@@ -285,6 +285,22 @@ internal class WebViewEngineHost : EngineHost {
      * shutdown path: the caller that wants the engine gone restarts it, which
      * is the same protocol profile switching already uses.
      */
+    /**
+     * Commit WebView's buffered state to disk.
+     *
+     * WebView holds cookies in memory and writes them out on its own schedule.
+     * The app kills its own process on a profile switch, with no orderly
+     * shutdown to hang a save on, so anything still unwritten at that moment is
+     * lost -- which is why the app used to call `CookieManager.flush()` itself
+     * as its last act. The conversion left that call with nothing to call.
+     *
+     * Deliberately not gated on [bound]: this runs on the process-death path,
+     * where a refusal would be the worst possible answer.
+     */
+    override fun flush(context: Context) {
+        runCatching { CookieManager.getInstance().flush() }
+    }
+
     override fun shutdown() {
         // Intentionally empty -- see the KDoc above. Not a TODO.
     }

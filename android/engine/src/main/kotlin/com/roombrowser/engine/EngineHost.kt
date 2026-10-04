@@ -94,6 +94,23 @@ interface EngineHost {
     fun storageBytes(context: Context, profileId: ProfileId): Long
 
     /**
+     * Commit any engine state still held in memory to disk.
+     *
+     * The app's last act before switching profiles is to kill its own process
+     * (`Process.killProcess`), with no orderly shutdown to hang a save on. An
+     * engine that buffers writes therefore loses them. WebView does -- cookies
+     * live in memory until flushed -- so before this member existed the app
+     * called `CookieManager.flush()` directly, and the conversion left that
+     * call with nothing to call.
+     *
+     * An engine that writes through to disk as it goes implements this as a
+     * no-op, and that is a truthful implementation rather than a placeholder.
+     * It must not be used as a general "save everything" hook: it runs on the
+     * process-death path and is not a checkpoint.
+     */
+    fun flush(context: Context)
+
+    /**
      * Release process-wide engine resources. After this the host is unusable;
      * it exists for tests and for the process-exit path, not for profile
      * switching (which restarts the process instead).

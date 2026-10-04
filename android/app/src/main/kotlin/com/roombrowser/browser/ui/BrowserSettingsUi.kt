@@ -333,7 +333,7 @@ fun BrowserSettingsScreen(viewModel: BrowserViewModel, onClose: () -> Unit) {
                     scope.launch { viewModel.updateGlobalSettings(global) }
                 }
             )
-            val engines = remember { ProfileEngine.installedWebViewEngines(context) }
+            val engines = remember { ProfileEngine.installedEngines(context) }
             // Honest display-only row: Android decides the active WebView
             // provider, so a picker here could never take effect (see the
             // InfoNote below). We simply show the current engine as text.

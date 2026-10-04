@@ -1,7 +1,7 @@
 package com.roombrowser.browser.ui
 
 import android.content.pm.PackageManager
-import android.webkit.PermissionRequest
+import com.roombrowser.engine.PermissionResponder
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
@@ -97,14 +97,14 @@ private fun MediaPermissionSheet(
     // page replaces the pending one while the dialog is up; without this the
     // dialog's result would be applied to the newer request, answering a
     // question the user was never asked.
-    var awaiting by remember { mutableStateOf<PermissionRequest?>(null) }
+    var awaiting by remember { mutableStateOf<PermissionResponder?>(null) }
 
     val launcher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
     ) { granted ->
         val target = awaiting
         awaiting = null
-        if (target == null || viewModel.pendingPermission?.request !== target) return@rememberLauncherForActivityResult
+        if (target == null || viewModel.pendingPermission?.responder !== target) return@rememberLauncherForActivityResult
         if (granted.values.all { it }) {
             viewModel.grantPendingPermission()
         } else {

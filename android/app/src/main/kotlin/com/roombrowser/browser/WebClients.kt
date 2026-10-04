@@ -1,26 +1,8 @@
 package com.roombrowser.browser
 
-import android.content.Intent
-import android.graphics.Bitmap
-import android.net.Uri
-import android.net.http.SslError
 import android.os.Handler
 import android.os.Looper
-import android.os.Message
 import android.os.SystemClock
-import android.view.View
-import android.webkit.CookieManager
-import android.webkit.HttpAuthHandler
-import android.webkit.JavascriptInterface
-import android.webkit.PermissionRequest
-import android.webkit.SslErrorHandler
-import android.webkit.ValueCallback
-import android.webkit.WebChromeClient
-import android.webkit.WebResourceError
-import android.webkit.WebResourceRequest
-import android.webkit.WebResourceResponse
-import android.webkit.WebView
-import android.webkit.WebViewClient
 import com.roombrowser.data.db.SiteSettingEntity
 import com.roombrowser.data.repo.PermissionKind
 import com.roombrowser.domain.credentials.CredentialDomainMatcher
@@ -28,22 +10,35 @@ import com.roombrowser.domain.engine.FilterEngine
 import com.roombrowser.domain.engine.HttpsUpgradeFallbackPolicy
 import com.roombrowser.domain.engine.UrlIntelligence
 import com.roombrowser.domain.model.Profile
+import com.roombrowser.engine.EngineSession
+import com.roombrowser.engine.EngineSessionListener
+import com.roombrowser.engine.HttpAuthResponder
+import com.roombrowser.engine.PageErrorKind
+import com.roombrowser.engine.PermissionResponder
+import org.json.JSONObject
 import java.lang.ref.WeakReference
 
 /**
- * Privacy WebView client — request interception (ad/tracker/malicious
- * blocking), HTTPS upgrades, popup/redirect control and honest error
- * reporting. Blocking statistics come exclusively from REAL events.
+ * Privacy listener — request interception (ad/tracker/malicious blocking),
+ * HTTPS upgrades, popup control, permissions, fullscreen and authentication,
+ * expressed against the facade's [EngineSessionListener]. Blocking statistics
+ * come exclusively from REAL events.
+ *
+ * WHY ONE CLASS WHERE THERE USED TO BE TWO. The WebView edition had to split
+ * this policy across a `WebViewClient` and a `WebChromeClient`, because the
+ * platform did. The facade deliberately allows ONE listener per session —
+ * GeckoView has one delegate and registering a second replaces the first —
+ * so the two halves are merged here rather than duplicated per edition.
  *
  * Site-settings lookups use a thread-safe SNAPSHOT provided by the host
- * (shouldInterceptRequest runs on a background thread; Room cannot be
- * queried synchronously there).
+ * (the resource-request callback runs on an engine background thread; Room
+ * cannot be queried synchronously there).
  */
-class RoomWebViewClient(
+class RoomSessionListener(
     private val profile: Profile,
     private val filterEngine: FilterEngine,
     private val callbacks: Callbacks
-) : WebViewClient() {
+) : EngineSessionListener {
 
     /**
      * HTTPS-First fallback bookkeeping: upgraded navigation -> original http
@@ -53,115 +48,165 @@ class RoomWebViewClient(
      */
     private val upgradeFallbacks = HttpsUpgradeFallbackPolicy.Registry()
 
+    /**
+     * For deferring work out of an engine callback that must not be re-entered.
+     *
+     * The https-upgrade retry below starts a load from inside the very error
+     * callback that just reported the failure. Doing that inline re-enters the
+     * engine while it is still delivering the error, which is why the
+     * pre-facade code always deferred it through `view.post { loadUrl(...) }`.
+     * The facade has no post of its own, so the hop is kept here rather than
+     * quietly dropped.
+     */
+    private val main = Handler(Looper.getMainLooper())
+
     interface Callbacks {
         /**
-         * Host of the page the FIRING engine is showing — the page host a
-         * sub-resource block is judged against. [view] is the engine that
-         * fired.
+         * Host of the page the FIRING session is showing — the page host a
+         * sub-resource block is judged against. [session] is what fired.
          *
-         * WHY IT TAKES THE VIEW: shouldInterceptRequest runs for EVERY
-         * WebView, background tabs included. Answering with the ACTIVE tab's
-         * URL (what this callback used to do, as `currentUrlHost()`) judged a
-         * background tab's sub-resources against whatever page the user
-         * happened to be looking at — the cross-site determination was wrong
-         * and the blocked-event category recorded for that tab was wrong with
-         * it.
+         * WHY IT TAKES THE SESSION: the resource-request callback runs for
+         * EVERY session, background tabs included. Answering with the ACTIVE
+         * tab's URL (what this callback used to do, as `currentUrlHost()`)
+         * judged a background tab's sub-resources against whatever page the
+         * user happened to be looking at — the cross-site determination was
+         * wrong and the blocked-event category recorded for that tab was wrong
+         * with it.
          */
-        fun pageHostFor(view: WebView): String?
+        fun pageHostFor(session: EngineSession): String?
         /** Snapshot of site settings for the given request host (thread-safe). */
         fun siteSettingFor(host: String): SiteSettingEntity?
         /** Record a real blocking event (Room insert, fire-and-forget). */
         fun recordBlockEvent(host: String, category: String)
         fun onBlocked(host: String, category: FilterEngine.FilterCategory)
         fun onHttpsUpgrade(host: String)
-        fun onPopupBlocked()
+        fun onPopupBlocked(session: EngineSession)
         fun onSuspiciousSite(url: String, signals: List<String>)
-        /** [view] is the engine that fired: per-tab state must be routed to
+
+        fun onProgress(session: EngineSession, progress: Int)
+        fun onTitleChanged(session: EngineSession, title: String)
+        /** [session] is the engine that fired: per-tab state must be routed to
          *  the OWNING tab's row, never to whichever tab happens to be active. */
-        fun onPageStarted(view: WebView, url: String)
-        fun onPageFinished(view: WebView, url: String, title: String)
+        fun onPageStarted(session: EngineSession, url: String)
+        /** [success] is false when the engine gave up on the load. */
+        fun onPageFinished(session: EngineSession, url: String, title: String, success: Boolean)
         /** Live web-history state — fires on EVERY navigation (including
          *  same-document pushState/replaceState) so the UI's Back / Forward
          *  controls are never stale. */
-        fun onHistoryChanged(view: WebView, canGoBack: Boolean, canGoForward: Boolean)
-        fun onReceivedError(view: WebView, url: String, errorCode: Int, description: String?)
-        /** An HTTP status error on the MAIN frame (4xx/5xx). Separate from
-         *  [onReceivedError] on purpose: the engine reports it as a SUCCESSFUL
-         *  navigation, so a 404 arrives as a clean onPageFinished with the
-         *  right URL and an empty document. Reported for the trace only. */
-        fun onReceivedHttpError(view: WebView, url: String, statusCode: Int)
-        /** The engine has a first frame to show for [url]. Its absence after
-         *  onPageFinished means the document never painted. Trace only. */
-        fun onPageCommitVisible(view: WebView, url: String)
-        fun onSslError(view: WebView, url: String, error: SslError)
+        fun onHistoryChanged(session: EngineSession, canGoBack: Boolean, canGoForward: Boolean)
+        /**
+         * A main-frame load failed, for a reason that is NOT a certificate
+         * failure. [kind] is the engine-neutral category (TRANSPORT covers
+         * DNS failure, a refused connection and a drop, which the two engines
+         * report with their own, different, numbers); [errorCode] is the
+         * engine's own and is for diagnostics only.
+         */
+        fun onReceivedError(
+            session: EngineSession,
+            url: String,
+            kind: PageErrorKind,
+            errorCode: Int,
+            description: String?
+        )
+        /**
+         * The connection was refused because its certificate is not trusted.
+         * Reported through the facade's [PageErrorKind.CERTIFICATE] rather
+         * than a dedicated callback (the WebView edition's
+         * `onReceivedSslError`), so [errorCode] is the ENGINE's security code
+         * and not a `SslError` primary error.
+         */
+        fun onSslError(session: EngineSession, url: String, errorCode: Int, description: String?)
         /**
          * A site asked for HTTP Basic/Digest credentials. The host shows a
          * prompt and answers with exactly ONE of [proceed] or [cancel] — the
-         * engine's handler is single-shot, and dropping both leaves the
+         * engine's responder is single-shot, and dropping both leaves the
          * navigation hanging.
          */
         fun onHttpAuthRequest(
-            view: WebView,
+            session: EngineSession,
             host: String,
             realm: String,
             proceed: (String, String) -> Unit,
             cancel: () -> Unit
         )
-        fun openInNewTab(url: String, isPrivate: Boolean)
-    }
-
-    override fun shouldInterceptRequest(
-        view: WebView,
-        request: WebResourceRequest
-    ): WebResourceResponse? {
-        // Recorded BEFORE the main-frame early return: this is the earliest
-        // main-frame signal there is, and it covers redirect hops that
-        // onPageStarted does not report. Background thread — see [mainFrameUrl].
-        if (request.isForMainFrame) mainFrameUrl = request.url.toString()
-        if (request.isForMainFrame) return null
-        val url = request.url
-        val host = url.host?.lowercase() ?: return null
-        // The OWNING engine's page host, resolved from the firing [view] —
-        // never the active tab's (see [Callbacks.pageHostFor]). The resolver
-        // is total (pure map/URL lookups, no throw) and falls back to the
-        // active tab's URL for an engine that owns no session, so this hot
-        // path stays allocation-light and cannot fail a sub-resource load.
-        val pageHost = callbacks.pageHostFor(view)
-
-        val siteOverride = callbacks.siteSettingFor(host)
-        val shieldsDisabled = siteOverride?.shieldsDisabled == true
-        val s = profile.settings
-        val decision = filterEngine.decide(
-            requestHost = host,
-            pageHost = pageHost,
-            path = url.path ?: "/",
-            blockAds = s.blockAds && !shieldsDisabled,
-            blockTrackers = s.blockTrackers && !shieldsDisabled,
-            blockCrossSite = s.blockCrossSiteTrackers && !shieldsDisabled,
-            blockMalicious = s.blockMalicious
+        /**
+         * The page asked for the camera and/or microphone. The host must
+         * answer [responder] exactly once, and must refuse a request from
+         * anything but the ACTIVE session.
+         */
+        fun onPermissionRequest(
+            session: EngineSession,
+            responder: PermissionResponder,
+            kinds: Set<PermissionKind>,
+            originUrl: String
         )
-        if (decision is FilterEngine.Decision.Blocked) {
-            callbacks.onBlocked(host, decision.category)
-            callbacks.recordBlockEvent(host, StatCategories.from(decision.category))
-            return blockedResponse()
-        }
-        return null
+        /** The page asked for the user's location. [origin] may be null. */
+        fun onGeolocationRequest(
+            session: EngineSession,
+            origin: String?,
+            responder: PermissionResponder
+        )
+        /**
+         * The session entered or left fullscreen. A STATE, not a view: the
+         * engine renders fullscreen content inside its own view, so the app
+         * only hides or restores its chrome.
+         */
+        fun onFullScreen(session: EngineSession, fullScreen: Boolean)
+        /**
+         * A message from one of this session's page-world bridges. [payload]
+         * is page-controlled and must be treated as hostile; the session's own
+         * URL is the anchor it is validated against.
+         */
+        fun onPageMessage(session: EngineSession, channel: String, payload: String)
+        /**
+         * The page started a download, or navigated to something the engine
+         * cannot render. The app owns the download queue, so it handles every
+         * one of these.
+         */
+        fun onDownloadRequest(
+            session: EngineSession,
+            url: String,
+            userAgent: String?,
+            contentDisposition: String?,
+            mimeType: String?
+        )
+        fun openNewWindow(session: EngineSession, url: String)
+        fun openInNewTab(url: String, isPrivate: Boolean)
+        fun currentUrl(): String?
+        /** TRUE when [session] is the ACTIVE tab's engine. Needed because a
+         *  popup request must be refused for a background tab, and this class
+         *  has no other way to know which tab is on screen. */
+        fun isActiveEngine(session: EngineSession): Boolean
     }
 
-    override fun shouldOverrideUrlLoading(
-        view: WebView,
-        request: WebResourceRequest
-    ): Boolean {
-        val url = request.url.toString()
-        val host = request.url.host?.lowercase() ?: ""
+    // ------------------------------------------------------------- navigation
 
-        // Malicious-site protection for main-frame navigations
+    /**
+     * A navigation is about to start. This is where the app's navigation
+     * policy lives: refusing a host on the malicious-site list, and rewriting
+     * an `http://` load to `https://` when the profile asks for upgrades.
+     *
+     * The https upgrade is expressed as [NavigationDecision.LoadDifferent]
+     * rather than as a `view.post { loadUrl(...) }` hop, which is what the
+     * WebView edition had to do: the facade owns the substitution, so the
+     * original navigation is never started and there is no window in which the
+     * app has to remember which URL it really meant.
+     */
+    override fun onNavigationRequest(
+        session: EngineSession,
+        url: String,
+        isTopLevel: Boolean,
+        hasUserGesture: Boolean
+    ): NavigationDecision {
+        val host = UrlIntelligence.hostOf(url).orEmpty()
+
+        // Malicious-site protection for navigations.
         if (profile.settings.blockMalicious && host.isNotBlank()) {
             val category = filterEngine.blockedCategory(host)
             if (category == FilterEngine.FilterCategory.MALICIOUS) {
                 callbacks.onBlocked(host, category)
                 callbacks.recordBlockEvent(host, StatCategories.from(category))
-                return true
+                return NavigationDecision.Block
             }
             val signals = filterEngine.suspiciousSignals(url)
             if (signals.isNotEmpty()) {
@@ -177,240 +222,307 @@ class RoomWebViewClient(
                 upgradeFallbacks.register(upgraded.url, url)
                 callbacks.onHttpsUpgrade(host)
                 callbacks.recordBlockEvent(host, StatCategories.HTTPS_UPGRADE)
-                // We are the ones starting this load: it IS the main frame
-                // now, and an SSL failure on the way must be attributed to it
-                // (see [mainFrameUrl]).
-                mainFrameUrl = upgraded.url
-                view.post { view.loadUrl(upgraded.url) }
-                return true
+                return NavigationDecision.LoadDifferent(upgraded.url)
             }
         }
-        // Reaching here means the engine loads this url: it is the main frame.
-        mainFrameUrl = url
+        return NavigationDecision.Allow
+    }
+
+    /**
+     * A sub-resource load is about to start. Return true to block it.
+     *
+     * THE FALLBACK IS GONE. The WebView edition recorded the main-frame URL
+     * from the request that carried `isForMainFrame`; the facade makes the
+     * session's own URL authoritative instead, so nothing here has to keep a
+     * parallel copy of it.
+     *
+     * ENGINE NOTE, carried as a real gap rather than hidden: the GeckoView
+     * edition has no per-request delegate for arbitrary sub-resources and
+     * answers this from a bundled WebExtension, so until that lands it blocks
+     * nothing here and the profile's own tracking-protection settings are the
+     * only thing between the page and a tracker. The decision below is still
+     * written once, for both editions.
+     */
+    override fun onResourceRequest(
+        session: EngineSession,
+        url: String,
+        isForMainFrame: Boolean
+    ): Boolean {
+        if (isForMainFrame) return false
+        val host = UrlIntelligence.hostOf(url) ?: return false
+        // The OWNING session's page host, resolved from the firing session —
+        // never the active tab's (see [Callbacks.pageHostFor]). The resolver
+        // is total (pure map/URL lookups, no throw) and falls back to the
+        // active tab's URL for a session that is not tracked, so this hot path
+        // stays allocation-light and cannot fail a sub-resource load.
+        val pageHost = callbacks.pageHostFor(session)
+        val siteOverride = callbacks.siteSettingFor(host)
+        val shieldsDisabled = siteOverride?.shieldsDisabled == true
+        val s = profile.settings
+        val decision = filterEngine.decide(
+            requestHost = host,
+            pageHost = pageHost,
+            path = runCatching { java.net.URI(url).path }.getOrNull() ?: "/",
+            blockAds = s.blockAds && !shieldsDisabled,
+            blockTrackers = s.blockTrackers && !shieldsDisabled,
+            blockCrossSite = s.blockCrossSiteTrackers && !shieldsDisabled,
+            blockMalicious = s.blockMalicious
+        )
+        if (decision is FilterEngine.Decision.Blocked) {
+            callbacks.onBlocked(host, decision.category)
+            callbacks.recordBlockEvent(host, StatCategories.from(decision.category))
+            return true
+        }
         return false
     }
 
-    override fun onPageStarted(view: WebView, url: String, favicon: Bitmap?) {
-        CookieManager.getInstance().flush()
-        // Main-frame-only callback, and the authoritative one: whatever the
-        // engine is actually navigating to (including a url we never saw in
-        // shouldOverrideUrlLoading, such as a cross-host redirect target).
-        mainFrameUrl = url
-        // Early history feedback: the back/forward buttons light up as soon
-        // as a navigation begins, then doUpdateVisitedHistory re-reports the
-        // authoritative state when the entry lands.
-        callbacks.onHistoryChanged(view, view.canGoBack(), view.canGoForward())
-        callbacks.onPageStarted(view, url)
+    // ----------------------------------------------------------- page events
+
+    override fun onPageStarted(session: EngineSession, url: String?) {
+        callbacks.onPageStarted(session, url.orEmpty())
     }
 
-    override fun onPageFinished(view: WebView, url: String) {
-        CookieManager.getInstance().flush()
-        mainFrameUrl = url
-        callbacks.onHistoryChanged(view, view.canGoBack(), view.canGoForward())
-        callbacks.onPageFinished(view, url, view.title ?: url)
+    override fun onPageFinished(session: EngineSession, url: String?, success: Boolean) {
+        val shown = url.orEmpty()
+        callbacks.onPageFinished(session, shown, session.title ?: shown, success)
+    }
+
+    override fun onTitleChanged(session: EngineSession, title: String?) {
+        title?.let { callbacks.onTitleChanged(session, it) }
+    }
+
+    override fun onProgress(session: EngineSession, progress: Int) {
+        callbacks.onProgress(session, progress)
     }
 
     /**
-     * An HTTP status error is NOT an engine error: no [onReceivedError] fires,
-     * [onPageFinished] still arrives with the right URL, and the screen shows
-     * an empty document. Forwarded so the trace can tell a 404 apart from a
-     * page that rendered — from the device side those two are identical.
+     * THE reliable back/forward signal, in both editions: the engine reports
+     * history state whenever it changes, including the same-document
+     * navigations (history.pushState) that produce no page-started or
+     * page-finished event at all. Without it the navigation buttons stay grey
+     * forever on SPA sites.
      */
-    override fun onReceivedHttpError(
-        view: WebView,
-        request: WebResourceRequest,
-        errorResponse: WebResourceResponse
+    override fun onNavigationStateChanged(
+        session: EngineSession,
+        canGoBack: Boolean,
+        canGoForward: Boolean
     ) {
-        if (request.isForMainFrame) {
-            callbacks.onReceivedHttpError(
-                view,
-                request.url.toString(),
-                errorResponse.statusCode
-            )
-        }
+        callbacks.onHistoryChanged(session, canGoBack, canGoForward)
     }
 
-    /** The engine has a first frame to show. Its absence after
-     *  [onPageFinished] means the document never painted. */
-    override fun onPageCommitVisible(view: WebView, url: String) {
-        callbacks.onPageCommitVisible(view, url)
-    }
+    // ------------------------------------------------------------ load errors
 
     /**
-     * THE reliable back/forward signal: fires for every history commit —
-     * including same-document navigations (history.pushState) that skip
-     * onPageStarted/onPageFinished entirely. Without this, the navigation
-     * buttons stay grey forever on SPA sites.
-     */
-    override fun doUpdateVisitedHistory(view: WebView, url: String?, isReload: Boolean) {
-        callbacks.onHistoryChanged(view, view.canGoBack(), view.canGoForward())
-    }
-
-    override fun onReceivedError(
-        view: WebView,
-        request: WebResourceRequest,
-        error: WebResourceError
-    ) {
-        if (request.isForMainFrame) {
-            val failedUrl = request.url.toString()
-            // HTTPS-First fallback: our own upgrade failed → retry the
-            // original http URL once, silently (no error page flash).
-            val original = upgradeFallbacks.consume(failedUrl)
-            if (original != null && HttpsUpgradeFallbackPolicy.isRecoverable(error.errorCode)) {
-                view.post { view.loadUrl(original) }
-                return
-            }
-            callbacks.onReceivedError(
-                view,
-                failedUrl,
-                error.errorCode,
-                error.description?.toString()
-            )
-        }
-    }
-
-    /**
-     * LEGACY 4-arg error callback — some WebView stacks report main-frame
-     * transport failures (ERR_SSL_PROTOCOL_ERROR against plain-http ports,
-     * connection resets mid-handshake) ONLY through this deprecated
-     * signature during shouldOverrideUrlLoading→loadUrl upgrade flows.
-     * The default implementation is a no-op, so the failure dies silently
-     * with the old page still shown (CI-proven by BrowserNavigationE2eTest:
-     * https attempt started — back/forward lit up — then nothing: no error
-     * surface, no fallback, server never saw the retry).
+     * A load failed. Return true to have handled it.
      *
-     * Routing: only the upgrade-fallback case is handled here; ordinary
-     * error reporting stays with the modern signature above (overriding
-     * both for reporting would double-fire on stacks that call both —
-     * onPageStarted clears pageError, so a raced overlay self-heals).
+     * The two cases the WebView edition had to tell apart are now one call
+     * with a [PageErrorKind]: a certificate that is bad for a SUB-RESOURCE is
+     * that resource's problem and is swallowed so the page carries on, while a
+     * certificate failure for the page itself gets the "this connection is not
+     * secure" surface. Nothing here ever proceeds past a failed validation.
      */
-    @Deprecated("Deprecated in Java")
-    override fun onReceivedError(
-        view: WebView,
+    override fun onPageError(
+        session: EngineSession,
+        url: String?,
+        kind: PageErrorKind,
+        isTopLevel: Boolean,
         errorCode: Int,
-        description: String?,
-        failingUrl: String?
-    ) {
-        if (failingUrl != null) {
-            val original = upgradeFallbacks.consume(failingUrl)
-            if (original != null && HttpsUpgradeFallbackPolicy.isRecoverable(errorCode)) {
-                view.post { view.loadUrl(original) }
+        description: String?
+    ): Boolean {
+        // HTTPS-First fallback: an https endpoint without working TLS behind
+        // one of OUR upgrades -> retry the original http URL once, silently
+        // (no error page flash). The registry key is the FAILING url.
+        if (url != null && isTopLevel) {
+            val original = upgradeFallbacks.consume(url)
+            // THE RECOVERABILITY TEST BELONGS TO THE TRANSPORT CODE SPACE.
+            // It is written against WebViewClient's ERROR_* codes (-1, -6, -8,
+            // -11), and the facade guarantees every engine reports in that
+            // space -- see EngineErrorCode, which is also where a GeckoView
+            // failure is translated. It was not always so: an engine passing
+            // its own numbering through would have landed every failure in
+            // this test's `else` branch and the retry below would simply never
+            // have fired, silently.
+            //
+            // On the CERTIFICATE path the code is an `SslError.SSL_*` value
+            // (0..5) instead, and no SSL code can match that list -- so testing
+            // it there made the fallback unreachable in precisely the case it
+            // exists for: an http-only host whose https port answers with a
+            // certificate we will not accept. The pre-facade code consumed the
+            // registry on the certificate path with no test at all, and that is
+            // what this restores. The test still guards the transport path,
+            // where the code space is the one it was written for.
+            val recoverable = kind == PageErrorKind.CERTIFICATE ||
+                HttpsUpgradeFallbackPolicy.isRecoverable(errorCode)
+            if (original != null && recoverable) {
+                main.post { session.loadUri(original) }
+                return true
             }
         }
+        if (kind == PageErrorKind.CERTIFICATE) {
+            // Sub-resource certificate failures are not the page's failure.
+            if (!isTopLevel) return true
+            callbacks.onSslError(session, url.orEmpty(), errorCode, description)
+            return true
+        }
+        if (!isTopLevel) return true
+        callbacks.onReceivedError(session, url.orEmpty(), kind, errorCode, description)
+        return true
+    }
+
+    // -------------------------------------------------------------- popups
+
+    /**
+     * May this session open another window?
+     *
+     * THE GATE, and it carries no URL. That is the point rather than an
+     * omission: it is asked before the engine commits anything to the popup --
+     * on WebView before the throwaway transport is built, on GeckoView before
+     * a session is created -- so a refusal costs no renderer. The target URL
+     * arrives afterwards, at [onNewWindowResolved].
+     *
+     * AN EARLIER VERSION OF THIS METHOD TOOK THE URL and refused a null one,
+     * which read as "there is nothing to open" and was locally reasonable. It
+     * was also fatal: the engine's gate legitimately has no URL yet, so the
+     * gate always answered false and EVERY popup -- every `target="_blank"`
+     * link, every `window.open()` -- was refused in both editions, with
+     * nothing shown to the user.
+     */
+    override fun onNewWindowRequest(session: EngineSession, hasUserGesture: Boolean): Boolean {
+        val blocked = profile.settings.blockPopups || !hasUserGesture
+        if (blocked) {
+            callbacks.onPopupBlocked(session)
+            return false
+        }
+        // A popup from a BACKGROUND session is refused outright: opening a
+        // window on behalf of a page the user is not looking at is exactly the
+        // cross-tab surprise this guards. DROPPED rather than queued — a window
+        // opened now would be navigated whenever the user finally got to that
+        // tab, with no context for why, and the usual background case (no user
+        // gesture) was already refused above. The page simply sees
+        // window.open() fail.
+        return callbacks.isActiveEngine(session)
     }
 
     /**
-     * The most recent MAIN-FRAME url this client has seen.
+     * The popup's target is known. Open it as a new tab.
      *
-     * WHY IT EXISTS: [onReceivedSslError] is the one WebView callback that
-     * does not say which frame it fired for — a `SslError` carries a url and
-     * nothing else. Without this, a single third-party sub-resource with a
-     * broken certificate (an ad iframe, a tracker pixel, a CDN with an
-     * expired cert) replaced an otherwise perfectly good page with the
-     * full-screen "Connection Not Secure" error — the reported symptom, and
-     * not something any other browser does: Chrome blocks the one resource
-     * and keeps the page.
-     *
-     * HOW IT IS FILLED: every callback that CAN identify a main frame does.
-     * [shouldOverrideUrlLoading] and [shouldInterceptRequest] both receive an
-     * `isForMainFrame` flag, and [onPageStarted]/[onPageFinished] are
-     * main-frame-only callbacks by definition. Sub-resource loads never reach
-     * any of them, which is exactly what makes the comparison meaningful.
-     *
-     * `@Volatile`: [shouldInterceptRequest] runs on a background thread while
-     * the SSL callback runs on the UI thread.
+     * Only ever reached after [onNewWindowRequest] returned true for this same
+     * popup, so this is the half that acts, not the half that decides --
+     * which is why it has no return value.
      */
-    @Volatile
-    private var mainFrameUrl: String? = null
-
-    /**
-     * Which frame a failing certificate belongs to.
-     *
-     * The decision itself lives in [SslFrameMatch], where it can be tested;
-     * this only supplies the two urls it compares against. See that object
-     * for why the comparison is scheme+host+port and why an unknown failing
-     * url errs towards "main frame".
-     */
-    private fun isMainFrameSslFailure(view: WebView, failingUrl: String?): Boolean =
-        SslFrameMatch.isMainFrameFailure(failingUrl, mainFrameUrl, view.url)
-
-    override fun onReceivedSslError(view: WebView, handler: SslErrorHandler, error: SslError) {
-        // HTTPS-First fallback: an https endpoint without a valid TLS setup
-        // behind one of OUR upgrades → retry the original http URL once.
-        // The registry key is the FAILING url (error.url — e.g.
-        // https://host:port/page), NOT view.url: during an in-page link
-        // navigation view.url still reports the LAST COMMITTED page, so the
-        // old key could never match and the fallback silently never fired
-        // (CI-proven by BrowserNavigationE2eTest).
-        val original = upgradeFallbacks.consume(error.url)
-        if (original != null) {
-            handler.cancel()
-            view.post { view.loadUrl(original) }
-            return
-        }
-        // A certificate that is bad for a SUB-RESOURCE is that resource's
-        // problem, not the page's: cancel it and let the page carry on. This
-        // is a refusal, never an acceptance — the resource is not loaded, and
-        // nothing here ever calls handler.proceed(), so certificate
-        // validation is untouched.
-        if (!isMainFrameSslFailure(view, error.url)) {
-            handler.cancel()
-            return
-        }
-        // Never proceed automatically — the user decides via the error page.
-        // The url reported is the one that FAILED, not view.url: for a
-        // main-frame navigation view.url is still the previous page, and
-        // telling the user that address is insecure when it is not would be
-        // the same class of lie this method just stopped telling.
-        handler.cancel()
-        callbacks.onSslError(view, error.url ?: view.url ?: "", error)
+    override fun onNewWindowResolved(session: EngineSession, url: String, hasUserGesture: Boolean) {
+        callbacks.openNewWindow(session, url)
     }
 
-    /**
-     * HTTP Basic/Digest authentication.
-     *
-     * This used to be a bare `handler.cancel()` — no prompt, no message, no
-     * explanation — which made every site behind HTTP auth simply unreachable:
-     * the user got a blank 401 with no way to enter the credentials the server
-     * was asking for. Unlike the SSL path above, there is nothing unsafe to
-     * decide here; the server asked for a username and a password, and only
-     * the user has them.
-     *
-     * The handler is single-shot and `useHttpAuthUsernamePassword` is NOT
-     * consulted: this browser deliberately keeps no WebView credential
-     * database (the password manager is the vault), so every challenge is
-     * answered by the user. A non-main-frame challenge is still refused —
-     * a sub-resource must not be able to raise a credential prompt.
-     */
-    override fun onReceivedHttpAuthRequest(
-        view: WebView,
-        handler: HttpAuthHandler,
-        host: String?,
-        realm: String?
+    // --------------------------------------------------------- permissions
+
+    override fun onMediaPermissionRequest(
+        session: EngineSession,
+        origin: String,
+        wantsVideo: Boolean,
+        wantsAudio: Boolean,
+        responder: PermissionResponder
+    ) {
+        val kinds = mutableSetOf<PermissionKind>()
+        if (wantsVideo) kinds += PermissionKind.CAMERA
+        if (wantsAudio) kinds += PermissionKind.MICROPHONE
+        // Refused rather than ignored: an unanswered request hangs the page
+        // for the life of its document.
+        if (kinds.isEmpty()) {
+            responder.deny()
+            return
+        }
+        callbacks.onPermissionRequest(session, responder, kinds, origin)
+    }
+
+    override fun onGeolocationRequest(
+        session: EngineSession,
+        origin: String?,
+        responder: PermissionResponder
+    ) {
+        // Denied rather than ignored when the engine cannot attribute the
+        // request: an unanswered request hangs the page, and a null origin is
+        // not a reason to grant anything.
+        if (origin.isNullOrBlank()) {
+            responder.deny()
+            return
+        }
+        callbacks.onGeolocationRequest(session, origin, responder)
+    }
+
+    override fun onHttpAuthRequest(
+        session: EngineSession,
+        host: String,
+        realm: String,
+        responder: HttpAuthResponder
     ) {
         var answered = false
         callbacks.onHttpAuthRequest(
-            view = view,
-            host = host.orEmpty(),
-            realm = realm.orEmpty(),
+            session = session,
+            host = host,
+            realm = realm,
             proceed = { user, password ->
                 if (!answered) {
                     answered = true
-                    runCatching { handler.proceed(user, password) }
+                    runCatching { responder.proceed(user, password) }
                 }
             },
             cancel = {
                 if (!answered) {
                     answered = true
-                    runCatching { handler.cancel() }
+                    runCatching { responder.cancel() }
                 }
             }
         )
     }
 
-    private fun blockedResponse(): WebResourceResponse =
-        WebResourceResponse("text/plain", "utf-8", java.io.ByteArrayInputStream(ByteArray(0)))
+    override fun onFullScreen(session: EngineSession, fullScreen: Boolean) {
+        callbacks.onFullScreen(session, fullScreen)
+    }
+
+    override fun onPageMessage(session: EngineSession, channel: String, payload: String) {
+        callbacks.onPageMessage(session, channel, payload)
+    }
+
+    /**
+     * The page started a download. The app enqueues it through its own
+     * download engine, so the answer is always "handled" — returning true and
+     * then doing nothing would be a silently failed download.
+     */
+    override fun onDownloadRequest(
+        session: EngineSession,
+        url: String,
+        userAgent: String?,
+        contentDisposition: String?,
+        mimeType: String?,
+        contentLength: Long
+    ): Boolean {
+        callbacks.onDownloadRequest(session, url, userAgent, contentDisposition, mimeType)
+        return true
+    }
 }
+
+/**
+ * The `channel` an upward page message carries: the name of the native entry
+ * point that was called, which is the same string the page sees on
+ * `window` (`RoomVault`, `RoomWallet`).
+ *
+ * WHY THE APP NAMES THESE. The facade deliberately does not fix the channel
+ * vocabulary — it describes the two entry points in prose and leaves the wire
+ * to the editions, because each edition's page-world script chooses what it
+ * posts. The name the page already calls is the only string both the injected
+ * scripts and the page-visible contract already agree on, so it is the one
+ * that can be shared.
+ */
+object PageBridgeChannels {
+    const val VAULT = "RoomVault"
+    const val WALLET = "RoomWallet"
+}
+
+/** Reads a possibly-null string field out of a page-supplied envelope. */
+internal fun JSONObject.stringOrNull(name: String): String? =
+    if (isNull(name)) null else optString(name, "").ifEmpty { null }
+
 
 /**
  * The page host a sub-resource block is judged against, given the FIRING
@@ -459,239 +571,6 @@ object StatCategories {
 }
 
 /**
- * Chrome client: windows (popups), permissions, fullscreen, file chooser.
- *
- * ONE INSTANCE PER ENGINE (built in the host's createWebView). A few chrome
- * callbacks carry no WebView at all — onPermissionRequest and
- * onGeolocationPermissionsShowPrompt — so without knowing its own engine a
- * client cannot tell a background tab's request from the active tab's, and
- * would raise a sheet over the tab the user is actually looking at. Every
- * other callback here carries the firing view and routes on it.
- */
-class RoomWebChromeClient(
-    private val profile: Profile,
-    private val callbacks: ChromeCallbacks,
-    /**
-     * The engine this instance is installed on, or null for an engine-less
-     * instance. The host builds one per engine (createWebView passes the
-     * engine it just made), so null here means the client was built without
-     * one — and the host REFUSES such a request rather than attributing it to
-     * whichever tab happens to be in front. WEAK: the engine owns its client,
-     * and a client must never keep a destroyed engine alive.
-     */
-    engine: WebView? = null
-) : WebChromeClient() {
-
-    private val engineRef = WeakReference(engine)
-
-    /** The engine that fired, or null when this instance is not engine-bound
-     *  or its engine has been collected (a collected engine cannot call back;
-     *  the host refuses a request it cannot attribute). */
-    private fun firingEngine(): WebView? = engineRef.get()
-
-    interface ChromeCallbacks {
-        /** [view] is the engine that fired (see the WebViewClient callbacks). */
-        fun onProgress(view: WebView, progress: Int)
-        fun onTitleChanged(view: WebView, title: String)
-        fun onShowCustomView(view: View, callback: CustomViewCallback)
-        fun onHideCustomView()
-        /** [view] is the engine that fired, or null when it is unknown. The
-         *  host must refuse a request from anything but the ACTIVE engine. */
-        fun onPermissionRequest(
-            view: WebView?,
-            request: PermissionRequest,
-            kinds: Set<PermissionKind>,
-            originUrl: String
-        )
-        fun onGeolocationPermissions(
-            view: WebView?,
-            origin: String?,
-            callback: android.webkit.GeolocationPermissions.Callback
-        )
-        fun onFileChooserIntent(
-            view: WebView?,
-            intent: Intent,
-            callback: FileChooserResult
-        )
-        fun openNewWindow(view: WebView?, url: String)
-        /** [view] is the engine whose page tried to open the window, or null
-         *  when it is unknown. */
-        fun onPopupBlocked(view: WebView?)
-        fun currentUrl(): String?
-        /** TRUE when [view] is the ACTIVE tab's engine. Needed because the
-         *  popup transport below must be refused BEFORE it is built, and the
-         *  chrome client has no other way to know which tab is on screen. */
-        fun isActiveEngine(view: WebView): Boolean
-    }
-
-    interface FileChooserResult {
-        fun onResult(values: Array<out Uri>?)
-    }
-
-    override fun onProgressChanged(view: WebView, newProgress: Int) {
-        callbacks.onProgress(view, newProgress)
-    }
-
-    override fun onReceivedTitle(view: WebView, title: String?) {
-        title?.let { callbacks.onTitleChanged(view, it) }
-    }
-
-    /** Popup blocking: new windows are refused while popups are blocked. */
-    override fun onCreateWindow(
-        view: WebView,
-        isDialog: Boolean,
-        isUserGesture: Boolean,
-        resultMsg: Message?
-    ): Boolean {
-        val blocked = profile.settings.blockPopups || !isUserGesture
-        if (blocked) {
-            callbacks.onPopupBlocked(view)
-            return false
-        }
-        // A popup from a BACKGROUND engine is refused outright, BEFORE the
-        // transport is built: opening a window on behalf of a page the user
-        // is not looking at is exactly the cross-tab surprise this guards.
-        // DROPPED rather than queued — a window opened now would be navigated
-        // whenever the user finally got to that tab, with no context for why,
-        // and the usual background case (no user gesture) was already refused
-        // above. The page simply sees window.open() fail.
-        if (!callbacks.isActiveEngine(view)) return false
-        // Popups allowed → transport WebView forwards the target URL to a new tab.
-        val temp = WebView(view.context)
-        // Single-shot destroy, shared by the navigation callback and the
-        // timeout below. Main-thread only (onCreateWindow, the WebViewClient
-        // callback and postDelayed all run there), so a plain Boolean is the
-        // right guard — destroy() on an already-destroyed WebView throws.
-        var reaped = false
-        val reap = {
-            if (!reaped) {
-                reaped = true
-                temp.stopLoading()
-                temp.destroy()
-            }
-        }
-        temp.webViewClient = object : WebViewClient() {
-            override fun shouldOverrideUrlLoading(
-                tempView: WebView,
-                request: WebResourceRequest
-            ): Boolean {
-                val target = request.url.toString()
-                tempView.stopLoading()
-                tempView.post { reap() }
-                // The ORIGIN engine, not the transport: the host must re-check
-                // ownership against the tab that actually asked (the active
-                // tab can change while the popup's URL is being resolved).
-                callbacks.openNewWindow(view, target)
-                return true
-            }
-        }
-        (resultMsg?.obj as? WebView.WebViewTransport)?.webView = temp
-        resultMsg?.sendToTarget()
-        // The transport only dies when it NAVIGATES. A `window.open()` with no
-        // URL — or one the page keeps as a handle and never points anywhere —
-        // never reaches shouldOverrideUrlLoading, so without this the renderer
-        // it owns stays alive for the life of the process, one per popup.
-        // Nothing is lost by reaping it: the transport is off-screen and is
-        // never attached to a tab, so a popup that has not resolved a URL by
-        // now had no way to become one.
-        temp.postDelayed({ reap() }, TRANSPORT_REAP_MS)
-        return true
-    }
-
-    override fun onShowCustomView(view: View, callback: CustomViewCallback) {
-        callbacks.onShowCustomView(view, callback)
-    }
-
-    override fun onHideCustomView() {
-        callbacks.onHideCustomView()
-    }
-
-    override fun onPermissionRequest(request: PermissionRequest) {
-        val resources = request.resources
-        val kinds = mutableSetOf<PermissionKind>()
-        if (PermissionRequest.RESOURCE_VIDEO_CAPTURE in resources) kinds += PermissionKind.CAMERA
-        if (PermissionRequest.RESOURCE_AUDIO_CAPTURE in resources) kinds += PermissionKind.MICROPHONE
-
-        // PROTECTED MEDIA (EME) — answered here, on the spot, never put to the
-        // user. This is the request a video site makes before it will hand the
-        // engine a DRM-protected stream, and denying it is why video on the
-        // sites that use it failed to start or stalled on "initializing".
-        //
-        // WHY IT NEEDS NO CONSENT SURFACE, unlike camera and microphone: the
-        // resource is not a window onto anything the user owns. It is a request
-        // to decode content the page is already delivering, using the device's
-        // DRM module and keys the page obtained from its own licence server. No
-        // data about the user leaves the device because of it, so there is
-        // nothing for a prompt to protect — which is why every mainstream
-        // browser, this app's own desktop-mode UA included, answers it without
-        // asking. Refusing it was never a privacy decision; it was a limitation
-        // of a sheet that could only answer the WHOLE resource array at once.
-        //
-        // The mixed case stays with the sheet: a request that wants a camera or
-        // a microphone AND protected media is answered as one decision, because
-        // PermissionRequest is single-shot and a partial grant would leave the
-        // camera half of it hanging.
-        if (kinds.isEmpty()) {
-            // Refused rather than ignored: an unanswered PermissionRequest
-            // hangs the page for the life of its document.
-            if (PermissionRequest.RESOURCE_PROTECTED_MEDIA_ID in resources) {
-                request.grant(arrayOf(PermissionRequest.RESOURCE_PROTECTED_MEDIA_ID))
-            } else {
-                // RESOURCE_MIDI_SYSEX is the remaining case: it has no kind
-                // here either, and refusal is the honest answer — the app has
-                // no MIDI device story.
-                request.deny()
-            }
-            return
-        }
-        // No WebView on this callback — firingEngine() is the only handle on
-        // the tab that asked. The host denies anything but the ACTIVE engine.
-        callbacks.onPermissionRequest(firingEngine(), request, kinds, callbacks.currentUrl() ?: "")
-    }
-
-    override fun onGeolocationPermissionsShowPrompt(
-        origin: String?,
-        callback: android.webkit.GeolocationPermissions.Callback
-    ) {
-        callbacks.onGeolocationPermissions(firingEngine(), origin, callback)
-    }
-
-    override fun onShowFileChooser(
-        webView: WebView?,
-        filePathCallback: ValueCallback<Array<Uri>>?,
-        fileChooserParams: FileChooserParams?
-    ): Boolean {
-        val intent = fileChooserParams?.createIntent() ?: return false
-        // `true` is returned even when the host refuses the chooser: false
-        // would hand the request to the platform's OWN picker, which is the
-        // very UI the ownership check exists to suppress. The host answers a
-        // refused request by completing the callback with a null result.
-        callbacks.onFileChooserIntent(
-            webView,
-            intent,
-            object : FileChooserResult {
-                override fun onResult(values: Array<out Uri>?) {
-                    filePathCallback?.onReceiveValue(values?.let { arrayOf(*it) })
-                }
-            }
-        )
-        return true
-    }
-
-    private companion object {
-        /**
-         * How long a popup transport WebView may live without navigating.
-         *
-         * Long enough that a real popup — which navigates as soon as the
-         * engine pumps the transport's first load — is never cut off on a
-         * cold, loaded emulator; short enough that an abandoned one is not
-         * holding a renderer process while the user browses on.
-         */
-        const val TRANSPORT_REAP_MS = 10_000L
-    }
-}
-
-/**
  * NATIVE half of the password-manager page bridge, exposed to page JS as
  * `window.RoomVault` (see [RoomVaultScript] for the injected half).
  *
@@ -706,17 +585,29 @@ class RoomWebChromeClient(
  *    fill (see [RoomVaultScript]). Observational only; nothing is stored
  *    until the user taps "Save" on the prompt sheet.
  *
+ * HOW THE CALLS ARRIVE NOW. There is no `@JavascriptInterface` on this side
+ * any more, in either edition: the page reaches native code through the
+ * engine's own page bridge and the call surfaces as
+ * [RoomSessionListener.onPageMessage], carrying the channel this object is
+ * registered under ([PageBridgeChannels.VAULT]). [onMessage] unpacks the
+ * envelope and routes it to the same two handlers the old interface exposed,
+ * so the PAGE-VISIBLE wire — two method names, their arity, their argument
+ * order — does not change by a byte. Only where the arguments come from does.
+ *
  * SECURITY MODEL — the bridge never trusts the page:
- *  1. Only these two `@JavascriptInterface` methods are reachable from JS.
- *  2. Every call is validated ON THE MAIN THREAD against the WebView's own
- *     current URL: the host the page CLAIMS must match the host family of
- *     what the WebView is actually showing (CredentialDomainMatcher, equal or
- *     parent/child). The host handed to the callbacks is always the
- *     WebView's authoritative one, so a page can never obtain or report
- *     credentials attributed to another site. (The injected script registers
- *     in the MAIN FRAME ONLY, which is the first line of defence; this host
- *     check is the second, and it holds even against a page that calls the
- *     interface directly instead of going through the script.)
+ *  1. Only the two methods named in the envelope are reachable; anything else
+ *     the page sends on this channel is dropped.
+ *  2. Every call is validated ON THE MAIN THREAD against the session's own
+ *     current URL — [EngineSession.url], the facade's documented TRUST
+ *     ANCHOR, which is written only from a top-level navigation and never
+ *     from the page. The host the page CLAIMS must match the host family of
+ *     what the session is actually showing (CredentialDomainMatcher, equal or
+ *     parent/child). The host handed to the callbacks is always the session's
+ *     authoritative one, so a page can never obtain or report credentials
+ *     attributed to another site. (The injected script registers in the MAIN
+ *     FRAME ONLY, which is the first line of defence; this host check is the
+ *     second, and it holds even against a page that reaches the bridge
+ *     directly instead of going through the script.)
  *  3. Nothing here reads the vault or shows UI — that is the ViewModel's
  *     decision ([com.roombrowser.browser.BrowserViewModel]). The bridge is
  *     silent to the page either way, and a LOCKED vault never starts a
@@ -724,57 +615,74 @@ class RoomWebChromeClient(
  *     offer sheet's locked variant, whose only action is the user's own tap.
  *  4. No argument is ever logged.
  *
- * THREADING: `@JavascriptInterface` methods arrive on WebView's internal
- * JavaBridge thread; WebView state (getUrl) is main-thread only, so each call
- * hops to the main thread inside [main] before validation. Throttle fields
- * are therefore confined to the main thread.
+ * THREADING: engine callbacks may arrive on the engine's own threads, so each
+ * call hops to the main thread inside [main] before validation; the session
+ * URL it validates against is readable from any thread, which is what makes
+ * the hop safe. Throttle fields are therefore confined to the main thread.
  *
- * LIFETIME: the WebView holds the interface object strongly, so the interface
- * holds the WebView only through a [WeakReference] — a destroyed engine
- * releases its bridge.
+ * LIFETIME: the host keeps one bridge per session in a weak map, so this
+ * object holds its session only through a [WeakReference] — a destroyed
+ * session releases its bridge rather than being kept alive by it.
  */
 class RoomVaultBridge(
-    webView: WebView,
+    session: EngineSession,
     private val callbacks: Callbacks
 ) {
 
-    private val viewRef = WeakReference(webView)
+    private val sessionRef = WeakReference(session)
     private val main = Handler(Looper.getMainLooper())
 
-    /** Anti-spam state (a hostile page can call the interface directly,
+    /** Anti-spam state (a hostile page can reach the bridge directly,
      *  bypassing the injected script's own cooldowns). Main-thread only. */
     private var lastRequestAt = 0L
     private var lastReportKey: String? = null
     private var lastReportAt = 0L
 
     interface Callbacks {
-        /** The user focused a login form on [webView] (authoritative [host]). */
-        fun onCredentialsRequested(webView: WebView, host: String, href: String)
+        /** The user focused a login form on [session] (authoritative [host]). */
+        fun onCredentialsRequested(session: EngineSession, host: String, href: String)
 
-        /** A login form submitted on [webView] (authoritative [host]). */
+        /** A login form submitted on [session] (authoritative [host]). */
         fun onCredentialReported(
-            webView: WebView,
+            session: EngineSession,
             host: String,
             username: String,
             password: String
         )
     }
 
-    @JavascriptInterface
-    fun requestCredentials(host: String?, href: String?) {
-        val claimedHost = host ?: return
-        main.post {
-            val view = viewRef.get() ?: return@post
-            val pageHost = validatedHost(view, claimedHost) ?: return@post
-            val now = SystemClock.elapsedRealtime()
-            if (now - lastRequestAt < REQUEST_COOLDOWN_MS) return@post
-            lastRequestAt = now
-            callbacks.onCredentialsRequested(view, pageHost, href.orEmpty())
+    /**
+     * One upward page message for this channel. The payload is page-controlled
+     * and is treated as hostile: it is parsed defensively, and anything that is
+     * not one of the two known methods is dropped without a trace.
+     */
+    fun onMessage(payload: String) {
+        val json = runCatching { JSONObject(payload) }.getOrNull() ?: return
+        when (json.optString("method")) {
+            METHOD_REQUEST_CREDENTIALS ->
+                requestCredentials(json.stringOrNull("host"), json.stringOrNull("href"))
+            METHOD_REPORT_CREDENTIAL ->
+                reportCredential(
+                    json.stringOrNull("host"),
+                    json.stringOrNull("username"),
+                    json.stringOrNull("password")
+                )
         }
     }
 
-    @JavascriptInterface
-    fun reportCredential(host: String?, username: String?, password: String?) {
+    private fun requestCredentials(host: String?, href: String?) {
+        val claimedHost = host ?: return
+        main.post {
+            val session = sessionRef.get() ?: return@post
+            val pageHost = validatedHost(session, claimedHost) ?: return@post
+            val now = SystemClock.elapsedRealtime()
+            if (now - lastRequestAt < REQUEST_COOLDOWN_MS) return@post
+            lastRequestAt = now
+            callbacks.onCredentialsRequested(session, pageHost, href.orEmpty())
+        }
+    }
+
+    private fun reportCredential(host: String?, username: String?, password: String?) {
         val claimedHost = host ?: return
         val reportedUsername = username.orEmpty()
         val reportedPassword = password.orEmpty()
@@ -782,8 +690,8 @@ class RoomVaultBridge(
         // never in a log, cache or field beyond the prompt state.
         if (reportedPassword.isEmpty()) return
         main.post {
-            val view = viewRef.get() ?: return@post
-            val pageHost = validatedHost(view, claimedHost) ?: return@post
+            val session = sessionRef.get() ?: return@post
+            val pageHost = validatedHost(session, claimedHost) ?: return@post
             val now = SystemClock.elapsedRealtime()
             if (now - lastReportAt < REPORT_MIN_GAP_MS) return@post
             val key = pageHost + '\n' + reportedUsername + '\n' + reportedPassword
@@ -792,17 +700,17 @@ class RoomVaultBridge(
             }
             lastReportKey = key
             lastReportAt = now
-            callbacks.onCredentialReported(view, pageHost, reportedUsername, reportedPassword)
+            callbacks.onCredentialReported(session, pageHost, reportedUsername, reportedPassword)
         }
     }
 
     /**
      * The host a page claims, accepted only when it names the same site as
-     * the WebView's CURRENT URL (equal or parent/child domain). Returns the
-     * WebView's own (authoritative) host, or null when the claim fails.
+     * the session's CURRENT URL (equal or parent/child domain). Returns the
+     * session's own (authoritative) host, or null when the claim fails.
      */
-    private fun validatedHost(view: WebView, claimedHost: String): String? {
-        val url = view.url ?: return null
+    private fun validatedHost(session: EngineSession, claimedHost: String): String? {
+        val url = session.url ?: return null
         val currentHost = UrlIntelligence.hostOf(url) ?: return null
         val claimed = CredentialDomainMatcher.normalize(claimedHost)
         if (claimed.isEmpty()) return null
@@ -811,13 +719,18 @@ class RoomVaultBridge(
     }
 
     companion object {
-        /** JS object name the injected script (and, defensively, pages) see. */
-        const val JS_INTERFACE_NAME = "RoomVault"
+        /** JS object name the injected script (and, defensively, pages) see —
+         *  which is also the channel the engine's page bridge reports it on. */
+        const val JS_INTERFACE_NAME = PageBridgeChannels.VAULT
+
+        /** Method names the page can reach, as the injected script spells them. */
+        private const val METHOD_REQUEST_CREDENTIALS = "requestCredentials"
+        private const val METHOD_REPORT_CREDENTIAL = "reportCredential"
 
         /** Focus events on the same page arrive in bursts — coalesce them. */
         private const val REQUEST_COOLDOWN_MS = 500L
 
-        /** A hostile page may call the interface directly — rate-limit hard. */
+        /** A hostile page may call the bridge directly — rate-limit hard. */
         private const val REPORT_MIN_GAP_MS = 1_000L
 
         /** An identical (host, username, password) report is not re-prompted. */

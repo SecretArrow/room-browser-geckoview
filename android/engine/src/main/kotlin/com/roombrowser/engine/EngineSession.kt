@@ -170,8 +170,59 @@ interface EngineSession {
     /** Save this session's history so it can be restored later, if possible. */
     fun saveState(): EngineState?
 
-    /** Restore a token previously produced by [saveState]. */
-    fun restoreState(state: EngineState)
+    /**
+     * Restore a token previously produced by [saveState], and report whether
+     * it actually produced any history.
+     *
+     * THE RETURN VALUE IS NOT DECORATION. The caller's next line, when the
+     * answer is false, is to load the tab's URL afresh -- because a tab whose
+     * state could not be restored must still show something, and reloading the
+     * entity URL is exactly what it showed before. Without the answer, the
+     * caller has to guess, and the obvious guess is wrong: the session's own
+     * "can go back" flag is populated by the engine's back/forward callbacks,
+     * which have not run yet on the line after a restore. Reading it there
+     * always says false, so every restored tab was reloaded from its URL and
+     * the state that had just been restored was thrown away -- the tab lost
+     * its history and scroll position on every reopen and every eviction.
+     *
+     * Implementations answer from the restore itself, synchronously: WebView
+     * from the back/forward list the restore populated, GeckoView from whether
+     * the session state it was handed carried any entries. A token that yields
+     * no history returns false, which is the same "nothing to restore"
+     * answer as the WebView edition's empty-bundle guard.
+     */
+    fun restoreState(state: EngineState): Boolean
+
+    /**
+     * Leave fullscreen, if this session is in it.
+     *
+     * The page cannot be asked and cannot be relied on to ask: the app's Back
+     * handler owns leaving fullscreen, and [EngineSessionListener.onFullScreen]
+     * only REPORTS the engine's state -- it is not a lever. Without this
+     * member the app can set its own fullscreen flag to false while the
+     * engine's fullscreen view stays mounted over the web area, with the page
+     * still believing it is fullscreen: the chrome comes back but the user
+     * cannot see it, and nothing is left that can undo it.
+     *
+     * Idempotent, and a no-op for a session that is not in fullscreen.
+     */
+    fun exitFullScreen()
+
+    /**
+     * Erase this session's transient browsing artifacts: session cookies and
+     * form data.
+     *
+     * SCOPE IS THE POINT. [EngineHost.clearBrowsingData] erases the whole
+     * profile -- every tab, every site -- and is the wrong instrument for
+     * "this session is over": it would sign the user out of everything to
+     * close one private tab. This is the narrower operation the private-tab
+     * promise and the per-site "clear data" action both need.
+     *
+     * It is a real erase and not a formality: the private-tab surface tells
+     * the user session cookies are gone when the last private tab closes, and
+     * an empty implementation makes that text false.
+     */
+    fun clearSessionData()
 
     /** Tear the session down. Idempotent: calling it twice must be harmless. */
     fun close()

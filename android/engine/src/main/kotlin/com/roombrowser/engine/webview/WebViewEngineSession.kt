@@ -25,6 +25,7 @@ import android.webkit.WebResourceResponse
 import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import android.webkit.WebViewDatabase
 import androidx.webkit.ScriptHandler
 import androidx.webkit.WebViewCompat
 import androidx.webkit.WebViewFeature
@@ -556,11 +557,60 @@ internal class WebViewEngineSession(
         return lastState
     }
 
-    override fun restoreState(state: EngineState) {
-        val bundle = (state as? WebViewState)?.bundle ?: return
+    override fun restoreState(state: EngineState): Boolean {
+        val bundle = (state as? WebViewState)?.bundle ?: return false
+        var restored = false
         runOnMain {
             if (closed) return@runOnMain
             runCatching { webView.restoreState(bundle) }
+            // Asked HERE, on the same thread and the same turn as the restore,
+            // because that is the only point where the answer is meaningful.
+            // `restoreState` populates the back/forward list as part of that
+            // call, so the list is already correct on the next line -- this is
+            // exactly what the app asked before the facade existed
+            // (`copyBackForwardList().size > 0`). The session's own
+            // `canGoBack` is NOT a substitute: its backing field is written by
+            // the back/forward callbacks, none of which have run yet, so it
+            // answers false even for a restore that worked perfectly -- and
+            // the caller reads false as "nothing was restored, reload the URL"
+            // and throws the restored history away.
+            restored = runCatching {
+                webView.copyBackForwardList().size > 0
+            }.getOrDefault(false)
+        }
+        return restored
+    }
+
+    /**
+     * Session-scoped erase: session cookies and form data.
+     *
+     * NOT THE PROFILE WIPE. [EngineHost.clearBrowsingData] erases everything
+     * for the whole profile -- every tab, every site -- and it is the wrong
+     * instrument for "this private session is over": using it here would sign
+     * the user out of every site they are logged into, to close one tab. This
+     * is the narrower operation the private-tab promise needs, and it is the
+     * exact body the app ran before the facade existed
+     * (`ProfileEngine.clearSessionArtifacts`, ProfileEngine.kt:492-497) --
+     * removeSessionCookies + flush + clearFormData.
+     *
+     * A REAL ERASE, not a formality. The private-tab surface tells the user
+     * session cookies are gone when the last private tab closes, and the
+     * per-site "clear data" action promises the same for one site. An empty
+     * implementation makes both of those texts false.
+     *
+     * Deliberately NOT gated on `closed`. The cookie jar is process-wide and
+     * this is precisely what a session being torn down needs; refusing it
+     * because the view is already gone would break the promise in the one case
+     * it exists for.
+     */
+    override fun clearSessionData() {
+        runOnMain {
+            runCatching {
+                val cookies = CookieManager.getInstance()
+                cookies.removeSessionCookies(null)
+                cookies.flush()
+            }
+            runCatching { WebViewDatabase.getInstance(webView.context).clearFormData() }
         }
     }
 
@@ -779,6 +829,10 @@ internal class WebViewEngineSession(
                 failedUrl,
                 kindOf(error.errorCode),
                 true,
+                // Passed through untouched, and that is not laziness: this
+                // edition's codes ARE the space the app's policy is written
+                // against (EngineErrorCode), so a mapping here would be the
+                // identity function with a chance of being wrong.
                 error.errorCode,
                 error.description?.toString()
             )
@@ -805,6 +859,17 @@ internal class WebViewEngineSession(
          * matches nothing and changes nothing, and the app's own error state is
          * a plain assignment. The alternative -- reporting from one signature
          * only -- silently loses the failure on half the devices.
+         *
+         * IS IT TOP LEVEL? This signature carries no frame flag, and an
+         * earlier version of this method answered `true` unconditionally --
+         * which is a claim it cannot support. The app paints a full-screen
+         * error surface for a top-level failure, so that answer let a
+         * SUB-RESOURCE failure (a blocked image, a font that never loaded)
+         * paint a full-screen error over a perfectly healthy page. The
+         * comparison below is the honest answer available here: the failure is
+         * top-level exactly when it names the main frame being tracked, and
+         * anything else -- a different URL, or no URL at all -- is not, which
+         * errs toward leaving a good page alone.
          */
         @Deprecated("Deprecated in Java")
         override fun onReceivedError(
@@ -817,7 +882,7 @@ internal class WebViewEngineSession(
                 this@WebViewEngineSession,
                 failingUrl,
                 kindOf(errorCode),
-                true,
+                failingUrl != null && failingUrl == mainFrameUrl,
                 errorCode,
                 description
             )
@@ -966,7 +1031,6 @@ internal class WebViewEngineSession(
         ): Boolean {
             val accepted = listener?.onNewWindowRequest(
                 this@WebViewEngineSession,
-                null,
                 isUserGesture
             ) ?: false
             if (!accepted) return false
@@ -993,7 +1057,14 @@ internal class WebViewEngineSession(
                     val target = request.url.toString()
                     tempView.stopLoading()
                     tempView.post { reap() }
-                    listener?.onNewWindowRequest(
+                    // The gate above already said yes; this is the second half
+                    // of the protocol, and it is the ONLY call that carries a
+                    // URL. Reporting it as a fresh request -- which is what an
+                    // earlier form of this file did, by passing the target back
+                    // to onNewWindowRequest -- would ask the gate a question it
+                    // has already answered, and a gate that refuses a null URL
+                    // reads the answer as "nothing to open".
+                    listener?.onNewWindowResolved(
                         this@WebViewEngineSession,
                         target,
                         isUserGesture
@@ -1042,13 +1113,7 @@ internal class WebViewEngineSession(
         }
 
         override fun onHideCustomView() {
-            val view = customView
-            val callback = customViewCallback
-            customView = null
-            customViewCallback = null
-            if (view != null) runCatching { (view.parent as? ViewGroup)?.removeView(view) }
-            runCatching { callback?.onCustomViewHidden() }
-            listener?.onFullScreen(this@WebViewEngineSession, false)
+            hideCustomView()
         }
 
         /**
@@ -1246,6 +1311,47 @@ internal class WebViewEngineSession(
         listener?.onNavigationStateChanged(this@WebViewEngineSession, canBack, canForward)
     }
 
+    /**
+     * Leave fullscreen. The app's Back handler owns this decision, and this is
+     * the only lever that can carry it out.
+     *
+     * WHY THIS HAS TO BE A FACADE MEMBER AT ALL.
+     * [EngineSessionListener.onFullScreen] only REPORTS what the engine is
+     * doing -- it is not a way to ask for anything. Without this member the
+     * app could set its own fullscreen flag to false and nothing else would
+     * happen: the page's view stays mounted over the web area, the page still
+     * believes it is fullscreen, and the chrome that just came back is hidden
+     * behind it. The user is left in a state no control can undo.
+     *
+     * Idempotent, and a no-op for a session that is not in fullscreen.
+     */
+    override fun exitFullScreen() {
+        runOnMain { hideCustomView() }
+    }
+
+    /**
+     * Takes the page's fullscreen content back down and tells WebView it is
+     * over. Shared by WebView's own exit (the chrome-client callback) and by
+     * [exitFullScreen], which is why it is not inline in that callback: doing
+     * only half of it is the trap. Unmounting without `onCustomViewHidden()`
+     * leaves WebView rendering fullscreen content into a view nobody is
+     * showing; calling it without unmounting leaves the page's view on top of
+     * the web area with nothing left that can remove it.
+     *
+     * Silent when there is nothing to hide, so a redundant call cannot report
+     * a fullscreen exit that never happened.
+     */
+    private fun hideCustomView() {
+        val view = customView
+        val callback = customViewCallback
+        if (view == null && callback == null) return
+        customView = null
+        customViewCallback = null
+        if (view != null) runCatching { (view.parent as? ViewGroup)?.removeView(view) }
+        runCatching { callback?.onCustomViewHidden() }
+        listener?.onFullScreen(this@WebViewEngineSession, false)
+    }
+
     /** Puts the page's fullscreen content over this session's own view, once
      *  there is a host to put it in. See [onShowCustomView]. */
     private fun mountCustomView() {
@@ -1428,7 +1534,12 @@ internal object WebViewStockUserAgent {
  * screen.
  */
 private fun kindOf(errorCode: Int): PageErrorKind = when (errorCode) {
-    WebViewClient.ERROR_HOST_LOOKUP,
+    // The NAME did not resolve. Kept apart from a host that resolved and then
+    // did not answer, because the app's advice differs -- see
+    // PageErrorKind.DNS. Folding it into TRANSPORT is what made the app's
+    // "DNS Resolution Failed" surface unreachable dead code.
+    WebViewClient.ERROR_HOST_LOOKUP -> PageErrorKind.DNS
+
     WebViewClient.ERROR_CONNECT,
     WebViewClient.ERROR_TIMEOUT -> PageErrorKind.TRANSPORT
 

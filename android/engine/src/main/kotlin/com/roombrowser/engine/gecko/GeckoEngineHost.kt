@@ -236,6 +236,20 @@ internal class GeckoEngineHost : EngineHost {
         .filter { it.isFile }
         .sumOf { it.length() }
 
+    /**
+     * A truthful no-op.
+     *
+     * GeckoView writes its profile data through to disk as it goes, so there
+     * is no in-memory cookie jar to commit. The app calls this on the
+     * process-death path before switching profiles and there is nothing here
+     * that killing the process could lose. Implementing it as anything else --
+     * a synchronous flush, a runtime restart -- would invent work that the
+     * engine does not need.
+     */
+    override fun flush(context: Context) {
+        // Intentionally empty: see the KDoc above.
+    }
+
     override fun shutdown() {
         runtime?.shutdown()
         runtime = null

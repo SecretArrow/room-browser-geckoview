@@ -1,18 +1,18 @@
 package com.roombrowser.browser
 
 import android.graphics.Bitmap
-import android.os.Bundle
-import android.webkit.WebView
 import com.roombrowser.data.db.TabEntity
+import com.roombrowser.engine.EngineSession
+import com.roombrowser.engine.EngineState
 import java.util.concurrent.ConcurrentHashMap
 
-/** In-memory tab model bound to a WebView slot. */
+/** In-memory tab model bound to an engine session slot. */
 data class TabSession(
     val entity: TabEntity,
-    val webView: WebView?,
+    val engine: EngineSession?,
     val thumbnail: Bitmap?,
     val desktopMode: Boolean = false,
-    /** Monotonic recency stamp — drives LRU eviction of live WebViews. */
+    /** Monotonic recency stamp — drives LRU eviction of live engines. */
     val lastUsedAt: Long = 0L
 ) {
     val id: String get() = entity.id
@@ -22,9 +22,9 @@ data class TabSession(
 
 /**
  * Tab session manager for ONE profile (the profile bound to this process).
- * Lazy restoration: only the active tab owns a live WebView; background
+ * Lazy restoration: only the active tab owns a live engine; background
  * tabs hold persisted state (URL/title), optional thumbnails and the
- * back/forward bundle captured when their engine was evicted or closed.
+ * back/forward state captured when their engine was evicted or closed.
  *
  * Every open tab has a SESSION by construction (see [ensureSession]) — a
  * tab whose live engine is not tracked here is invisible to the LRU
@@ -36,36 +36,48 @@ class TabManager {
     private val thumbnails = HashMap<String, Bitmap>()
 
     /**
-     * Back/forward state bundles saved right before an engine is destroyed
-     * (LRU eviction or tab close). Keyed by tab id, so a bundle can never
+     * Back/forward state saved right before an engine is destroyed
+     * (LRU eviction or tab close). Keyed by tab id, so a state can never
      * be restored into a DIFFERENT tab; survives [remove] so a closed tab
      * that is reopened gets its history back; dies with [clear] (profile
      * switch — another profile's tabs must never receive this history).
+     *
+     * The value is the facade's opaque [EngineState]: this class stores it
+     * and hands it back and never looks inside, because whatever the engine
+     * serialised — a WebView `Bundle` in one edition, a GeckoView
+     * `SessionState` in the other — is an engine type that may not appear
+     * on this side of the facade.
      */
-    private val savedStates = HashMap<String, Bundle>()
+    private val savedStates = HashMap<String, EngineState>()
 
     /**
      * Reverse index over live engines: engine -> (owning tab id, that tab's
      * last known page URL).
      *
-     * WHY IT EXISTS: engine callbacks carry the WebView that fired, and both
+     * WHY IT EXISTS: engine callbacks carry the session that fired, and both
      * questions asked of them — "which tab owns this engine?" and "which page
-     * is THIS engine showing?" — are answered from the firing view.
+     * is THIS engine showing?" — are answered from the firing session.
      * [sessions] cannot answer either from a background thread.
      *
-     * WHY CONCURRENT: [pageUrlFor] is read by shouldInterceptRequest, which
-     * runs on a WebView BACKGROUND thread for every sub-resource of every
-     * engine; [sessions] is main-thread state and iterating it from there
-     * could see a resize mid-flight. WebView does not override equals or
-     * hashCode, so the keys are engine IDENTITY — exactly the
-     * `session.webView === webView` semantics the old loops had.
+     * WHY CONCURRENT: [pageUrlFor] is read by the engine's resource-request
+     * callback, which runs on an engine BACKGROUND thread for every
+     * sub-resource of every session; [sessions] is main-thread state and
+     * iterating it from there could see a resize mid-flight.
+     *
+     * WHY THE KEYS ARE SOUND: [EngineSession] implementations are required
+     * not to override equals or hashCode (the facade states it as a contract,
+     * see the interface's KDoc), so the keys are engine IDENTITY — exactly the
+     * `session.engine === engine` semantics the old loops had. That was a
+     * property a `WebView` had by inheriting identity equality, and it is the
+     * one property this map cannot do without: a value-equal session would
+     * make two live tabs collide here.
      *
      * Kept in lockstep with [sessions] through the single [store] funnel. A
      * STALE entry is worse than a missing one: a missing entry falls back to
      * the pre-fix behaviour, a stale one would route an engine's callback to
      * a tab that no longer owns it.
      */
-    private val engineIndex = ConcurrentHashMap<WebView, EngineEntry>()
+    private val engineIndex = ConcurrentHashMap<EngineSession, EngineEntry>()
 
     /** Immutable index value, replaced wholesale and never mutated, so a
      *  reader can never see a tab id and a URL from different tabs. */
@@ -77,8 +89,8 @@ class TabManager {
      * disagree with the map it indexes. Main thread only.
      */
     private fun store(session: TabSession): TabSession {
-        val previous = sessions[session.id]?.webView
-        val engine = session.webView
+        val previous = sessions[session.id]?.engine
+        val engine = session.engine
         if (previous != null && previous !== engine) engineIndex.remove(previous)
         sessions[session.id] = session
         if (engine != null) engineIndex[engine] = EngineEntry(session.id, session.url)
@@ -89,8 +101,8 @@ class TabManager {
         entities.forEach { store(TabSession(it, null, thumbnails[it.id])) }
     }
 
-    fun add(entity: TabEntity, webView: WebView?): TabSession =
-        store(TabSession(entity, webView, thumbnails[entity.id]))
+    fun add(entity: TabEntity, engine: EngineSession?): TabSession =
+        store(TabSession(entity, engine, thumbnails[entity.id]))
 
     /**
      * The session for this tab, created on demand and refreshed from the
@@ -116,65 +128,69 @@ class TabManager {
         }
     }
 
-    fun attachWebView(id: String, webView: WebView?) {
+    fun attachEngine(id: String, engine: EngineSession?) {
         sessions[id]?.let {
-            store(it.copy(webView = webView, lastUsedAt = android.os.SystemClock.elapsedRealtime()))
+            store(it.copy(engine = engine, lastUsedAt = android.os.SystemClock.elapsedRealtime()))
         }
     }
 
-    /** Drops the engine reference from whichever session holds [webView]
+    /** Drops the engine reference from whichever session holds [engine]
      *  (per-tab engines are owned by exactly ONE session). */
-    fun detachWebView(webView: WebView?) {
-        if (webView == null) return
-        sessions.values.filter { it.webView === webView }
-            .forEach { store(it.copy(webView = null)) }
+    fun detachEngine(engine: EngineSession?) {
+        if (engine == null) return
+        sessions.values.filter { it.engine === engine }
+            .forEach { store(it.copy(engine = null)) }
     }
 
-    /** Reverse of [attachWebView]: the tab OWNING [webView] (per-tab engines
+    /** Reverse of [attachEngine]: the tab OWNING [engine] (per-tab engines
      *  belong to exactly ONE session), or null when no session holds it —
      *  a destroyed/never-tracked engine. Used to route an engine's callbacks
      *  to its own tab instead of whichever tab happens to be active.
      *  Thread-safe: reads the concurrent [engineIndex] only. */
-    fun idFor(webView: WebView?): String? {
-        if (webView == null) return null
-        return engineIndex[webView]?.id
+    fun idFor(engine: EngineSession?): String? {
+        if (engine == null) return null
+        return engineIndex[engine]?.id
     }
 
-    /** Page URL of the tab OWNING [webView], or null when no session holds it
+    /** Page URL of the tab OWNING [engine], or null when no session holds it
      *  (destroyed or mid-teardown engine). Safe from ANY thread: this is the
-     *  one lookup shouldInterceptRequest may perform, and it must never touch
-     *  [sessions].
+     *  one lookup the resource-request callback may perform, and it must
+     *  never touch [sessions].
      *
      *  A null answer is the caller's cue to fall back — it is NOT a licence
      *  to judge the engine against some other tab's page. */
-    fun pageUrlFor(webView: WebView?): String? {
-        if (webView == null) return null
-        return engineIndex[webView]?.url
+    fun pageUrlFor(engine: EngineSession?): String? {
+        if (engine == null) return null
+        return engineIndex[engine]?.url
     }
 
     /** Records [url] as this tab's current page URL, engine untouched. Called
      *  from the navigation funnel so a BACKGROUND engine's page host — the one
-     *  shouldInterceptRequest judges its sub-resources against — is as fresh
-     *  as the row being persisted, rather than as stale as the last switch to
-     *  that tab. Main thread only; no-op for a tab with no session (a late
-     *  callback after the tab closed must not resurrect an index entry). */
+     *  the resource-request callback judges its sub-resources against — is as
+     *  fresh as the row being persisted, rather than as stale as the last
+     *  switch to that tab. Main thread only; no-op for a tab with no session
+     *  (a late callback after the tab closed must not resurrect an index
+     *  entry). */
     fun setPageUrl(id: String, url: String) {
         val session = sessions[id] ?: return
         if (session.url == url) return
         store(session.copy(entity = session.entity.copy(url = url)))
     }
 
-    /** Stores the engine's back/forward bundle under [id] (pre-destroy). */
-    fun saveEngineState(id: String, bundle: Bundle) {
-        if (bundle.isEmpty) return
-        savedStates[id] = bundle
+    /** Stores the engine's back/forward state under [id] (pre-destroy).
+     *  [state] is the facade's opaque token; a session that could not produce
+     *  one returns null from `saveState` and the caller simply does not call
+     *  this, which is the same "no history to restore" answer the WebView
+     *  edition's empty-bundle guard gave. */
+    fun saveEngineState(id: String, state: EngineState) {
+        savedStates[id] = state
         if (savedStates.size > MAX_SAVED_STATES) {
             savedStates.keys.firstOrNull()?.let { savedStates.remove(it) }
         }
     }
 
     /** The saved engine state for [id] (null when this tab has none). */
-    fun engineState(id: String): Bundle? = savedStates[id]
+    fun engineState(id: String): EngineState? = savedStates[id]
 
     fun captureThumbnail(id: String, bitmap: Bitmap?) {
         if (bitmap == null) return
@@ -188,7 +204,7 @@ class TabManager {
 
     fun remove(id: String): TabSession? {
         val removed = sessions.remove(id) ?: return null
-        removed.webView?.let { engineIndex.remove(it) }
+        removed.engine?.let { engineIndex.remove(it) }
         return removed
     }
 
@@ -198,25 +214,25 @@ class TabManager {
 
     fun privateTabs(): List<TabSession> = sessions.values.filter { it.entity.isPrivate }
 
-    /** Sessions that currently hold a LIVE WebView (the active one included). */
-    fun liveWebViewSessions(): List<TabSession> =
-        sessions.values.filter { it.webView != null }
+    /** Sessions that currently hold a LIVE engine (the active one included). */
+    fun liveEngineSessions(): List<TabSession> =
+        sessions.values.filter { it.engine != null }
 
     /**
      * LRU eviction candidates: background sessions (never [keepId]) holding
-     * live WebViews, OLDEST first. The caller destroys as many as needed to
-     * stay under the live-WebView budget — evicted tabs gracefully fall back
-     * to lazy re-creation (entity + thumbnail + saved state bundle survive).
+     * live engines, OLDEST first. The caller destroys as many as needed to
+     * stay under the live-engine budget — evicted tabs gracefully fall back
+     * to lazy re-creation (entity + thumbnail + saved state survive).
      */
     fun lruVictims(keepId: String?): List<TabSession> =
         sessions.values
-            .filter { it.webView != null && it.id != keepId }
+            .filter { it.engine != null && it.id != keepId }
             .sortedBy { it.lastUsedAt }
 
     fun clear() {
         sessions.clear()
         thumbnails.clear()
-        // Engine-state bundles die with the profile context: the next
+        // Engine-state tokens die with the profile context: the next
         // profile's tabs must never receive this profile's history.
         savedStates.clear()
         // The engine index is a view of `sessions`; it dies with them.

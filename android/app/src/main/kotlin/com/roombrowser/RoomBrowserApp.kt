@@ -6,6 +6,7 @@ import androidx.work.Constraints
 import androidx.work.ExistingPeriodicWorkPolicy
 import androidx.work.PeriodicWorkRequestBuilder
 import androidx.work.WorkManager
+import com.roombrowser.browser.engine.ProfileEngine
 import com.roombrowser.di.AppGraph
 import com.roombrowser.work.RetentionCleanupWorker
 import java.util.concurrent.TimeUnit
@@ -31,6 +32,10 @@ class RoomBrowserApp : Application(), Configuration.Provider {
 
     override fun onCreate() {
         super.onCreate()
+        // ProfileEngine keeps the once-per-process binding for the whole app;
+        // it needs the application context to reach the engine facade's
+        // `bind`, and this is the first moment one exists.
+        ProfileEngine.init(this)
         graph = AppGraph(this)
         if (isDefaultProcess()) scheduleRetentionCleanup()
     }

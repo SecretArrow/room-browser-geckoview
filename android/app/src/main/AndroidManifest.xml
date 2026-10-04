@@ -28,8 +28,8 @@
     <uses-feature android:name="android.hardware.fingerprint" android:required="false" />
 
     <!--
-      Package visibility (API 30+). Without this the WebView-provider probe in
-      ProfileEngine.installedWebViewEngines() throws NameNotFoundException for
+      Package visibility (API 30+). Without this the provider probe behind
+      ProfileEngine.installedEngines() throws NameNotFoundException for
       every candidate, so the Settings -> Engine list could only ever show the
       single active provider. Read-only diagnostics: we ask about these five
       packages by name rather than holding QUERY_ALL_PACKAGES.

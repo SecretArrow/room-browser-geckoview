@@ -9,6 +9,7 @@ import android.view.View
 import android.view.ViewGroup
 import com.roombrowser.domain.model.Profile
 import com.roombrowser.domain.model.UserAgents
+import com.roombrowser.engine.EngineErrorCode
 import com.roombrowser.engine.EnginePageScripts
 import com.roombrowser.engine.EngineSession
 import com.roombrowser.engine.EngineSessionListener
@@ -394,10 +395,58 @@ internal class GeckoEngineSession(
         return lastStateJson?.let(::GeckoState)
     }
 
-    override fun restoreState(state: EngineState) {
-        val json = (state as? GeckoState)?.json ?: return
-        val parsed = GeckoSession.SessionState.fromString(json) ?: return
+    override fun restoreState(state: EngineState): Boolean {
+        val json = (state as? GeckoState)?.json ?: return false
+        val parsed = GeckoSession.SessionState.fromString(json) ?: return false
         runOnMain { session.restoreState(parsed) }
+        // `restoreState` is applied synchronously on the main thread, and a
+        // state that parsed is a state that carried history -- GeckoView 153
+        // exposes no accessor to count the entries afterwards, so "it parsed"
+        // is the strongest honest answer available. What matters is that it is
+        // NOT read from the session's back/forward flags: those are written by
+        // callbacks that have not run yet, so they answer false immediately
+        // after a restore that worked, and the caller reads false as "nothing
+        // restored, reload the URL" -- which threw the restored history away.
+        return true
+    }
+
+    /**
+     * Leave fullscreen.
+     *
+     * [EngineSessionListener.onFullScreen] only reports what the engine is
+     * doing; this is the lever that acts. Without it the app can clear its own
+     * fullscreen flag while GeckoView keeps the page in fullscreen, leaving
+     * the user in a state no control can undo.
+     */
+    override fun exitFullScreen() {
+        runOnMain { runCatching { session.exitFullScreen() } }
+    }
+
+    /**
+     * NOT IMPLEMENTED FOR THIS ENGINE, and the reason is not laziness.
+     *
+     * A session-scoped cookie erase is only meaningful when the session has
+     * its own cookie context. This one does not: [settingsFor] builds every
+     * session with `usePrivateMode(false)` and the profile's own `contextId`,
+     * so all of a profile's sessions share a single cookie jar. A
+     * session-scoped clear would therefore erase the WHOLE profile's cookies
+     * while claiming to close one private tab -- signing the user out of every
+     * site they are logged into. That is strictly worse than doing nothing,
+     * and it is the exact failure the facade's KDoc warns against.
+     *
+     * THE REAL FIX, named rather than deferred silently: a private context per
+     * private session (`usePrivateMode(true)`, or a distinct `contextId`),
+     * whose cookies die with the session by construction instead of by an
+     * erase somebody has to remember to run. That changes the isolation model,
+     * so it is a decision and not a detail. Until it is made, this method must
+     * stay empty -- an implementation here could only be the harmful one.
+     *
+     * The WebView edition has the same gap in a weaker form and closes it the
+     * only way that edition can: `CookieManager.removeSessionCookies`. There
+     * is no equivalent here that is both session-scoped and safe.
+     */
+    override fun clearSessionData() {
+        // Intentionally empty: see the KDoc above for the blocker.
     }
 
     override fun close() {
@@ -493,18 +542,22 @@ internal class GeckoEngineSession(
             // failure as a frame failure -- so true is reported, and the one
             // imprecise case is recorded here rather than hidden.
             //
-            // The engine's own code is passed alongside the mapped kind rather
-            // than instead of it: the kind is what the shared policy branches
-            // on, the code is what the diagnostics screen prints, and
-            // collapsing them would put a GeckoView numbering system into code
-            // that must not know one.
+            // The engine's own code is NOT passed through: the app's policy
+            // branches on this number (see EngineErrorCode), and GeckoView's
+            // WebRequestError values occupy a different space entirely, so
+            // forwarding them would make the https-upgrade retry stop firing
+            // and print the wrong certificate sentence -- quietly, since every
+            // value is a plausible-looking Int. The mapped code is reported
+            // instead; the raw GeckoView code survives in the description for
+            // the diagnostics screen.
+            val kind = pageErrorKind(error)
             listener?.onPageError(
                 this@GeckoEngineSession,
                 uri,
-                pageErrorKind(error),
+                kind,
                 true,
-                error.code,
-                "category=" + error.category
+                pageErrorCode(error, kind),
+                "category=" + error.category + " code=" + error.code
             )
             // Always null: that hands the failure to GeckoView's own error page.
             //
@@ -537,7 +590,17 @@ internal class GeckoEngineSession(
             // a fact about a navigation the engine never described, and would
             // give a script's unsolicited `window.open()` the same standing as
             // a link the user pressed.
-            listener?.onNewWindowRequest(this@GeckoEngineSession, uri, false)
+            // TWO CALLS, and the order is the contract: the gate decides
+            // whether this session may open a window at all, and only then is
+            // the URL handed over. GeckoView 153 supplies the URI in the same
+            // callback, so the two calls sit adjacent here -- but they stay
+            // two, because that is what the WebView edition needs (its gate
+            // runs before any transport exists) and one facade shape shared by
+            // both is the entire point of the facade.
+            val accepted = listener?.onNewWindowRequest(this@GeckoEngineSession, false) ?: false
+            if (accepted) {
+                listener?.onNewWindowResolved(this@GeckoEngineSession, uri, false)
+            }
             // Null anyway, even when the app just opened the URL as its own
             // new tab: answering with a session would hand GeckoView a second
             // session for a window the app has already opened, and the user
@@ -893,15 +956,68 @@ internal class GeckoEngineSession(
         error.code == WebRequestError.ERROR_SECURITY_SSL ||
             error.code == WebRequestError.ERROR_SECURITY_BAD_CERT ||
             error.code == WebRequestError.ERROR_BAD_HSTS_CERT -> PageErrorKind.CERTIFICATE
+        // BEFORE the NETWORK category below, which would otherwise swallow it.
+        // An unresolvable NAME is reported differently by the app from a host
+        // that resolved and then did not answer -- see PageErrorKind.DNS.
+        error.code == WebRequestError.ERROR_UNKNOWN_HOST -> PageErrorKind.DNS
         error.category == WebRequestError.ERROR_CATEGORY_NETWORK -> PageErrorKind.TRANSPORT
         error.code == WebRequestError.ERROR_NET_RESET ||
             error.code == WebRequestError.ERROR_NET_INTERRUPT ||
             error.code == WebRequestError.ERROR_NET_TIMEOUT ||
             error.code == WebRequestError.ERROR_OFFLINE ||
             error.code == WebRequestError.ERROR_PORT_BLOCKED ||
-            error.code == WebRequestError.ERROR_UNKNOWN_HOST ||
             error.code == WebRequestError.ERROR_PROXY_CONNECTION_REFUSED -> PageErrorKind.TRANSPORT
         else -> PageErrorKind.OTHER
+    }
+
+    /**
+     * Translate a GeckoView failure into the numbering the app's policy reads.
+     *
+     * WHY THIS EXISTS AT ALL: two decisions above the facade are keyed to the
+     * error code, not to [PageErrorKind] -- whether a failed https upgrade
+     * gets one automatic retry over http, and which sentence the certificate
+     * screen shows. Both were written against WebView's numbering, and
+     * GeckoView's `WebRequestError` codes are small positive integers, so
+     * every GeckoView failure would land in the wrong branch: the retry would
+     * never fire and every certificate problem would print the fallback line.
+     * Neither is a compile error and neither fails a test that does not know
+     * to look, which is exactly why the translation belongs here, next to the
+     * kind mapping, and not in the policy.
+     *
+     * The recovery set is the interesting half. [EngineErrorCode.TIMEOUT] and
+     * [EngineErrorCode.CONNECT] are the failures where retrying the original
+     * http URL is the HTTPS-First behaviour the app promises -- nothing is
+     * listening on 443, or the TLS endpoint did not answer. [HOST_LOOKUP] is
+     * the opposite answer on purpose: a name that does not resolve, a device
+     * with no network, and a proxy that refuses the tunnel all fail over http
+     * exactly as they failed over https, so retrying would only add a second
+     * failure to the same page. Mapping those onto the "unreachable" code
+     * states the behaviour the app wants; the number is a policy input, and
+     * the raw GeckoView code is preserved in the description.
+     */
+    private fun pageErrorCode(error: WebRequestError, kind: PageErrorKind): Int = when {
+        kind == PageErrorKind.CERTIFICATE ->
+            // GeckoView says a certificate is bad; it does not say whether it
+            // expired, is not yet valid, or names another host. Claiming one of
+            // those would be a guess printed as fact, so the honest answer is
+            // the one that claims nothing beyond what is known.
+            if (error.code == WebRequestError.ERROR_SECURITY_BAD_CERT ||
+                error.code == WebRequestError.ERROR_BAD_HSTS_CERT
+            ) {
+                EngineErrorCode.CERT_INVALID
+            } else {
+                EngineErrorCode.CERT_UNTRUSTED
+            }
+        error.code == WebRequestError.ERROR_UNKNOWN_HOST -> EngineErrorCode.HOST_LOOKUP
+        error.code == WebRequestError.ERROR_NET_TIMEOUT -> EngineErrorCode.TIMEOUT
+        error.code == WebRequestError.ERROR_NET_RESET -> EngineErrorCode.CONNECT
+        error.code == WebRequestError.ERROR_NET_INTERRUPT -> EngineErrorCode.CONNECT
+        error.code == WebRequestError.ERROR_PORT_BLOCKED -> EngineErrorCode.CONNECT
+        // Not recoverable by a scheme change: the device is offline, or a
+        // proxy the http retry would also go through refused the connection.
+        error.code == WebRequestError.ERROR_OFFLINE -> EngineErrorCode.HOST_LOOKUP
+        error.code == WebRequestError.ERROR_PROXY_CONNECTION_REFUSED -> EngineErrorCode.HOST_LOOKUP
+        else -> EngineErrorCode.UNKNOWN
     }
 
     /**

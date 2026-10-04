@@ -1,23 +1,11 @@
 package com.roombrowser.browser
 
 import android.app.Application
-import android.graphics.Bitmap
-import android.net.Uri
-import android.net.http.SslError
-import android.os.Bundle
-import android.os.Handler
-import android.os.Looper
 import android.os.SystemClock
 import android.util.Log
-import android.view.View
-import android.webkit.CookieManager
-import android.webkit.PermissionRequest
-import android.webkit.ValueCallback
-import android.webkit.WebView
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
-import androidx.core.graphics.createBitmap
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.roombrowser.RoomBrowserApp
@@ -48,6 +36,9 @@ import com.roombrowser.domain.model.ProfileSettings
 import com.roombrowser.domain.theme.BuiltInThemes
 import com.roombrowser.domain.theme.RoomThemeSpec
 import com.roombrowser.domain.theme.ThemeJson
+import com.roombrowser.engine.EngineSession
+import com.roombrowser.engine.PageErrorKind
+import com.roombrowser.engine.PermissionResponder
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -97,7 +88,7 @@ data class ShieldsState(
 )
 
 /**
- * BrowserViewModel — owns the tab model, the active WebView, filtering,
+ * BrowserViewModel — owns the tab model, the active engine session, filtering,
  * downloads, DNS state and network-identity warnings for exactly ONE
  * profile (the process-bound one).
  */
@@ -122,12 +113,21 @@ class BrowserViewModel(
     val networkIdentity = NetworkIdentity(appState, browserRepo, graph.ipConflictDetector)
 
     /**
-     * Per-WebView dApp bridges (window.ethereum & friends). Weak keys: a
+     * Per-session dApp bridges (window.ethereum & friends). Weak keys: a
      * destroyed engine's bridge must not outlive it — GC reclaims both. Used
      * to push accountsChanged/chainChanged events to every live page after
      * the user switches networks or accounts in the wallet dashboard.
      */
-    private val walletBridges = java.util.WeakHashMap<WebView, com.roombrowser.browser.wallet.dapp.WalletBridge>()
+    private val walletBridges =
+        java.util.WeakHashMap<EngineSession, com.roombrowser.browser.wallet.dapp.WalletBridge>()
+
+    /**
+     * Per-session password-manager bridges. The bridge holds its session only
+     * through a [java.lang.ref.WeakReference], so a weak key here is a real
+     * release rather than a key the value keeps alive; the entry is dropped
+     * explicitly by the session teardown all the same.
+     */
+    private val vaultBridges = java.util.WeakHashMap<EngineSession, RoomVaultBridge>()
 
     /** Last-seen wallet state, so event collectors only emit on CHANGE. */
     private var lastWalletChainIds: Map<com.roombrowser.domain.wallet.model.ChainType, com.roombrowser.domain.wallet.model.NetworkConfig> = emptyMap()
@@ -219,11 +219,11 @@ class BrowserViewModel(
      *  quick switcher ("Switch Profile" decision on the network warning). */
     val quickSwitcherSignal = MutableStateFlow(0)
 
-    /** The live WebView of the ACTIVE tab — each tab owns its own engine
-     *  (kept alive in its TabManager session while in the background).
-     *  Compose state, so WebViewHost swaps the attached engine the moment
+    /** The live engine session of the ACTIVE tab — each tab owns its own
+     *  engine (kept alive in its TabManager session while in the background).
+     *  Compose state, so EngineViewHost swaps the attached engine the moment
      *  this changes (never into a stale parent, never a missed reattach). */
-    var activeWebView: WebView? by mutableStateOf<WebView?>(null)
+    var activeSession: EngineSession? by mutableStateOf<EngineSession?>(null)
         private set
 
     /**
@@ -247,13 +247,15 @@ class BrowserViewModel(
     @Volatile
     private var siteSettingsSnapshot: Map<String, SiteSettingEntity> = emptyMap()
 
-    lateinit var webViewClient: RoomWebViewClient
+    /**
+     * Whether the ACTIVE session is showing fullscreen media.
+     *
+     * A STATE, NOT A VIEW: the engine renders fullscreen content inside its
+     * own view, so the app's only job is to drop its own chrome (and hide the
+     * system bars) while this is true.
+     */
+    var isFullscreen by mutableStateOf(false)
         private set
-
-    /** Fullscreen media view state. */
-    var customView by mutableStateOf<View?>(null)
-        private set
-    private var customViewCallback: android.webkit.WebChromeClient.CustomViewCallback? = null
 
     /** Pending permission requests from the web engine. */
     var pendingPermission by mutableStateOf<PendingPermission?>(null)
@@ -267,10 +269,10 @@ class BrowserViewModel(
      * page's. The sheet names this one; naming [pageUrl] instead would pin a
      * third-party frame's camera request on the site the user is reading,
      * which is the same misattribution the wallet sheets refuse when they
-     * name the WebView-verified host rather than the page's claim.
+     * name the engine-verified host rather than the page's claim.
      */
     data class PendingPermission(
-        val request: PermissionRequest,
+        val responder: PermissionResponder,
         val kinds: Set<PermissionKind>,
         val pageUrl: String,
         val requesterOrigin: String
@@ -281,7 +283,7 @@ class BrowserViewModel(
 
     data class PendingGeolocation(
         val origin: String?,
-        val callback: android.webkit.GeolocationPermissions.Callback,
+        val responder: PermissionResponder,
         val host: String
     )
 
@@ -320,11 +322,19 @@ class BrowserViewModel(
         pending.cancel()
     }
 
-    /** File-chooser bridge for <input type=file>. */
-    var fileChooserCallback: ValueCallback<Array<Uri>>? = null
-        private set
+    /**
+     * The wallet channel's payload is the engine's one-method envelope
+     * (`{"method":"request","payload":<page request>}`); the bridge parses the
+     * request the page built, so the inner string is what it is handed. The
+     * facade deliberately fixes neither the vocabulary nor the envelope, so
+     * this is the app's side of the transport.
+     */
+    private fun unwrapWalletEnvelope(payload: String): String = runCatching {
+        val json = JSONObject(payload)
+        if (json.optString("method") == "request") json.optString("payload") else payload
+    }.getOrNull()?.takeIf { it.isNotEmpty() } ?: payload
 
-    private val clientCallbacks = object : RoomWebViewClient.Callbacks {
+    private val sessionCallbacks = object : RoomSessionListener.Callbacks {
         /**
          * The page host a sub-resource of [view] is judged against.
          *
@@ -341,11 +351,11 @@ class BrowserViewModel(
          * indexed URL, and every sub-resource it is still fetching must keep
          * being judged rather than silently unblocked.
          */
-        override fun pageHostFor(view: WebView): String? {
-            val url = if (view === activeWebView) {
+        override fun pageHostFor(session: EngineSession): String? {
+            val url = if (session === activeSession) {
                 pageState.url
             } else {
-                tabManager.pageUrlFor(view) ?: pageState.url
+                tabManager.pageUrlFor(session) ?: pageState.url
             }
             return UrlIntelligence.hostOf(url)
         }
@@ -359,21 +369,21 @@ class BrowserViewModel(
         override fun onHttpsUpgrade(host: String) {
             emitMessage("Upgraded to HTTPS: $host")
         }
-        override fun onPopupBlocked() {
+        override fun onPopupBlocked(session: EngineSession) {
             recordBlock(UrlIntelligence.hostOf(pageState.url) ?: "", StatCategories.POPUP)
             emitMessage("Popup blocked")
         }
         override fun onSuspiciousSite(url: String, signals: List<String>) {
             emitMessage("Caution: ${signals.joinToString()}")
         }
-        override fun onPageStarted(view: WebView, url: String) {
-            // [view] is the engine that fired: everything below belongs to
+        override fun onPageStarted(session: EngineSession, url: String) {
+            // [session] is the engine that fired: everything below belongs to
             // the tab that OWNS it. pageState is the ACTIVE tab's view state
             // and is only ever written while the firing engine IS the active
             // one (a background tab's load must never repaint this tab).
-            val owner = tabManager.idFor(view) ?: return
-            Log.d(NAV_TAG, "vm=$navId onPageStarted url=$url active=${view === activeWebView}")
-            if (view !== activeWebView) {
+            val owner = tabManager.idFor(session) ?: return
+            Log.d(NAV_TAG, "vm=$navId onPageStarted url=$url active=${session === activeSession}")
+            if (session !== activeSession) {
                 // A background tab navigating: the URL belongs to ITS row
                 // (title stays as stored — the new document has none yet).
                 persistTab(owner, url)
@@ -392,15 +402,15 @@ class BrowserViewModel(
             // old one's grant, so it is refused rather than carried over.
             invalidateWebPermissionRequests()
         }
-        override fun onPageFinished(view: WebView, url: String, title: String) {
+        override fun onPageFinished(session: EngineSession, url: String, title: String, success: Boolean) {
             // ROUTING: the finish lands on the tab that OWNS the firing
             // engine. pageState / pageError / thumbnails / shields belong to
             // the ACTIVE tab only — a background tab's load must never write
             // into them nor into the active tab's row (the cross-tab
             // contamination: A finishing while B was active stamped A's
             // url/title onto B and flipped the omnibox back to A).
-            val owner = tabManager.idFor(view) ?: return
-            val active = view === activeWebView
+            val owner = tabManager.idFor(session) ?: return
+            val active = session === activeSession
             // A freshly created WebView can fire a LATE finish for its
             // INITIAL about:blank commit at first attach — AFTER a real
             // navigation already started. (CI 75822ed: the artifact finish
@@ -455,67 +465,52 @@ class BrowserViewModel(
             refreshShields()
             refreshStats()
         }
-        override fun onHistoryChanged(view: WebView, canGoBack: Boolean, canGoForward: Boolean) {
+        override fun onHistoryChanged(session: EngineSession, canGoBack: Boolean, canGoForward: Boolean) {
             // The single source of truth for the Back / Forward buttons and
             // the system-Back web-history branch. Without this the nav bar
             // stayed grey forever (canGoBack was never reported).
             // Only the ACTIVE engine owns that UI state: a background tab's
-            // history lives inside its own WebView.
-            if (view !== activeWebView) return
+            // history lives inside its own engine.
+            if (session !== activeSession) return
             if (pageState.canGoBack != canGoBack || pageState.canGoForward != canGoForward) {
                 pageState = pageState.copy(canGoBack = canGoBack, canGoForward = canGoForward)
             }
         }
-        override fun onReceivedHttpError(view: WebView, url: String, statusCode: Int) {
-            // An HTTP error is NOT an engine error: no onReceivedError fires,
-            // onPageFinished still arrives, the URL is right — and the screen
-            // shows an empty document. Without this line a 404 and a rendered
-            // page look identical in the trace, which is exactly the
-            // ambiguity that stalled the geolocation/camera suite.
-            Log.d(
-                NAV_TAG,
-                "vm=$navId onReceivedHttpError url=$url code=$statusCode " +
-                    "active=${view === activeWebView}"
-            )
-        }
+        // NOTE: the WebView edition ALSO traced onReceivedHttpError and
+        // onPageCommitVisible. The facade has no member for either (a
+        // sub-resource HTTP status, and the first committable frame), so both
+        // diagnostics are dropped rather than faked. Reported as a gap.
 
-        override fun onPageCommitVisible(view: WebView, url: String) {
-            // The first frame the engine is willing to show, and the earliest
-            // point at which a layout pass has certainly run — so the size
-            // here is real, unlike the one taken when the deferred load fires.
-            // A 0x0 or shown=false at THIS moment is the difference between
-            // "the page is slow" and "the page has nowhere to draw": the two
-            // look identical from the device side, because a WebView with no
-            // area still loads, still reports onPageFinished, and publishes no
-            // accessibility nodes for UiAutomator to find.
-            Log.d(
-                NAV_TAG,
-                "vm=$navId onPageCommitVisible url=$url " +
-                    "size=${view.width}x${view.height} shown=${view.isShown} " +
-                    "active=${view === activeWebView}"
-            )
-        }
-
-        override fun onReceivedError(view: WebView, url: String, errorCode: Int, description: String?) {
+        override fun onReceivedError(
+            session: EngineSession,
+            url: String,
+            kind: PageErrorKind,
+            errorCode: Int,
+            description: String?
+        ) {
             // The error surface belongs to the ACTIVE tab — a background
             // failure must not paint an error page over the page on screen.
-            if (view !== activeWebView) return
-            Log.d(NAV_TAG, "vm=$navId onReceivedError url=$url code=$errorCode")
-            pageError = when (errorCode) {
-                android.webkit.WebViewClient.ERROR_HOST_LOOKUP -> PageError.DnsFailure(url)
-                android.webkit.WebViewClient.ERROR_CONNECT,
-                android.webkit.WebViewClient.ERROR_TIMEOUT -> PageError.NoInternet(url)
+            if (session !== activeSession) return
+            Log.d(NAV_TAG, "vm=$navId onReceivedError url=$url code=$errorCode kind=$kind")
+            // The KIND is the engine-neutral answer this branches on. The
+            // numeric code is each engine's own numbering and is deliberately
+            // NOT compared, because the two editions do not share one.
+            pageError = when (kind) {
+                PageErrorKind.DNS -> PageError.DnsFailure(url)
+                PageErrorKind.TRANSPORT -> PageError.NoInternet(url)
                 else -> PageError.Generic(url, description)
             }
             pageState = pageState.copy(loading = false)
         }
-        override fun onSslError(view: WebView, url: String, error: SslError) {
-            if (view !== activeWebView) return
-            pageError = PageError.Ssl(url, sslErrorText(error))
+
+        override fun onSslError(session: EngineSession, url: String, errorCode: Int, description: String?) {
+            if (session !== activeSession) return
+            pageError = PageError.Ssl(url, sslErrorText(errorCode))
             pageState = pageState.copy(loading = false)
         }
+
         override fun onHttpAuthRequest(
-            view: WebView,
+            session: EngineSession,
             host: String,
             realm: String,
             proceed: (String, String) -> Unit,
@@ -525,7 +520,7 @@ class BrowserViewModel(
             // page the user is reading — and it cannot be left unanswered
             // either, so it is refused outright. The same rule the popup
             // transport follows.
-            if (view !== activeWebView) {
+            if (session !== activeSession) {
                 cancel()
                 return
             }
@@ -539,7 +534,7 @@ class BrowserViewModel(
             pendingHttpAuth = PendingHttpAuth(
                 host = host,
                 realm = realm,
-                pageUrl = view.url.orEmpty(),
+                pageUrl = session.url.orEmpty(),
                 proceed = proceed,
                 cancel = cancel
             )
@@ -547,119 +542,166 @@ class BrowserViewModel(
         override fun openInNewTab(url: String, isPrivate: Boolean) {
             viewModelScope.launch { openNewTab(url, isPrivate) }
         }
-    }
 
-    private val chromeCallbacks = object : RoomWebChromeClient.ChromeCallbacks {
-        override fun onProgress(view: WebView, progress: Int) {
+        override fun onProgress(session: EngineSession, progress: Int) {
             // Progress is pure ACTIVE-tab UI state — a background engine's
             // progress must not drive the bar the user is watching.
-            if (view !== activeWebView) return
+            if (session !== activeSession) return
             pageState = pageState.copy(progress = progress, loading = progress < 100)
         }
-        override fun onTitleChanged(view: WebView, title: String) {
+
+        override fun onTitleChanged(session: EngineSession, title: String) {
             // Only the ACTIVE engine's title paints the omnibox. A background
             // tab's title is NOT lost: its onPageFinished persists url+title
             // in ONE write to its own row — writing it here as well would be
             // a second, racing read-modify-write on that same row (it could
             // land after the finish and stamp the PRE-navigation URL back).
-            if (view !== activeWebView) return
+            if (session !== activeSession) return
             pageState = pageState.copy(title = title)
         }
-        override fun onShowCustomView(view: View, callback: android.webkit.WebChromeClient.CustomViewCallback) {
-            customView = view
-            customViewCallback = callback
+
+        override fun onFullScreen(session: EngineSession, fullScreen: Boolean) {
+            // A STATE, not a view: the engine owns the fullscreen surface and
+            // renders it inside its own view, so the app only mirrors the
+            // transition to get its own chrome out of the way. A background
+            // tab's transition is not this tab's state.
+            if (session !== activeSession) return
+            isFullscreen = fullScreen
         }
-        override fun onHideCustomView() {
-            customView = null
-            customViewCallback?.onCustomViewHidden()
-            customViewCallback = null
-        }
+
         override fun onPermissionRequest(
-            view: WebView?,
-            request: PermissionRequest,
+            session: EngineSession,
+            responder: PermissionResponder,
             kinds: Set<PermissionKind>,
             originUrl: String
         ) {
             // A background engine must not raise a grant sheet over the tab the
             // user is looking at. Answered with an explicit DENY rather than
-            // left alone: an unanswered PermissionRequest leaves the page's
-            // request pending for the life of the document.
-            if (view == null || view !== activeWebView) {
-                request.deny()
+            // left alone: an unanswered request leaves the page's promise
+            // pending for the life of the document.
+            if (session !== activeSession) {
+                responder.deny()
                 return
             }
-            val origin = request.origin
-            // A request always carries an origin; the fallback keeps the sheet
-            // naming the page rather than an empty line if one ever does not.
-            val requesterOrigin = if (origin == null) originUrl else origin.toString()
+            // The origin passed down IS the one that asked (a frame's origin
+            // when a cross-origin iframe asked); the sheet names it. The page
+            // half of the attribution is the session's own URL.
             viewModelScope.launch {
-                answerOrRaise(request, kinds, originUrl, requesterOrigin, view)
+                answerOrRaise(responder, kinds, session.url ?: originUrl, originUrl, session)
             }
         }
-        override fun onGeolocationPermissions(
-            view: WebView?,
+
+        override fun onGeolocationRequest(
+            session: EngineSession,
             origin: String?,
-            callback: android.webkit.GeolocationPermissions.Callback
+            responder: PermissionResponder
         ) {
             // Same rule as permissions: deny for a background engine instead of
-            // leaving the callback un-invoked.
-            if (view == null || view !== activeWebView) {
-                callback.invoke(origin, false, false)
+            // leaving the request unanswered.
+            if (session !== activeSession || origin == null) {
+                responder.deny()
                 return
             }
-            val host = origin?.let { UrlIntelligence.hostOf(it) } ?: ""
+            val host = UrlIntelligence.hostOf(origin) ?: ""
             viewModelScope.launch {
-                if (view !== activeWebView) {
-                    callback.invoke(origin, false, false)
+                if (session !== activeSession) {
+                    responder.deny()
                     return@launch
                 }
                 when (storedDecisionFor(host, setOf(PermissionKind.LOCATION))) {
-                    PermissionDecision.BLOCK -> callback.invoke(origin, false, false)
-                    PermissionDecision.ALLOW -> callback.invoke(origin, true, false)
-                    // No stored answer: ask. `retain = false` on the way out
-                    // (see respondGeolocation) — the WebView's own per-origin
-                    // store is not where a decision the user can neither see
-                    // nor revoke belongs.
+                    PermissionDecision.BLOCK -> responder.deny()
+                    PermissionDecision.ALLOW -> responder.grant()
+                    // No stored answer: ask. Nothing is retained in the
+                    // engine's own per-origin store (see respondGeolocation) —
+                    // a decision the user can neither see nor revoke does not
+                    // belong there.
                     else -> {
                         retirePendingGeolocation()
-                        pendingGeolocation = PendingGeolocation(origin, callback, host)
+                        pendingGeolocation = PendingGeolocation(origin, responder, host)
                     }
                 }
             }
         }
-        override fun onFileChooserIntent(
-            view: WebView?,
-            intent: android.content.Intent,
-            callback: RoomWebChromeClient.FileChooserResult
+
+        /**
+         * A file input (<input type=file>) has NO facade counterpart: neither
+         * listener nor session can reach the picker the WebView edition opened
+         * through `onShowFileChooser`. Dropped rather than faked — reported as
+         * a gap. (The state it used to publish here was never read by the UI.)
+         */
+        override fun onDownloadRequest(
+            session: EngineSession,
+            url: String,
+            userAgent: String?,
+            contentDisposition: String?,
+            mimeType: String?
         ) {
-            // A file input waiting on a picker that will never open is worse
-            // than one told no, so a background engine's request is cancelled.
-            if (view == null || view !== activeWebView) {
-                callback.onResult(null)
-                return
-            }
-            fileChooserLauncherIntent = intent
-            fileChooserResult = callback
+            val name = DownloadEngine.guessFileName(url, contentDisposition, mimeType)
+            // The engine's own request UA, not a fresh one: the download must
+            // present the same device identity as the page that linked to it.
+            download(url, name, mimeType ?: "", userAgent)
         }
-        override fun openNewWindow(view: WebView?, url: String) {
-            // The second of two checks: onCreateWindow already refuses a popup
-            // from a background engine before the transport is built, but the
-            // active tab can change while the popup's URL is being resolved, so
-            // ownership is re-checked here against the tab that actually asked.
-            if (view == null || view !== activeWebView) return
+
+        override fun openNewWindow(session: EngineSession, url: String) {
+            // The second of two checks: the navigation listener already
+            // refuses a popup from a background engine, but the active tab can
+            // change while the popup's URL is being resolved, so ownership is
+            // re-checked here against the tab that actually asked.
+            if (session !== activeSession) return
             viewModelScope.launch { openNewTab(url, isPrivate = false) }
         }
-        override fun onPopupBlocked(view: WebView?) {
-            // handled by the WebViewClient path
+
+        /**
+         * One upward message from a page-world bridge. The channel vocabulary
+         * is the app's (the facade fixes none), and the payload is
+         * page-controlled: it is handled exactly as hostilely as the
+         * `@JavascriptInterface` string argument it replaces.
+         */
+        override fun onPageMessage(session: EngineSession, channel: String, payload: String) {
+            when (channel) {
+                PageBridgeChannels.VAULT -> vaultBridges[session]?.onMessage(payload)
+                PageBridgeChannels.WALLET ->
+                    walletBridges[session]?.onMessage(unwrapWalletEnvelope(payload))
+            }
         }
+
         override fun currentUrl(): String? = pageState.url
-        override fun isActiveEngine(view: WebView): Boolean = view === activeWebView
+
+        override fun isActiveEngine(session: EngineSession): Boolean = session === activeSession
     }
 
-    var fileChooserLauncherIntent: android.content.Intent? = null
-        private set
-    var fileChooserResult: RoomWebChromeClient.FileChooserResult? = null
-        private set
+    /**
+     * Attaches the ACTIVE session's engine view to [host], detaching whatever
+     * was there before.
+     *
+     * WHY THE APP DOES NOT CALL addView ITSELF: attaching and detaching is the
+     * ENGINE's business — the facade's KDoc says so, because GeckoView requires
+     * its session to be released before another is attached, which a bare
+     * `addView`/`removeView` cannot express. Called by EngineViewHost's update
+     * block, which runs on every engine swap (activeSession is Compose state).
+     */
+    fun attachActiveSessionTo(host: android.view.ViewGroup) {
+        val session = activeSession
+        if (attachedSession !== session) {
+            runCatching { attachedSession?.detach() }
+            host.removeAllViews()
+            attachedSession = session
+            session?.attachTo(host)
+        }
+        // A navigation/restore queued while this engine had no parent (see
+        // runWhenAttached) starts NOW — every load begins on an attached,
+        // laid-out view. No-op when nothing is pending.
+        session?.let { consumePendingActionFor(it) }
+    }
+
+    /** Releases whatever [attachActiveSessionTo] last attached. */
+    fun detachAttachedSession() {
+        runCatching { attachedSession?.detach() }
+        attachedSession = null
+    }
+
+    /** The session currently attached to the Compose host, if any. */
+    private var attachedSession: EngineSession? = null
 
     // ------------------------------------------------------------------
     // Answers to the engine's permission requests.
@@ -688,20 +730,20 @@ class BrowserViewModel(
      * that is gone must not be granted.
      */
     private suspend fun answerOrRaise(
-        request: PermissionRequest,
+        responder: PermissionResponder,
         kinds: Set<PermissionKind>,
         pageUrl: String,
         requesterOrigin: String,
-        engine: WebView
+        session: EngineSession
     ) {
-        if (engine !== activeWebView) {
-            request.deny()
+        if (session !== activeSession) {
+            responder.deny()
             return
         }
         val host = UrlIntelligence.hostOf(requesterOrigin) ?: ""
         when (storedDecisionFor(host, kinds)) {
-            PermissionDecision.BLOCK -> request.deny()
-            PermissionDecision.ALLOW -> request.grant(request.resources)
+            PermissionDecision.BLOCK -> responder.deny()
+            PermissionDecision.ALLOW -> responder.grant()
             else -> {
                 // The sheet shows one request at a time. A request still on
                 // screen when a second arrives is refused rather than
@@ -709,7 +751,7 @@ class BrowserViewModel(
                 // pending for the life of its document.
                 retirePendingPermission()
                 pendingPermission = PendingPermission(
-                    request = request,
+                    responder = responder,
                     kinds = kinds,
                     pageUrl = pageUrl,
                     requesterOrigin = requesterOrigin
@@ -752,13 +794,13 @@ class BrowserViewModel(
     private fun retirePendingPermission() {
         val previous = pendingPermission ?: return
         pendingPermission = null
-        previous.request.deny()
+        previous.responder.deny()
     }
 
     private fun retirePendingGeolocation() {
         val previous = pendingGeolocation ?: return
         pendingGeolocation = null
-        previous.callback.invoke(previous.origin, false, false)
+        previous.responder.deny()
     }
 
     /**
@@ -777,7 +819,6 @@ class BrowserViewModel(
     fun showMessage(message: String) = emitMessage(message)
 
     init {
-        webViewClient = RoomWebViewClient(profile, graph.filterEngine, clientCallbacks)
         viewModelScope.launch { initialize() }
         observeFlows()
     }
@@ -799,7 +840,6 @@ class BrowserViewModel(
             }
             profile = graph.profileRepo.getProfile(profileId) ?: profile
             themeSpec = BuiltInThemes.resolveOrDefault(profile.themeJson)
-            webViewClient = RoomWebViewClient(profile, graph.filterEngine, clientCallbacks)
             globalSettings = appState.globalSettingsSnapshot()
             httpClient = dnsMonitor.apply(globalSettings, profile)
             agent.updateClient(httpClient)
@@ -895,7 +935,6 @@ class BrowserViewModel(
                     profile = p
                     themeSpec = BuiltInThemes.resolveOrDefault(p.themeJson)
                     if (settingsChanged) {
-                        webViewClient = RoomWebViewClient(profile, graph.filterEngine, clientCallbacks)
                         reconfigureAllWebViews()
                     }
                 }
@@ -955,20 +994,20 @@ class BrowserViewModel(
             if (newTab || targetId == null) {
                 openNewTab(url, isPrivate)
             } else {
-                val webView = activeWebView ?: createWebView().also { engine ->
-                    activeWebView = engine
+                val session = activeSession ?: createSession(targetId).also { engine ->
+                    activeSession = engine
                     // The engine belongs to THIS tab: its session must exist
                     // before attaching, or the engine goes untracked (leak +
                     // state loss on reselect).
                     tabs.firstOrNull { it.id == targetId }?.let { tabManager.ensureSession(it) }
-                    tabManager.attachWebView(targetId, engine)
+                    tabManager.attachEngine(targetId, engine)
                 }
                 // CI 36833914913 (Tabs + Wallet, both omnibox loads on a
                 // start-page tab): the navigation used to start on an engine
                 // that was NOT yet attached to the window — pageState stayed
                 // on the homepage until onPageStarted arrived (~400 ms
                 // later, AFTER the navigation had already begun on the
-                // parentless view), so WebViewHost was not composed at all.
+                // parentless view), so EngineViewHost was not composed at all.
                 // On the WebView 83 stack such a navigation wedges
                 // permanently when the view attaches mid-flight: renderer
                 // spawned, onPageStarted fired, then total silence — no
@@ -986,16 +1025,16 @@ class BrowserViewModel(
                     isHomepage = false
                 )
                 pageError = null
-                Log.d(NAV_TAG, "vm=$navId loadUrl same-tab url=$url attached=${webView.parent != null}")
-                runWhenAttached(webView) { webView.loadUrl(url) }
+                Log.d(NAV_TAG, "vm=$navId loadUrl same-tab url=$url attached=${session.view.parent != null}")
+                runWhenAttached(session) { session.loadUri(url) }
             }
         }
     }
 
-    fun goBack() { activeWebView?.goBack() }
-    fun goForward() { activeWebView?.goForward() }
-    fun reload() { activeWebView?.reload() }
-    fun stopLoading() { activeWebView?.stopLoading() }
+    fun goBack() { activeSession?.goBack() }
+    fun goForward() { activeSession?.goForward() }
+    fun reload() { activeSession?.reload() }
+    fun stopLoading() { activeSession?.stop() }
 
     /**
      * Returns the active tab to the start page (about:home) — the "Back to
@@ -1018,16 +1057,39 @@ class BrowserViewModel(
     }
 
     /**
-     * Leaves fullscreen (custom-view) media mode. Called by the system Back
-     * handler so the first Back press exits fullscreen video instead of
-     * killing the engine activity.
+     * Leaves fullscreen media mode. Called by the system Back handler so the
+     * first Back press exits fullscreen video instead of killing the engine
+     * activity.
+     *
+     * The ENGINE is asked as well as the app. Clearing the local flag alone
+     * restores the app's chrome but leaves the engine's fullscreen view
+     * mounted over the web area with the page still believing it is
+     * fullscreen: the chrome comes back and the user cannot see it, and
+     * nothing is left that can undo it.
      */
     fun exitFullscreen() {
-        if (customView != null) {
-            customView = null
-            customViewCallback?.onCustomViewHidden()
-            customViewCallback = null
-        }
+        isFullscreen = false
+        activeSession?.exitFullScreen()
+    }
+
+    /**
+     * Drop session cookies and form data for every live private session.
+     *
+     * This is what the private-tab surface promises the user -- "session
+     * cookies are cleared when private tabs close" -- and it is the narrow
+     * operation, not the profile wipe: [ProfileEngine.clearEngineStorage]
+     * erases every site for every tab, so reaching for it here would sign the
+     * user out of everything they are logged into, to close one tab.
+     *
+     * It runs while the sessions are still alive, because the erase is
+     * session-scoped and a destroyed engine can no longer be asked. A caller
+     * that has already torn its engines down finds nothing to clear, which is
+     * why the two places that destroy private tabs call this first.
+     */
+    fun clearPrivateSessionArtifacts() {
+        tabManager.privateTabs()
+            .mapNotNull { it.engine }
+            .forEach { runCatching { it.clearSessionData() } }
     }
 
     // ---------- Tabs ----------
@@ -1063,19 +1125,19 @@ class BrowserViewModel(
             // switching tabs never reloads a still-live page. The session is
             // created BEFORE the attach — an untracked engine was why young
             // tabs reloaded (and leaked) instead of switching cleanly.
-            val webView = createWebView()
-            activeWebView = webView
+            val session = createSession(entity.id)
+            activeSession = session
             tabManager.ensureSession(entity)
-            tabManager.attachWebView(entity.id, webView)
+            tabManager.attachEngine(entity.id, session)
             // Nothing may load while a network decision is pending; the
             // load fires the moment the user decides.
             networkGate.first { !it }
-            Log.d(NAV_TAG, "vm=$navId openNewTab url=$url attached=${webView.parent != null}")
-            runWhenAttached(webView) { webView.loadUrl(url) }
+            Log.d(NAV_TAG, "vm=$navId openNewTab url=$url attached=${session.view.parent != null}")
+            runWhenAttached(session) { session.loadUri(url) }
         } else {
             // The previous tab keeps its engine alive in its OWN session;
             // the new homepage tab simply has no engine of its own.
-            activeWebView = null
+            activeSession = null
         }
         evictStaleWebViews(entity.id)
     }
@@ -1086,12 +1148,12 @@ class BrowserViewModel(
      * The live engine of [id]'s tab, or null when that tab holds none — the
      * start page, an LRU-evicted background tab, or a tab since closed.
      *
-     * The agent resolves its engine HERE and not through [activeWebView]. A
+     * The agent resolves its engine HERE and not through [activeSession]. A
      * turn is started on one tab, and every tool of that turn belongs to that
      * tab; reading "whatever is on screen" is how the rest of a turn silently
      * retargets the moment the user switches away from it.
      */
-    fun tabWebView(id: String): WebView? = tabManager.get(id)?.webView
+    fun tabSession(id: String): EngineSession? = tabManager.get(id)?.engine
 
     /** Whether [id] is the tab the user is currently looking at. */
     fun isActiveTab(id: String): Boolean = id == activeTabId
@@ -1114,7 +1176,7 @@ class BrowserViewModel(
     }
 
     fun selectTab(id: String) {
-        if (id == activeTabId && activeWebView != null) return
+        if (id == activeTabId && activeSession != null) return
         Log.d(NAV_TAG, "vm=$navId selectTab id=$id same=${id == activeTabId}")
         activeTabId = id
         val tab = tabs.firstOrNull { it.id == id } ?: return
@@ -1136,8 +1198,8 @@ class BrowserViewModel(
             // Homepage tabs keep no live engine: pageState above already
             // shows the start page; drop any stale engine the session may
             // still hold so switching back never resurrects a dead page.
-            tabManager.get(id)?.webView?.let { destroyWebViewQuiet(it) }
-            activeWebView = null
+            tabManager.get(id)?.engine?.let { destroyEngineQuiet(it) }
+            activeSession = null
             pageState = pageState.copy(canGoBack = false, canGoForward = false)
         } else {
             // Reuse the tab's OWN WebView when it is still alive (instant,
@@ -1146,13 +1208,14 @@ class BrowserViewModel(
             // the saved back/forward bundle when present (entity-URL reload
             // as the fallback). While a network decision is pending, no
             // engine is created at all: nothing may load.
-            val webView = engineFor(tab)
-            if (webView != null) {
-                activeWebView = webView
-                // History state belongs to the selected tab's engine.
-                pageState = pageState.copy(canGoBack = webView.canGoBack(), canGoForward = webView.canGoForward())
+            val session = engineFor(tab)
+            if (session != null) {
+                activeSession = session
+                // History state belongs to the selected tab's engine, which
+                // publishes it (the facade has no synchronous history query).
+                pageState = pageState.copy(canGoBack = session.canGoBack, canGoForward = session.canGoForward)
             } else {
-                activeWebView = null
+                activeSession = null
                 pageState = pageState.copy(canGoBack = false, canGoForward = false)
             }
         }
@@ -1169,52 +1232,71 @@ class BrowserViewModel(
      * when present (LRU eviction / close), falling back to a reload of the
      * entity URL. Returns null while a network decision is pending.
      */
-    private fun engineFor(tab: TabEntity): WebView? {
-        val live = tabManager.get(tab.id)?.webView
+    private fun engineFor(tab: TabEntity): EngineSession? {
+        val live = tabManager.get(tab.id)?.engine
         if (live != null) return live
         if (networkGate.value) return null
-        val webView = createWebView()
+        val session = createSession(tab.id)
         tabManager.ensureSession(tab)
-        tabManager.attachWebView(tab.id, webView)
+        tabManager.attachEngine(tab.id, session)
         val saved = tabManager.engineState(tab.id)
         Log.d(NAV_TAG, "vm=$navId engineFor tab=${tab.id} url=${tab.url} hasSaved=${saved != null}")
         // The restore/fallback navigation must also start on an attached
-        // view (see runWhenAttached — same WebView-83 detached-load wedge
-        // as the omnibox path).
-        runWhenAttached(webView) {
+        // view (see runWhenAttached — same detached-load wedge as the
+        // omnibox path).
+        runWhenAttached(session) {
             var restored = false
             if (saved != null) {
-                runCatching { webView.restoreState(saved) }
-                restored = webView.copyBackForwardList().size > 0
+                // The ENGINE answers this, synchronously, from the restore
+                // itself. Asking the session's canGoBack instead read a flag
+                // written by the engine's back/forward callbacks, which have
+                // not run on the line after a restore -- so it answered false
+                // even for a restore that worked, the fallback below fired,
+                // and the history and scroll position the restore had just put
+                // back were thrown away on every tab reopen and every LRU
+                // eviction.
+                restored = runCatching { session.restoreState(saved) }.getOrDefault(false)
             }
-            if (!restored) webView.loadUrl(tab.url)
+            if (!restored) session.loadUri(tab.url)
         }
-        return webView
+        return session
     }
 
     fun closeTab(id: String) {
         viewModelScope.launch {
+            // The private-session clear MUST run before the destroy below.
+            // destroyEngineQuiet detaches the engine from the tab manager, and
+            // a detached engine is unreachable from privateTabs() — so
+            // clearing afterwards, which is where this call used to sit, found
+            // nothing whenever the LAST private tab was the one closing. That
+            // is exactly the moment the promise is made ("session cookies go
+            // when the private tabs do"), so the decision is taken here, while
+            // every engine it touches is still alive.
+            val closingPrivate = tabManager.get(id)?.entity?.isPrivate == true
+            val privateTabsLeft = browserRepo.openTabs(profileId)
+                .count { it.isPrivate && it.id != id }
+            if (closingPrivate && privateTabsLeft == 0) {
+                clearPrivateSessionArtifacts()
+            }
+
             // Destroy THIS tab's engine before dropping the session — its
             // back/forward state is captured first so reopening the tab
             // restores the page (and its history) instead of a bare reload.
-            tabManager.get(id)?.webView?.let { webView ->
-                saveEngineStateBeforeDestroy(id, webView)
-                destroyWebViewQuiet(webView)
+            tabManager.get(id)?.engine?.let { engine ->
+                saveEngineStateBeforeDestroy(id, engine)
+                destroyEngineQuiet(engine)
             }
             tabManager.remove(id)
             browserRepo.closeTab(id)
             val remaining = browserRepo.openTabs(profileId)
             tabs = remaining
             if (activeTabId == id) {
-                activeWebView = null
+                activeSession = null
                 // Activate the most-recently-viewed remaining tab of THIS
                 // profile (last_viewed_at), not just the last in position.
                 val next = remaining.maxByOrNull { it.lastViewedAt }
                 activeTabId = next?.id
                 if (next != null) selectTab(next.id) else pageState = PageState()
-            }
-            if (remaining.none { it.isPrivate }) {
-                ProfileEngine.clearSessionArtifacts(getApplication())
             }
         }
     }
@@ -1239,19 +1321,31 @@ class BrowserViewModel(
         viewModelScope.launch {
             val open = browserRepo.openTabs(profileId)
             val activePos = open.firstOrNull { it.id == id }?.position ?: 0
-            open.filter { tab ->
+            val closing = open.filter { tab ->
                 when (onlyLeft) {
                     null -> tab.id != id
                     true -> tab.position < activePos
                     else -> tab.position > activePos
                 }
-            }.forEach { tab ->
+            }
+            // Same ordering rule as closeTab: if this sweep takes the last
+            // private tab away, the session clear has to run before the loop
+            // below detaches the engines it needs to reach. This path used to
+            // skip the cleanup entirely, so "close all other tabs" left a
+            // private session's cookies behind even though no private tab
+            // survived it.
+            val closingIds = closing.map { it.id }.toSet()
+            val privateSurvivors = open.count { it.isPrivate && it.id !in closingIds }
+            if (privateSurvivors == 0 && closing.any { it.isPrivate }) {
+                clearPrivateSessionArtifacts()
+            }
+            closing.forEach { tab ->
                 // Per-tab engines: release each closed tab's engine + session,
                 // not just its database row — with the history bundle saved
                 // first (a reopened tab gets its page back).
-                tabManager.get(tab.id)?.webView?.let { webView ->
-                    saveEngineStateBeforeDestroy(tab.id, webView)
-                    destroyWebViewQuiet(webView)
+                tabManager.get(tab.id)?.engine?.let { engine ->
+                    saveEngineStateBeforeDestroy(tab.id, engine)
+                    destroyEngineQuiet(engine)
                 }
                 tabManager.remove(tab.id)
                 browserRepo.closeTab(tab.id)
@@ -1286,60 +1380,42 @@ class BrowserViewModel(
         viewModelScope.launch { openNewTab("about:home", isPrivate = true) }
     }
 
-    private fun createWebView(): WebView {
-        val webView = ProfileEngine.createWebView(getApplication(), profile)
-        webView.webViewClient = webViewClient
-        // ONE CHROME CLIENT PER ENGINE, bound to the engine it serves. The two
-        // permission callbacks (onPermissionRequest,
-        // onGeolocationPermissionsShowPrompt) carry no WebView of their own —
-        // the bound engine is the only handle on the tab that asked, and
-        // without it the host has to refuse, which is what it did: an unbound
-        // client made every camera, microphone and location request a silent
-        // denial. Rebuilding the client on a profile change therefore does
-        // nothing for engines that already exist; this is where they get one.
-        webView.webChromeClient = RoomWebChromeClient(profile, chromeCallbacks, webView)
-        // Password-manager page bridge: page JS sees window.RoomVault (the
-        // document-start detection script comes from ProfileEngine.configure).
-        // Every call is host-validated against THIS WebView's URL inside
-        // RoomVaultBridge before it reaches [vaultCallbacks].
-        webView.addJavascriptInterface(
-            RoomVaultBridge(webView, vaultCallbacks),
-            RoomVaultBridge.JS_INTERFACE_NAME
-        )
-        // Wallet dApp bridge: page JS sees window.ethereum / window.solana /
-        // window.aptos / window.suiWallet / window.tronLink (the provider
-        // script itself comes from ProfileEngine.configure's document-start
-        // install). Every call is host-validated against THIS WebView's URL
-        // inside WalletBridge before anything reaches the engine, and the
-        // engine settles each request through the confirmation UI.
-        val walletBridge = com.roombrowser.browser.wallet.dapp.WalletBridge(
+    private fun createSession(tabId: String): EngineSession {
+        val session = ProfileEngine.createSession(getApplication(), profile, tabId)
+        // ONE LISTENER PER ENGINE, bound to the session it serves. The facade
+        // allows exactly one, and it is the only handle on the tab that asked:
+        // a permission or auth request arrives naming its session, and the
+        // sheet is raised only for the ACTIVE one. This is also where a newly
+        // created engine picks up the CURRENT profile — rebuilding a shared
+        // listener on a settings change could never reach engines that already
+        // exist, so each engine is given one here.
+        session.setListener(RoomSessionListener(profile, graph.filterEngine, sessionCallbacks))
+        // Password-manager page bridge: the page's vault-channel messages
+        // arrive through [sessionCallbacks] and are host-validated against
+        // THIS session's URL inside RoomVaultBridge before they reach
+        // [vaultCallbacks].
+        vaultBridges[session] = RoomVaultBridge(session, vaultCallbacks)
+        // Wallet dApp bridge: the page's wallet-channel messages are
+        // host-validated against THIS session's URL inside WalletBridge before
+        // anything reaches the wallet engine, and the engine settles each
+        // request through the confirmation UI.
+        walletBridges[session] = com.roombrowser.browser.wallet.dapp.WalletBridge(
             engineProvider = { graph.walletEngine },
             activeNetworkProvider = { chain ->
                 graph.walletEngine.activeNetworks.value[chain]
             },
-            webViewRef = java.lang.ref.WeakReference(webView)
+            session = session
         )
-        walletBridges[webView] = walletBridge
-        webView.addJavascriptInterface(
-            walletBridge,
-            com.roombrowser.browser.wallet.dapp.WalletBridge.JS_INTERFACE_NAME
-        )
-        webView.setDownloadListener { url, userAgent, contentDisposition, mimeType, _ ->
-            val name = com.roombrowser.browser.engine.DownloadEngine.guessFileName(url, contentDisposition, mimeType)
-            // The WebView's own UA, not a fresh one: the download must present
-            // the same device identity as the page that linked to it.
-            download(url, name, mimeType, userAgent)
-        }
-        return webView
+        return session
     }
 
     // ---------- Per-tab WebView lifecycle ----------
 
     /** Destroys the ACTIVE tab's engine (fresh history on next navigation). */
     private fun destroyActiveWebView() {
-        val webView = activeWebView ?: return
-        activeWebView = null
-        destroyWebViewQuiet(webView)
+        val session = activeSession ?: return
+        activeSession = null
+        destroyEngineQuiet(session)
     }
 
     // ---------- Deferred engine actions (attach-ordered navigation) --------
@@ -1347,76 +1423,79 @@ class BrowserViewModel(
     /**
      * Actions (navigation starts, session restores) queued for engines not
      * yet attached to the window, keyed by the engine itself. Consumed by
-     * [consumePendingActionFor] the moment WebViewHost attaches the engine;
-     * dropped by [destroyWebViewQuiet] when the engine dies.
+     * [consumePendingActionFor] the moment EngineViewHost attaches the engine;
+     * dropped by [destroyEngineQuiet] when the engine dies.
      */
-    private val pendingEngineActions = mutableMapOf<WebView, () -> Unit>()
+    private val pendingEngineActions = mutableMapOf<EngineSession, () -> Unit>()
 
     /**
-     * Runs [action] on [webView] now when the view is already attached to
+     * Runs [action] on [session] now when its view is already attached to
      * the window hierarchy, and DEFERS it until the first attach otherwise.
      *
      * WHY THIS EXISTS (CI 36833914913, Tabs + Wallet e2e): a navigation
      * started on a WebView that has no parent — the omnibox path for a
      * start-page tab created the engine and called loadUrl while
-     * pageState.isHomepage was still true, so WebViewHost was not composed
+     * pageState.isHomepage was still true, so EngineViewHost was not composed
      * and the engine stayed parentless — wedges permanently on the WebView
      * 83 stack once the view attaches mid-flight: the renderer spawns,
      * onPageStarted fires, and then the navigation never commits — no
      * finish, no error, an empty surface forever. Every engine-creating
-     * path therefore queues its navigation here, and WebViewHost's update
+     * path therefore queues its navigation here, and EngineViewHost's update
      * block consumes it right after frame.addView: the navigation always
      * begins on an attached, laid-out view. The consume runs through
-     * webView.post, so the attach traversal (measure/layout/
+     * session.view.post, so the attach traversal (measure/layout/
      * onAttachedToWindow) completes before the load starts.
      */
-    private fun runWhenAttached(webView: WebView, action: () -> Unit) {
-        if (webView.parent != null) {
+    private fun runWhenAttached(session: EngineSession, action: () -> Unit) {
+        if (session.view.parent != null) {
             action()
         } else {
-            pendingEngineActions[webView] = action
+            pendingEngineActions[session] = action
         }
     }
 
     /**
-     * Called by WebViewHost right after it attached [webView]: fires the
+     * Called by EngineViewHost right after it attached [session]: fires the
      * navigation/restore queued for this engine, if any.
      */
-    fun consumePendingActionFor(webView: WebView) {
-        pendingEngineActions.remove(webView)?.let { action ->
+    fun consumePendingActionFor(session: EngineSession) {
+        pendingEngineActions.remove(session)?.let { action ->
             // No size here. This runs from the AndroidView `update` callback,
             // i.e. BEFORE the first layout pass, so it reports 0x0 for every
             // engine — including the ones whose pages render perfectly. That
             // measurement is taken at onPageCommitVisible instead, which is
             // after layout and therefore means something.
             Log.d(NAV_TAG, "vm=$navId deferred engine action fired (attached)")
-            webView.post(action)
+            session.view.post(action)
         }
     }
 
-    /** Detaches [webView] from its session, view tree and the renderer —
-     *  never throws, safe for already-released engines. */
-    private fun destroyWebViewQuiet(webView: WebView) {
+    /** Releases [session] from its bridges, the tab index and the engine —
+     *  never throws, safe for an already-closed session. */
+    private fun destroyEngineQuiet(session: EngineSession) {
         // A load deferred for this engine can never fire anymore — drop it
-        // so a destroyed view is never asked to navigate.
-        pendingEngineActions.remove(webView)
+        // so a released session is never asked to navigate.
+        pendingEngineActions.remove(session)
         // Only the ACTIVE engine is ever allowed to raise a credential
         // challenge, so a pending one belongs to this engine when this engine
         // is the active one. Cancelling it settles the handler while the
-        // WebView is still alive and takes the dialog down with it; leaving it
+        // engine is still alive and takes the dialog down with it; leaving it
         // would strand a prompt over a tab that no longer exists.
-        if (webView === activeWebView && pendingHttpAuth != null) dismissHttpAuth()
-        // The dApp bridge must go FIRST, while the WebView is still intact.
+        if (session === activeSession && pendingHttpAuth != null) dismissHttpAuth()
+        if (attachedSession === session) attachedSession = null
+        // The dApp bridge must go FIRST, while the engine is still intact.
         // A WeakHashMap entry is not enough to release it: an in-flight relay
         // coroutine is a strong reference to the bridge, so without this the
         // bridge of every closed or LRU-evicted tab outlived its engine —
         // still holding a Handler and its pending-call bookkeeping, and still
-        // trying to respond into a destroyed WebView.
-        runCatching { walletBridges.remove(webView)?.dispose() }
-        tabManager.detachWebView(webView)
-        runCatching { webView.stopLoading() }
-        runCatching { (webView.parent as? android.view.ViewGroup)?.removeView(webView) }
-        runCatching { webView.destroy() }
+        // trying to respond into a closed session.
+        runCatching { walletBridges.remove(session)?.dispose() }
+        vaultBridges.remove(session)
+        tabManager.detachEngine(session)
+        // close() is the facade's teardown and is idempotent: the adapter
+        // stops the load, takes its view out of the hierarchy and destroys it,
+        // in that order — which is what this method used to spell out.
+        runCatching { session.close() }
     }
 
     /**
@@ -1428,7 +1507,7 @@ class BrowserViewModel(
      * degradation, never a leak, never a lost page.
      */
     private fun evictStaleWebViews(keepId: String) {
-        val live = tabManager.liveWebViewSessions()
+        val live = tabManager.liveEngineSessions()
         if (live.size <= MAX_LIVE_WEBVIEWS) return
         val excess = live.size - MAX_LIVE_WEBVIEWS
         tabManager.lruVictims(keepId)
@@ -1438,30 +1517,32 @@ class BrowserViewModel(
             .filter { it.id != agentTabId }
             .take(excess)
             .forEach { victim ->
-                victim.webView?.let { webView ->
-                    saveEngineStateBeforeDestroy(victim.id, webView)
-                    destroyWebViewQuiet(webView)
+                victim.engine?.let { engine ->
+                    saveEngineStateBeforeDestroy(victim.id, engine)
+                    destroyEngineQuiet(engine)
                 }
             }
     }
 
     /**
      * Captures the engine's back/forward state (history stack, scroll and
-     * form data as far as WebView allows) under the OWNING tab's id — a
-     * bundle can never be restored into a different tab.
+     * form data as far as the engine allows) under the OWNING tab's id — a
+     * session token can never be restored into a different tab.
+     *
+     * A session that cannot produce a token answers null, and the tab is then
+     * restored without its history rather than failing to restore at all.
      */
-    private fun saveEngineStateBeforeDestroy(id: String, webView: WebView) {
-        val bundle = Bundle()
-        runCatching { webView.saveState(bundle) }
-        if (!bundle.isEmpty) tabManager.saveEngineState(id, bundle)
+    private fun saveEngineStateBeforeDestroy(id: String, session: EngineSession) {
+        val state = runCatching { session.saveState() }.getOrNull() ?: return
+        tabManager.saveEngineState(id, state)
     }
 
     /** Destroys EVERY live engine (profile switch / final teardown). */
     fun destroyAllWebViews() {
-        tabManager.liveWebViewSessions().forEach { session ->
-            session.webView?.let { destroyWebViewQuiet(it) }
+        tabManager.liveEngineSessions().forEach { session ->
+            session.engine?.let { destroyEngineQuiet(it) }
         }
-        activeWebView = null
+        activeSession = null
         // The pin names a tab of the profile being torn down; a leftover pin
         // would hold a dead id and silently exempt a LIVE tab of the next
         // profile from eviction.
@@ -1472,63 +1553,24 @@ class BrowserViewModel(
      *  engine — per-tab engines in the background must not keep stale
      *  settings until they happen to be re-selected. */
     private fun reconfigureAllWebViews() {
-        tabManager.liveWebViewSessions().forEach { session ->
-            session.webView?.let { ProfileEngine.configure(it, profile) }
+        tabManager.liveEngineSessions().forEach { session ->
+            session.engine?.let { ProfileEngine.configure(it, profile) }
         }
     }
 
-    // ---------- WebView lifecycle helpers ----------
+    // ---------- Engine lifecycle helpers ----------
 
     fun captureThumbnail() {
-        val view = activeWebView ?: return
+        val session = activeSession ?: return
         val id = activeTabId ?: return
-        if (view.width == 0 || view.height == 0) return
-        // NEVER draw a WebView synchronously on the main thread. The
-        // software-draw path (view.draw(Canvas)) forces a synchronous
-        // rasterization round-trip through the renderer, and on
-        // WebView-83-class stacks it DEADLOCKS when the compositor has not
-        // produced a frame for the view yet — CI 36842626140 proved the
-        // whole sequence: onPageFinished -> captureThumbnail ->
-        // view.draw() -> the ':browser' process froze forever (no further
-        // logcat from app or renderer, queued input events never
-        // processed, the a11y tree frozen on the last dispatched frame,
-        // the tab-persist coroutine never ran, the DB row never updated).
-        // PixelCopy is the asynchronous surface copy: it delivers the
-        // frame — or an error — through the callback, and the main thread
-        // is NEVER blocked. The View-source overload is API 34 — this
-        // project's platform surface offers the API-26 Window overload
-        // only, so the copy runs against the ACTIVITY window and is CROPPED
-        // to the engine's bounds (getLocationInWindow — the standard
-        // compat pattern). A failed thumbnail is purely cosmetic: never
-        // worth a crash or a hang.
-        val root = view.rootView
-        val window = (root.context as? android.app.Activity)?.window ?: return
-        if (root.width == 0 || root.height == 0) return
-        try {
-            val full = createBitmap(root.width, root.height)
-            android.view.PixelCopy.request(
-                window,
-                full,
-                { result ->
-                    if (result == android.view.PixelCopy.SUCCESS) {
-                        runCatching {
-                            val loc = IntArray(2)
-                            view.getLocationInWindow(loc)
-                            val x = loc[0].coerceIn(0, full.width)
-                            val y = loc[1].coerceIn(0, full.height)
-                            val cropW = view.width.coerceAtMost(full.width - x)
-                            val cropH = view.height.coerceAtMost(full.height - y)
-                            if (cropW > 0 && cropH > 0) {
-                                val cropped = Bitmap.createBitmap(full, x, y, cropW, cropH)
-                                tabManager.captureThumbnail(id, cropped)
-                            }
-                        }
-                    }
-                },
-                Handler(Looper.getMainLooper())
-            )
-        } catch (_: Exception) {
-            // Not attached to a window yet / surface unavailable — skip.
+        // The ENGINE owns the capture now: it answers asynchronously, on the
+        // main thread, with the frame already cropped to the session's own
+        // view — or with null when there is nothing to capture (unattached,
+        // zero sized). That replaces the PixelCopy dance this used to do
+        // against the ACTIVITY window, which existed only because a
+        // synchronous `view.draw(Canvas)` deadlocked on the WebView-83 stack.
+        session.capturePixels { bitmap ->
+            tabManager.captureThumbnail(id, bitmap)
         }
     }
 
@@ -1569,9 +1611,9 @@ class BrowserViewModel(
         browserRepo.updateTab(tab.copy(url = url, title = title, lastViewedAt = System.currentTimeMillis()))
     }
 
-    /** Detach (do not destroy twice) the shared WebView — used on switch. */
-    fun detachWebView() {
-        activeWebView = null
+    /** Detach (do not destroy twice) the active engine — used on switch. */
+    fun detachActiveSession() {
+        activeSession = null
     }
 
     /** Release in-memory caches — used by the profile-switch executor. */
@@ -1581,7 +1623,7 @@ class BrowserViewModel(
         pageError = null
         pendingPermission = null
         pendingGeolocation = null
-        customView = null
+        isFullscreen = false
         siteSettingsSnapshot = emptyMap()
     }
 
@@ -1678,12 +1720,17 @@ class BrowserViewModel(
     fun clearSiteDataForCurrentSite() {
         val host = UrlIntelligence.hostOf(pageState.url) ?: return
         viewModelScope.launch {
-            val webView = activeWebView ?: return@launch
-            webView.clearCache(true)
-            CookieManager.getInstance().removeSessionCookies(null)
+            if (activeSession == null) return@launch
+            // The session's OWN cookies and form data go first: this is the
+            // "clear data for this site" action, and the profile-wide wipe
+            // below is a different and much larger thing that the caller did
+            // not ask for. The HTTP cache is still not cleared here -- the
+            // facade has no cache-only member yet -- and that is an open gap,
+            // recorded rather than papered over.
+            activeSession?.clearSessionData()
             withContext(Dispatchers.IO) {
                 // engine data for this profile dir is wiped; per-site granularity
-                // is best-effort on WebView (documented in PROFILE_ISOLATION.md)
+                // is the engine's business (documented in PROFILE_ISOLATION.md)
                 ProfileEngine.clearEngineStorage(getApplication(), profileId)
             }
             emitMessage("Site data cleared for $host")
@@ -1693,16 +1740,18 @@ class BrowserViewModel(
     fun applyCurrentSiteSettings() {
         val host = UrlIntelligence.hostOf(pageState.url) ?: return
         val setting = siteSettingsSnapshot[host] ?: return
-        val webView = activeWebView ?: return
-        setting.jsEnabled?.let { webView.settings.javaScriptEnabled = it }
+        val session = activeSession ?: return
         setting.desktopMode?.let {
-            ProfileEngine.applyDesktopMode(webView, profile, it)
+            ProfileEngine.applyDesktopMode(session, profile, it)
             pageState = pageState.copy(desktopMode = it)
         }
-        CookieManager.getInstance().setAcceptThirdPartyCookies(
-            webView,
-            !(setting.cookiesBlocked ?: profile.settings.blockThirdPartyCookies)
-        )
+        // KNOWN GAP, REPORTED RATHER THAN FAKED. Two per-site overrides were
+        // applied here and have no facade counterpart: `jsEnabled` (a
+        // session's JavaScript switch) and `cookiesBlocked` (a third-party
+        // cookie decision for one session). Both are PROFILE settings below
+        // the facade, applied wholesale by EngineHost.configure; a per-site
+        // override cannot be expressed through it, so a stored per-site
+        // answer is ignored rather than silently applied to the whole profile.
     }
 
     private fun loadSiteSettingsSnapshot() {
@@ -1737,9 +1786,9 @@ class BrowserViewModel(
     /**
      * Grants the pending camera/microphone request.
      *
-     * `request.resources` is the WebView's OWN array, passed through whole.
-     * Granting a subset is not the cautious choice it looks like: a page that
-     * asked for camera+microphone and is granted only the microphone gets a
+     * The engine's grant is WHOLESALE — [PermissionResponder] answers the
+     * request as a whole — and that is the right shape here: a page that asked
+     * for camera+microphone and is granted only the microphone gets a
      * getUserMedia({audio,video}) promise that rejects, which it cannot tell
      * apart from a broken device. The sheet says what will be shared and the
      * user answers all of it.
@@ -1747,7 +1796,7 @@ class BrowserViewModel(
     fun grantPendingPermission() {
         val pending = pendingPermission ?: return
         pendingPermission = null
-        pending.request.grant(pending.request.resources)
+        pending.responder.grant()
     }
 
     /**
@@ -1758,7 +1807,7 @@ class BrowserViewModel(
     fun denyPendingPermission() {
         val pending = pendingPermission ?: return
         pendingPermission = null
-        pending.request.deny()
+        pending.responder.deny()
     }
 
     /**
@@ -1775,15 +1824,15 @@ class BrowserViewModel(
     }
 
     /**
-     * Settles the pending location request. `retain = false` deliberately:
-     * retaining would store the decision in the WebView's own per-origin
-     * store, where nothing in Settings could show or revoke it. Every visit
-     * asks again, and this answer is the only place a location grant exists.
+     * Settles the pending location request. Nothing is RETAINED, deliberately:
+     * a retained decision would live in the engine's own per-origin store,
+     * where nothing in Settings could show or revoke it. Every visit asks
+     * again, and this answer is the only place a location grant exists.
      */
     fun respondGeolocation(allow: Boolean) {
         val pending = pendingGeolocation ?: return
         pendingGeolocation = null
-        pending.callback.invoke(pending.origin, allow, false)
+        if (allow) pending.responder.grant() else pending.responder.deny()
     }
 
     // ---------- Clear data ----------
@@ -1806,7 +1855,11 @@ class BrowserViewModel(
                 }
             }
             withContext(Dispatchers.Main) {
-                if (clearCache) activeWebView?.clearCache(true)
+                // KNOWN GAP, REPORTED RATHER THAN FAKED: `clearCache` on its
+                // own has no facade member. The host's clearBrowsingData
+                // erases EVERYTHING for the profile, which is a far larger
+                // action than dropping the HTTP cache, so it is not called
+                // here for a cache-only request — that request does nothing.
                 if (clearCookies || clearSiteData) {
                     ProfileEngine.clearEngineStorage(getApplication(), profileId)
                 }
@@ -1819,18 +1872,27 @@ class BrowserViewModel(
     // ---------- Find in page ----------
 
     fun findInPage(query: String) {
-        activeWebView?.findAllAsync(query)
+        // KNOWN GAP, REPORTED RATHER THAN FAKED. This used findAllAsync, which
+        // highlights every match and reports how many there are. The facade
+        // has no find-in-page member, and the app will not re-implement one in
+        // page JavaScript: findInPageNavigate below already runs `window.find`,
+        // but that is a different feature (one moving highlight, not a
+        // match-all count), and passing it off as this one would look like a
+        // working find bar. Until the facade grows a member, typing in the
+        // find bar highlights nothing.
     }
 
     fun findInPageNavigate(forward: Boolean, query: String) {
         val escaped = query.replace("\\", "\\\\").replace("'", "\\'")
-        activeWebView?.evaluateJavascript(
+        activeSession?.evaluateJs(
             "window.find('$escaped', false, ${!forward}, true)"
         ) { }
     }
 
     fun clearFindInPage() {
-        activeWebView?.clearMatches()
+        // KNOWN GAP, REPORTED RATHER THAN FAKED — see [findInPage]: clearMatches
+        // has no facade counterpart, so a highlight left by the navigation
+        // above stays until the page changes.
     }
 
     // ---------- Reader mode ----------
@@ -1843,13 +1905,13 @@ class BrowserViewModel(
     )
 
     fun enterReaderMode() {
-        val webView = activeWebView ?: return
+        val session = activeSession ?: return
         val url = pageState.url
-        webView.evaluateJavascript(READER_SCRIPT) { result ->
+        session.evaluateJs(READER_SCRIPT) { result ->
             val json = result?.let { unescapeJson(it) }
             if (json.isNullOrBlank() || json == "null") {
                 emitMessage("Reader mode: page could not be simplified")
-                return@evaluateJavascript
+                return@evaluateJs
             }
             runCatching {
                 val obj = JSONObject(json)
@@ -1867,7 +1929,7 @@ class BrowserViewModel(
 
     private fun unescapeJson(raw: String): String? = runCatching {
         if (raw == "null") return null
-        // evaluateJavascript returns a JSON-encoded string
+        // evaluateJs returns a JSON-encoded string
         val arr = JSONArray("[$raw]")
         arr.optString(0)
     }.getOrNull()
@@ -1875,12 +1937,12 @@ class BrowserViewModel(
     // ---------- Desktop mode ----------
 
     fun toggleDesktopMode() {
-        val webView = activeWebView ?: return
+        val session = activeSession ?: return
         val newValue = !pageState.desktopMode
-        ProfileEngine.applyDesktopMode(webView, profile, newValue)
+        ProfileEngine.applyDesktopMode(session, profile, newValue)
         pageState = pageState.copy(desktopMode = newValue)
         setSiteSetting { it.copy(desktopMode = newValue) }
-        webView.reload()
+        session.reload()
     }
 
     // ---------- Settings ----------
@@ -2190,7 +2252,7 @@ class BrowserViewModel(
         }
     }
 
-    /** Relay one EIP-1193 event to every live WebView's wallet bridge. */
+    /** Relay one EIP-1193 event to every live session's wallet bridge. */
     private fun emitWalletEvent(event: String, payloadJson: String) {
         val bridges = walletBridges.values.toList()
         bridges.forEach { it.emitEvent(event, payloadJson) }
@@ -2203,24 +2265,24 @@ class BrowserViewModel(
      */
     private val dismissedOfferHosts = mutableSetOf<String>()
 
-    /** Wired into every engine in [createWebView] (via RoomVaultBridge). */
+    /** Wired into every engine in [createSession] (via RoomVaultBridge). */
     private val vaultCallbacks = object : RoomVaultBridge.Callbacks {
-        override fun onCredentialsRequested(webView: WebView, host: String, href: String) {
-            handleVaultRequest(webView, host)
+        override fun onCredentialsRequested(session: EngineSession, host: String, href: String) {
+            handleVaultRequest(session, host)
         }
 
         override fun onCredentialReported(
-            webView: WebView,
+            session: EngineSession,
             host: String,
             username: String,
             password: String
         ) {
-            handleVaultReport(webView, host, username, password)
+            handleVaultReport(session, host, username, password)
         }
     }
 
     /**
-     * The user focused a password field on [webView]. Only the ACTIVE tab's
+     * The user focused a password field on [session]. Only the ACTIVE tab's
      * engine may surface UI (a background tab's page cannot).
      *
      * LOCKED VAULT: the vault starts locked in every ':browser' process, so
@@ -2232,8 +2294,8 @@ class BrowserViewModel(
      * unlock tap. The biometric gate is never started from here: focusing a
      * login field must never raise a prompt by itself, only the tap may.
      */
-    private fun handleVaultRequest(webView: WebView, host: String) {
-        if (webView !== activeWebView) return
+    private fun handleVaultRequest(session: EngineSession, host: String) {
+        if (session !== activeSession) return
         if (vaultOffer != null) return
         if (host in dismissedOfferHosts) return
         if (!graph.credentialRepo.isUnlocked.value) {
@@ -2245,7 +2307,7 @@ class BrowserViewModel(
                 graph.credentialRepo.findForDomain(profileId, host)
             }.getOrNull() ?: return@launch
             // The active tab may have changed while the lookup ran.
-            if (webView !== activeWebView || matches.isEmpty()) return@launch
+            if (session !== activeSession || matches.isEmpty()) return@launch
             vaultOffer = VaultOffer(host, matches)
         }
     }
@@ -2293,12 +2355,12 @@ class BrowserViewModel(
      * tab switch) is left alone.
      */
     private fun rerunVaultOffer(host: String) {
-        val webView = activeWebView ?: return
+        val session = activeSession ?: return
         viewModelScope.launch {
             val matches = runCatching {
                 graph.credentialRepo.findForDomain(profileId, host)
             }.getOrNull() ?: return@launch
-            if (webView !== activeWebView) return@launch
+            if (session !== activeSession) return@launch
             if (vaultOffer?.host != host) return@launch
             vaultOffer = if (matches.isEmpty()) null else VaultOffer(host, matches)
         }
@@ -2315,12 +2377,12 @@ class BrowserViewModel(
      * comparison and prompt (the check is re-run at Save time).
      */
     private fun handleVaultReport(
-        webView: WebView,
+        session: EngineSession,
         host: String,
         username: String,
         password: String
     ) {
-        if (webView !== activeWebView) return
+        if (session !== activeSession) return
         if (password.isEmpty()) return
         if (pageState.isPrivate) return
         viewModelScope.launch {
@@ -2330,7 +2392,7 @@ class BrowserViewModel(
                 }.getOrNull()?.any { it.username == username && it.password == password } == true
                 if (duplicate) return@launch
             }
-            if (webView !== activeWebView) return@launch
+            if (session !== activeSession) return@launch
             vaultSavePrompt = VaultSavePrompt(host, username, password)
         }
     }
@@ -2367,16 +2429,16 @@ class BrowserViewModel(
         // fill; refuse it explicitly rather than trusting the sheet to have
         // hidden its rows.
         if (offer.locked) return
-        val webView = activeWebView
-        val currentHost = webView?.url?.let { UrlIntelligence.hostOf(it) }
+        val session = activeSession
+        val currentHost = session?.url?.let { UrlIntelligence.hostOf(it) }
         vaultOffer = null
-        if (webView == null || currentHost == null) return
+        if (session == null || currentHost == null) return
         if (!CredentialDomainMatcher.matches(offer.host, currentHost)) return
         val payload = JSONObject()
             .put("u", credential.username)
             .put("p", credential.password)
             .toString()
-        webView.evaluateJavascript(
+        session.evaluateJs(
             "window.__roomVaultFill && window.__roomVaultFill(${jsStringLiteral(payload)})",
             null
         )
@@ -2486,13 +2548,28 @@ class BrowserViewModel(
         viewModelScope.launch { snackbar.emit(message) }
     }
 
-    private fun sslErrorText(error: SslError): String = when (error.primaryError) {
-        SslError.SSL_EXPIRED -> "The certificate has expired."
-        SslError.SSL_IDMISMATCH -> "The certificate hostname does not match."
-        SslError.SSL_NOTYETVALID -> "The certificate is not yet valid."
-        SslError.SSL_UNTRUSTED -> "The certificate authority is not trusted."
-        SslError.SSL_INVALID -> "A generic certificate error occurred."
-        SslError.SSL_DATE_INVALID -> "The certificate date is invalid."
+    /**
+     * The user-facing text for a certificate failure.
+     *
+     * BRANCHES ON THE CODE SPACE THE FACADE FIXES for
+     * [PageErrorKind.CERTIFICATE]: the platform's `SslError.SSL_*` values,
+     * 0..5. The numbers are spelled out as constants rather than referenced
+     * through `android.net.http.SslError`, because a shared file naming an
+     * engine type is exactly the coupling the facade exists to remove -- and
+     * the code space is part of the contract, not a detail of one engine.
+     *
+     * THE ENGINE'S OWN DESCRIPTION IS DELIBERATELY NOT USED, even when it
+     * supplies one. It is a free-form string from the engine, and the GeckoView
+     * adapter fills it with an internal diagnostic (`"category=security"`)
+     * which would otherwise be rendered to the user verbatim. Naming the
+     * specific fault is worth doing, so it is derived from the code instead.
+     */
+    private fun sslErrorText(errorCode: Int): String = when (errorCode) {
+        SSL_EXPIRED, SSL_DATE_INVALID -> "The site's certificate has expired."
+        SSL_IDMISMATCH -> "The site's certificate does not match its hostname."
+        SSL_NOTYETVALID -> "The site's certificate is not valid yet."
+        SSL_UNTRUSTED -> "The site's certificate is not trusted."
+        SSL_INVALID -> "The site's certificate is invalid."
         else -> "The site's certificate could not be verified."
     }
 
@@ -2507,6 +2584,16 @@ class BrowserViewModel(
 
     companion object {
         const val DAY_MS = 24L * 60 * 60 * 1000
+
+        // The `SslError.SSL_*` code space the facade fixes for
+        // PageErrorKind.CERTIFICATE, spelled out as numbers so that no file
+        // above the facade has to name an engine type. See sslErrorText.
+        const val SSL_NOTYETVALID = 0
+        const val SSL_EXPIRED = 1
+        const val SSL_IDMISMATCH = 2
+        const val SSL_UNTRUSTED = 3
+        const val SSL_DATE_INVALID = 4
+        const val SSL_INVALID = 5
 
         /** Navigation state-machine log tag — the CI per-test logcat greps
          *  these to reconstruct the exact callback order (see the Tabs/Wallet

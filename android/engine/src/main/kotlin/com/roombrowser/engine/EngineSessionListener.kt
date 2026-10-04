@@ -74,11 +74,90 @@ enum class PageErrorKind {
     /** The connection was refused because its certificate is not trusted. */
     CERTIFICATE,
 
-    /** The host could not be reached, the connection dropped, or DNS failed. */
+    /**
+     * The host's name could not be resolved.
+     *
+     * Separate from [TRANSPORT] because the two lead to different advice: an
+     * unresolvable name is usually a typo or a network that is not there,
+     * while a refused or dropped connection means the host exists and did not
+     * answer. Both engines report the difference -- WebView as
+     * `ERROR_HOST_LOOKUP`, GeckoView as `NS_ERROR_UNKNOWN_HOST` -- so folding
+     * them together here throws away a distinction the user can act on.
+     */
+    DNS,
+
+    /** The host could not be reached, or the connection dropped. */
     TRANSPORT,
 
     /** Anything else the engine reported. */
     OTHER
+}
+
+/**
+ * The numbering [EngineSessionListener.onPageError] reports `errorCode` in.
+ *
+ * THE APP'S POLICY BRANCHES ON THESE NUMBERS, which is why they are a stated
+ * contract and not "whatever the engine said". Two places above the facade
+ * read the code and make a decision with it:
+ *
+ *  - `HttpsUpgradeFallbackPolicy.isRecoverable`, which decides whether a
+ *    failed https upgrade gets one automatic retry over the original http
+ *    URL. It is keyed to [TIMEOUT] and [CONNECT] (and [UNKNOWN]); it
+ *    deliberately excludes [HOST_LOOKUP], because a name that does not
+ *    resolve will not resolve over http either.
+ *  - `BrowserViewModel.sslErrorText`, which turns a [PageErrorKind.CERTIFICATE]
+ *    code into the sentence the user reads, so the numbers there are the
+ *    `SSL_*` family below.
+ *
+ * Both were written against WebView and are unchanged, which is the point:
+ * the facade absorbs the numbering difference so the shared policy never has
+ * to know which engine is underneath. The values are the platform's own
+ * (`WebViewClient.ERROR_*`, `SslError.SSL_*`) rather than new invented ones,
+ * so the WebView edition passes its codes through untouched and the two
+ * editions agree by construction.
+ *
+ * NOT A COMPLETE MIRROR OF EITHER ENGINE. These are the codes the shared
+ * policy distinguishes, and an engine that cannot tell two of them apart
+ * reports the one that produces the right BEHAVIOUR and the truthful
+ * sentence, rather than inventing a distinction it does not have. The
+ * GeckoView certificate codes are the clear case: it reports that a
+ * certificate is bad but not whether it expired or names the wrong host, so
+ * it answers [CERT_INVALID] for every certificate error instead of guessing
+ * at "expired" and being wrong half the time.
+ */
+object EngineErrorCode {
+    /**
+     * `val`, not `const val`, on purpose: these are the platform's constants
+     * rather than literals repeated here, so the two editions cannot drift
+     * apart from android.jar, and nothing needs them in a compile-time
+     * constant context.
+     */
+
+    /** The host's name could not be resolved. */
+    val HOST_LOOKUP = android.webkit.WebViewClient.ERROR_HOST_LOOKUP
+
+    /** The connection could not be established, or it dropped. */
+    val CONNECT = android.webkit.WebViewClient.ERROR_CONNECT
+
+    /** The connection was established but the peer did not answer in time. */
+    val TIMEOUT = android.webkit.WebViewClient.ERROR_TIMEOUT
+
+    /** A TLS handshake failed on an endpoint the app itself upgraded. */
+    val FAILED_SSL_HANDSHAKE = android.webkit.WebViewClient.ERROR_FAILED_SSL_HANDSHAKE
+
+    /**
+     * A failure the engine could not classify. Deliberately the same slot the
+     * app's retry policy already treats as "some stacks report a connect
+     * failure this way" -- an unrecognised error is reported here rather than
+     * under a specific meaning the engine cannot support.
+     */
+    val UNKNOWN = android.webkit.WebViewClient.ERROR_UNKNOWN
+
+    /** The site's certificate is not valid. */
+    val CERT_INVALID = android.net.http.SslError.SSL_INVALID
+
+    /** The site's certificate is not trusted for another reason. */
+    val CERT_UNTRUSTED = android.net.http.SslError.SSL_UNTRUSTED
 }
 
 /**
@@ -216,8 +295,14 @@ interface EngineSessionListener {
      * failed https upgrade -- is the CALLER's policy, implemented once above
      * the facade. The engine only reports what happened.
      *
-     * [kind] is what the shared policy branches on; [errorCode] is the engine's
-     * own number and exists for the diagnostics screen, not for decisions.
+     * [kind] is what the shared policy branches on for what to SHOW. [errorCode]
+     * is what it branches on for what to DO, and it is therefore reported in
+     * [EngineErrorCode]'s numbering, not the engine's own -- an engine that
+     * passed its native code through would make the app's retry policy and its
+     * certificate wording silently wrong on that edition, with no compile
+     * error and no failing test to catch it. [description] is the engine's
+     * own free-form text and is never parsed; it is passed for the diagnostics
+     * screen only.
      */
     fun onPageError(
         session: EngineSession,
@@ -229,11 +314,23 @@ interface EngineSessionListener {
     ): Boolean = false
 
     /**
-     * The page asked to open another window (target=_blank, window.open).
+     * May this session open another window at all?
      *
-     * Return true to have handled it, which in this app means "opened it as a
-     * new tab". Returning false lets the engine decide, and GeckoView's own
-     * answer is to refuse, which would break everyday links.
+     * THE GATE, and it is a separate question from [onNewWindowResolved]
+     * because that is how both engines actually work: the answer is decided
+     * from the session and the gesture, BEFORE any URL exists. WebView asks it
+     * from `onCreateWindow` before a transport WebView is built; GeckoView asks
+     * it from `onNewSession` before a session is created. Returning false
+     * refuses the popup outright and costs no renderer.
+     *
+     * WHY IT IS NOT ONE METHOD TAKING A NULLABLE URL. An earlier form of this
+     * interface asked once, with `url = null` meaning "gate", and the app-side
+     * implementation read a null url as "there is nothing to open" and refused.
+     * Both halves were individually reasonable and together refused EVERY
+     * popup -- every `target="_blank"` link and every `window.open()` -- with
+     * no error surfaced anywhere, because a bare `window.open()` never
+     * produces a URL at all and so the resolving call never came. Two
+     * questions that must be answered in order are two methods.
      *
      * [hasUserGesture] is what separates a link the user pressed from a script
      * that decided to open a window, and the profile's popup policy is decided
@@ -242,7 +339,20 @@ interface EngineSessionListener {
      * reports false, which errs toward blocking rather than toward letting an
      * unsolicited window through.
      */
-    fun onNewWindowRequest(session: EngineSession, url: String?, hasUserGesture: Boolean): Boolean = false
+    fun onNewWindowRequest(session: EngineSession, hasUserGesture: Boolean): Boolean = false
+
+    /**
+     * The popup's target URL is now known. Open it as a new tab.
+     *
+     * Called only after [onNewWindowRequest] returned true for the SAME popup,
+     * so the decision has already been made and there is deliberately no
+     * return value: a refusal here would leave the engine holding a half-built
+     * popup with no way to finish or discard it.
+     *
+     * [url] is non-null by construction -- it is the whole reason this second
+     * call exists.
+     */
+    fun onNewWindowResolved(session: EngineSession, url: String, hasUserGesture: Boolean) {}
 
     /**
      * The page started a download, or navigated to something the engine cannot

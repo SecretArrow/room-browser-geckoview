@@ -3,8 +3,6 @@ package com.roombrowser.browser.wallet.dapp
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
-import android.webkit.JavascriptInterface
-import android.webkit.WebView
 import com.roombrowser.browser.wallet.DappOutcome
 import com.roombrowser.browser.wallet.WalletAccountRecord
 import com.roombrowser.browser.wallet.WalletBridgeError
@@ -14,6 +12,7 @@ import com.roombrowser.domain.wallet.model.ChainType
 import com.roombrowser.domain.wallet.model.NetworkConfig
 import com.roombrowser.domain.wallet.model.WalletException
 import com.roombrowser.domain.wallet.rpc.JsonRpcClient
+import com.roombrowser.engine.EngineSession
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -36,24 +35,33 @@ import java.util.concurrent.TimeUnit
 /**
  * NATIVE half of the dApp wallet bridge, exposed to page JS as
  * `window.RoomWallet` (see [RoomWalletScript] for the injected half and
- * [WalletBridgeProtocol] for the codec). One bridge per WebView, built by
+ * [WalletBridgeProtocol] for the codec). One bridge per session, built by
  * the integrator alongside the document-start script install.
  *
  * PROTOCOL (what page JS can call — nothing else is exported):
- *  - `RoomWallet.request(json)` — one bridge call. Returns "" immediately;
- *    the answer is pushed asynchronously with
- *    `evaluateJavascript("window.__roomWalletResponse(id, resultJson,
- *    errorCode, errorMessage)")` once the engine settles it (or the RPC
- *    relay completes).
+ *  - `RoomWallet.request(json)` — one bridge call, answered asynchronously
+ *    with `window.__roomWalletResponse(id, resultJson, errorCode,
+ *    errorMessage)` once the engine settles it (or the RPC relay completes).
+ *
+ * HOW THE CALLS ARRIVE NOW. There is no `@JavascriptInterface` on this side
+ * any more, in either edition: the page reaches native code through the
+ * engine's own page bridge and the call surfaces as
+ * [com.roombrowser.browser.RoomSessionListener.onPageMessage], carrying the
+ * channel this object is registered under
+ * ([com.roombrowser.browser.PageBridgeChannels.WALLET]). [onMessage] is what
+ * that channel lands on. The PAGE-VISIBLE wire is unchanged — the promise
+ * still resolves through `window.__roomWalletResponse`, because the answer is
+ * still written with a script; only the way IN changed.
  *
  * SECURITY MODEL — the bridge never trusts the page (mirrors
  * RoomVaultBridge):
- *  1. Only [request] is reachable from JS, and every payload is parsed by
- *     the codec into typed calls or typed errors — never an exception.
- *  2. Every call hops to the MAIN thread first, then the WebView's OWN
- *     current URL supplies the host and origin for the contract
- *     [DappRequest] — a page's claimed origin is metadata only and params
- *     never carry a trusted domain. Solana/Aptos/Sui/Tron Connect calls
+ *  1. Only [onMessage] is reachable, and every payload is parsed by the codec
+ *     into typed calls or typed errors — never an exception.
+ *  2. Every call hops to the MAIN thread first, then the session's OWN
+ *     current URL ([EngineSession.url], the facade's trust anchor — written
+ *     only from a top-level navigation) supplies the host and origin for the
+ *     contract [DappRequest] — a page's claimed origin is metadata only and
+ *     params never carry a trusted domain. Solana/Aptos/Sui/Tron Connect calls
  *     carry no origin claim at all: the verified host IS the host.
  *  3. Anti-flood: a 300ms minimum gap per (host, method) and at most 8
  *     concurrent pending calls per host — the OLDEST is auto-rejected with
@@ -78,21 +86,24 @@ import java.util.concurrent.TimeUnit
  *  - A null [engineProvider] (engine not bound) answers 4900 DISCONNECTED
  *    for wallet-level calls; the RPC relay works regardless.
  *
- * THREADING: `@JavascriptInterface` arrives on WebView's JavaBridge thread;
- * WebView state is main-thread only, so every call hops inside [main].
- * The engine settles outcomes on the main thread (contract), and [finish]
+ * THREADING: engine callbacks may arrive on the engine's own threads, so
+ * every call hops inside [main] before touching state; the session URL it
+ * reads is readable from any thread, which is what makes that safe. The
+ * engine settles outcomes on the main thread (contract), and [finish]
  * re-checks the looper defensively. All bookkeeping maps are confined to
  * the main thread.
  *
- * LIFETIME: the WebView holds the interface object strongly, so the
- * interface holds the WebView only through the [webViewRef]
- * [WeakReference] — a destroyed engine releases its bridge.
+ * LIFETIME: the host keeps one bridge per session in a weak map, so this
+ * object holds its session only through the [sessionRef] [WeakReference] —
+ * a destroyed session releases its bridge.
  */
 class WalletBridge(
     private val engineProvider: () -> WalletEngineApi?,
     private val activeNetworkProvider: (ChainType) -> NetworkConfig?,
-    private val webViewRef: WeakReference<WebView>
+    session: EngineSession
 ) {
+
+    private val sessionRef = WeakReference(session)
 
     private val main = Handler(Looper.getMainLooper())
 
@@ -106,7 +117,7 @@ class WalletBridge(
     /**
      * The bridge's relay client. The OkHttp client behind it is SHARED across
      * every bridge (see [sharedRelayClient]) — one bridge is built per engine
-     * and engines churn under the live-WebView LRU budget, so a per-bridge
+     * and engines churn under the live-session LRU budget, so a per-bridge
      * client meant every tab create and every eviction allocated a fresh
      * connection pool and dispatcher thread pool that nothing ever shut down.
      */
@@ -132,14 +143,13 @@ class WalletBridge(
     private val lastDispatchAt = HashMap<String, Long>()
 
     /**
-     * The single page-reachable entry point. Always returns "" — answers
+     * The single page-reachable entry point: one channel message from this
+     * session's page bridge. Nothing is returned to the page here — answers
      * are asynchronous (the async-response pattern; a synchronous return
-     * value would be evaluated on the JavaBridge thread and is unreliable).
+     * would be evaluated on the engine's JavaScript thread and is unreliable).
      */
-    @JavascriptInterface
-    fun request(payload: String): String {
+    fun onMessage(payload: String) {
         main.post { onMain(payload) }
-        return ""
     }
 
     /**
@@ -151,7 +161,7 @@ class WalletBridge(
     fun emitEvent(event: String, payloadJson: String) {
         runOnMain {
             val script = WalletBridgeProtocol.encodeEmitScript(event, payloadJson)
-            webViewRef.get()?.let { view -> runCatching { view.evaluateJavascript(script, null) } }
+            sessionRef.get()?.evaluateJs(script)
         }
     }
 
@@ -160,17 +170,17 @@ class WalletBridge(
     // ------------------------------------------------------------------
 
     private fun onMain(payload: String) {
-        val view = webViewRef.get() ?: return
+        val session = sessionRef.get() ?: return
         when (val parsed = WalletBridgeProtocol.parseRequest(payload)) {
             is BridgeParseResult.Invalid -> respondError(parsed.pageId, parsed.error)
-            is BridgeParseResult.Ok -> dispatch(view, parsed.call)
+            is BridgeParseResult.Ok -> dispatch(session, parsed.call)
         }
     }
 
-    private fun dispatch(view: WebView, call: BridgeCall) {
-        // The WebView's own URL is the ONLY host/origin source — never a
+    private fun dispatch(session: EngineSession, call: BridgeCall) {
+        // The session's own URL is the ONLY host/origin source — never a
         // page claim, never a param.
-        val url = view.url ?: run {
+        val url = session.url ?: run {
             respondError(call.id, WalletBridgeError(WalletBridgeError.DISCONNECTED, "No page loaded"))
             return
         }
@@ -473,7 +483,7 @@ class WalletBridge(
     private fun finish(pageId: String, script: String) {
         runOnMain {
             removePending(pageId)
-            webViewRef.get()?.let { view -> runCatching { view.evaluateJavascript(script, null) } }
+            sessionRef.get()?.evaluateJs(script)
         }
     }
 
@@ -531,15 +541,15 @@ class WalletBridge(
     }
 
     /**
-     * Releases everything this bridge owns. MUST be called when the WebView
+     * Releases everything this bridge owns. MUST be called when the session
      * behind it is destroyed.
      *
-     * [webViewRef] being weak is not enough on its own: an in-flight relay
+     * [sessionRef] being weak is not enough on its own: an in-flight relay
      * coroutine is a strong reference to the bridge, and through it to the
      * Handler and the whole pending-state bookkeeping. Without this the bridge
      * of every closed or LRU-evicted tab stayed alive until its last relay
      * timed out, and any relay still running kept issuing `respond*` calls
-     * into a WebView that was already gone.
+     * into a session that was already gone.
      *
      * The shared relay client is deliberately NOT shut down here — it belongs
      * to the process, not to one bridge.

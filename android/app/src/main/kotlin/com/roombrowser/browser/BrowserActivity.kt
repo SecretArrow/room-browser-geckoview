@@ -310,7 +310,7 @@ class BrowserActivity : FragmentActivity() {
             host = object : ProfileSwitchExecutor.Host {
                 override fun stopNavigation() {
                     viewModel.stopLoading()
-                    viewModel.activeWebView?.stopLoading()
+                    viewModel.activeSession?.stop()
                 }
 
                 override suspend fun saveTabState() {
@@ -323,11 +323,17 @@ class BrowserActivity : FragmentActivity() {
                     // active one (the process restart would reap them, but the
                     // explicit destroy keeps the switch protocol honest).
                     viewModel.destroyAllWebViews()
-                    viewModel.detachWebView()
+                    viewModel.detachActiveSession()
                 }
 
                 override fun flushProfileState() {
-                    android.webkit.CookieManager.getInstance().flush()
+                    // Last act before the process is killed: the engine commits
+                    // whatever it still holds in memory. WebView keeps cookies
+                    // in RAM and would lose them here; GeckoView has already
+                    // written them through and says so by doing nothing. The
+                    // engine owns that difference now, so no WebView type comes
+                    // back above the boundary.
+                    ProfileEngine.flushProfileState(application)
                 }
 
                 override fun releaseProfileResources() {
@@ -335,7 +341,18 @@ class BrowserActivity : FragmentActivity() {
                 }
 
                 override fun cleanupPrivateTabs() {
-                    ProfileEngine.clearSessionArtifacts(application)
+                    // The clear is SESSION-scoped, so it has to reach the live
+                    // engines -- which is why it lives on the ViewModel and not
+                    // here. Routing it through the ViewModel also means it and
+                    // the tab-close path (BrowserViewModel.closeTab) do exactly
+                    // the same thing, so a private tab's cookies do not depend
+                    // on how the tab went away.
+                    //
+                    // Called only by ProfileSwitchExecutor.cleanupPrivateSession,
+                    // which nothing invokes today; closing a private tab is the
+                    // path that actually runs, and that one calls the ViewModel
+                    // directly.
+                    viewModel.clearPrivateSessionArtifacts()
                 }
 
                 override val restartActivityClass: Class<*> = BrowserActivity::class.java
