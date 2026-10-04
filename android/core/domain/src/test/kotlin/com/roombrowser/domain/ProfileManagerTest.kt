@@ -251,6 +251,59 @@ class ProfileManagerTest {
     }
 
     @Test
+    fun `create mints a fingerprint seed and persists it`() = runTest {
+        val seeded = ProfileManager(
+            store,
+            clock = { now },
+            randomDeviceId = { "samsung-sm-s918b" },
+            randomSeed = { "seed-a" }
+        )
+        val p = seeded.create("Seed", "s", 0)
+        assertThat(p.settings.fingerprintSeed).isEqualTo("seed-a")
+        // Persisted, not merely returned: the engine reads the stored row.
+        assertThat(store.profiles().single().settings.fingerprintSeed).isEqualTo("seed-a")
+    }
+
+    @Test
+    fun `each created profile gets its own seed`() = runTest {
+        val seeds = ArrayDeque(listOf("seed-a", "seed-b"))
+        val seeded = ProfileManager(
+            store,
+            clock = { now },
+            randomDeviceId = { id -> "device-" + id.size },
+            randomSeed = { seeds.removeFirst() }
+        )
+        val one = seeded.create("One", "1", 0)
+        val two = seeded.create("Two", "2", 0)
+        assertThat(one.settings.fingerprintSeed).isEqualTo("seed-a")
+        assertThat(two.settings.fingerprintSeed).isEqualTo("seed-b")
+    }
+
+    @Test
+    fun `duplicate preserves the source seed`() = runTest {
+        val seeded = ProfileManager(
+            store,
+            clock = { now },
+            randomDeviceId = { "samsung-sm-s918b" },
+            randomSeed = { "seed-a" }
+        )
+        val original = seeded.create("Research", "R", 0)
+        val copy = seeded.duplicate(original.id, CopyOptions())
+        // A copy is the same persona in a new row.
+        assertThat(copy.settings.fingerprintSeed).isEqualTo("seed-a")
+    }
+
+    @Test
+    fun `a seed restored from a backup is kept, not re-rolled`() = runTest {
+        val p = manager.create(
+            "Imported", "i", 0,
+            settings = ProfileSettings(fingerprintSeed = "from-the-file"),
+            randomizeDevice = false
+        )
+        assertThat(p.settings.fingerprintSeed).isEqualTo("from-the-file")
+    }
+
+    @Test
     fun `the catalogue is large enough to keep profiles distinct`() {
         // Distinct assignment is only meaningful while the catalogue has room:
         // a catalogue that ran out would start handing back shared devices.

@@ -5,6 +5,7 @@ import com.roombrowser.browser.RoomVaultScript
 import com.roombrowser.browser.wallet.dapp.RoomWalletScript
 import com.roombrowser.domain.model.ClaimedScreen
 import com.roombrowser.domain.model.Device
+import com.roombrowser.domain.model.FingerprintProfile
 import com.roombrowser.domain.model.Profile
 import com.roombrowser.domain.model.ProfileId
 import com.roombrowser.domain.model.ProfileSettings
@@ -181,7 +182,14 @@ object ProfileEngine {
         val settings = profile.settings
         val screen = settings.claimedScreen()
         val shim = if (desktop) {
-            deviceShimOrNull(device = null, screen = screen, webRtc = settings.webRtcPolicy)
+            // The derived surfaces go with the Android identity: a Windows UA
+            // must not carry Android touch points.
+            deviceShimOrNull(
+                device = null,
+                screen = screen,
+                webRtc = settings.webRtcPolicy,
+                fingerprint = FingerprintProfile.legacy()
+            )
         } else {
             deviceShimScript(settings)
         }
@@ -196,28 +204,32 @@ object ProfileEngine {
     }
 
     /**
-     * The device shim for one profile, or null when the profile has nothing
-     * to install.
-     *
-     * The empty case is the whole of the three, not of the device alone: a
-     * profile with no device, no screen claim and a non-default WebRTC policy
-     * still has something to install. Making the test about the device would
-     * silently drop the policy for every profile that never picked one.
+     * The shim for one profile, or null when there is nothing to install. The
+     * test covers all four parts: a screen claim or a non-default WebRTC
+     * policy installs something even with no device and no seed.
      */
-    private fun deviceShimScript(settings: ProfileSettings): String? =
-        deviceShimOrNull(
-            device = UserAgents.device(settings),
+    private fun deviceShimScript(settings: ProfileSettings): String? {
+        val device = UserAgents.device(settings)
+        return deviceShimOrNull(
+            device = device,
             screen = settings.claimedScreen(),
-            webRtc = settings.webRtcPolicy
+            webRtc = settings.webRtcPolicy,
+            fingerprint = FingerprintProfile.from(settings.fingerprintSeed, device)
         )
+    }
 
     private fun deviceShimOrNull(
         device: Device?,
         screen: ClaimedScreen?,
-        webRtc: WebRtcPolicy
+        webRtc: WebRtcPolicy,
+        fingerprint: FingerprintProfile
     ): String? {
-        if (device == null && screen == null && webRtc == WebRtcPolicy.DEFAULT) return null
-        return DeviceShim.scriptFor(device, screen, webRtc)
+        if (device == null && !fingerprint.isSeeded && screen == null &&
+            webRtc == WebRtcPolicy.DEFAULT
+        ) {
+            return null
+        }
+        return DeviceShim.scriptFor(device, screen, webRtc, fingerprint)
     }
 
     /**

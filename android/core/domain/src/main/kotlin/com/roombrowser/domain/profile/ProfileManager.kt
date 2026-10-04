@@ -5,6 +5,7 @@ import com.roombrowser.domain.model.Profile
 import com.roombrowser.domain.model.ProfileId
 import com.roombrowser.domain.model.ProfileSettings
 import com.roombrowser.domain.model.UaMode
+import java.security.SecureRandom
 
 /**
  * Storage port implemented by the app layer (Room-backed).
@@ -44,13 +45,18 @@ interface TabCountStore {
  * explicit identity configured; it is handed the ids already in use so two
  * profiles do not present the same handset (injectable for deterministic
  * tests).
+ *
+ * [randomSeed] mints the fingerprint seed a new profile carries; injectable
+ * like [randomDeviceId], and separate from it on purpose — the seed is what
+ * keeps two profiles apart when the catalogue hands them the same handset.
  */
 class ProfileManager(
     private val store: ProfileStore,
     private val clock: () -> Long = { System.currentTimeMillis() },
     private val randomDeviceId: (Set<String>) -> String? = { taken ->
         Devices.random(taken).id
-    }
+    },
+    private val randomSeed: () -> String = { newFingerprintSeed() }
 ) {
 
     /**
@@ -63,6 +69,9 @@ class ProfileManager(
      * device and still uses [UaMode.DEFAULT]. Import / restore callers pass
      * [randomizeDevice] = false so the payload's settings are preserved
      * verbatim.
+     *
+     * A seed is minted for every profile that arrives without one; a profile
+     * that already carries one keeps it, which preserves export/import.
      */
     suspend fun create(
         name: String,
@@ -79,12 +88,15 @@ class ProfileManager(
         require(existing.none { it.name.equals(trimmed, ignoreCase = true) }) {
             "A profile with this name already exists"
         }
+        val seeded =
+            if (settings.fingerprintSeed == null) settings.copy(fingerprintSeed = randomSeed())
+            else settings
         val effectiveSettings =
-            if (randomizeDevice && settings.deviceId == null && settings.uaMode == UaMode.DEFAULT) {
+            if (randomizeDevice && seeded.deviceId == null && seeded.uaMode == UaMode.DEFAULT) {
                 val taken = existing.mapNotNull { it.settings.deviceId }.toSet()
-                settings.copy(deviceId = randomDeviceId(taken))
+                seeded.copy(deviceId = randomDeviceId(taken))
             } else {
-                settings
+                seeded
             }
         val profile = Profile(
             id = ProfileId.new(),
@@ -105,7 +117,8 @@ class ProfileManager(
      * presented itself as a device, the copy gets a device no other profile
      * is using, so the two do not look like the same handset (which would
      * defeat the point of separate profiles). Cosmetic and setting fields
-     * are still copied.
+     * are still copied. The fingerprint seed is kept, not re-minted: the copy
+     * is the same persona in a new row.
      */
     suspend fun duplicate(id: ProfileId, options: CopyOptions, nameSuffix: String = " Copy"): Profile {
         val source = store.get(id) ?: throw IllegalArgumentException("Profile not found: $id")
@@ -286,5 +299,22 @@ class ProfileManager(
 
     companion object {
         const val MAX_NAME = 40
+
+        private const val SEED_BYTES = 32
+        private const val HEX_DIGITS = "0123456789abcdef"
+
+        // 32 CSPRNG bytes, hex-encoded so they survive JSON and a file export.
+        private val SEED_RANDOM = SecureRandom()
+
+        private fun newFingerprintSeed(): String {
+            val bytes = ByteArray(SEED_BYTES)
+            SEED_RANDOM.nextBytes(bytes)
+            val out = StringBuilder(SEED_BYTES * 2)
+            for (b in bytes) {
+                val v = b.toInt() and 0xFF
+                out.append(HEX_DIGITS[v ushr 4]).append(HEX_DIGITS[v and 0x0F])
+            }
+            return out.toString()
+        }
     }
 }

@@ -67,7 +67,9 @@ point of this section. What changes:
   high-entropy values `model`, `platformVersion`, `uaFullVersion`,
   `fullVersionList` and `formFactor`, which are the client hints that would
   otherwise name the real handset
-- `navigator.platform`, `navigator.deviceMemory`, `navigator.hardwareConcurrency`
+- `navigator.platform` (derived from the profile's seed — see *The
+  per-profile fingerprint seed* below), `navigator.deviceMemory`,
+  `navigator.hardwareConcurrency`
 - the WebGL `UNMASKED_VENDOR_WEBGL` / `UNMASKED_RENDERER_WEBGL` strings
 
 What changes only when the profile asks for it, through the **Screen size** row
@@ -83,10 +85,12 @@ in its own settings:
 What deliberately does **not** change, because it would be both a lie and a
 detectable one:
 
-- **The layout viewport and the pixel ratio.** `innerWidth`, `innerHeight` and
-  `devicePixelRatio` are the page's real width and height on this display, and
-  the ratio the compositor actually renders at. No script can move them without
-  re-laying the page out at a size the screen does not have.
+- **The layout viewport.** `innerWidth` and `innerHeight` are the page's real
+  width and height on this display. No script can move them without re-laying
+  the page out at a size the screen does not have. `devicePixelRatio` stays the
+  compositor's real ratio for a profile that claims no screen size; for a
+  profile that *does* claim one, the seed derives it along with the claim — see
+  below.
 - **Real capabilities.** Camera, microphone, sensors, codecs, battery, and
   every permission stay the hardware's own.
 
@@ -97,6 +101,59 @@ undetectable, and the app does not claim it does: a page that inspects
 call, or correlates dozens of unrelated signals can still tell. Profiles are
 for keeping separate identities separate, not for evading a determined
 fingerprinter.
+
+#### The per-profile fingerprint seed
+
+Every profile the app creates carries a random seed. It is not shown and not
+editable: it is part of the profile's identity. It exists because a device
+assignment alone does not always keep two profiles apart — the imported
+profile can have no device at all, and once the device catalogue is exhausted
+two profiles are handed the same row — and two profiles that present the same
+handset byte for byte defeat the reason for having separate profiles. The seed
+varies independently of the device, so those profiles stay distinct. Exporting
+a profile carries the seed in its settings, so a restore keeps the identity
+rather than minting a new one; a profile stored before this field existed has
+no seed and looks exactly as it did.
+
+The seed derives a stable value for each surface below, through
+HMAC-SHA-256 with one label per surface. *Stable* is the point: each value is
+computed once and installed, never drawn per read, because a value that changed
+between reads would be a much louder signal than an unusual but constant one.
+The same seed yields the same values on every launch and in both editions, so
+the derivation itself is not a way to tell the editions apart. Every value is
+drawn from a pool a real Android Chrome could report:
+
+- `navigator.platform` — one of the arm spellings Chrome for Android sends.
+- `screen.colorDepth` / `screen.pixelDepth` — 16 or 24.
+- `navigator.maxTouchPoints` — 5 or 10.
+- `devicePixelRatio` — a ratio a real phone ships, and **only** when the
+  profile claims a screen size; a profile that claims none keeps the
+  compositor's real ratio.
+- the shape of `navigator.plugins` and `navigator.mimeTypes` — a subset of
+  Chromium's bundled PDF viewers and the matching PDF mime types. The viewer
+  *names* are Chromium's; only how many are reported varies.
+
+What the seed deliberately does **not** do: it adds no canvas or audio noise,
+no font, timezone or language manipulation, and no per-read jitter. Random
+per-read noise is itself a fingerprint signal — a value that cannot be read the
+same way twice is not a value a real device produced — and it breaks pages.
+Timezone and language overrides stay off unless the user asks for them.
+
+#### What this still does not cover
+
+- **Worker realms.** A document-start script runs in the document. Code a page
+  runs in a Web Worker, Shared Worker, Service Worker or any other realm sees
+  the engine's own values, both for the WebRTC policy and for every surface
+  above.
+- **Anything that has to be patched before `document_start`.** A surface the
+  engine reads before the first page script runs, or one a page reads from a
+  realm this script is not injected into, cannot be reached from here.
+- **Surfaces the shim does not touch.** Canvas and audio rendering, font
+  metrics, TLS and HTTP/2 fingerprints, battery, sensors, codecs, WebGPU and
+  `navigator.connection` are the hardware's own, and a page that correlates
+  dozens of unrelated signals can still single a profile out. The shim raises
+  the cost of the cheap checks; it is not and does not claim to be
+  undetectable.
 
 #### Claiming a screen size
 

@@ -2,19 +2,24 @@ package com.roombrowser.browser.engine
 
 import com.roombrowser.domain.model.ClaimedScreen
 import com.roombrowser.domain.model.Device
+import com.roombrowser.domain.model.FingerprintProfile
 import com.roombrowser.domain.model.WebRtcPolicy
 
 /**
  * The JavaScript a profile runs before any page script, so the properties a
  * page reads agree with what the profile claims to be.
  *
- * Three independent parts, and each is installed only when the profile has
+ * Four independent parts, and each is installed only when the profile has
  * actually asked for it:
  *
  *  - the **identity** shim, for a profile presenting a device: the UA, the
- *    client hints, `platform`, `deviceMemory`, `hardwareConcurrency` and the
- *    WebGL vendor/renderer strings. These are the things a handset determines
+ *    client hints, `deviceMemory`, `hardwareConcurrency` and the WebGL
+ *    vendor/renderer strings. These are the things a handset determines
  *    and that the real hardware therefore cannot contradict.
+ *
+ *  - the **derived** shim, for every profile with a fingerprint seed: the
+ *    surfaces a device alone cannot keep apart, derived (never drawn per
+ *    read). No seed means the old platform line and nothing more.
  *
  *  - the **screen** shim, for a profile whose screen size is set by hand:
  *    `screen.width/height/availWidth/availHeight` and `screen.orientation`.
@@ -27,12 +32,14 @@ import com.roombrowser.domain.model.WebRtcPolicy
  * Screen geometry is left alone unless the profile asks for it. The default is
  * the phone's own screen, because the page really is laid out here. A profile
  * that sets a size by hand is making a choice the settings row states plainly,
- * and the cost is in what this deliberately does *not* do: the layout viewport
- * cannot follow the claim, so `innerWidth`, `innerHeight` and
- * `devicePixelRatio` stay the display's own — they are what the compositor
- * actually renders at, and moving them means re-laying the page out, which is
- * the breakage this file exists to avoid. A claimed screen that differs from
- * the phone's is therefore a disagreement a script can find.
+ * and the cost is in what the layout viewport cannot do: it stays the display's
+ * own, because `innerWidth` and `innerHeight` are the width and height the page
+ * is really laid out at and moving them means re-laying the page out, which is
+ * the breakage this file exists to avoid. `devicePixelRatio` follows a claimed
+ * screen only for a profile with a seed, and is the one geometric value that
+ * can move with the claim; a profile with no claim keeps the compositor's real
+ * ratio. Either way a claimed screen that differs from the phone's is a
+ * disagreement with the viewport a script can find.
  *
  * It is offered anyway because the alternative is worse. Without it, a profile
  * presenting a Galaxy S24 Ultra reports a screen that handset never had — the
@@ -52,9 +59,9 @@ object DeviceShim {
 
     /**
      * The document-start script for a profile. Blank when the profile claims
-     * neither a device nor a screen size and its WebRTC policy is
-     * [WebRtcPolicy.DEFAULT] — nothing absent is installed, and nothing asked
-     * for is changed.
+     * neither a device nor a screen size, derives no fingerprint surfaces and
+     * its WebRTC policy is [WebRtcPolicy.DEFAULT] — nothing absent is
+     * installed, and nothing asked for is changed.
      *
      * The policy is a parameter with a default rather than something read
      * from a profile the way [Device] is, because the shim has never held
@@ -64,13 +71,21 @@ object DeviceShim {
      * existed. A real profile does not start there — the profile settings
      * default the policy to RESTRICT_LOCAL_IP — so the engine passes the
      * profile's own value at every call site and never leans on this default.
+     *
+     * [fingerprint] defaults to [FingerprintProfile.legacy]; the engine passes
+     * the profile's own [FingerprintProfile.from] result.
      */
     fun scriptFor(
         device: Device?,
         screen: ClaimedScreen? = null,
-        webRtc: WebRtcPolicy = WebRtcPolicy.DEFAULT
+        webRtc: WebRtcPolicy = WebRtcPolicy.DEFAULT,
+        fingerprint: FingerprintProfile = FingerprintProfile.legacy()
     ): String = buildString {
         if (device != null) append(identityScript(device))
+        // A seed installs the derived surfaces even with no device.
+        if (device != null || fingerprint.isSeeded) {
+            append(fingerprintScript(fingerprint, screen))
+        }
         if (screen != null) append(screenScript(screen))
         append(webRtcScript(webRtc))
     }
@@ -91,6 +106,58 @@ object DeviceShim {
             .replace("__CORES__", device.hardwareConcurrency.toString())
             .replace("__GPU_VENDOR__", jsString(device.gpuVendor))
             .replace("__GPU_RENDERER__", jsString(device.gpuRenderer))
+    }
+
+    /**
+     * `platform` always; the rest only when seeded. `devicePixelRatio` also
+     * needs a claimed screen, so the ratio never contradicts a display the
+     * profile did not describe.
+     */
+    private fun fingerprintScript(
+        fingerprint: FingerprintProfile,
+        screen: ClaimedScreen?
+    ): String {
+        val defines = StringBuilder()
+        defines.append("    define(Navigator.prototype, 'platform', ")
+            .append(jsString(fingerprint.platform))
+            .append(");\n")
+        if (fingerprint.isSeeded) {
+            fingerprint.colorDepth?.let {
+                defines.append("    define(Screen.prototype, 'colorDepth', $it);\n")
+            }
+            fingerprint.pixelDepth?.let {
+                defines.append("    define(Screen.prototype, 'pixelDepth', $it);\n")
+            }
+            fingerprint.maxTouchPoints?.let {
+                defines.append("    define(Navigator.prototype, 'maxTouchPoints', $it);\n")
+            }
+            if (screen != null) {
+                fingerprint.devicePixelRatio?.let {
+                    defines.append("    define(window, 'devicePixelRatio', $it);\n")
+                }
+            }
+            defines.append(pluginDefines(fingerprint))
+        }
+        return FINGERPRINT.replace("__DEFINES__", defines.toString())
+    }
+
+    /**
+     * `navigator.plugins` / `mimeTypes` as array-likes; only the count varies.
+     */
+    private fun pluginDefines(fingerprint: FingerprintProfile): String {
+        val plugins = fingerprint.plugins.joinToString(", ") { plugin ->
+            "{ name: ${jsString(plugin.name)}, " +
+                "description: ${jsString(plugin.description)}, " +
+                "filename: ${jsString(plugin.filename)}, " +
+                "length: ${plugin.mimeTypes.size} }"
+        }
+        val mimeTypes = fingerprint.mimeTypes.joinToString(", ") { mime ->
+            "{ type: ${jsString(mime.type)}, " +
+                "suffixes: ${jsString(mime.suffixes)}, " +
+                "description: ${jsString(mime.description)} }"
+        }
+        return "    define(Navigator.prototype, 'plugins', arrayLike([$plugins]));\n" +
+            "    define(Navigator.prototype, 'mimeTypes', arrayLike([$mimeTypes]));\n"
     }
 
     /** The screen shim: what a page is told the display is. */
@@ -183,7 +250,8 @@ object DeviceShim {
     }
 
     define(Navigator.prototype, 'userAgent', UA);
-    define(Navigator.prototype, 'platform', 'Linux armv8l');
+    // `platform` is deliberately not here: it belongs to the derived shim
+    // below, because a profile with no device still has a platform to report.
     define(Navigator.prototype, 'deviceMemory', MEMORY);
     define(Navigator.prototype, 'hardwareConcurrency', CORES);
 
@@ -257,6 +325,43 @@ object DeviceShim {
     }
     if (typeof WebGLRenderingContext !== 'undefined') patchGL(WebGLRenderingContext);
     if (typeof WebGL2RenderingContext !== 'undefined') patchGL(WebGL2RenderingContext);
+  } catch (e) {
+    // A page must still load even if the platform refuses one of these.
+  }
+})();
+"""
+
+    // Installed when the profile presents a device or carries a seed; for an
+    // unseeded one __DEFINES__ is the single platform line it always got.
+    private val FINGERPRINT = """
+(function () {
+  'use strict';
+  try {
+    function define(target, prop, value) {
+      try {
+        Object.defineProperty(target, prop, {
+          get: function () { return value; },
+          configurable: true,
+          enumerable: true
+        });
+      } catch (e) {}
+    }
+
+    // Array-like shape plugins/mimeTypes expose: length, entries, item, namedItem.
+    function arrayLike(items) {
+      var out = [];
+      for (var i = 0; i < items.length; i++) out[i] = items[i];
+      out.item = function (i) { return this[i] === undefined ? null : this[i]; };
+      out.namedItem = function (name) {
+        for (var i = 0; i < this.length; i++) {
+          if (this[i].name === name || this[i].type === name) return this[i];
+        }
+        return null;
+      };
+      return out;
+    }
+
+__DEFINES__
   } catch (e) {
     // A page must still load even if the platform refuses one of these.
   }

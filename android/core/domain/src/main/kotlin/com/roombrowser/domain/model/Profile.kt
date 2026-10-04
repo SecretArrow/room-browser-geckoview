@@ -141,6 +141,9 @@ data class ProfileSettings(
     val uaMode: UaMode = UaMode.DEFAULT,
     val uaPresetId: String? = null,
     val customUserAgent: String? = null,
+    // Minted by ProfileManager on create; duplicate and export/import keep it.
+    // Null (a profile stored before this field existed) derives nothing.
+    val fingerprintSeed: String? = null,
     // Screen size
     //
     // The device decides *what the profile is*; this decides what a page is
