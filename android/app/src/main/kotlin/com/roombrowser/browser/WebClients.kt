@@ -13,6 +13,7 @@ import com.roombrowser.domain.model.Profile
 import com.roombrowser.engine.EngineSession
 import com.roombrowser.engine.EngineSessionListener
 import com.roombrowser.engine.HttpAuthResponder
+import com.roombrowser.engine.NavigationDecision
 import com.roombrowser.engine.PageErrorKind
 import com.roombrowser.engine.PermissionResponder
 import org.json.JSONObject

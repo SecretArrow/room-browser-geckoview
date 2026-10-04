@@ -21,6 +21,16 @@ import java.io.File
  * would object. This test objects. It is the difference between "the boundary
  * is intended" and "the boundary is enforced".
  *
+ * BOTH ENGINES ARE BANNED, not just the one that has a compile-classpath guard
+ * already. `android.webkit` needs no `api` flip to reappear -- it is on every
+ * Android classpath -- so nothing but this test stands between a future
+ * `WebView` convenience and an app that compiles against one engine again. The
+ * conversion just finished removed every such import; this keeps them removed.
+ * (A STRING that merely names a class, like the androidTest probe that locates
+ * the engine view by `By.clazz("android.webkit.WebView")`, is not an import and
+ * does not trip this -- deliberately, since that probe is a black-box question
+ * about what is on screen, not a dependency on the type.)
+ *
  * It scans source text rather than compiled classes because the violation is
  * legible at the point it is written, and because it needs no classpath -- so
  * it runs in milliseconds as part of the ordinary unit-test task.
@@ -39,8 +49,12 @@ class EngineBoundaryTest {
             dir.walkTopDown()
                 .filter { it.isFile && it.extension == "kt" }
                 .forEach { file ->
-                    if (FORBIDDEN_IMPORT.containsMatchIn(file.readText())) {
-                        offenders += file.path.removePrefix("../")
+                    val text = file.readText()
+                    for (forbidden in FORBIDDEN_IMPORTS) {
+                        if (forbidden.containsMatchIn(text)) {
+                            offenders += file.path.removePrefix("../") +
+                                " -> " + forbidden.pattern
+                        }
                     }
                 }
         }
@@ -60,6 +74,19 @@ class EngineBoundaryTest {
             "../core/wallet/src",
         )
 
-        val FORBIDDEN_IMPORT = Regex("""^\s*import\s+org\.mozilla\.geckoview""", RegexOption.MULTILINE)
+        /**
+         * The engine packages that must not appear above the facade.
+         *
+         * `android.net.http` is here with `android.webkit` because the one type
+         * the app ever wanted from it, `SslError`, is meaningful only to the
+         * WebView edition -- and the app's certificate wording is keyed to a
+         * numbering the facade fixes (`EngineErrorCode`), which is the whole
+         * reason it does not need the type.
+         */
+        val FORBIDDEN_IMPORTS = listOf(
+            Regex("""^\s*import\s+org\.mozilla\.geckoview""", RegexOption.MULTILINE),
+            Regex("""^\s*import\s+android\.webkit\.""", RegexOption.MULTILINE),
+            Regex("""^\s*import\s+android\.net\.http\.""", RegexOption.MULTILINE),
+        )
     }
 }

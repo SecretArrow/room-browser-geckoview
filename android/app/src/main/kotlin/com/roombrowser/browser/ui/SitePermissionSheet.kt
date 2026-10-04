@@ -129,7 +129,7 @@ private fun MediaPermissionSheet(
             viewModel.grantPendingPermission()
             return
         }
-        awaiting = pending.request
+        awaiting = pending.responder
         launcher.launch(missing.toTypedArray())
     }
 

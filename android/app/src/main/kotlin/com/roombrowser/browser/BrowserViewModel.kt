@@ -636,7 +636,11 @@ class BrowserViewModel(
             contentDisposition: String?,
             mimeType: String?
         ) {
-            val name = DownloadEngine.guessFileName(url, contentDisposition, mimeType)
+            // The engine may not know a MIME type; the helper takes a String
+            // and only uses it to pick a file extension when neither the
+            // Content-Disposition nor the URL names one, so an empty string
+            // lands on the same "download" fallback an absent type always did.
+            val name = DownloadEngine.guessFileName(url, contentDisposition, mimeType ?: "")
             // The engine's own request UA, not a fresh one: the download must
             // present the same device identity as the page that linked to it.
             download(url, name, mimeType ?: "", userAgent)
