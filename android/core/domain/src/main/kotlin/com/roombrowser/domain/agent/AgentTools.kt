@@ -36,6 +36,13 @@ object AgentTools {
     const val AUTO_POST = "auto_post"
     const val WAIT = "wait"
 
+    // ---- wallet (dApp request queue + active network) ----
+    const val WALLET_STATE = "wallet_state"
+    const val WALLET_REQUESTS = "wallet_requests"
+    const val WALLET_APPROVE = "wallet_approve"
+    const val WALLET_REJECT = "wallet_reject"
+    const val WALLET_SWITCH_NETWORK = "wallet_switch_network"
+
     private const val OBJ = """{"type":"object"}"""
 
     private val SCHEMA_NAVIGATE = """{"type":"object","properties":{"url":{"type":"string","description":"Full URL, e.g. https://example.com/path"}},"required":["url"]}"""
@@ -49,11 +56,17 @@ object AgentTools {
     private val SCHEMA_TAB_INDEX = """{"type":"object","properties":{"index":{"type":"integer","description":"Tab index from list_tabs"}},"required":["index"]}"""
     private val SCHEMA_TEXT = """{"type":"object","properties":{"text":{"type":"string","description":"Text to send"}},"required":["text"]}"""
     private val SCHEMA_WAIT = """{"type":"object","properties":{"ms":{"type":"integer","description":"Milliseconds to wait, 200-20000, default 1500"}}}"""
+    private val SCHEMA_REQUEST_ID = """{"type":"object","properties":{"request_id":{"type":"string","description":"Request id from wallet_requests"}},"required":["request_id"]}"""
+    private val SCHEMA_NETWORK_ID = """{"type":"object","properties":{"network_id":{"type":"string","description":"Network id from wallet_state, e.g. EVM:137. The wallet must already know it."}},"required":["network_id"]}"""
 
     /** Tool names whose execution may require user confirmation. */
     val INTERACTIVE_TOOLS = setOf(
         CLICK, FILL_INPUT, PRESS_ENTER,
-        AUTO_LIKE, AUTO_REPOST, AUTO_REPLY, AUTO_POST
+        AUTO_LIKE, AUTO_REPOST, AUTO_REPLY, AUTO_POST,
+        // Wallet approval and network switching change wallet state and are
+        // confirmed with the user. WALLET_REJECT is deliberately NOT here:
+        // rejecting is the safe direction and must always work.
+        WALLET_APPROVE, WALLET_SWITCH_NETWORK
     )
 
     /** OpenAI `tools` array for the chat request. */
@@ -74,7 +87,32 @@ object AgentTools {
         def(AUTO_REPOST, "Repost/retweet/reblog/share the posts currently visible on the page. Reposts up to 15 visible items. Scroll first, then call again to continue.", SCHEMA_NO_PARAMS),
         def(AUTO_REPLY, "Reply to the open post/thread: types the given text into the visible reply box and submits it. Returns immediately; call wait then read_page to verify.", SCHEMA_TEXT),
         def(AUTO_POST, "Create a new post/status/tweet with the given text: opens the composer, types, and submits. Call wait then read_page to verify.", SCHEMA_TEXT),
-        def(WAIT, "Wait for a page update (post-submit animations, infinite scroll loading) before reading again.", SCHEMA_WAIT)
+        def(WAIT, "Wait for a page update (post-submit animations, infinite scroll loading) before reading again.", SCHEMA_WAIT),
+        def(
+            WALLET_STATE,
+            "Read the wallet's current state: whether it is locked, its accounts (chain, label, address), the active network for each chain, and the networks it already knows. Use it to find a network_id for wallet_switch_network. Addresses are public; never ask the user for a key or phrase.",
+            SCHEMA_NO_PARAMS
+        ),
+        def(
+            WALLET_REQUESTS,
+            "List the dApp requests waiting for the user's decision, with the host, the method and the transaction or message being requested. ALWAYS call this before wallet_approve: approving a request that was not listed here is refused. Listing changes nothing and needs no confirmation.",
+            SCHEMA_NO_PARAMS
+        ),
+        def(
+            WALLET_APPROVE,
+            "Approve one pending dApp request by its request_id from wallet_requests. This is IRREVERSIBLE: approving a transaction broadcasts it and moves funds, and approving a signature lets the dApp use a signature that cannot be recalled. The user is shown the full request and must confirm, so expect a pause. Never approve anything the user did not ask for — when the request is unclear or unwanted, use wallet_reject instead.",
+            SCHEMA_REQUEST_ID
+        ),
+        def(
+            WALLET_REJECT,
+            "Reject one pending dApp request by its request_id. Rejecting is always allowed and never asks for confirmation — it is the safe answer when the request is unclear, unexpected, or was not asked for. The page receives a user-rejected error and nothing is signed or sent.",
+            SCHEMA_REQUEST_ID
+        ),
+        def(
+            WALLET_SWITCH_NETWORK,
+            "Make an already-known network the wallet's active network for its chain, using a network_id from wallet_state. It cannot add or invent a network: the id must already be in the wallet and enabled. This changes which network every connected dApp sees (chainChanged) and which network later transactions target, and the user is asked to confirm. It moves no funds.",
+            SCHEMA_NETWORK_ID
+        )
     )
 
     private fun def(name: String, description: String, schema: String): ToolDef =
@@ -102,6 +140,9 @@ object AgentTools {
             (args[key] as? JsonPrimitive)?.contentOrNull?.takeIf { it.isNotBlank() }
         fun int(key: String): Int? =
             (args[key] as? JsonPrimitive)?.intOrNull
+        // A request id is a UUID; the card shows only its head so the label
+        // stays readable. The model still passes the whole id to the tool.
+        fun shortId(id: String?): String = id?.take(8) ?: "?"
 
         when (name) {
             NAVIGATE -> "Open ${str("url") ?: "page"}"
@@ -121,6 +162,11 @@ object AgentTools {
             AUTO_REPLY -> "Reply \"${(str("text") ?: "").take(30)}\""
             AUTO_POST -> "Post \"${(str("text") ?: "").take(30)}\""
             WAIT -> "Wait ${formatDurationMs(int("ms") ?: 1500)}"
+            WALLET_STATE -> "Read wallet state"
+            WALLET_REQUESTS -> "List pending wallet requests"
+            WALLET_APPROVE -> "Approve wallet request ${shortId(str("request_id"))}"
+            WALLET_REJECT -> "Reject wallet request ${shortId(str("request_id"))}"
+            WALLET_SWITCH_NETWORK -> "Switch network to ${str("network_id") ?: "?"}"
             else -> name
         }
     } catch (_: Exception) {
