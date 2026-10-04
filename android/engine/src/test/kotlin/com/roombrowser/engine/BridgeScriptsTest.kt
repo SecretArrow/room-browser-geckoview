@@ -77,7 +77,9 @@ class BridgeScriptsTest {
             assertThat(mainJs).contains(marker)
             assertThat(isolatedJs).contains(marker)
         }
-        assertThat(mainJs).containsMatch(Regex("__roomEval(?!Result)"))
+        // Truth's containsMatch takes the pattern as a STRING (@Regex), not a
+        // Regex object -- passing Regex(...) does not compile.
+        assertThat(mainJs).containsMatch("__roomEval(?!Result)")
     }
 
     @Test
