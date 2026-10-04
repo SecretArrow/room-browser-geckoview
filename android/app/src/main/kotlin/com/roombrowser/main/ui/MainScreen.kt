@@ -183,10 +183,7 @@ fun MainScreen(
         }
     }
 
-    // Pick a password file for the profile whose menu asked for one. One
-    // launcher and one ViewModel entry point serve all five sources — Chrome,
-    // Brave, Edge, Firefox and our own sealed export — because which one it is
-    // is decided from the file's content, not from the picker.
+    // One launcher serves all five sources; the file's content decides which.
     val pickPasswordFileLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.OpenDocument()
     ) { uri ->
@@ -291,15 +288,8 @@ fun MainScreen(
                         ProfileCard(
                             profile = profile,
                             tabCount = viewModel.tabCounts[profile.id.value] ?: 0,
-                            // The offer a creation owes is raised ON THE CARD,
-                            // never as a dialog over the list: a profile is
-                            // also created from the browser quick-switcher,
-                            // which restarts the process to bind it, so the
-                            // offer has to survive until this list is next
-                            // visible — and a recorded offer that surfaces at
-                            // some later launch must not be able to stand
-                            // between the user and their profiles, nor between
-                            // a create and the engine boot that follows it.
+                            // Inline, never a dialog: a recorded offer must
+                            // not gate the launch surface.
                             offerPasswordImport =
                                 viewModel.passwordImportOfferId == profile.id.value,
                             onDismissPasswordImportOffer = {
@@ -317,9 +307,6 @@ fun MainScreen(
                             onEdit = { editTarget = profile },
                             onDuplicate = { duplicateTarget = profile },
                             onReset = { resetTarget = profile },
-                            // The delete prompt is the ViewModel's: it has to
-                            // count the profile's saved logins, which needs the
-                            // vault, before it can say what deleting costs.
                             onDelete = { viewModel.requestDeleteProfile(profile) },
                             onExport = { exportTarget = profile },
                             onImportPasswords = {
@@ -414,11 +401,8 @@ fun MainScreen(
         )
     }
 
-    // Deleting a profile destroys its saved passwords with it — the rows and
-    // the Keystore key that decrypts them, in one step — so the offer to take
-    // them along has to come BEFORE the delete, which is what this prompt is.
-    // It has three ways out, and the middle one exists because a user who
-    // declines the export is still entitled to delete.
+    // The offer must come BEFORE the delete: deleting destroys the saved
+    // passwords, rows and Keystore key together.
     viewModel.deletePrompt?.let { prompt ->
         val target = prompt.profile
         val passwords = when (val count = prompt.credentialCount) {
@@ -444,8 +428,7 @@ fun MainScreen(
             },
             confirmButton = {
                 TextButton(onClick = { viewModel.confirmDeleteWithoutExport() }) {
-                    // "without exporting" only means something when there is
-                    // something that could have been exported.
+                    // Only meaningful when there was something to export.
                     Text(if (prompt.credentialCount == 0) "Delete" else "Delete without exporting")
                 }
             },
@@ -624,18 +607,10 @@ private fun CreateProfileLabel() {
 }
 
 /**
- * What the password-file picker offers.
- *
- * The narrow types come first and the catch-all last, exactly as the
- * profile-import launcher does it: a browser's export is a `.csv` and ours is a
- * `.txt`, but a picker provider is free to report either as
+ * What the password-file picker offers. A provider may report a real CSV as
  * `application/octet-stream`, and a file the user can see but not select has no
- * workaround at all. Nothing is trusted by being selectable — the content
- * decides what the file is, and a file that is neither a browser CSV nor one of
- * our sealed exports is reported as such with nothing written.
- *
- * (The catch-all is spelled out in the array below rather than written here:
- * the literal characters for it end this comment.)
+ * workaround — so the catch-all is last and the CONTENT decides what the file
+ * is. (Its literal is in the array below; written here it would end this comment.)
  */
 private val passwordFileTypes = arrayOf("text/csv", "text/plain", "*/*")
 
@@ -786,16 +761,6 @@ private fun ProfileCard(
                 }
             }
             if (offerPasswordImport) {
-                // The offer a creation is owed, raised ON THE CARD. It was a
-                // dialog over the list until a CI run proved why it cannot be
-                // one: a profile is also created from the browser
-                // quick-switcher, which restarts the process to bind it, so the
-                // offer has to be recorded and shown the next time this list is
-                // visible — and an offer that surfaces at some later launch
-                // must not be able to stand between the user and their
-                // profiles, nor between a create and the engine boot that
-                // follows it. Inline is also the honest weight for something
-                // optional: it asks, and gets out of the way.
                 Spacer(Modifier.height(12.dp))
                 Column(
                     Modifier
@@ -836,8 +801,6 @@ private fun ProfileCard(
                         Spacer(Modifier.weight(1f))
                         Button(
                             onClick = {
-                                // Answering the offer IS importing into this
-                                // profile, so it clears in the same tap.
                                 onDismissPasswordImportOffer()
                                 onImportPasswords()
                             }
@@ -1318,11 +1281,8 @@ private fun VaultPassphraseDialog(
                             " of \"${prompt.profileName}\" will be sealed under this passphrase. " +
                             "You will need it on the receiving device — it cannot be recovered."
                     } else {
-                        // A standalone passwords file gets its own sentence: it
-                        // carries no profile name outside its encryption, so
-                        // naming one here would be inventing an origin for it.
-                        // The whole-profile export still says which profile it
-                        // came from, because that file really does carry it.
+                        // A passwords file carries no profile name, so naming
+                        // one here would be inventing an origin.
                         if (prompt.passwordsFile) {
                             "This is a sealed Room Browser password file. Enter the " +
                                 "passphrase it was exported with."

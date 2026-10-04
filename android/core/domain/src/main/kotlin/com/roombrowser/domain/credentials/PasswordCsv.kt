@@ -1,79 +1,48 @@
 package com.roombrowser.domain.credentials
 
 /**
- * Reads the password file that other browsers export.
+ * Reads the password file other browsers export.
  *
- * WHY A CSV READER AND NOT A LIBRARY. Chrome, Brave, Edge and Firefox can only
- * hand a user their passwords as a CSV: none of them will write our format, and
- * Android gives no way for one app to read another app's password store. So the
- * import path is a file the user exported themselves, and the only thing that
- * can be done with it is parse it. A CSV library would be a dependency for one
- * screen; the format is small enough to read here and the parsing rules that
- * matter (quoting, embedded newlines, embedded commas) are the ones written
- * down below rather than the ones a library happens to implement.
+ * Chrome, Brave, Edge and Firefox only ever hand a user their passwords as a
+ * CSV, and Android gives no way to read another app's store, so the import path
+ * is a file the user exported themselves.
  *
- * THE COLUMNS ARE FOUND BY NAME, NEVER BY POSITION. This is the whole reason
- * one parser can serve four browsers: Chrome and Brave write
- * `name,url,username,password,note`, Firefox writes
- * `url,username,password,httpRealm,formActionOrigin,guid,timeCreated,...`, and
- * Edge writes Chrome's shape. A positional reader would import Firefox's
- * `httpRealm` as a password. Any column we do not know is ignored rather than
- * rejected, so a new browser adding a column does not break the import.
+ * Columns are found by NAME, never by position: Chrome writes
+ * `name,url,username,password,note` where Firefox writes
+ * `url,username,password,httpRealm,...`, and a positional reader would import
+ * `httpRealm` as a password. Unknown columns are ignored, not rejected.
  *
- * WHAT IT REFUSES, LOUDLY. Two kinds of row cannot become a Room Browser
- * login and are counted instead of imported:
- *
- *  - a Firefox row whose password is encrypted (`moz_ciphertext`, written when
- *    the export was taken with a primary password set). Those bytes are not a
- *    password and cannot be decrypted without NSS's `key4.db` and the master
- *    password, so importing them would store a string that fills a login form
- *    with garbage. The user is told how many rows to re-export without a
- *    primary password.
- *  - a row with no usable web URL. This is not a corner case: Chrome's own
- *    export carries `android://<hash>@<package>/` rows for saved app
- *    credentials, Firefox exports `about:` and `moz-extension:` origins, and a
- *    URL cell can simply be blank. None of them is a site the in-page filler
- *    can ever match, so they are counted as unsupported rather than imported
- *    as a login that never appears.
- *
- * The counters exist so the screen can say "412 imported, 30 skipped because
- * they were encrypted" instead of quietly importing less than the file held.
- * A silent partial import is the failure mode that matters here: the user
- * concludes their passwords are safe in the app and deletes the CSV.
+ * Rows that cannot become a login are counted as skipped, never dropped
+ * silently: a Firefox `moz_ciphertext` row (encrypted with a primary password,
+ * so those bytes are not a password) and a row with no usable http/https URL
+ * (Chrome's `android://` app rows, Firefox's `about:`/`moz-extension:`
+ * origins). The screen reports the counts so the user does not delete the CSV
+ * believing everything was imported.
  */
 object PasswordCsv {
 
-    /** One row that can become a saved login. */
     data class Row(
         /** Canonical host ([CredentialDomainMatcher.normalize]); never blank. */
         val domain: String,
         val username: String,
         val password: String,
-        /** The export's own label column (`name` in Chrome), when it had one. */
         val title: String?
     )
 
-    /** Why a row was left out. Each is reported as a count, never silently. */
     enum class SkipReason {
         /** Firefox `moz_ciphertext`: the password is encrypted, not text. */
         ENCRYPTED,
 
-        /** No URL column value at all. */
         NO_URL,
 
-        /** A URL, but not http/https — `about:`, `moz-extension:`, `chrome:`. */
+        /** A URL, but not http/https: `about:`, `moz-extension:`, `chrome:`. */
         UNSUPPORTED_URL,
 
-        /** A URL and a username, but no password and no ciphertext. */
         INCOMPLETE
     }
 
     sealed interface Result {
-        /**
-         * The file was a password CSV. [rows] is what could be imported and
-         * [skipped] is why the rest could not; both together account for every
-         * data record in the file.
-         */
+        /** The file was a password CSV; [rows] plus [skipped] account for every data record. */
         data class Parsed(
             val rows: List<Row>,
             val skipped: Map<SkipReason, Int>
@@ -82,19 +51,14 @@ object PasswordCsv {
         }
 
         /**
-         * The header has no column this importer recognises, so the file is
-         * not a password export at all — a wrong file, a different CSV, or a
-         * spreadsheet the user re-saved. Kept distinct from "0 imported" on
-         * purpose: those are different things to tell the user, and treating
-         * this as an empty success would report a wrong file as "nothing to
-         * import".
+         * No column this importer recognises — a wrong file, kept distinct from
+         * "0 imported" so it is not reported as an empty success.
          */
         data object NotAPasswordCsv : Result
     }
 
-    // Column names, lowercased and stripped of spaces/underscores. Each list is
-    // in preference order: the first present column wins, so a file carrying
-    // both `url` and `origin_url` takes `url`.
+    // Column names, lowercased and stripped of spaces/underscores; first
+    // present column wins.
     private val URL_COLUMNS = listOf("url", "originurl", "formactionorigin", "loginuri")
     private val USERNAME_COLUMNS = listOf("username", "login", "user")
     private val PASSWORD_COLUMNS = listOf("password", "pass", "loginpassword")
@@ -102,29 +66,20 @@ object PasswordCsv {
     private val TITLE_COLUMNS = listOf("name", "title")
 
     /**
-     * Parse [text] as a password CSV.
-     *
-     * A UTF-8 BOM, CRLF or LF line endings and a missing final newline are all
-     * accepted, because which of those a file has depends on the browser and
-     * the platform that wrote it and none of them is a reason to fail.
+     * Parse [text] as a password CSV. A UTF-8 BOM, CRLF or LF endings and a
+     * missing final newline are all accepted.
      */
     fun parse(text: String): Result {
         val records = readRecords(text)
         if (records.isEmpty()) return Result.NotAPasswordCsv
 
         val header = records.first().map { normaliseHeader(it) }
-        // Every URL-ish column the header carries, in preference order — not
-        // one column chosen here. The host is resolved PER ROW across these,
-        // because a real Firefox export has both `url` and `formActionOrigin`
-        // and a given login may fill only one of them: a login saved on a page
-        // whose form posts to another origin can have an empty `url`. Picking a
-        // column once would drop that row as "no site" while the file says
-        // plainly where it goes.
+        // Every URL-ish column, in preference order: a Firefox login can have an
+        // empty `url` and only `formActionOrigin`, so the host is resolved per row.
         val urlColumns = URL_COLUMNS.map { name -> header.indexOf(name) }.filter { it >= 0 }
         val passwordColumn = header.indexOfFirst { it in PASSWORD_COLUMNS }
         val ciphertextColumn = header.indexOfFirst { it in CIPHERTEXT_COLUMNS }
-        // A password export without a URL column cannot be matched to a site,
-        // and one with neither a password nor a ciphertext column is not a
+        // No URL column, or neither a password nor a ciphertext column: not a
         // password file. Everything else is optional.
         if (urlColumns.isEmpty() || (passwordColumn < 0 && ciphertextColumn < 0)) {
             return Result.NotAPasswordCsv
@@ -142,18 +97,15 @@ object PasswordCsv {
 
         for (index in 1 until records.size) {
             val record = records[index]
-            // A trailing newline produces one final empty record; a blank line
-            // in the middle of the file is the same thing to RFC 4180. Neither
-            // is a row, so neither is counted as a skipped one.
+            // A trailing newline and a blank line both produce an empty record;
+            // neither is a row, so neither is counted as skipped.
             if (record.all { it.isBlank() }) continue
 
             val host = hostOf(record, urlColumns)
             if (host == null) {
-                // "No site" and "a site we cannot use" are different things to
-                // tell the user, and only the first of them means the file is
-                // missing something. A row is only NO_URL when every URL column
-                // it has is empty — one that held a `moz-extension:` origin said
-                // where the login goes and the answer was "not the web".
+                // NO_URL only when every URL column is empty: a row holding a
+                // `moz-extension:` origin did say where it goes, just not to
+                // the web.
                 val heldSomething = urlColumns.any { record.getOrNull(it).orEmpty().isNotBlank() }
                 skip(if (heldSomething) SkipReason.UNSUPPORTED_URL else SkipReason.NO_URL)
                 continue
@@ -188,11 +140,8 @@ object PasswordCsv {
     }
 
     /**
-     * The first usable host among [record]'s URL columns, in preference order,
-     * or null when none of them holds an http/https URL.
-     *
-     * Takes the columns rather than one index so a row can fall through from an
-     * empty `url` to a populated `formActionOrigin` — see the call site.
+     * The first usable host among [record]'s URL columns, or null when none
+     * holds an http/https URL.
      */
     private fun hostOf(record: List<String>, urlColumns: List<Int>): String? {
         for (column in urlColumns) {
@@ -203,13 +152,8 @@ object PasswordCsv {
     }
 
     /**
-     * The host of [raw] when it is an http/https URL, else null.
-     *
-     * The scheme check is a real filter, not pedantry: Firefox exports logins
-     * for `about:` and `moz-extension:` origins, and `java.net.URI` happily
-     * returns a host for some of them (an extension's UUID, for instance).
-     * Storing that as a domain would create a login that no page can ever
-     * match and that the user cannot explain.
+     * The host of [raw] when it is an http/https URL, else null. `URI` returns a
+     * host even for `about:` and `moz-extension:` origins, which no page can match.
      */
     private fun webHostOf(raw: String): String? {
         if (raw.isEmpty()) return null
@@ -224,23 +168,10 @@ object PasswordCsv {
         raw.trim().lowercase().filter { it.isLetterOrDigit() }
 
     /**
-     * Split [text] into records of fields, RFC 4180 style.
-     *
-     * The four rules that matter, and the reason each is here rather than left
-     * to a `split(",")`:
-     *
-     *  - a field may be quoted, and inside quotes a comma is data;
-     *  - inside quotes a doubled quote (`""`) is one literal quote;
-     *  - inside quotes a newline is data — a Chrome `note` routinely contains
-     *    one, and treating it as the end of the record shifts every following
-     *    row by a column;
-     *  - a quote appearing mid-field outside quotes is data (lenient), because
-     *    passwords are arbitrary text and some exports do not escape them.
-     *
-     * An unterminated quote at the end of the file takes the rest of the text
-     * as one field rather than failing: the alternative is rejecting a file
-     * whose only defect is a truncation, when every complete row before it is
-     * still importable.
+     * Split [text] into records of fields, RFC 4180 style: a quoted field may
+     * hold commas, doubled quotes and newlines (a Chrome `note` has them, and
+     * misreading one shifts every following row by a column). An unterminated
+     * final quote takes the rest as one field rather than rejecting the file.
      */
     private fun readRecords(text: String): List<List<String>> {
         val input = text.removePrefix("﻿")
@@ -277,16 +208,14 @@ object PasswordCsv {
             } else {
                 when (c) {
                     // Only a quote at the START of a field opens a quoted
-                    // field. A quote further in is data — some exports write a
-                    // password containing a quote without escaping it, and
-                    // treating that as an opening quote would swallow every
-                    // following record into one field.
+                    // field; a password with an unescaped quote is data, or it
+                    // would swallow every following record into one field.
                     '"' -> if (field.isEmpty()) quoted = true else field.append('"')
                     ',' -> endField()
                     '\r' -> {
                         // CRLF and a lone CR both end the record; the \n of a
-                        // CRLF pair is consumed here so it cannot become an
-                        // empty record of its own.
+                        // pair is consumed here so it cannot become an empty
+                        // record of its own.
                         endRecord()
                         if (index + 1 < input.length && input[index + 1] == '\n') index++
                     }

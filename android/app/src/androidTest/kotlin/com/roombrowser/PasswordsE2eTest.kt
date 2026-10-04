@@ -348,43 +348,26 @@ class PasswordsE2eTest {
     }
 
     /**
-     * The offer a creation is owed must never gate the launch surface.
-     *
-     * MEASURED FAILURE (run 37221499995): the offer was a modal
-     * AlertDialog that opened over the profile list on the first launch
-     * after a create. UiAutomator only sees the ACTIVE window, so the
-     * next suite's `bootstrapFreshEngine` found neither "Your profiles"
-     * nor "Create Profile" and failed after two 90 s waits — the failure
-     * surfaced two suites away from the feature that caused it, which is
-     * why this guard exists here rather than nowhere.
-     *
-     * The offer is recorded in app state rather than raised from the
-     * create callback because a profile can also be created from the
-     * browser quick-switcher, which restarts the process to bind it. So a
-     * pending offer being on screen at launch is by design, and it has to
-     * be raised INLINE on the card it names.
+     * The recorded import offer must never gate the launch surface — it was a
+     * modal dialog until run 37221499995, where it opened over the list and
+     * broke another suite's relaunch-and-wait bootstrap.
      */
     @Test
     fun import_offer_survives_a_relaunch_without_gating_the_profile_list() {
         E2eDeterminism.suppressOrganicNetworkWarnings()
         assertTrue("Engine must come up on a fresh profile", bootstrapFreshEngine())
 
-        // The bootstrap's create armed the offer. Come back the way a
-        // returning user does — fresh task, no engine in front.
+        // The bootstrap's create armed the offer; come back as a user would.
         device.pressHome()
         launchMainActivity()
         device.waitForIdle(2_000)
 
-        // THE regression guard: whatever is pending, the list is what the
-        // app opens on. A dialog here fails this line, not a distant suite.
         assertTrue(
             "The profile list must be the launch surface with an offer pending\n${uiTree()}",
             hasText("Your profiles", 90_000)
         )
 
-        // The offer is still owed, so it must be visible — the card it
-        // names may sit below the fold on the 320x640 CI screen, where an
-        // off-screen node is not in the a11y tree at all.
+        // May sit below the fold, where a node is not in the a11y tree.
         val offered = hasText("Bring your passwords over?", 10_000) || run {
             var found = false
             repeat(8) {
@@ -400,7 +383,6 @@ class PasswordsE2eTest {
             offered
         )
 
-        // And it must be a prompt, not a wall: answering it costs nothing.
         assertTrue(
             "The offer must be dismissable\n${uiTree()}",
             clickTextVerifiedScrollable("Later", 30_000) {

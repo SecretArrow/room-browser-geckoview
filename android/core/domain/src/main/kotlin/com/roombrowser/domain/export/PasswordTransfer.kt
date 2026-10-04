@@ -17,56 +17,26 @@ class PasswordTransferFormatException(message: String, cause: Throwable? = null)
  * Passwords export — the file a user writes before deleting a profile, or to
  * carry their logins to another phone.
  *
- * ## The decrypted document is a plain CSV, on purpose
+ * The sealed file is a small JSON envelope around a [ProfileBackup.VaultBackup];
+ * once opened, the document is an ordinary `name,url,username,password` CSV —
+ * the shape Chrome, Brave and Edge export and [PasswordCsv] already reads. So a
+ * user who decrypts it by hand gets something useful, and "import from Room
+ * Browser" and "import from Chrome" are one code path rather than two parsers
+ * that can drift.
  *
- * The sealed file is a small JSON envelope whose only payload is a
- * [ProfileBackup.VaultBackup] blob; what that blob holds, once the user's
- * passphrase opens it, is an ordinary `name,url,username,password` CSV — the
- * shape Chrome, Brave and Edge export and the shape [PasswordCsv] already reads.
- *
- * Two things fall out of that choice, and they are why it is worth the
- * indirection of having a payload format rather than a bespoke one:
- *
- *  - **A user who decrypts this file by hand gets something useful.** They can
- *    read it, and they can feed it straight to Chrome's or Brave's importer.
- *    A file that only Room Browser could read would be a worse promise for the
- *    same encryption.
- *  - **"Import from Room Browser" and "import from Chrome" are one code path.**
- *    The only difference between them is whether the text needed a passphrase
- *    first. There is no second parser to keep correct, and no way for the two
- *    to drift.
- *
- * It also means the document needs no fence markers or companion prose the way
- * [WalletBackup]'s does: a CSV is already both the human-readable form and the
- * machine-readable one, so the two halves [WalletBackup] has to reconcile are
- * here the same bytes.
- *
- * ## Why it is sealed rather than written in the clear
- *
- * [seal] always encrypts, and the plaintext CSV is never written to disk by
- * this class. A plain `.csv` in Downloads is readable by every app holding
- * legacy storage permission, is picked up by cloud backup, and survives
- * deletion on flash — for a file that is, by construction, a list of every
- * password the user has. The screen offers the plaintext form as well, because
- * the user may genuinely want it, but it is a separate deliberate act with its
- * own warning rather than the default.
- *
- * ## What an export cannot carry
+ * [seal] always encrypts and this class never writes the plaintext CSV: a plain
+ * `.csv` in Downloads is readable by any app with legacy storage permission and
+ * is picked up by cloud backup.
  *
  * Only the host is stored for a login
- * ([com.roombrowser.domain.credentials.SavedCredential.domain]), so the
- * exported URL is `https://<host>` and the login page's path is not preserved.
- * A round trip through another browser lands the login on the site rather than
- * on the exact page it was saved from, which is where autofill would have
- * offered it anyway.
+ * ([com.roombrowser.domain.credentials.SavedCredential.domain]), so the exported
+ * URL is `https://<host>` and the login page's path is not preserved.
  */
 object PasswordTransfer {
 
     /**
-     * One saved login, detached from the database.
-     *
-     * [password] is plaintext: it exists in this shape only inside the
-     * encryption, and in memory for the moment an export or an import runs.
+     * One saved login, detached from the database. [password] is plaintext:
+     * it lives in this shape only inside the encryption and in memory.
      */
     @Serializable
     data class Entry(
@@ -76,53 +46,29 @@ object PasswordTransfer {
         val title: String? = null
     )
 
-    /** Everything a restore needs. */
     data class Contents(val entries: List<Entry>) {
-        /** Nothing to export — sealing this would write a file that restores nothing. */
+        /** True when [carryable] drops everything — sealing that would restore nothing. */
         val isEmpty: Boolean get() = carryable(entries).isEmpty()
     }
 
     /**
-     * The entries this format can actually carry.
-     *
-     * A login with an empty password is NOT one. The CSV cell for it would be
-     * empty, [PasswordCsv] counts such a row as incomplete on the way back in
-     * (rightly — nothing can match a login with no password), and so writing it
-     * would produce a file whose re-import returns fewer logins than the export
-     * said it wrote. That is the silent partial transfer this whole feature is
-     * designed against, and the export is the last point at which the count is
-     * still visible to the user, so the decision belongs here rather than in the
-     * reader.
-     *
-     * This is not a hypothetical state: `CredentialRepository.save` requires a
-     * domain but not a password, so a row with an empty one can be in the store.
-     * Callers compare the size of the result against the size of what they asked
-     * to export, and report the difference.
+     * The entries this format can actually carry: a login with an empty password
+     * is not one, because the CSV cell would be empty and [PasswordCsv] counts
+     * that as incomplete on the way back in, making the file return fewer logins
+     * than the export reported. `CredentialRepository.save` permits a domain
+     * without a password, so the state is reachable.
      */
     fun carryable(entries: List<Entry>): List<Entry> = entries.filter { it.password.isNotEmpty() }
 
     const val KIND = "room-browser-passwords"
 
-    /**
-     * 1 — this format's first version.
-     *
-     * There is deliberately no legacy-reading branch the way [WalletBackup] has
-     * one: that format had shipped before it changed shape, and this one has not.
-     * Building a reader for a past that does not exist would be untested code
-     * guarding nothing.
-     */
+    /** 1 — this format's first version. No legacy reader: that format never shipped. */
     const val FORMAT_VERSION = 1
 
     /**
-     * The file as written to disk. [vault] is non-null by construction: [seal]
-     * refuses an empty export rather than writing a file that restores nothing.
-     *
-     * [kind] has no default, for the reason [WalletBackup.KeyFile] gives: a
-     * profile export also carries a `vault` block, so `kind` is the only thing
-     * separating the formats, and a defaulted discriminator is no discriminator
-     * — a file that omitted the field would decode to the default and be
-     * accepted, which for an import means reading a bookmark list as a list of
-     * passwords and offering to save them.
+     * The file as written to disk. [kind] has no default because a profile
+     * export also carries a `vault` block, so the discriminator is the only
+     * thing separating the formats.
      */
     @Serializable
     data class PasswordFile(
@@ -138,16 +84,10 @@ object PasswordTransfer {
     }
 
     /**
-     * The decrypted document: the export as a CSV that this app and the other
-     * browsers can both read.
-     *
-     * Usernames and titles are written trimmed because [PasswordCsv] trims them
-     * on the way back in — for our own file exactly as for Chrome's — so writing
-     * them trimmed is what makes the round trip exact rather than
-     * approximately exact. Passwords are never trimmed: a leading or trailing
-     * space is part of a password, and every value is quoted when it holds a
-     * comma, a quote or a line break, so nothing in a password can escape its
-     * cell.
+     * The decrypted document: the export as a CSV this app and the other
+     * browsers both read. Usernames and titles are trimmed because [PasswordCsv]
+     * trims them on the way back in; passwords never are, and every value is
+     * quoted when it holds a comma, a quote or a line break.
      */
     fun document(contents: Contents): String = buildString {
         appendLine("name,url,username,password")
@@ -164,10 +104,8 @@ object PasswordTransfer {
     }
 
     /**
-     * Seals [contents] under [passphrase] and returns the file text.
-     *
-     * @throws IllegalArgumentException when there is nothing carryable — see
-     *   [carryable] — so a file that restores nothing is never written.
+     * Seals [contents] under [passphrase]; throws when nothing is carryable (see
+     * [carryable]) so a file that restores nothing is never written.
      */
     fun seal(contents: Contents, passphrase: CharArray): String {
         require(passphrase.isNotEmpty()) { "A password export needs a passphrase" }
@@ -180,11 +118,8 @@ object PasswordTransfer {
     }
 
     /**
-     * Decrypts a file written by [seal] and reads the logins back out of it.
-     *
-     * The document is handed to [PasswordCsv], so the reader for our own file is
-     * the reader for Chrome's — if this ever fails to read something [document]
-     * wrote, that is a bug in one of those two and it shows up here first.
+     * Decrypts a file written by [seal] and reads the logins back out. The
+     * document goes to [PasswordCsv], so our own reader is Chrome's reader.
      *
      * @throws PasswordTransferFormatException when [text] is not one of our files.
      * @throws com.roombrowser.domain.credentials.VaultAuthException when the
@@ -195,11 +130,9 @@ object PasswordTransfer {
             if (text.isBlank()) "the file is empty" else "not a Room Browser password file"
         )
         val document = PasswordVaultCrypto.decrypt(file.vault.toCipherData(), passphrase)
-        // The document was written by document(), so it is a password CSV by
-        // construction; a NotAPasswordCsv here means the file was tampered with
-        // or forged, and GCM has already rejected that. Treated as a format
-        // error rather than an empty success so a broken file cannot look like
-        // an empty profile.
+        // document() wrote this, so it is a password CSV by construction; a
+        // NotAPasswordCsv here means the file was forged. A format error, not an
+        // empty profile.
         val parsed = PasswordCsv.parse(document) as? PasswordCsv.Result.Parsed
             ?: throw PasswordTransferFormatException("the decrypted contents are not a password list")
         return Contents(
@@ -211,23 +144,15 @@ object PasswordTransfer {
 
     /**
      * True when [text] is one of our sealed password files, so the import screen
-     * knows to ask for a passphrase before it tries to read anything.
-     *
-     * Decided on the raw text, before any passphrase exists — which is the point:
-     * the screen's first question ("this file is encrypted; what is the
-     * passphrase?") has to be asked before it can ask the second one.
-     *
-     * A CSV never begins with `{`, so the fast path rejects the common case
-     * without parsing. A file that is one of our envelopes but a different kind
-     * — a wallet backup, say — is NOT claimed here; it falls through to the CSV
-     * reader, which reports it as not a password file, which is true and is the
-     * right thing to tell the user.
+     * asks for the passphrase before trying to read anything. A file of another
+     * kind (a wallet backup) is not claimed here and falls through to the CSV
+     * reader, which reports it as not a password file.
      */
     fun isSealedFile(text: String): Boolean = parseEnvelope(text) != null
 
     /**
-     * The envelope, when [text] is one of ours; null otherwise. One place parses
-     * it, so `open` and `isSealedFile` cannot disagree about what our file is.
+     * The envelope when [text] is one of ours; null otherwise. One parser, so
+     * `open` and `isSealedFile` cannot disagree about what our file is.
      */
     private fun parseEnvelope(text: String): PasswordFile? {
         if (!text.trimStart().startsWith("{")) return null
@@ -246,13 +171,8 @@ object PasswordTransfer {
     }
 
     /**
-     * One CSV cell: quoted when it holds anything that would otherwise be read
-     * as structure.
-     *
-     * A quote ANYWHERE forces quoting, not just at the start. `PasswordCsv`
-     * treats a quote at the start of a field as opening a quoted field, so an
-     * unquoted password like `"abc` would swallow the rest of the file — the
-     * value has to be wrapped and its own quotes doubled.
+     * One CSV cell, quoted when it holds a comma, quote or line break; an
+     * unquoted `"abc` would open a quoted field.
      */
     private fun cell(value: String): String =
         if (value.any { it == ',' || it == '"' || it == '\n' || it == '\r' }) {
@@ -262,10 +182,9 @@ object PasswordTransfer {
         }
 
     /**
-     * A filename that sorts by date and survives every filesystem: no spaces,
-     * no colons, ASCII only. Carries the profile's label so two profiles
-     * exported on the same day do not collide in a Downloads folder, and the
-     * time so two exports of one profile do not either.
+     * A filename that sorts by date and survives every filesystem: ASCII only,
+     * no spaces or colons. Carries the profile label and the time so two
+     * exports do not collide in a Downloads folder.
      */
     fun fileName(profileLabel: String, at: Long): String {
         val slug = profileLabel.lowercase(Locale.US)

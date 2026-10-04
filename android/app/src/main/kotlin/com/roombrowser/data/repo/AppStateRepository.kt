@@ -47,11 +47,7 @@ object AppStateKeys {
     /** Pending profile-network decision (NetworkWarningActivity gate). */
     const val PENDING_NET_DECISION = "net_decision_pending"
 
-    /**
-     * The profile id whose "import your passwords?" offer is still owed.
-     * A one-shot key: written when a profile is created, read and cleared by
-     * the profile list when it shows the offer.
-     */
+    /** Profile id still owed the post-create "import your passwords?" offer. */
     const val PASSWORD_IMPORT_OFFER = "password_import_offer"
 }
 
@@ -364,24 +360,16 @@ class AppStateRepository(private val dao: AppStateDao) {
     // ---------- Post-create password-import offer ----------
 
     /**
-     * The profile id whose "import your passwords?" offer has not been shown
-     * yet, or null when none is owed.
+     * Profile id owing an "import your passwords?" offer, or null.
      *
-     * WHY A PERSISTED ONE-SHOT KEY rather than a dialog shown straight from the
-     * create callback: a profile can also be created from the browser
-     * quick-switcher, which then RESTARTS the process to bind the new profile —
-     * so at the moment of creation there is no UI left to show anything in, and
-     * the offer would be lost. Writing the id here means the profile list shows
-     * the offer on its next appearance whichever path created the profile.
-     *
-     * Room's multi-instance invalidation is enabled, so the browser process
-     * writing this and the default process (which owns the profile list)
-     * observing it is a supported path, not a coincidence.
+     * Persisted because the quick-switcher path creates a profile and then
+     * restarts the process, leaving no UI to raise it in; the profile list
+     * picks it up on its next appearance.
      */
     fun observePasswordImportOffer(): Flow<String?> =
         dao.observe(AppStateKeys.PASSWORD_IMPORT_OFFER)
 
-    /** Owed, or, with null, settled — the offer is shown once and only once. */
+    /** null settles the offer. */
     suspend fun setPasswordImportOffer(profileId: String?) {
         if (profileId == null) dao.remove(AppStateKeys.PASSWORD_IMPORT_OFFER)
         else dao.put(AppStateEntity(AppStateKeys.PASSWORD_IMPORT_OFFER, profileId))

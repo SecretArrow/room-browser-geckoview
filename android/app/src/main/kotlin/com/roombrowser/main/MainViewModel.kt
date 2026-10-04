@@ -44,13 +44,8 @@ class PendingExport(val fileName: String, val json: String, val sizeBytes: Int)
  *   export (two fields, min length enforced by the dialog); false = the user
  *   is ENTERING the passphrase an import file was sealed with.
  * @param error inline retry hint (import only), e.g. "Wrong passphrase".
- * @param passwordsFile the import is a standalone passwords file rather than a
- *   whole-profile backup. Both are sealed the same way and open the same way,
- *   but they word themselves differently to the user: a passwords file carries
- *   no profile name outside its encryption (see
- *   [com.roombrowser.domain.export.PasswordTransfer]), so the dialog must not
- *   name an origin it cannot know. Defaulted, so every caller that predates the
- *   passwords flow keeps its exact wording.
+ * @param passwordsFile the import is a standalone passwords file, so the
+ *   dialog must not name a profile origin it cannot know.
  * @param id identity of THIS prompt instance. Like [VaultGateRequest.id] it
  *   exists so an equal-looking prompt is still a NEW prompt: the dialog keys
  *   its passphrase fields on it. Without it, a second wrong passphrase
@@ -83,14 +78,8 @@ enum class MessageAction { OPEN_NOTIFICATION_SETTINGS }
 data class VaultGateRequest(val id: Int)
 
 /**
- * The state of the "delete this profile?" prompt.
- *
- * @param credentialCount how many saved logins the profile holds, or null when
- *   the vault is locked and reading them would have required unlocking it just
- *   to ask a question. The two are different sentences to the user — "this
- *   profile has 12 saved passwords" versus "this profile may have saved
- *   passwords" — and collapsing them would mean either claiming a count we did
- *   not read or dropping the warning for every locked profile.
+ * @param credentialCount saved logins the profile holds, or null when the vault
+ *   is locked and the count could not be read — a different sentence to the user.
  */
 data class DeletePrompt(val profile: Profile, val credentialCount: Int?)
 
@@ -166,25 +155,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     var passwordImportOfferId by mutableStateOf<String?>(null)
         private set
 
-    /**
-     * The pre-delete prompt for a profile, or null when the user is not
-     * deleting anything. [credentialCount] is null when the vault is locked
-     * and the count could not be read — see [requestDeleteProfile].
-     */
+    /** The pre-delete prompt, or null when nothing is being deleted. */
     var deletePrompt by mutableStateOf<DeletePrompt?>(null)
         private set
 
-    /**
-     * Export-in-progress inputs — intermediate work data, not UI state.
-     *
-     * [passwordsOnly] selects the passwords-transfer file instead of a
-     * whole-profile backup. The two exports share every step except the last
-     * one — gate, unlock, read, passphrase, stage, deliver — so they share
-     * this draft and [confirmExportPassphrase] branches on the flag rather
-     * than duplicating the flow. What differs is the payload: a backup carries
-     * bookmarks, permissions and settings as well, and is delivered as
-     * `ProfileBackup` JSON.
-     */
+    /** [passwordsOnly] exports the passwords file instead of a whole backup. */
     private class ExportDraft(
         val profile: Profile,
         val includeBookmarks: Boolean,
@@ -193,11 +168,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     private var exportDraft: ExportDraft? = null
 
-    /**
-     * A passwords import in flight: the profile it is landing in, and the
-     * picked file's text when that file is one of our sealed exports (null for
-     * a plain CSV, which needs no passphrase and completes immediately).
-     */
+    /** [sealedText] is null for a plain CSV, which needs no passphrase. */
     private class PasswordImport(val profile: Profile, val sealedText: String?)
 
     private var passwordImport: PasswordImport? = null
@@ -297,13 +268,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     /**
-     * Creates a profile, then owes the user the passwords-import offer.
-     *
-     * The offer is RECORDED here and shown by the profile list rather than
-     * raised from [onCreated], because this same creation also happens from the
-     * browser quick-switcher, which restarts the process — an offer raised
-     * in-process would simply never be seen on that path. See
-     * [AppStateRepository.observePasswordImportOffer].
+     * Records the passwords-import offer rather than raising it: the same
+     * creation also happens from the quick-switcher, which restarts the process.
      */
     fun createProfile(
         name: String,
@@ -396,9 +362,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             runCatching { profileManager.delete(id) }
                 .onSuccess {
                     message = successMessage
-                    // A pending import offer dies with the profile it named.
-                    // The key is only ever consumed by an answer, so without
-                    // this it outlives its profile in app state for good.
                     if (passwordImportOfferId == id.value) consumePasswordImportOffer()
                 }
                 .onFailure { message = it.message ?: "Could not delete profile" }
