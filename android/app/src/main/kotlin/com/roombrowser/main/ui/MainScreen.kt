@@ -647,13 +647,16 @@ private fun CreateProfileLabel() {
 /**
  * What the password-file picker offers.
  *
- * The narrow types come first and `*/*` is last, exactly as the profile-import
- * launcher does it: a browser's export is a `.csv` and ours is a `.txt`, but a
- * picker provider is free to report either as `application/octet-stream`, and a
- * file the user can see but not select has no workaround at all. Nothing is
- * trusted by being selectable — the content decides what the file is, and a
- * file that is neither a browser CSV nor one of our sealed exports is reported
- * as such with nothing written.
+ * The narrow types come first and the catch-all last, exactly as the
+ * profile-import launcher does it: a browser's export is a `.csv` and ours is a
+ * `.txt`, but a picker provider is free to report either as
+ * `application/octet-stream`, and a file the user can see but not select has no
+ * workaround at all. Nothing is trusted by being selectable — the content
+ * decides what the file is, and a file that is neither a browser CSV nor one of
+ * our sealed exports is reported as such with nothing written.
+ *
+ * (The catch-all is spelled out in the array below rather than written here:
+ * the literal characters for it end this comment.)
  */
 private val passwordFileTypes = arrayOf("text/csv", "text/plain", "*/*")
 
