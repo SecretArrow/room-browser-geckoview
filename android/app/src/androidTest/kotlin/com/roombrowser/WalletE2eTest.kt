@@ -490,6 +490,18 @@ class WalletE2eTest {
         "probe dump failed: $t"
     }
 
+    /**
+     * Failure-path diagnostic sink. The per-test logcat is uploaded inside
+     * the `e2e-reports` artifact, so a probe written here survives even when
+     * a test-report renderer truncates or drops a multi-line assertion
+     * message. Chunked to stay well under logcat's per-message limit.
+     */
+    private fun logProbe(tag: String, message: String) {
+        message.chunked(1_000).forEach {
+            android.util.Log.w("WalletE2eTest", "RB-PROBE $tag: $it")
+        }
+    }
+
     // ---------- Bootstrap: fresh per-run profiles -------------------------
 
     /** TabsE2eTest bootstrap: one fresh profile, engine up on it. */
@@ -1309,7 +1321,107 @@ class WalletE2eTest {
         // Scroll-aware: on the 320x640 CI screen the Reveal button can sit
         // below the fold under the one-time-phrase copy.
         assertTrue("Reveal must be tappable", clickTextWithScroll("Reveal"))
-        assertTrue("Hide phrase must show once revealed", hasText("Hide phrase", 5_000))
+        // ONE-CYCLE DIAGNOSTIC (GeckoView edition only; the WebView edition
+        // passes this step in every cached run). This test fails here with
+        // "Hide phrase must show once revealed" while the tap that precedes
+        // it is byte-for-byte the same as the passing run's -- same node,
+        // same bounds, same `input tap 85 526`, timelines within ~40 ms. So
+        // the tree and the tap are not the variable; the app's response is.
+        //
+        // Evaluating the wait into a value FIRST, then building the message,
+        // is the whole point: the eager `${uiTree()}` idiom used by the
+        // assertions above would dump the tree BEFORE the wait and describe
+        // the pre-tap screen. Here every probe runs after the wait and
+        // describes the FAILURE-TIME state, which separates the two live
+        // hypotheses:
+        //   (A) the tap never reached the Button -- `revealed` is still
+        //       false, the tree still says "Reveal", and a second tap
+        //       flips it (retap=true after_retap=true);
+        //   (B) the tap landed and the label flipped but the a11y tree did
+        //       not follow -- the tree already says "Hide phrase" while the
+        //       wait could not see it.
+        // The probes are on the FAILURE PATH ONLY, so a green run pays
+        // nothing for them, and the assertion still fails whenever the wait
+        // failed -- they diagnose, they never paper over.
+        val revealed = hasText("Hide phrase", 5_000)
+        val failTree = if (revealed) "" else uiTree()
+        if (!revealed) logProbe("reveal-not-shown", failTree)
+        assertTrue(
+            buildString {
+                append("Hide phrase must show once revealed")
+                if (!revealed) {
+                    append("\nprobe: display=").append(device.displayWidth)
+                        .append('x').append(device.displayHeight)
+                    // The bounds matter as much as the booleans: a node that is
+                    // only half-clipped at the fold is in the tree with a rect
+                    // whose centre can sit OUTSIDE the window, and the tap then
+                    // lands on the navigation bar instead of the Button.
+                    val revealNode = device.findObjects(By.text("Reveal")).firstOrNull()
+                    append("\nprobe: reveal_node=").append(
+                        revealNode?.let {
+                            runCatching { it.visibleBounds.toString() }.getOrDefault("bounds?")
+                        } ?: "absent"
+                    )
+                    append("\nprobe: still_on_reveal_screen=")
+                    append(device.findObjects(By.text("Your recovery phrase")).isNotEmpty())
+                    append(" hide_node_present=")
+                    append(device.findObjects(By.text("Hide phrase")).isNotEmpty())
+                    // Which window actually owns the screen at failure time.
+                    // A tap is delivered to the WINDOW at that point, not to
+                    // the app's node graph -- an IME (imePadding is on this
+                    // Scaffold) or any other window over the Button would
+                    // swallow it while the app's own a11y tree still reads
+                    // normally. `executeShellCommand` runs no shell, so the
+                    // filter is done here rather than with `| grep`.
+                    val imeUp = runCatching {
+                        device.executeShellCommand("dumpsys input_method")
+                            .contains("mInputShown=true")
+                    }.getOrDefault(false)
+                    val focus = runCatching {
+                        sequenceOf("dumpsys window", "dumpsys activity activities")
+                            .flatMap { cmd ->
+                                device.executeShellCommand(cmd).lineSequence().filter {
+                                    it.contains("mCurrentFocus") ||
+                                        it.contains("mFocusedApp") ||
+                                        it.contains("ResumedActivity")
+                                }
+                            }
+                            .joinToString(" | ")
+                            .take(400)
+                    }.getOrDefault("?")
+                    append("\nprobe: ime_up=").append(imeUp)
+                    append("\nprobe: focus=").append(focus)
+                    val retap = clickTextWithScroll("Reveal", attempts = 3)
+                    val afterRetap = hasText("Hide phrase", 3_000)
+                    append("\nprobe: retap=").append(retap)
+                    append(" after_retap=").append(afterRetap)
+                    if (!afterRetap) {
+                        // Same node, DIFFERENT point on it: separates "this
+                        // Button never gets a touch" from "something covers
+                        // the middle of it". Only reached when the centre tap
+                        // has already failed twice, so a green run never pays
+                        // for it.
+                        val edge = runCatching {
+                            val b = device.findObjects(By.text("Reveal"))
+                                .firstOrNull()?.visibleBounds
+                            if (b == null) {
+                                "no-node"
+                            } else {
+                                device.executeShellCommand(
+                                    "input tap ${b.left + 6} ${b.top + 6}"
+                                )
+                                device.waitForIdle(1_000)
+                                "(${b.left + 6},${b.top + 6})"
+                            }
+                        }.getOrElse { "err:$it" }
+                        append("\nprobe: edge_tap=").append(edge)
+                        append(" after_edge_tap=").append(hasText("Hide phrase", 3_000))
+                    }
+                    append("\nprobe tree at failure:\n").append(failTree)
+                }
+            },
+            revealed
+        )
         // The export button is the last row of this screen, under the grid.
         // Scroll-aware for the same reason as Reveal above: off-screen nodes
         // are not in the a11y tree, so a plain By.text probe would fail on a
