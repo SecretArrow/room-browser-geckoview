@@ -170,6 +170,28 @@ jobs:
             exit 0
           fi
           git add -A
+          # VERIFY BEFORE PUSHING, and this is not belt-and-braces.
+          #
+          # AGP's lintFix applies PSI quickfixes without adding the imports
+          # they need, so it can commit source that does not compile. On run
+          # 37181410343 it replaced `Uri.parse(s)` with `s.toUri()` and
+          # `Bitmap.createBitmap(w, h, cfg)` with `createBitmap(w, h)` in four
+          # files and added neither `androidx.core.net.toUri` nor
+          # `androidx.core.graphics.createBitmap` -- a tree that cannot build,
+          # pushed by the job whose entire purpose is to keep the tree green.
+          #
+          # The check runs only on the path where lintFix actually changed
+          # something, so a run with nothing to fix pays nothing for it.
+          #
+          # Failing here rather than pushing is deliberate: an unbuildable
+          # autofix commit on the branch is worse than a red job, because the
+          # red job says what happened and the commit does not.
+          if ! (cd android && ./gradlew :app:compileDebugKotlin --console=plain); then
+            echo "::error::lintFix produced source that does not compile — refusing to push it."
+            echo "The staged diff, which is what lintFix changed:"
+            git --no-pager diff --cached
+            exit 1
+          fi
           # NO "[skip ci]" here, and that is load-bearing: the other jobs no
           # longer wait for this one, so the run that is in flight right now
           # is testing the PRE-fix tree. Without a fresh run the pipeline
