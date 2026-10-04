@@ -390,11 +390,43 @@ class WalletE2eTest {
         try { Thread.sleep(300) } catch (_: InterruptedException) { }
     }
 
-    /** Scroll-aware click (off-screen rows are not in the a11y tree). */
+    /**
+     * Scroll-aware click (off-screen rows are not in the a11y tree).
+     *
+     * The node's rect is read, and the tap is sent to that rect a moment
+     * later -- and after a drag the rect can still be travelling, because the
+     * fling keeps carrying the row for a while after the finger lifts. A tap
+     * sent to a rect read mid-fling lands where the control WAS, which is the
+     * failure [dragUpQuarter] already records as CI-proven ("the wallet row
+     * tap landed on nothing and no activity started"). So the tap waits for
+     * two identical reads.
+     *
+     * The wait has to happen BEFORE the tap rather than as a retry after it:
+     * "Reveal" toggles the phrase, so a second tap on a click that had in
+     * fact landed would undo the state the test came for. One settle, one
+     * tap, no retries.
+     */
     private fun clickTextWithScroll(text: String, attempts: Int = 24): Boolean {
-        for (i in 1..attempts) {
-            if (clickText(text, 1_500)) return true
+        repeat(attempts) {
+            val node = device.wait(Until.findObject(By.text(text)), 1_500)
+            if (node != null && rectSettled(node) && clickSmart(node)) return true
             dragUpQuarter()
+        }
+        return false
+    }
+
+    /**
+     * True once two consecutive reads of [node]'s rect agree, i.e. the
+     * viewport has stopped moving. Bounded: gives up after [tries] reads so a
+     * node that is genuinely animating cannot hang the test.
+     */
+    private fun rectSettled(node: UiObject2, tries: Int = 6): Boolean {
+        var previous = runCatching { node.visibleBounds }.getOrNull() ?: return false
+        repeat(tries) {
+            try { Thread.sleep(200) } catch (_: InterruptedException) { }
+            val current = runCatching { node.visibleBounds }.getOrNull() ?: return false
+            if (current == previous) return true
+            previous = current
         }
         return false
     }
@@ -518,6 +550,23 @@ class WalletE2eTest {
         "TEXTS: $texts\nDESCS: $descs"
     } catch (t: Throwable) {
         "probe dump failed: $t"
+    }
+
+    /**
+     * A real screenshot of the device at a named moment. The CI failure
+     * fallback pulls /sdcard/e2e-shots into the `e2e-reports` artifact, so
+     * "the tree says one thing and the screen says another" is settled by
+     * looking instead of by a fourth round of inferences about the tree.
+     *
+     * This is the instrument the reveal assertion needed from the start: every
+     * probe it has carried so far reads the accessibility tree, and the tree
+     * is the thing that has been contradicting itself.
+     */
+    private fun snap(name: String) {
+        runCatching {
+            device.executeShellCommand("mkdir -p /sdcard/e2e-shots")
+            device.executeShellCommand("screencap -p /sdcard/e2e-shots/$name.png")
+        }
     }
 
     /**
@@ -1451,12 +1500,11 @@ class WalletE2eTest {
         assertTrue("Create Wallet must be tappable", clickText("Create Wallet", 5_000))
         assertTrue("The reveal screen must render", hasText("Your recovery phrase", 20_000))
 
-        // Reveal, then READ the 24 numbered cells (kept in memory only).
-        // Scroll-aware: on the 320x640 CI screen the Reveal button can sit
-        // below the fold under the one-time-phrase copy.
+        // Reveal, then wait for the GRID to unmask -- the requirement the
+        // button's caption only reports. Scroll-aware before the wait:
+        // on the 320x640 CI screen the Reveal button sits below the fold
+        // under the one-time-phrase copy.
         assertTrue("Reveal must be tappable", clickTextWithScroll("Reveal"))
-        // Wait for the label to flip, sampling the whole screen state per
-        // sample rather than one label.
         //
         // WHAT THE SAMPLES ALREADY SETTLED. The first version of this wait was
         // a single `hasText`, and the first repair assumed the accessibility
@@ -1478,58 +1526,83 @@ class WalletE2eTest {
         // column could not have read anything but 0ms, and it answered a
         // question nobody had asked.
         //
-        // WHY THE SAMPLES ARE SHAPED THE WAY THEY ARE. A single label leaves
-        // two readings indistinguishable when the query and the screen
-        // disagree: "the app has not flipped yet" and "the label this test is
-        // looking for is not the label on screen". So each sample reads the
-        // screen, not the assertion: the other label of the same toggle
-        // (`Reveal`), the screen's own title, and how many masked cells the tree
-        // carries. An empty `Reveal` AND an empty `Hide phrase` is a partial
-        // tree, not a state; a full grid with the wrong label is a different
-        // screen; and a title that has gone missing while the button is present
-        // is the tree dropping nodes, which is what a clipped scroller looks
-        // like from outside.
+        // AND WHAT THE THIRD INSTRUMENT SETTLED ABOUT THE CHANNEL ITSELF. The
+        // multi-field timeline that replaced it -- the run of 2026-10-04 13:37
+        // -- carried samples at 18.2 s and 19.4 s reading `revealBtn=true
+        // exact=false`, with the one-off `uiTree()` between them reading
+        // "Hide phrase" and no "Reveal" -- the opposite answer, milliseconds
+        // apart, with no tap in between and no screen that can hold both
+        // captions at once. The a11y tree is not merely lagging here; it has
+        // been observed contradicting itself about this screen, in both
+        // directions, in three separate runs. So the wait stopped asking the
+        // caption, and started asking the grid (see the gate below). The
+        // caption survives as one diagnostic column.
         //
-        // This still fails when the label never flips -- `revealed` is set only
-        // from a live query and nothing here taps a second time, so a screen
-        // that stayed on "Reveal" still ends the test.
+        // The tap itself was also hardened rather than left to chance:
+        // `clickTextWithScroll` now waits for the rect to stop moving before
+        // it sends the one tap it is allowed, because "Reveal" is a toggle and
+        // a retry would undo a click that had landed.
+        //
+        // This still fails when the mask never comes off -- `revealed` is set
+        // only from a live query and nothing here taps a second time, so a
+        // phrase that stayed masked still ends the test.
         //
         // The samples accumulate in memory and are emitted only on the failure
         // path, so a green run pays one ArrayList and no logcat.
         val timeline = mutableListOf<String>()
         var appHealth: String? = null
         val revealStartedAt = System.currentTimeMillis()
+        // THE GATE IS THE GRID UNMASKING, NOT THE BUTTON'S CAPTION. The
+        // caption's queries and the tree sweep disagreed at the SAME instant
+        // in three runs -- twice in opposite directions -- and the run of
+        // 2026-10-04 13:37 has the sweep reading "Hide phrase" at 18.6 s
+        // between poll samples at 18.2 s and 19.4 s that both read "Reveal",
+        // with no tap in between and no way for a screen to hold both. A
+        // contradiction like that is a readback artefact, and a test cannot
+        // gate on a channel it has watched contradict itself. The mask is
+        // the same state observed one step further out: every cell reads
+        // "$n. ••••••" until the toggle flips and "$n. <word>" after, so an
+        // empty `masked` count is the phrase actually being readable, which
+        // is what the screen exists to do. The caption is still sampled, as
+        // a diagnostic for the failure path.
         val revealed = waitUntil(20_000) {
-            val exact = device.findObjects(By.text("Hide phrase")).isNotEmpty()
-            val sweep = device.findObjects(By.textContains("Hide phrase")).isNotEmpty()
-            val revealBtn = device.findObjects(By.text("Reveal")).isNotEmpty()
-            val title = device.findObjects(By.text("Your recovery phrase")).isNotEmpty()
-            val cells = device.findObjects(By.textContains(MASK_BULLET)).size
+            val cells = device.findObjects(By.textContains(". "))
+                .mapNotNull { it.text }
+                .filter { wordCell.matches(it) }
+            val masked = cells.count { it.contains(MASK_BULLET) }
+            val label = device.findObjects(By.text("Hide phrase")).isNotEmpty()
             timeline += "${System.currentTimeMillis() - revealStartedAt}ms " +
-                "exact=$exact sweep=$sweep revealBtn=$revealBtn " +
-                "title=$title cells=$cells"
-            exact || sweep
+                "cells=${cells.size} masked=$masked hideLabel=$label"
+            cells.isNotEmpty() && masked == 0
         }
         val failTree = if (revealed) "" else uiTree()
         if (!revealed) {
+            // Pixels, not a tree. The readback channel this test has been
+            // arguing with is the accessibility tree, and a screenshot is not
+            // routed through it: whether the phrase is masked or readable, and
+            // where the button sits, is settled by looking. The CI failure
+            // fallback pulls /sdcard/e2e-shots into the artifact.
+            snap("wallet-reveal-fail")
             // How long the flip actually took, past the window. "It was there
             // when the next query ran" is not a number; this is, and only a
-            // number can say whether the label was one frame late or twenty
-            // seconds late. Observes only -- no tap, so it cannot create the
-            // state it is measuring.
+            // number can say whether the mask came off one frame late or
+            // twenty seconds late. Observes only -- no tap, so it cannot
+            // create the state it is measuring.
             val flipWindowClosed = System.currentTimeMillis()
             val flippedLate = waitUntil(10_000) {
-                device.findObjects(By.textContains("Hide phrase")).isNotEmpty() ||
-                    device.findObjects(By.text("Hide phrase")).isNotEmpty()
+                device.findObjects(By.textContains(". "))
+                    .mapNotNull { it.text }
+                    .filter { wordCell.matches(it) }
+                    .let { cells -> cells.isNotEmpty() && cells.none { it.contains(MASK_BULLET) } }
             }
             logProbe(
                 "reveal-late-flip",
                 if (flippedLate) {
-                    "label appeared ${System.currentTimeMillis() - flipWindowClosed}ms " +
+                    "mask came off ${System.currentTimeMillis() - flipWindowClosed}ms " +
                         "after the 20s window closed " +
                         "(${System.currentTimeMillis() - revealStartedAt}ms after the tap)"
                 } else {
-                    "label did not appear within a further 10s"
+                    "mask still on after a further 10s"
                 }
             )
             logProbe("reveal-not-shown", failTree)
@@ -1543,7 +1616,7 @@ class WalletE2eTest {
         }
         assertTrue(
             buildString {
-                append("Hide phrase must show once revealed")
+                append("Revealing must unmask the phrase grid")
                 if (!revealed) {
                     append("\nprobe: display=").append(device.displayWidth)
                         .append('x').append(device.displayHeight)
@@ -1557,9 +1630,28 @@ class WalletE2eTest {
                             runCatching { it.visibleBounds.toString() }.getOrDefault("bounds?")
                         } ?: "absent"
                     )
-                    append("\nprobe: still_on_reveal_screen=")
-                    append(device.findObjects(By.text("Your recovery phrase")).isNotEmpty())
-                    append(" hide_node_present=")
+                    // What the gate itself read, at the moment it gave up: the
+                    // count of cells in the tree and how many still carry the
+                    // mask. `cells=0` and `masked=0` together are a viewport
+                    // with no grid in it, which is a different fault from a
+                    // grid that is still masked.
+                    val cellsAtFail = runCatching {
+                        device.findObjects(By.textContains(". "))
+                            .mapNotNull { it.text }
+                            .filter { wordCell.matches(it) }
+                    }.getOrDefault(emptyList())
+                    append("\nprobe: grid_cells=").append(cellsAtFail.size)
+                        .append(" still_masked=")
+                        .append(cellsAtFail.count { it.contains(MASK_BULLET) })
+                    // The title is NOT a "still on the reveal screen" probe
+                    // any more: reaching the Reveal button means the viewport
+                    // was scrolled to the bottom of a 24-word grid, so the
+                    // title is legitimately out of the tree and this line read
+                    // `false` in every run, saying nothing. The confirm button
+                    // below the grid is the control that shares this viewport.
+                    append("\nprobe: reveal_screen_visible=")
+                    append(device.findObjects(By.text("I wrote it down")).isNotEmpty())
+                    append(" hide_label_present=")
                     append(device.findObjects(By.text("Hide phrase")).isNotEmpty())
                     // Which window actually owns the screen at failure time.
                     // A tap is delivered to the WINDOW at that point, not to
