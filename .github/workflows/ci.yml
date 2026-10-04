@@ -618,6 +618,13 @@ jobs:
         if: always()
         run: test ! -f "$GITHUB_WORKSPACE/e2e-first-invocation-failed"
 
+      # The probes the suites log go to logcat, and logcat was only ever pulled
+      # on failure -- so the one run that could have measured a latency (a green
+      # one) was the one run that kept no record of it. Tagged, so it stays small.
+      - name: Dump the suites' probe log
+        if: always()
+        run: adb exec-out logcat -d -s 'WalletE2eTest:*' > "$GITHUB_WORKSPACE/e2e-probe.txt" || true
+
       - name: Upload instrumented test reports
         if: always()
         uses: actions/upload-artifact@v7
@@ -627,6 +634,7 @@ jobs:
             android/app/build/outputs/androidTest-results/
             e2e-logcat-crash.txt
             e2e-logcat-full.txt
+            e2e-probe.txt
             e2e-ui.xml
             e2e-shots
           if-no-files-found: ignore
