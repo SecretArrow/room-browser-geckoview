@@ -2,6 +2,8 @@ package com.roombrowser
 
 import android.content.Context
 import android.content.Intent
+import android.os.Handler
+import android.os.Looper
 import androidx.biometric.BiometricManager
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
@@ -125,6 +127,21 @@ class WalletE2eTest {
 
         /** id of the custom EVM network whose RPC refuses instantly. */
         const val REFUSED_NETWORK_ID = "EVM:42141337"
+
+        /**
+         * The engine's bridge log tag, duplicated here rather than imported.
+         *
+         * `:engine` is an `implementation` dependency of `:app`, so its
+         * `internal` constant is not on this module's compile classpath, and
+         * androidTest could not read it even if it were public. A rename on
+         * the engine side would therefore not break this file -- it would only
+         * make `bridgeLogTail()` print nothing, and an empty bridge dump reads
+         * as "the bridge never ran", which answers the question wrongly rather
+         * than failing to answer it. `BridgeDiagnosticsTest` in `:app`'s unit
+         * tests reads the constant out of the engine's source and fails in the
+         * fast job when the two drift apart.
+         */
+        const val BRIDGE_LOG_TAG = "RoomBridge"
     }
 
     @Before
@@ -501,6 +518,55 @@ class WalletE2eTest {
             android.util.Log.w("WalletE2eTest", "RB-PROBE $tag: $it")
         }
     }
+
+    /**
+     * How long a no-op takes to run on the app's MAIN looper, plus the main
+     * thread's stack when it did not run at all.
+     *
+     * WHY THIS MEASURES WHAT IT MEASURES. `onClick = { revealed = !revealed }`
+     * is a Compose state write and nothing else -- no engine call, no I/O, no
+     * crypto -- so the label it renders is repainted on the next frame the
+     * main thread produces. A run where the label stayed "Reveal" for twenty
+     * seconds while 72 fresh accessibility queries were answered in the
+     * meantime was therefore not a slow reveal and not a slow query: it was a
+     * main thread that was answering messages and not drawing frames.
+     *
+     * This is the instrument that tells those apart, from inside the process
+     * and without root. A posted no-op is the cheapest possible message, so
+     * its latency is a floor on how long any pending work -- a Choreographer
+     * frame callback, or the tap itself -- would have waited behind the same
+     * queue. And because the instrumentation runs in the app's OWN process,
+     * `Looper.getMainLooper().thread.stackTrace` can be read while the main
+     * thread is still stuck, which names the culprit instead of inferring it.
+     *
+     * Returns `-1` and that stack when the no-op has not run within
+     * [budgetMs]; otherwise the latency in milliseconds and an empty stack.
+     */
+    @Suppress("DEPRECATION")
+    private fun mainThreadPing(budgetMs: Long): Pair<Long, String> {
+        val ran = CountDownLatch(1)
+        val start = System.currentTimeMillis()
+        Handler(Looper.getMainLooper()).post { ran.countDown() }
+        if (ran.await(budgetMs, TimeUnit.MILLISECONDS)) {
+            return (System.currentTimeMillis() - start) to ""
+        }
+        val stack = Looper.getMainLooper().thread.stackTrace
+            .take(30)
+            .joinToString("\n") { "    at $it" }
+        return -1L to stack
+    }
+
+    /**
+     * The tail of the engine's bridge log, for a failure path only.
+     *
+     * `executeShellCommand` starts no shell, so the `-s` here is an argument
+     * to logcat rather than a pipe -- which is the point: the filter is the
+     * engine's own tag, so the dump is only ever the bridge's own lines and
+     * not a slice of GeckoView's chatter.
+     */
+    private fun bridgeLogTail(): String = runCatching {
+        device.executeShellCommand("logcat -d -s $BRIDGE_LOG_TAG -t 300")
+    }.getOrDefault("<logcat unavailable>")
 
     // ---------- Bootstrap: fresh per-run profiles -------------------------
 
@@ -1043,7 +1109,38 @@ class WalletE2eTest {
             "The connect page must load",
             loadInOmnibox(urlConnect, "WC1-$tag", acceptInstead = listOf("Connect site"))
         )
-        assertTrue("The Connect sheet must appear over the page", hasText("Connect site", 20_000))
+        // The bridge lines this test is about are written at page load, and
+        // logcat is a ring that GeckoView fills fast: by the time the
+        // assertion below has waited out its twenty seconds, the lines that
+        // explain the wait may already have been evicted. So the tail is read
+        // HERE, held in memory, and printed only if something later fails --
+        // a capture cannot be evicted, and it costs one shell command on a
+        // test that already spends most of a minute in an emulator.
+        val bridgeAtLoad = bridgeLogTail()
+        val connectSheet = hasText("Connect site", 20_000)
+        assertTrue(
+            buildString {
+                append("The Connect sheet must appear over the page")
+                if (!connectSheet) {
+                    // The engine's three lifecycle lines are the whole answer
+                    // here, and they only answer it IN ORDER: "extension
+                    // installed" with no "port connected" is an injection that
+                    // never reached a port; "port connected" with no "port
+                    // message" is a page that never called; no lines at all is
+                    // an extension that never installed. Taken in full rather
+                    // than grepped for the line whose absence is the question,
+                    // because silence at one boundary is not evidence about
+                    // the next one.
+                    val tail = bridgeLogTail()
+                    logProbe("bridge-logcat-at-load", bridgeAtLoad)
+                    logProbe("bridge-logcat-now", tail)
+                    append("\nprobe: bridge logcat at page load, engine tag ")
+                    append(BRIDGE_LOG_TAG).append(":\n").append(bridgeAtLoad.take(3_000))
+                    append("\nprobe: bridge logcat now:\n").append(tail.take(2_000))
+                }
+            },
+            connectSheet
+        )
         // CONTAINS, not equals: HostBadge renders a "Connected site" label and
         // the host as two Texts in one Column, and Compose exposes that pair
         // as a single merged accessibility node, so the node's text is the
@@ -1321,41 +1418,74 @@ class WalletE2eTest {
         // Scroll-aware: on the 320x640 CI screen the Reveal button can sit
         // below the fold under the one-time-phrase copy.
         assertTrue("Reveal must be tappable", clickTextWithScroll("Reveal"))
-        // Wait for the label to flip. POLLING, OVER BOTH QUERY SHAPES, and
-        // both halves of that are load-bearing.
+        // Wait for the label to flip, sampling BOTH query shapes, and sample
+        // the main thread alongside them.
         //
-        // It used to be one `hasText` -- a single `Until.hasObject` on the
-        // active-window tree with an exact match -- and that shape is exactly
-        // what this screen defeated. The one-cycle probe that used to sit here
-        // ran in a GeckoView job and logged "Hide phrase" in the all-windows
-        // sweep (`uiTree`) while the active-window exact query, issued in the
-        // same second, still returned the pre-tap label; the same job's
-        // UiAutomator log answers only TWO a11y queries in the five seconds the
-        // wait allowed, so the wait effectively asked once and reported the
-        // answer as it had been seconds earlier. The tap was never the
-        // variable: the probe's own bounds and the `input tap` that produced
-        // them are byte-identical to the passing WebView runs.
+        // WHAT THE SAMPLES ALREADY SETTLED. The first version of this wait was
+        // a single `hasText`, and the first repair assumed the accessibility
+        // pipeline was at fault -- that one query had sampled a tree seconds
+        // stale. The 20 s / 72-sample run that followed killed that reading.
+        // Every fresh sample, over the exact shape and the substring shape
+        // alike, returned false, and a `uiTree()` issued immediately after the
+        // last one found "Hide phrase". The pipeline was not stale and the
+        // query shape was never the variable: the label genuinely flipped
+        // about twenty seconds after the tap.
         //
-        // A fresh query per sample, both shapes, first hit wins. This still
-        // fails when the label never flips -- `revealed` is only ever set from
-        // a live query and nothing here taps a second time, so a screen that
-        // stayed on "Reveal" still ends the test.
+        // That is not a slow reveal. `WalletOnboarding` reveals by flipping a
+        // `remember { mutableStateOf(false) }` from the Button's own onClick,
+        // so the only things between the tap and the repaint are the main
+        // thread's message queue and the frame it produces. `mainThreadPing`
+        // measures that queue: a posted no-op is the cheapest message there
+        // is, so its latency is a floor on how long the tap and the frame
+        // callback behind it had to wait, and when the no-op does not run at
+        // all the main thread's own stack is captured and names the reason.
+        // A run that reports `main=0ms` at every sample while the label stays
+        // stale rules the main thread out and says so.
         //
-        // The samples accumulate in memory and are only ever emitted on the
-        // failure path, so a green run pays one ArrayList and no logcat.
+        // This still fails when the label never flips -- `revealed` is set only
+        // from a live query and nothing here taps a second time, so a screen
+        // that stayed on "Reveal" still ends the test.
+        //
+        // The samples accumulate in memory and are emitted only on the failure
+        // path, so a green run pays one ArrayList, one cheap post per sample
+        // and no logcat.
         val timeline = mutableListOf<String>()
+        var blockedStack: String? = null
         val revealStartedAt = System.currentTimeMillis()
         val revealed = waitUntil(20_000) {
             val exact = device.findObjects(By.text("Hide phrase")).isNotEmpty()
             val sweep = device.findObjects(By.textContains("Hide phrase")).isNotEmpty()
+            val (pingMs, pingStack) = mainThreadPing(budgetMs = 200)
+            if (pingMs < 0 && blockedStack == null) blockedStack = pingStack
             timeline += "${System.currentTimeMillis() - revealStartedAt}ms " +
-                "exact=$exact sweep=$sweep"
+                "exact=$exact sweep=$sweep " +
+                (if (pingMs < 0) "main=BLOCKED" else "main=${pingMs}ms")
             exact || sweep
         }
         val failTree = if (revealed) "" else uiTree()
         if (!revealed) {
+            // How long the flip actually took, past the window. "It was there
+            // when the next query ran" is not a number; this is, and only a
+            // number can say whether the label was one frame late or twenty
+            // seconds late. Observes only -- no tap, so it cannot create the
+            // state it is measuring.
+            val flipWindowClosed = System.currentTimeMillis()
+            val flippedLate = waitUntil(10_000) {
+                device.findObjects(By.textContains("Hide phrase")).isNotEmpty()
+            }
+            logProbe(
+                "reveal-late-flip",
+                if (flippedLate) {
+                    "label appeared ${System.currentTimeMillis() - flipWindowClosed}ms " +
+                        "after the 20s window closed " +
+                        "(${System.currentTimeMillis() - revealStartedAt}ms after the tap)"
+                } else {
+                    "label did not appear within a further 10s"
+                }
+            )
             logProbe("reveal-not-shown", failTree)
             logProbe("reveal-timeline", timeline.joinToString(", "))
+            blockedStack?.let { logProbe("reveal-main-thread-stack", it) }
         }
         assertTrue(
             buildString {
@@ -1409,6 +1539,13 @@ class WalletE2eTest {
                     // -- destroying the very state the probe was called in to
                     // describe. A probe may not change what it measures.
                     append("\nprobe: reveal_timeline=").append(timeline.joinToString(", "))
+                    // Only ever present when a posted no-op did not run, i.e.
+                    // when the main thread was provably not draining its
+                    // queue. Its absence is a finding too, and the timeline
+                    // above is where that reads.
+                    blockedStack?.let {
+                        append("\nprobe: main_thread_stack_while_stale:\n").append(it)
+                    }
                     append("\nprobe tree at failure:\n").append(failTree)
                 }
             },
