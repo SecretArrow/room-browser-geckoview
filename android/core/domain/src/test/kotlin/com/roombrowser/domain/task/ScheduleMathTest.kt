@@ -7,16 +7,6 @@ import java.time.ZoneId
 import kotlinx.serialization.json.Json
 import org.junit.Test
 
-/**
- * Schedule arithmetic, proved without a device.
- *
- * Every instant is pinned: the zone is named explicitly in every call (CI runs
- * in UTC, and a test that leaned on the machine default would be a coin flip),
- * and every expected value is an exact epoch millisecond, not a range. The DST
- * fixtures use 2026 transitions that really exist in America/New_York:
- * 2026-03-08 02:00 EST jumps to 03:00 EDT, and 2026-11-01 02:00 EDT falls back
- * to 01:00 EST.
- */
 class ScheduleMathTest {
 
     private val ny = ZoneId.of("America/New_York")
@@ -24,14 +14,10 @@ class ScheduleMathTest {
 
     private fun ms(iso: String): Long = Instant.parse(iso).toEpochMilli()
 
-    // --- floor clamp -----------------------------------------------------
-
     @Test
     fun `intervals below the WorkManager floor are clamped and flagged high-frequency`() {
         assertThat(ScheduleMath.effectiveWorkManagerInterval(5)).isEqualTo(15L)
         assertThat(ScheduleMath.effectiveWorkManagerInterval(14)).isEqualTo(15L)
-        // The boundary itself is allowed: at exactly 15 minutes WorkManager can
-        // run it, so it is not a high-frequency case.
         assertThat(ScheduleMath.effectiveWorkManagerInterval(15)).isEqualTo(15L)
         assertThat(ScheduleMath.effectiveWorkManagerInterval(16)).isEqualTo(16L)
 
@@ -60,13 +46,10 @@ class ScheduleMathTest {
             .isEqualTo(ms("2026-01-05T00:30:00Z"))
     }
 
-    // --- DST -------------------------------------------------------------
-
+    // America/New_York 2026: 03-08 02:00 EST jumps to 03:00 EDT; 11-01 02:00 EDT falls back to 01:00 EST.
     @Test
     fun `a daily run in a DST gap resolves to the first instant after the gap, once`() {
         val schedule = TaskSchedule(kind = ScheduleKind.DAILY, minuteOfDay = 2 * 60 + 30)
-        // 02:30 does not exist on 2026-03-08 in America/New_York. The first
-        // instant after the gap is the transition itself: 07:00Z.
         val gapFirstInstant = ms("2026-03-08T07:00:00Z")
 
         assertThat(ScheduleMath.nextRunAt(schedule, ms("2026-03-08T00:00:00Z"), ny))
@@ -84,8 +67,6 @@ class ScheduleMathTest {
     @Test
     fun `a daily run in a DST overlap fires once, not twice`() {
         val schedule = TaskSchedule(kind = ScheduleKind.DAILY, minuteOfDay = 1 * 60 + 30)
-        // 01:30 happens twice on 2026-11-01 in America/New_York. Only the earlier
-        // instant, 01:30 EDT (05:30Z), fires.
         val earlier = ms("2026-11-01T05:30:00Z")
 
         assertThat(ScheduleMath.nextRunAt(schedule, ms("2026-11-01T00:00:00Z"), ny))
@@ -99,13 +80,9 @@ class ScheduleMathTest {
             )
         ).containsExactly(earlier).inOrder()
 
-        // The following run is the next day at 01:30 EST, not the second 01:30
-        // on the overlap day.
         assertThat(ScheduleMath.nextRunAt(schedule, earlier, ny))
             .isEqualTo(ms("2026-11-02T06:30:00Z"))
     }
-
-    // --- month length ----------------------------------------------------
 
     @Test
     fun `monthly day 31 falls back to the last day of a shorter month`() {
@@ -118,13 +95,9 @@ class ScheduleMathTest {
             .isEqualTo(ms("2026-06-30T00:00:00Z"))
         assertThat(ScheduleMath.nextRunAt(schedule, ms("2026-02-01T00:00:00Z"), utc))
             .isEqualTo(ms("2026-02-28T00:00:00Z"))
-        // 2028 is a leap year, so the clamp follows the real month length rather
-        // than a hard-coded 28.
         assertThat(ScheduleMath.nextRunAt(schedule, ms("2028-02-01T00:00:00Z"), utc))
             .isEqualTo(ms("2028-02-29T00:00:00Z"))
     }
-
-    // --- quiet hours -----------------------------------------------------
 
     @Test
     fun `a run inside quiet hours is deferred to the window end, not dropped`() {
@@ -134,13 +107,9 @@ class ScheduleMathTest {
             quietFromMinute = 22 * 60,
             quietToMinute = 7 * 60
         )
-        // 02:30 New York is inside 22:00-07:00, so it is deferred to 07:00 EST
-        // the same day (12:00Z).
         assertThat(ScheduleMath.nextRunAt(schedule, ms("2026-01-05T17:00:00Z"), ny))
             .isEqualTo(ms("2026-01-06T12:00:00Z"))
 
-        // Three days in the window still produce one run per day, each at the
-        // quiet-window end -- deferred, never dropped.
         val occurrences = ScheduleMath.occurrencesBetween(
             schedule,
             ms("2026-01-04T00:00:00Z"),
@@ -162,7 +131,6 @@ class ScheduleMathTest {
             quietFromMinute = 22 * 60,
             quietToMinute = 7 * 60
         )
-        // The end is exclusive, so 07:00 itself runs.
         assertThat(ScheduleMath.nextRunAt(schedule, ms("2026-01-05T00:00:00Z"), utc))
             .isEqualTo(ms("2026-01-05T07:00:00Z"))
     }
@@ -205,13 +173,9 @@ class ScheduleMathTest {
             .isFalse()
     }
 
-    // --- missed-run catch-up (Doze) --------------------------------------
-
     @Test
     fun `isDue catches up a run WorkManager delivered late`() {
         val schedule = TaskSchedule(kind = ScheduleKind.DAILY, minuteOfDay = 9 * 60)
-        // Last ran three days ago and delivery was postponed; three occurrences
-        // fall in (lastRun, now], so the task is due once now.
         assertThat(
             ScheduleMath.isDue(
                 schedule,
@@ -227,12 +191,9 @@ class ScheduleMathTest {
         val schedule = TaskSchedule(kind = ScheduleKind.DAILY, minuteOfDay = 9 * 60)
         val lastRun = ms("2026-01-05T09:00:00Z")
 
-        // now == last run: the window is empty.
         assertThat(ScheduleMath.isDue(schedule, lastRun, lastRun, utc)).isFalse()
-        // now is exactly the next occurrence: it is inside (lastRun, now].
         assertThat(ScheduleMath.isDue(schedule, ms("2026-01-06T09:00:00Z"), lastRun, utc))
             .isTrue()
-        // One second short of it: not yet.
         assertThat(ScheduleMath.isDue(schedule, ms("2026-01-06T08:59:59Z"), lastRun, utc))
             .isFalse()
     }
@@ -252,8 +213,6 @@ class ScheduleMathTest {
         assertThat(ScheduleMath.isDue(schedule, ms("2026-01-08T10:00:00Z"), null, utc)).isFalse()
     }
 
-    // --- monotonicity ----------------------------------------------------
-
     @Test
     fun `nextRunAt is strictly monotonic and advances from its own result`() {
         val schedules = listOf(
@@ -266,8 +225,6 @@ class ScheduleMathTest {
             ),
             TaskSchedule(kind = ScheduleKind.MONTHLY, dayOfMonth = 31)
         )
-        // One start on the spring-forward day and one on the fall-back day, so
-        // the date kinds are pushed across both transitions.
         val starts = listOf(ms("2026-03-08T00:00:00Z"), ms("2026-11-01T00:00:00Z"))
 
         for (schedule in schedules) {
@@ -280,8 +237,6 @@ class ScheduleMathTest {
         }
     }
 
-    // --- weekly ----------------------------------------------------------
-
     @Test
     fun `weekly selects the requested days and an empty set means every day`() {
         val mondayOnly = TaskSchedule(
@@ -289,7 +244,6 @@ class ScheduleMathTest {
             minuteOfDay = 9 * 60,
             daysOfWeek = setOf(DayOfWeek.MONDAY)
         )
-        // 2026-01-07 is a Wednesday; the next Monday is 2026-01-12.
         assertThat(ScheduleMath.nextRunAt(mondayOnly, ms("2026-01-07T10:00:00Z"), utc))
             .isEqualTo(ms("2026-01-12T09:00:00Z"))
 
@@ -297,8 +251,6 @@ class ScheduleMathTest {
         assertThat(ScheduleMath.nextRunAt(everyDay, ms("2026-01-07T10:00:00Z"), utc))
             .isEqualTo(ms("2026-01-08T09:00:00Z"))
     }
-
-    // --- incomplete configuration ---------------------------------------
 
     @Test
     fun `an incomplete schedule has no next run`() {
@@ -314,8 +266,6 @@ class ScheduleMathTest {
             .isEmpty()
     }
 
-    // --- purity / no hidden clock ---------------------------------------
-
     @Test
     fun `the arithmetic is a pure function of its inputs`() {
         val schedule = TaskSchedule(
@@ -328,13 +278,9 @@ class ScheduleMathTest {
         val first = ScheduleMath.nextRunAt(schedule, from, ny)
         val second = ScheduleMath.nextRunAt(schedule, from, ny)
 
-        // Same inputs, same answer: the function reads no clock and keeps no
-        // state, so when the test runs cannot change the result.
         assertThat(first).isEqualTo(second)
         assertThat(first).isEqualTo(ms("2026-01-06T12:00:00Z"))
     }
-
-    // --- serialization ---------------------------------------------------
 
     @Test
     fun `a schedule survives a JSON round-trip`() {
