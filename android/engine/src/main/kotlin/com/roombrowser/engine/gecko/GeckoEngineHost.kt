@@ -224,10 +224,14 @@ internal class GeckoEngineHost : EngineHost {
                         .setAllowedInPrivateBrowsing(extension, true)
                         .accept(
                             { allowed ->
+                                // The flag lives on the extension's MetaData, not
+                                // on the extension: `setAllowedInPrivateBrowsing`
+                                // resolves with the UPDATED extension, and the
+                                // answer is read from there.
                                 android.util.Log.i(
                                     BRIDGE_LOG_TAG,
                                     "bridge allowedInPrivateBrowsing=" +
-                                        "${allowed?.allowedInPrivateBrowsing}"
+                                        "${allowed?.metaData?.allowedInPrivateBrowsing}"
                                 )
                             },
                             { error ->
