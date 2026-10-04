@@ -205,7 +205,18 @@ internal class GeckoEngineHost : EngineHost {
      * in the manifest -- see the asset in `src/main/assets/roombridge/`.
      */
     private fun installBridge(created: GeckoRuntime) {
-        created.webExtensionController
+        // Read the controller ONCE, here, and never from inside the callback
+        // below. `GeckoRuntime.getWebExtensionController()` is annotated
+        // @UiThread, and this function is only ever reached through `bind` ->
+        // `onMainThread { bindOnMainThread(...) }`, so reading it here is on
+        // the thread the annotation asks for. A GeckoResult callback's thread
+        // is not a documented contract -- Android Lint infers "any thread" for
+        // it and failed the build on exactly that line, and the runtime is
+        // only *probably* fine there (GeckoResult's default constructor adopts
+        // the creating thread's Looper). Hoisting removes the dependency
+        // instead of resting on it.
+        val controller = created.webExtensionController
+        controller
             .ensureBuiltIn(BRIDGE_URI, BRIDGE_ID)
             .accept(
                 { extension ->
@@ -220,7 +231,7 @@ internal class GeckoEngineHost : EngineHost {
                     // fail the one way this bridge always fails: the install
                     // succeeds, the delegate installs, and the port is never
                     // opened.
-                    created.webExtensionController
+                    controller
                         .setAllowedInPrivateBrowsing(extension, true)
                         .accept(
                             { allowed ->

@@ -1822,8 +1822,14 @@ class BrowserViewModel(
                 blockTrackers = settings.blockTrackers,
                 blockCrossSite = settings.blockCrossSiteTrackers,
                 blockMalicious = settings.blockMalicious,
+                // `shieldsDisabled` is nullable on the row: null means "no
+                // override stored", i.e. shields ON, so `== true` is the
+                // question being asked -- the same spelling the other two
+                // readers of this field use (WebClients.kt:273 and
+                // refreshShields below). A bare `it.shieldsDisabled` is a
+                // `Boolean?` predicate and does not compile.
                 shieldsDisabledHosts = siteSettingsSnapshot
-                    .filterValues { it.shieldsDisabled }
+                    .filterValues { it.shieldsDisabled == true }
                     .keys
             ),
             BlockedResourceSink { host, category ->
