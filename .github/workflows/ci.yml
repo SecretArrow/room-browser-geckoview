@@ -573,14 +573,40 @@ jobs:
             adb shell settings put global transition_animation_scale 0
             adb shell settings put global animator_duration_scale 0
             # The runner executes EACH LINE via its own `sh -c` — multi-line
-            # if/fi blocks are a syntax error (CI-proven twice). Keep the
+            # if/fi blocks are a syntax error (CI-proven twice). Keep each
             # failure fallback on ONE POSIX-valid line: on gradle failure,
             # dump the FULL device logcat (crash buffer + complete main
             # buffer + a UI hierarchy snapshot) into the workspace so the
             # e2e-reports artifact answers WHY from any point of the run —
             # a 2000-line tail missed the actual failure window once — then
             # exit non-zero.
-            cd android && ./gradlew connectedDebugAndroidTest --console=plain || (adb exec-out logcat -d -b crash > "$GITHUB_WORKSPACE/e2e-logcat-crash.txt"; adb exec-out logcat -d > "$GITHUB_WORKSPACE/e2e-logcat-full.txt"; adb shell uiautomator dump /sdcard/e2e-ui.xml >/dev/null 2>&1; adb pull /sdcard/e2e-ui.xml "$GITHUB_WORKSPACE/" >/dev/null 2>&1; adb pull /sdcard/e2e-shots "$GITHUB_WORKSPACE/" >/dev/null 2>&1; exit 1)
+            #
+            # WHY THERE ARE TWO INVOCATIONS. AndroidJUnitRunner scans the
+            # test APK's classes and runs them in class-name order, which
+            # makes `WalletE2eTest` ('W') the LAST suite in a 29-minute step:
+            # run 37204181484 finished `create_flow_reveals...` at 13:37:28
+            # and the job ended six seconds later, so every cycle spent the
+            # whole step before saying anything about the one test that was
+            # failing. The class filters move it forward. `-e class` and
+            # `-e notClass` both take a comma-separated list of FQCNs, and
+            # with no `-e class` the second invocation scans the classpath
+            # and drops exactly the two named classes, so no test runs twice.
+            #
+            # `A00WarmupTest` is in the FIRST invocation, not the second, and
+            # it stays ahead of the wallet suite on purpose. It is named to
+            # sort first and exists because the first minutes on a freshly
+            # installed APK are unusable -- ART verifies the whole (wallet-
+            # bearing) dex and dexopt churns, so every engine-booting test
+            # that starts in that window times out finding any UI node
+            # (runs d9587fe / 0e60f38). Putting `WalletE2eTest` ahead of it
+            # would buy the earlier answer by handing the wallet suite the
+            # cold window that the warm-up was written to absorb.
+            #
+            # The two fallback commands below are duplicated verbatim on
+            # purpose: a failure in either invocation must produce the same
+            # artifact.
+            cd android && ./gradlew connectedDebugAndroidTest --console=plain -Pandroid.testInstrumentationRunnerArguments.class=com.roombrowser.A00WarmupTest,com.roombrowser.WalletE2eTest || (adb exec-out logcat -d -b crash > "$GITHUB_WORKSPACE/e2e-logcat-crash.txt"; adb exec-out logcat -d > "$GITHUB_WORKSPACE/e2e-logcat-full.txt"; adb shell uiautomator dump /sdcard/e2e-ui.xml >/dev/null 2>&1; adb pull /sdcard/e2e-ui.xml "$GITHUB_WORKSPACE/" >/dev/null 2>&1; adb pull /sdcard/e2e-shots "$GITHUB_WORKSPACE/" >/dev/null 2>&1; exit 1)
+            cd android && ./gradlew connectedDebugAndroidTest --console=plain -Pandroid.testInstrumentationRunnerArguments.notClass=com.roombrowser.A00WarmupTest,com.roombrowser.WalletE2eTest || (adb exec-out logcat -d -b crash > "$GITHUB_WORKSPACE/e2e-logcat-crash.txt"; adb exec-out logcat -d > "$GITHUB_WORKSPACE/e2e-logcat-full.txt"; adb shell uiautomator dump /sdcard/e2e-ui.xml >/dev/null 2>&1; adb pull /sdcard/e2e-ui.xml "$GITHUB_WORKSPACE/" >/dev/null 2>&1; adb pull /sdcard/e2e-shots "$GITHUB_WORKSPACE/" >/dev/null 2>&1; exit 1)
 
       - name: Upload instrumented test reports
         if: always()
