@@ -161,6 +161,10 @@ internal class GeckoEngineHost : EngineHost {
                 { extension ->
                     if (extension == null) return@accept
                     bridge = extension
+                    android.util.Log.i(
+                        BRIDGE_LOG_TAG,
+                        "extension installed uri=$BRIDGE_URI id=$BRIDGE_ID"
+                    )
                     val waiting = synchronized(bridgeWaiters) {
                         val copy = bridgeWaiters.toList()
                         bridgeWaiters.clear()
@@ -172,7 +176,7 @@ internal class GeckoEngineHost : EngineHost {
                     // No bridge means no wallet, no vault and no device shim.
                     // Loud on purpose: this is not a degraded-but-usable state.
                     android.util.Log.e(
-                        "GeckoEngineHost",
+                        BRIDGE_LOG_TAG,
                         "Built-in bridge extension failed to install; page bridges are dead",
                         error
                     )

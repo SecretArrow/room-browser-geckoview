@@ -242,12 +242,23 @@ internal class GeckoEngineSession(
             bridgeDelegate,
             BRIDGE_NATIVE_APP
         )
+        android.util.Log.i(
+            BRIDGE_LOG_TAG,
+            "session=$id bridge delegate installed on port=$BRIDGE_NATIVE_APP"
+        )
     }
 
     private val bridgeDelegate = object : WebExtension.MessageDelegate {
         override fun onConnect(port: WebExtension.Port) {
             this@GeckoEngineSession.port = port
             port.setDelegate(portDelegate)
+            // Logged BEFORE the flushes below, because those have work to do
+            // (a queued eval, a page script) and a run that dies in them would
+            // otherwise look like a port that never connected.
+            android.util.Log.i(
+                BRIDGE_LOG_TAG,
+                "session=${this@GeckoEngineSession.id} port connected"
+            )
             flushQueuedEvals(port)
             flushPageScripts(port)
         }
@@ -256,16 +267,35 @@ internal class GeckoEngineSession(
     private val portDelegate = object : WebExtension.PortDelegate {
         override fun onPortMessage(message: Any, port: WebExtension.Port) {
             val json = message as? JSONObject ?: return
-            when (json.optString("type")) {
+            when (val type = json.optString("type")) {
                 "evalResult" -> {
                     val id = json.optLong("id")
                     pendingEval.remove(id)?.invoke(json.optString("value"))
                 }
                 "app" -> {
+                    val channel = json.optString("channel")
+                    // Type and channel only, never the payload. The payload is
+                    // page-authored and a wallet channel carries addresses and
+                    // signatures through here; a diagnostic is not a reason to
+                    // copy that into a buffer anything on the device can read.
+                    android.util.Log.i(
+                        BRIDGE_LOG_TAG,
+                        "session=${this@GeckoEngineSession.id} port message type=app channel=$channel"
+                    )
                     listener?.onPageMessage(
                         this@GeckoEngineSession,
-                        json.optString("channel"),
+                        channel,
                         json.optString("payload")
+                    )
+                }
+                else -> {
+                    // A `when` with no else dropped these without a word, so a
+                    // rename on either side of the port was invisible: the JS
+                    // sent, native received, and neither end could tell that
+                    // the two had stopped agreeing on what a message is called.
+                    android.util.Log.w(
+                        BRIDGE_LOG_TAG,
+                        "session=${this@GeckoEngineSession.id} port message with unknown type=$type"
                     )
                 }
             }
@@ -288,6 +318,15 @@ internal class GeckoEngineSession(
             // anchor exists to prevent.
             val abandoned = pendingEval.keys.toList()
             abandoned.forEach { id -> pendingEval.remove(id)?.invoke(null) }
+            // Last of the three lifecycle lines. A run that shows the connect
+            // and a disconnect with no message between them was connected and
+            // never called -- a different fault from one that never connected,
+            // and indistinguishable from it without this line.
+            android.util.Log.i(
+                BRIDGE_LOG_TAG,
+                "session=${this@GeckoEngineSession.id} port disconnected, " +
+                    "abandoned ${abandoned.size} pending eval(s)"
+            )
         }
     }
 
