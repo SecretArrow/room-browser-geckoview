@@ -98,13 +98,14 @@ class BrowserActivity : FragmentActivity() {
             return
         }
         boundProfileId = profileId
-        // THIS instance is the restart — any backstop alarm scheduled by the
-        // previous instance (scheduleSelfRestart / ProfileSwitchExecutor,
-        // same request code + intent identity) has done its job and MUST be
-        // cancelled: on the CI emulator the deferred alarm fired ~5 s AFTER
-        // this activity was already up, as a redundant CLEAR_TASK relaunch
-        // that destroyed the freshly-started engine mid-initialization (the
-        // second ViewModel's tab restore raced every early interaction).
+        // THIS instance is the restart, so the alarms that raced it here have
+        // done their job and are cancelled. This is TIDYING, not the safety
+        // property: the backstop can now only ever deliver an onNewIntent, so
+        // losing this race costs nothing. It used to be the whole defence, and
+        // it used to lose -- the alarm is due at T+350 while this method runs
+        // at ~T+1150, so whether it fired first was decided by how far the
+        // system deferred an inexact alarm that day (see
+        // ProfileSwitchExecutor.scheduleRestart).
         cancelPendingRestartAlarm()
 
         val factory = object : ViewModelProvider.Factory {
@@ -367,7 +368,7 @@ class BrowserActivity : FragmentActivity() {
             url?.let { putExtra(EXTRA_INITIAL_URL, it) }
         }
         val pending = android.app.PendingIntent.getActivity(
-            this, 4242, intent,
+            this, SELF_RESTART_REQUEST_CODE, intent,
             android.app.PendingIntent.FLAG_UPDATE_CURRENT or android.app.PendingIntent.FLAG_IMMUTABLE
         )
         val alarm = getSystemService(ALARM_SERVICE) as android.app.AlarmManager
@@ -382,24 +383,33 @@ class BrowserActivity : FragmentActivity() {
     }
 
     /**
-     * Cancels any pending self-restart backstop alarm. PendingIntent
-     * equivalence uses Intent.filterEquals (component/flags — extras are NOT
-     * compared) plus the request code, so this token matches BOTH the
-     * [scheduleSelfRestart] and the ProfileSwitchExecutor backstops (both
-     * 4242 + BrowserActivity + NEW_TASK|CLEAR_TASK). Creating the token here
-     * is side-effect free; cancelling it when no alarm was set is a no-op.
+     * Cancels every pending engine-restart alarm.
+     *
+     * TWO tokens, and they cannot be one: [SELF_RESTART_REQUEST_CODE] relaunches
+     * with CLEAR_TASK (safe, because its process is already dead when it fires)
+     * and [SWITCH_BACKSTOP_REQUEST_CODE] relaunches without it (so it can never
+     * tear down a live instance). `Intent.filterEquals` ignores flags, so only
+     * the request code separates them -- see RestartAlarm.kt.
+     *
+     * Cancelling a token that was never armed is a no-op, so this is safe to
+     * call unconditionally on every bind.
      */
     private fun cancelPendingRestartAlarm() {
-        runCatching {
-            val intent = Intent(this, BrowserActivity::class.java).apply {
-                flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK
+        val alarm = getSystemService(ALARM_SERVICE) as android.app.AlarmManager
+        for (requestCode in RESTART_REQUEST_CODES) {
+            runCatching {
+                // The flags here are irrelevant -- filterEquals does not read
+                // them -- so one shape of intent cancels both tokens.
+                val intent = Intent(this, BrowserActivity::class.java).apply {
+                    flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK
+                }
+                val pending = android.app.PendingIntent.getActivity(
+                    this, requestCode, intent,
+                    android.app.PendingIntent.FLAG_UPDATE_CURRENT or
+                        android.app.PendingIntent.FLAG_IMMUTABLE
+                )
+                alarm.cancel(pending)
             }
-            val pending = android.app.PendingIntent.getActivity(
-                this, 4242, intent,
-                android.app.PendingIntent.FLAG_UPDATE_CURRENT or
-                    android.app.PendingIntent.FLAG_IMMUTABLE
-            )
-            (getSystemService(ALARM_SERVICE) as android.app.AlarmManager).cancel(pending)
         }
     }
 

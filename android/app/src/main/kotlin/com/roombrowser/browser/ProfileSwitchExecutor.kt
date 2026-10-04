@@ -139,25 +139,36 @@ class ProfileSwitchExecutor(
         // with no Displayed line ever following), leaving the switcher
         // create-then-switch flow with a dead screen forever.
         runCatching { context.startActivity(intent) }
-        // BACKSTOP only: if the in-flight launch above is somehow lost
-        // before the system registers it, the alarm relaunches. The
-        // successfully-restarted activity CANCELS this alarm on bind
-        // (BrowserActivity.cancelPendingRestartAlarm) so it can never fire
-        // as a redundant CLEAR_TASK relaunch on top of a live engine.
+        // BACKSTOP only: if the in-flight launch above is somehow lost before
+        // the system registers it, the alarm relaunches.
+        //
+        // IT MUST NOT BE ABLE TO DESTROY ANYTHING. The copy below drops
+        // FLAG_ACTIVITY_CLEAR_TASK, so a backstop that arrives on top of a live
+        // engine becomes onNewIntent on the singleTask instance -- harmless --
+        // while still starting a fresh one when nothing is up.
+        //
+        // That is a fix, not caution. The alarm is due at T+350 and the
+        // activity it races does not reach cancelPendingRestartAlarm() until
+        // ~T+1150, so the cancel is a LOSING RACE BY CONSTRUCTION: it wins only
+        // when the system happens to defer the inexact alarm past the cold
+        // start. When it lost (run 37185155108) the backstop's CLEAR_TASK tore
+        // down the freshly-started engine, its replacement's start was
+        // cancelled, and the process was left alive with no activity at all --
+        // onResume, then onCleared 43 ms later, no frame ever drawn. A backstop
+        // that cannot destroy needs no cancellation to be safe.
+        val backstop = Intent(intent).apply { flags = Intent.FLAG_ACTIVITY_NEW_TASK }
         val pending = PendingIntent.getActivity(
             context,
-            RESTART_REQUEST_CODE,
-            intent,
+            SWITCH_BACKSTOP_REQUEST_CODE,
+            backstop,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
         val alarm = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
         val triggerAt = SystemClock.elapsedRealtime() + RESTART_DELAY_MS
-        // WAKEUP (matching BrowserActivity.scheduleSelfRestart): the process
-        // dies immediately after this call — only the alarm can relaunch the
-        // engine, so it must fire even if the device dozes mid-switch (the CI
-        // emulator deferred the non-wakeup variant by ~5 s while idle).
-        // See [scheduleEngineRestart] for why this is not a bare
-        // setExactAndAllowWhileIdle.
+        // WAKEUP: the process dies moments after this call, so the alarm is the
+        // last thing that can bring the engine back if the primary launch above
+        // was lost -- it must survive Doze. See [scheduleEngineRestart] for why
+        // this is not a bare setExactAndAllowWhileIdle.
         alarm.scheduleEngineRestart(triggerAt, pending)
     }
 
@@ -177,7 +188,6 @@ class ProfileSwitchExecutor(
     companion object {
         const val EXTRA_PROFILE_ID = "com.roombrowser.extra.PROFILE_ID"
         const val EXTRA_RESTART = "com.roombrowser.extra.RESTART"
-        private const val RESTART_REQUEST_CODE = 4242
         private const val RESTART_DELAY_MS = 350L
         private const val KILL_DELAY_MS = 250L
     }

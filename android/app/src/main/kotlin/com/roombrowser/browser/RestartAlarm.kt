@@ -5,6 +5,29 @@ import android.app.PendingIntent
 import android.os.Build
 
 /**
+ * Request code of the token that RE-LAUNCHES the engine: armed by
+ * `BrowserActivity.scheduleSelfRestart`, where the alarm is the only thing
+ * left that can bring the browser back (the process dies on the next line).
+ */
+internal const val SELF_RESTART_REQUEST_CODE = 4242
+
+/**
+ * Request code of the backstop token armed by [ProfileSwitchExecutor].
+ *
+ * It is a SEPARATE token from [SELF_RESTART_REQUEST_CODE] on purpose, and the
+ * request code is the only thing that can separate them: `Intent.filterEquals`
+ * -- which decides whether two `PendingIntent`s are the same token -- compares
+ * component, action, data and categories but NOT flags. Two tokens that differ
+ * only in their flags would therefore be one token, and the second
+ * `FLAG_UPDATE_CURRENT` would silently rewrite the first one's intent.
+ */
+internal const val SWITCH_BACKSTOP_REQUEST_CODE = 4243
+
+/** Both engine-restart tokens, for the one call site that cancels them. */
+internal val RESTART_REQUEST_CODES =
+    intArrayOf(SELF_RESTART_REQUEST_CODE, SWITCH_BACKSTOP_REQUEST_CODE)
+
+/**
  * The engine-restart backstop alarm, shared by [ProfileSwitchExecutor] and
  * `BrowserActivity.scheduleSelfRestart`.
  *
