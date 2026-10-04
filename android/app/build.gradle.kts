@@ -260,6 +260,45 @@ dependencies {
     implementation(libs.androidx.work.runtime)
     implementation(libs.androidx.webkit)
 
+    // Guava, for `com.google.common.util.concurrent.ListenableFuture` -- the
+    // type QrScannerActivity calls `addListener` on, because that is what
+    // CameraX's `ProcessCameraProvider.getInstance()` returns.
+    //
+    // WHY THIS LINE IS HERE, because deleting it looks harmless and is not:
+    // the class was reaching this module TRANSITIVELY, and the engine broke
+    // that path. CameraX depends on `com.google.guava:listenablefuture:1.0`,
+    // the stub artifact that exists so libraries can name ListenableFuture
+    // without pulling in all of Guava. Bundling the engine put
+    // geckoview -> androidx.media3:media3-common -> com.google.guava:guava on
+    // the RUNTIME classpath, and Guava declares that it PROVIDES the
+    // `listenablefuture` capability at version
+    // `9999.0-empty-to-avoid-conflict-with-guava` together with a dependency
+    // on that very artifact -- which is empty, and exists only so that "9999"
+    // wins the conflict and the duplicate class never ships. It wins, the stub
+    // is dropped, and on the runtime classpath that is correct: Guava's own
+    // jar carries ListenableFuture.
+    //
+    // It stops being correct one configuration over. AGP resolves the debug
+    // compile classpath CONSISTENTLY with the runtime one, so the compile
+    // classpath inherits the same choice -- and GeckoView is not on the
+    // compile classpath, because `:engine` keeps it to `implementation`. So
+    // the compile classpath got the empty artifact, not Guava, and the
+    // compiler reported what it actually saw:
+    //
+    //   Cannot access class 'com.google.common.util.concurrent.ListenableFuture'
+    //
+    // Declaring Guava here is the honest repair rather than a workaround for
+    // it: this module's code genuinely uses the type, so it should declare the
+    // library that provides it instead of inheriting it from whichever engine
+    // happens to be in the tree. The alternative -- forcing
+    // `com.google.guava:listenablefuture` back to 1.0 -- was rejected because
+    // it would put the stub back alongside Guava and reintroduce the duplicate
+    // class that the 9999 artifact exists to prevent.
+    //
+    // Cost is nil: Guava is already in the APK through the engine, and R8
+    // shrinks it in release builds.
+    implementation(libs.guava)
+
     implementation(libs.androidx.camera.core)
     implementation(libs.androidx.camera.camera2)
     implementation(libs.androidx.camera.lifecycle)
