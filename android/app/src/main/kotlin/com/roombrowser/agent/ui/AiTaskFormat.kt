@@ -27,8 +27,10 @@ fun scheduleSummary(s: TaskSchedule): String {
         ScheduleKind.MONTHLY ->
             "Monthly on day ${s.dayOfMonth ?: 1} at ${formatMinuteOfDay(s.minuteOfDay ?: 0)}"
     }
-    return if (s.quietFromMinute != null && s.quietToMinute != null && s.quietFromMinute != s.quietToMinute) {
-        "$core (quiet ${formatMinuteOfDay(s.quietFromMinute)}–${formatMinuteOfDay(s.quietToMinute)})"
+    val quietFrom = s.quietFromMinute
+    val quietTo = s.quietToMinute
+    return if (quietFrom != null && quietTo != null && quietFrom != quietTo) {
+        "$core (quiet ${formatMinuteOfDay(quietFrom)}–${formatMinuteOfDay(quietTo)})"
     } else {
         core
     }

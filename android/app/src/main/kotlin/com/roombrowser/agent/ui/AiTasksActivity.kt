@@ -81,7 +81,7 @@ class AiTasksActivity : ComponentActivity() {
                 AiTasksRoot(
                     controller = controller,
                     onAdd = { launchEditor(null) },
-                    onEdit = { launchEditor(it) },
+                    onEdit = { launchEditor(it.id) },
                     onClose = { finish() }
                 )
             }

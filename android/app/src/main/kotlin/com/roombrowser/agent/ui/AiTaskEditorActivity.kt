@@ -61,7 +61,6 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.Lifecycle
-import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.roombrowser.RoomBrowserApp
 import com.roombrowser.agent.AiTaskController
 import com.roombrowser.data.db.AiTaskEntity
