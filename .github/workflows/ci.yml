@@ -59,9 +59,33 @@ jobs:
   autofix:
     name: Auto-fix (lintFix)
     runs-on: ubuntu-latest
+    env:
+      # The branch autofix commits onto, and it has to be named explicitly.
+      #
+      # On a pull_request event GitHub checks out the PR's MERGE commit
+      # (refs/pull/N/merge) in detached HEAD, and github.ref_name is then the
+      # literal string "1/merge". Pushing to that is not an edge case that
+      # mostly works: git refuses outright, because an unqualified destination
+      # that matches no ref on the remote cannot be guessed at --
+      #
+      #   error: The destination you provided is not a full refname
+      #   error: failed to push some refs
+      #
+      # -- which is exactly how this job failed on run 37180993472 the moment
+      # it had something to commit. The variable is fully qualified for both
+      # events on purpose: git's fallback is to look for a ref matching the
+      # destination on the remote, and it gives up when it finds none.
+      #
+      # Committing onto the PR's head branch rather than the merge commit also
+      # keeps a stray merge commit out of the branch every time autofix fires.
+      AUTOFIX_REF: ${{ github.event_name == 'pull_request' && format('refs/heads/{0}', github.event.pull_request.head.ref) || github.ref }}
     steps:
       - name: Checkout
         uses: actions/checkout@v7
+        with:
+          # See AUTOFIX_REF. Without this the tree committed below would sit
+          # on top of the merge commit and drag it onto the branch.
+          ref: ${{ env.AUTOFIX_REF }}
 
       - name: Set up JDK 21
         uses: actions/setup-java@v6
@@ -155,11 +179,11 @@ jobs:
           # Prefer PAT_TOKEN: pushes with it re-trigger the workflow so the
           # fixed tree gets a full clean pipeline run (GITHUB_TOKEN would not).
           if [ -n "${{ secrets.PAT_TOKEN }}" ]; then
-            git push "https://x-access-token:${{ secrets.PAT_TOKEN }}@github.com/${{ github.repository }}.git" HEAD:${{ github.ref_name }}
+            git push "https://x-access-token:${{ secrets.PAT_TOKEN }}@github.com/${{ github.repository }}.git" HEAD:${{ env.AUTOFIX_REF }}
             echo "pushed_with_pat=true" >> "$GITHUB_OUTPUT"
             echo "Auto-fixes pushed with PAT — a fresh CI run now validates the fixed tree."
           else
-            git push "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git" HEAD:${{ github.ref_name }}
+            git push "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git" HEAD:${{ env.AUTOFIX_REF }}
             echo "pushed_with_pat=false" >> "$GITHUB_OUTPUT"
             echo "WARN: PAT_TOKEN secret not set — pushed with GITHUB_TOKEN (no re-trigger)."
           fi

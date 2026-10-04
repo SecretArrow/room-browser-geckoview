@@ -210,6 +210,19 @@ android {
             excludes += "/META-INF/LICENSE*"
             excludes += "/META-INF/*LICENSE*"
             excludes += "/META-INF/NOTICE*"
+            // The multi-release OSGi manifest, shipped inside
+            // META-INF/versions/9/ by both org.bouncycastle:bcprov-jdk18on
+            // (via :core:wallet) and org.jspecify:jspecify 1.0.0 (via Guava,
+            // which the engine's media3 dependency pulls in). Two identical
+            // paths, so :app:mergeDebugJavaResource fails outright --
+            //
+            //   2 files found with path 'META-INF/versions/9/OSGI-INF/MANIFEST.MF'
+            //
+            // Nothing on Android reads it: it describes an OSGi bundle, and
+            // META-INF/versions/ is the Java 9+ multi-release mechanism, which
+            // does not exist on ART. Excluding it drops a manifest that was
+            // never loadable here.
+            excludes += "/META-INF/versions/9/OSGI-INF/MANIFEST.MF"
         }
     }
     lint {
