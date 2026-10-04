@@ -119,17 +119,30 @@ class BrowserViewModel(
      * destroyed engine's bridge must not outlive it — GC reclaims both. Used
      * to push accountsChanged/chainChanged events to every live page after
      * the user switches networks or accounts in the wallet dashboard.
+     *
+     * Synchronized because the readers are not all on one thread: the page
+     * callback below runs on the engine's own thread while the main thread
+     * inserts and removes. A bare [java.util.WeakHashMap] is not safe under
+     * that — and its stale-entry sweep mutates the table from whichever
+     * thread happens to touch the map.
      */
     private val walletBridges =
-        java.util.WeakHashMap<EngineSession, com.roombrowser.browser.wallet.dapp.WalletBridge>()
+        java.util.Collections.synchronizedMap(
+            java.util.WeakHashMap<EngineSession, com.roombrowser.browser.wallet.dapp.WalletBridge>()
+        )
 
     /**
      * Per-session password-manager bridges. The bridge holds its session only
      * through a [java.lang.ref.WeakReference], so a weak key here is a real
      * release rather than a key the value keeps alive; the entry is dropped
      * explicitly by the session teardown all the same.
+     *
+     * Synchronized like [walletBridges], for the same reason.
      */
-    private val vaultBridges = java.util.WeakHashMap<EngineSession, RoomVaultBridge>()
+    private val vaultBridges =
+        java.util.Collections.synchronizedMap(
+            java.util.WeakHashMap<EngineSession, RoomVaultBridge>()
+        )
 
     /** Last-seen wallet state, so event collectors only emit on CHANGE. */
     private var lastWalletChainIds: Map<com.roombrowser.domain.wallet.model.ChainType, com.roombrowser.domain.wallet.model.NetworkConfig> = emptyMap()
@@ -2333,7 +2346,9 @@ class BrowserViewModel(
 
     /** Relay one EIP-1193 event to every live session's wallet bridge. */
     private fun emitWalletEvent(event: String, payloadJson: String) {
-        val bridges = walletBridges.values.toList()
+        // Snapshot under the map's lock: iterating a synchronized view without
+        // it is the one operation the wrapper does not cover.
+        val bridges = synchronized(walletBridges) { walletBridges.values.toList() }
         bridges.forEach { it.emitEvent(event, payloadJson) }
     }
 
