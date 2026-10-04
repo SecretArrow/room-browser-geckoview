@@ -35,8 +35,8 @@ rootProject.name = "RoomBrowser"
 include(":app")
 include(":core:domain")
 include(":core:wallet")
-// TODO(geckoview): include(":engine") lands together with the module itself, the
-// ABI restriction in app/build.gradle.kts, and the CI verification steps -- as
-// one change. Adding the include on its own would fail configuration, and adding
-// the module without the ABI restriction would make the debug build package
-// three copies of a ~150 MB engine.
+// The engine. This is the ONLY module that may name a concrete rendering
+// engine, and it does so behind the com.roombrowser.engine facade. The app
+// depends on it as `implementation`, so no engine type reaches :app's compile
+// classpath -- enforced by EngineBoundaryTest rather than by convention.
+include(":engine")

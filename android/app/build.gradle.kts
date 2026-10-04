@@ -21,6 +21,17 @@ val baseVersionName =
 val ciBuildNumber = System.getenv("GITHUB_RUN_NUMBER")?.toIntOrNull() ?: 0
 val baseVersionCode = if (ciBuildNumber > 0) ciBuildNumber else 1
 
+// The ABIs the bundled engine actually ships native libraries for. Measured
+// from the AAR rather than assumed: GeckoView publishes arm64-v8a, armeabi-v7a
+// and x86_64, and NO 32-bit x86 build at all.
+//
+// That absence is why "x86" is REMOVED from the split set rather than merely
+// deprioritised. An x86 APK would build, install, launch, and then die at
+// System.loadLibrary -- a crash on exactly the devices least able to report
+// it. Not shipping one is the honest answer, and this list is the single place
+// the fact is written down.
+val geckoViewAbis = listOf("arm64-v8a", "armeabi-v7a", "x86_64")
+
 android {
     namespace = "com.roombrowser"
     compileSdk = 35
@@ -38,23 +49,42 @@ android {
         vectorDrawables { useSupportLibrary = true }
     }
 
-    // ABI-split release builds (spec section 57).
-    // RB_RELEASE_ABIS (comma-separated, e.g. "arm64-v8a,armeabi-v7a")
-    // narrows the split set — the CI release job uses it to focus the
-    // shippable artifacts on real-device ARM ABIs. Unset (local + all other
-    // CI jobs): the full split set + universal, exactly as before.
+    // ABI splits.
+    //
+    // RB_ABIS (comma-separated) narrows the split set. There is one variable
+    // rather than separate debug and release ones because `splits` is a
+    // project-wide setting in AGP -- there is no per-build-type equivalent --
+    // so two variables would look like they did something they cannot.
+    //
+    // This matters far more than it used to. The engine is now BUNDLED into
+    // the APK instead of being taken from the device, so every ABI adds its
+    // own copy of a ~150 MB engine. The former default -- four splits plus a
+    // universal APK carrying all of them -- would push roughly half a gigabyte
+    // of native libraries through every CI job that only wanted to know
+    // whether the app compiles. The jobs narrow it accordingly: quality builds
+    // arm64-v8a, e2e builds the emulator's own x86_64.
     splits {
         abi {
             isEnable = true
             reset()
-            val focusAbis = System.getenv("RB_RELEASE_ABIS")
+            val focusAbis = System.getenv("RB_ABIS")
                 ?.split(',')?.map { it.trim() }?.filter { it.isNotEmpty() }
             if (focusAbis.isNullOrEmpty()) {
-                include("armeabi-v7a", "arm64-v8a", "x86", "x86_64")
+                include(*geckoViewAbis.toTypedArray())
             } else {
+                focusAbis.forEach { abi ->
+                    require(abi in geckoViewAbis) {
+                        "ABI '$abi' has no GeckoView native library; the engine ships " +
+                            "only $geckoViewAbis. See the note above geckoViewAbis."
+                    }
+                }
                 include(*focusAbis.toTypedArray())
             }
-            isUniversalApk = focusAbis.isNullOrEmpty()
+            // Never a universal APK. It is the sum of every ABI, which makes it
+            // the single largest artifact this build can produce, and no job
+            // needs it: the release ships per-ABI splits and the Play listing
+            // takes splits too.
+            isUniversalApk = false
         }
     }
 
@@ -69,7 +99,6 @@ android {
                     "arm64-v8a" -> 4
                     "armeabi-v7a" -> 3
                     "x86_64" -> 2
-                    "x86" -> 1
                     else -> 0
                 }
                 impl.versionCode.set(abiRank * 100_000 + baseVersionCode)
@@ -195,6 +224,13 @@ dependencies {
     // Multi-chain wallet core (chain adapters + crypto). App-side wallet
     // layers (contract/engine/bridge/repository/UI) build on it.
     implementation(project(":core:wallet"))
+
+    // The engine. `implementation`, never `api`: this is what keeps every
+    // org.mozilla.geckoview type off this module's compile classpath, so the
+    // app physically cannot write code that depends on which engine it runs.
+    // EngineBoundaryTest fails the build if an engine import ever appears
+    // above the facade, so this stays true rather than merely intended.
+    implementation(project(":engine"))
 
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.appcompat)

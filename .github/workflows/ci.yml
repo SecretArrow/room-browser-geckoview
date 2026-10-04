@@ -199,7 +199,7 @@ jobs:
         working-directory: android
         run: ./gradlew lintDebug --console=plain
 
-      - name: Unit tests (domain + app)
+      - name: Unit tests (domain + engine + app)
         working-directory: android
         # --continue so a failure in one module still reports the other's
         # result instead of hiding it, and one retry because several tests in
@@ -208,15 +208,80 @@ jobs:
         # runner can fail those with no code being wrong — that has happened
         # twice. A genuinely broken test fails both attempts, so the gate
         # still holds; the annotation keeps the retry visible, not silent.
+        #
+        # :engine:test carries the two guards that hold this codebase's shape
+        # together: EngineBoundaryTest fails if an engine import escapes the
+        # single module allowed to name one, and BridgeManifestTest fails if
+        # the bridge extension's manifest stops declaring what injection
+        # silently depends on. Both are pure JVM and cost about a second.
         run: |
-          ./gradlew testDebugUnitTest :core:domain:test :core:wallet:test --console=plain --continue || {
+          ./gradlew testDebugUnitTest :core:domain:test :core:wallet:test :engine:test --console=plain --continue || {
             echo "::warning title=Unit tests flaked::First attempt failed — retrying once. A load-induced flake passes now; a real failure fails again."
-            ./gradlew testDebugUnitTest :core:domain:test :core:wallet:test --console=plain --continue
+            ./gradlew testDebugUnitTest :core:domain:test :core:wallet:test :engine:test --console=plain --continue
           }
 
-      - name: Debug build (all ABIs)
+      - name: Debug build (single ABI)
         working-directory: android
+        # RB_ABIS narrows the split set for THIS invocation. It matters far
+        # more now than it did when the engine came from the device: the
+        # engine is bundled into the APK, so each ABI carries its own ~167 MB
+        # libxul.so. Building the default set here produced three of those
+        # plus (before isUniversalApk was pinned false) a universal APK
+        # containing all of them — roughly half a gigabyte of native code
+        # packaged twice per pipeline, to answer a question that one ABI
+        # answers just as well. arm64-v8a is the ABI the two guard steps below
+        # then check the packaging of.
+        env:
+          RB_ABIS: "arm64-v8a"
         run: ./gradlew assembleDebug --console=plain
+
+      - name: Verify the engine's native libraries reach the APK
+        working-directory: android
+        # WHY THIS STEP EXISTS. Everything about the bundled engine fails
+        # QUIETLY. A packaging exclude that swallows libxul.so, a shrinker
+        # rule that strips it, an ABI filter that never applied — none of
+        # these break the build. They produce an APK that installs, launches,
+        # and dies in System.loadLibrary, or worse, an APK whose Gradle
+        # "splits" output looks correct while the library inside is missing.
+        #
+        # The e2e job would eventually catch the catastrophic case, but only
+        # after a 50-minute emulator run, and it would catch it on x86_64 —
+        # which says nothing about whether the arm64 APK this pipeline ships
+        # is intact. This check reads the artifact itself, in seconds, on the
+        # ABI that actually ships.
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          apks=(app/build/outputs/apk/debug/*.apk)
+          [ ${#apks[@]} -eq 1 ] || {
+            echo "::error::expected exactly one debug APK (RB_ABIS=arm64-v8a), found ${#apks[@]}"
+            ls -l app/build/outputs/apk/debug/ || true
+            exit 1
+          }
+          APK="${apks[0]}"
+          echo "checking $(basename "$APK") ($(du -h "$APK" | cut -f1))"
+          # Every entry under lib/<abi>/ in the packaged APK.
+          #
+          # The filter is `.so` files, not everything under lib/: a zip may
+          # also carry DIRECTORY entries (lib/, lib/arm64-v8a/), and those
+          # reduce to an empty ABI name and break the comparison below in a
+          # way that reads as "the ABI set is wrong" rather than "the listing
+          # was not filtered". Caught by running this script against
+          # synthetic APKs before it ever reached CI.
+          LIBS=$(unzip -l "$APK" | awk '$1 ~ /^[0-9]+$/ && $4 ~ /^lib\/.*\.so$/ {print $4}')
+          [ -n "$LIBS" ] || { echo "::error::the APK contains no native libraries at all — the engine was not packaged"; exit 1; }
+          ABIS=$(echo "$LIBS" | cut -d/ -f2 | sort -u)
+          echo "packaged ABIs:"; echo "$ABIS"
+          [ "$ABIS" = "arm64-v8a" ] || { echo "::error::expected only arm64-v8a, got: $ABIS"; exit 1; }
+          # libxul.so is the engine. The other twelve libraries are its
+          # dependencies (NSS, the media codecs, the crash reporter); xul is
+          # the one whose absence means "no browser".
+          echo "$LIBS" | grep -qx 'lib/arm64-v8a/libxul.so' || {
+            echo "::error::libxul.so is missing from the APK — the bundled engine is not usable"
+            echo "--- everything under lib/ ---"; echo "$LIBS"
+            exit 1
+          }
+          echo "lib/arm64-v8a/libxul.so present ($(unzip -l "$APK" | awk '$4 == "lib/arm64-v8a/libxul.so" {printf "%.0f MB", $1/1048576}'))"
 
       - name: Release build validation (unsigned, ARM-focused)
         working-directory: android
@@ -228,7 +293,14 @@ jobs:
         # stamps the release version and proves the signature with apksigner.
         env:
           RB_UNSIGNED_RELEASE: "true"
-          RB_RELEASE_ABIS: "arm64-v8a,armeabi-v7a"
+          # RB_ABIS, not RB_RELEASE_ABIS: there is one ABI variable now,
+          # because `splits` is a project-wide setting in AGP with no
+          # per-build-type equivalent. The old name stopped being read the
+          # moment the engine landed, and a variable that is set but never
+          # read is how this step would have silently gone back to building
+          # the full ABI set — five APKs, half a gigabyte of native code —
+          # while still printing a green check.
+          RB_ABIS: "arm64-v8a,armeabi-v7a"
         run: |
           ./gradlew assembleRelease --console=plain
           # NOTE: this step runs with working-directory=android — paths
@@ -243,6 +315,20 @@ jobs:
           if ls app/build/outputs/apk/release/*universal*.apk app/build/outputs/apk/release/*x86*.apk >/dev/null 2>&1; then
             echo "::error::unfocused ABI leaked into the release build"; ls -l app/build/outputs/apk/release/; exit 1
           fi
+          # The engine's native library is present in EVERY focused APK.
+          # R8 shrinking and resource shrinking both run on this build type
+          # and neither runs on the debug build, so "the debug APK has
+          # libxul.so" is not evidence about the artifact that ships. Checked
+          # per ABI rather than once, because a packaging rule can be
+          # ABI-conditional: the failure this guards against is armeabi-v7a
+          # coming out without an engine while arm64-v8a is fine, which no
+          # whole-build assertion would notice.
+          for abi in arm64-v8a armeabi-v7a; do
+            apk=$(ls app/build/outputs/apk/release/room-browser-*-${abi}-release*.apk | head -1)
+            unzip -l "$apk" | grep -q "lib/${abi}/libxul\.so" \
+              || { echo "::error::${abi} release APK has no libxul.so — the bundled engine is missing"; unzip -l "$apk" | grep 'lib/' || echo "(no lib/ entries at all)"; exit 1; }
+            echo "$(basename "$apk"): lib/${abi}/libxul.so present ($(du -h "$apk" | cut -f1))"
+          done
 
       - name: Upload lint report
         if: always()
@@ -261,6 +347,7 @@ jobs:
             android/app/build/reports/tests/
             android/core/domain/build/reports/tests/
             android/core/wallet/build/reports/tests/
+            android/engine/build/reports/tests/
           if-no-files-found: ignore
 
   # ---------------------------------------------------------------------
@@ -281,8 +368,13 @@ jobs:
     # emulator has already run.
     runs-on: ubuntu-latest
     # A hung emulator boot or a stalled SDK download would otherwise hold a
-    # runner for the 360-minute default.
-    timeout-minutes: 90
+    # runner for the 360-minute default. Raised from 90 to 120 when the
+    # engine started shipping inside the APK: the install now unpacks
+    # ~186 MB of x86_64 native libraries, and dexopt plus the test APK
+    # install run on top of that, on a software-GPU emulator sharing four
+    # vCPUs. The extra half hour is headroom for that, not a licence for a
+    # slow test — a run that needs it has regressed.
+    timeout-minutes: 120
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -335,6 +427,15 @@ jobs:
         # Building first means the in-script gradle call is an up-to-date
         # no-op, and a compile error costs seconds instead of a full boot.
         working-directory: android
+        # x86_64 and nothing else. The emulator below is x86_64, and before
+        # the engine was bundled the build still produced four splits plus a
+        # universal APK — three of which this job downloaded, installed
+        # nothing from, and threw away. With libxul.so at ~167 MB for arm64
+        # and ~130 MB for armeabi-v7a, that waste is now measured in
+        # hundreds of megabytes of runner disk on the pipeline's critical
+        # path.
+        env:
+          RB_ABIS: "x86_64"
         run: ./gradlew assembleDebug assembleDebugAndroidTest --console=plain
 
       - name: Run instrumented tests on emulator (API 30, x86_64)
@@ -343,7 +444,14 @@ jobs:
           api-level: 30
           arch: x86_64
           target: default
-          disk-size: 4096M
+          # 8 GB, not 4. The APK now carries ~186 MB of x86_64 native
+          # libraries uncompressed (modern AGP stores .so uncompressed and
+          # page-aligned so they can be mapped rather than extracted), the
+          # test APK sits alongside it, and the emulator needs room for
+          # dexopt and the app's own data on top. A 4 GB userdata image does
+          # not fit that comfortably, and an install that fails on space
+          # presents as an unrelated-looking test failure.
+          disk-size: 8192M
           # The input is `emulator-options`. It was written as `cmdline-options`
           # for a long time and silently did nothing: that key does not exist in
           # the action's action.yml, and GitHub only warns about unknown inputs.
@@ -688,7 +796,10 @@ jobs:
           # this release is being published under.
           RB_VERSION_NAME: ${{ steps.tag.outputs.version }}
           # Real-device ARM ABIs only (user focus: arm64-v8a + armeabi-v7a).
-          RB_RELEASE_ABIS: "arm64-v8a,armeabi-v7a"
+          # RB_ABIS is the single ABI variable — see the note in the quality
+          # job's release-validation step for why the old RB_RELEASE_ABIS
+          # name had to go rather than be kept as an alias.
+          RB_ABIS: "arm64-v8a,armeabi-v7a"
           # ROOMBROWSER_KEYSTORE comes from the decode step via GITHUB_ENV;
           # these three are the other half of the `releaseFromEnv` config.
           ROOMBROWSER_STORE_PASSWORD: ${{ secrets.ROOMBROWSER_STORE_PASSWORD }}
@@ -777,6 +888,13 @@ jobs:
         with:
           name: release-bundle
           path: release-out/
+          # An APK is already a zip, and its native libraries are stored
+          # uncompressed inside it on purpose so the loader can mmap them.
+          # Re-deflating a ~170-300 MB artifact therefore spends minutes of
+          # the pipeline's critical path to save almost nothing — the
+          # compression pass finds no redundancy that the format did not
+          # already remove.
+          compression-level: 0
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v3

@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  A library module's manifest. The namespace is declared in build.gradle.kts,
+  so there is no package attribute here; there is also nothing to declare,
+  because GeckoView brings its own manifest entries through the AAR and this
+  module adds no permissions, components or providers of its own.
+
+  Worth stating explicitly, since it is the kind of thing a later change gets
+  wrong: NOTHING here may add a permission to the consuming app. The engine
+  needs none -- it is a library inside the app's own process, not a separate
+  one -- and a permission that appears here would be merged into the APK's
+  manifest without appearing anywhere in :app's source.
+-->
+<manifest />
