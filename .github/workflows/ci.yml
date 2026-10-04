@@ -344,7 +344,16 @@ jobs:
           arch: x86_64
           target: default
           disk-size: 4096M
-          cmdline-options: -noaudio -no-boot-anim -gpu swiftshader_indirect -no-snapshot -wipe-data
+          # The input is `emulator-options`. It was written as `cmdline-options`
+          # for a long time and silently did nothing: that key does not exist in
+          # the action's action.yml, and GitHub only warns about unknown inputs.
+          # The flags below are not new policy, they are the action's own
+          # documented default (-no-window -gpu swiftshader_indirect -no-snapshot
+          # -noaudio -no-boot-anim) written out explicitly, plus -wipe-data,
+          # which is the one flag that was genuinely NOT taking effect before.
+          # Spelled out on purpose: relying on a default means an action upgrade
+          # can change the emulator under us without a diff to review.
+          emulator-options: -no-window -noaudio -no-boot-anim -gpu swiftshader_indirect -no-snapshot -wipe-data
           script: |
             adb shell settings put global window_animation_scale 0
             adb shell settings put global transition_animation_scale 0
