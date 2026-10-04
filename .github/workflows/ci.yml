@@ -296,6 +296,21 @@ jobs:
             ./gradlew testDebugUnitTest :core:domain:test :core:wallet:test :engine:test --console=plain --continue
           }
 
+      - name: Compile the instrumented test sources
+        working-directory: android
+        # The suite's other half, compiled where a mistake costs a minute
+        # instead of half an hour. Nothing else in this job ever builds
+        # `src/androidTest` -- the E2E job does, which is why a typo there has
+        # twice been discovered only after the emulator boot, the APK install
+        # and 40 tests, on a run that then reports it as a TEST failure rather
+        # than a compile failure. This step exists to move that discovery
+        # forward: `execution` is deliberately not `ANDROID_TEST`, so it
+        # compiles and does not run, and it adds no emulator.
+        #
+        # It is not a substitute for the E2E job: nothing here proves the
+        # assertions are right, only that they are well-formed.
+        run: ./gradlew compileDebugAndroidTestKotlin --console=plain
+
       - name: Debug build (single ABI)
         working-directory: android
         # RB_ABIS narrows the split set for THIS invocation. It matters far
@@ -565,7 +580,7 @@ jobs:
             # e2e-reports artifact answers WHY from any point of the run —
             # a 2000-line tail missed the actual failure window once — then
             # exit non-zero.
-            cd android && ./gradlew connectedDebugAndroidTest --console=plain || (adb exec-out logcat -d -b crash > /home/runner/work/room-browser/e2e-logcat-crash.txt; adb exec-out logcat -d > /home/runner/work/room-browser/e2e-logcat-full.txt; adb shell uiautomator dump /sdcard/e2e-ui.xml >/dev/null 2>&1; adb pull /sdcard/e2e-ui.xml /home/runner/work/room-browser/ >/dev/null 2>&1; adb pull /sdcard/e2e-shots /home/runner/work/room-browser/ >/dev/null 2>&1; exit 1)
+            cd android && ./gradlew connectedDebugAndroidTest --console=plain || (adb exec-out logcat -d -b crash > "$GITHUB_WORKSPACE/e2e-logcat-crash.txt"; adb exec-out logcat -d > "$GITHUB_WORKSPACE/e2e-logcat-full.txt"; adb shell uiautomator dump /sdcard/e2e-ui.xml >/dev/null 2>&1; adb pull /sdcard/e2e-ui.xml "$GITHUB_WORKSPACE/" >/dev/null 2>&1; adb pull /sdcard/e2e-shots "$GITHUB_WORKSPACE/" >/dev/null 2>&1; exit 1)
 
       - name: Upload instrumented test reports
         if: always()
@@ -574,10 +589,10 @@ jobs:
           name: e2e-reports
           path: |
             android/app/build/outputs/androidTest-results/
-            /home/runner/work/room-browser/e2e-logcat-crash.txt
-            /home/runner/work/room-browser/e2e-logcat-full.txt
-            /home/runner/work/room-browser/e2e-ui.xml
-            /home/runner/work/room-browser/e2e-shots
+            e2e-logcat-crash.txt
+            e2e-logcat-full.txt
+            e2e-ui.xml
+            e2e-shots
           if-no-files-found: ignore
 
   # ---------------------------------------------------------------------

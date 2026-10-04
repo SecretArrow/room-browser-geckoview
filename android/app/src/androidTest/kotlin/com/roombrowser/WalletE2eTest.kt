@@ -2,8 +2,6 @@ package com.roombrowser
 
 import android.content.Context
 import android.content.Intent
-import android.os.Handler
-import android.os.Looper
 import androidx.biometric.BiometricManager
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
@@ -142,6 +140,21 @@ class WalletE2eTest {
          * fast job when the two drift apart.
          */
         const val BRIDGE_LOG_TAG = "RoomBridge"
+
+        /**
+         * The reveal grid's mask character (U+2022), the one
+         * `WalletOnboarding` repeats six times per unrevealed cell, one cell per
+         * word. It is duplicated from `WalletOnboarding` rather than shared,
+         * because androidTest cannot see that module's private literal.
+         *
+         * Counted once per wait sample so the timeline can say how much of the
+         * screen the accessibility tree is carrying. An empty `Reveal` AND an
+         * empty `Hide phrase` cannot both be true of the real screen -- the two
+         * are the same toggle -- so seeing both is a truncated tree, and a tree
+         * that carries some cells but not the title is the same fault seen from
+         * the other end.
+         */
+        const val MASK_BULLET = "•"
     }
 
     @Before
@@ -520,40 +533,64 @@ class WalletE2eTest {
     }
 
     /**
-     * How long a no-op takes to run on the app's MAIN looper, plus the main
-     * thread's stack when it did not run at all.
+     * The app process that owns the screen, by name: `<pkg>:browser`.
      *
-     * WHY THIS MEASURES WHAT IT MEASURES. `onClick = { revealed = !revealed }`
-     * is a Compose state write and nothing else -- no engine call, no I/O, no
-     * crypto -- so the label it renders is repainted on the next frame the
-     * main thread produces. A run where the label stayed "Reveal" for twenty
-     * seconds while 72 fresh accessibility queries were answered in the
-     * meantime was therefore not a slow reveal and not a slow query: it was a
-     * main thread that was answering messages and not drawing frames.
-     *
-     * This is the instrument that tells those apart, from inside the process
-     * and without root. A posted no-op is the cheapest possible message, so
-     * its latency is a floor on how long any pending work -- a Choreographer
-     * frame callback, or the tap itself -- would have waited behind the same
-     * queue. And because the instrumentation runs in the app's OWN process,
-     * `Looper.getMainLooper().thread.stackTrace` can be read while the main
-     * thread is still stuck, which names the culprit instead of inferring it.
-     *
-     * Returns `-1` and that stack when the no-op has not run within
-     * [budgetMs]; otherwise the latency in milliseconds and an empty stack.
+     * WHY THAT NAME AND NOT THE PACKAGE. Six activities carry
+     * `android:process=":browser"`, and the runner is a plain
+     * AndroidJUnitRunner with no `targetProcess`, so instrumentation attaches to
+     * the app's DEFAULT process while the wallet screen, the engine and every
+     * tap this suite sends live in `:browser`. The two have different main
+     * threads, and a measurement taken in one says nothing about the other.
      */
-    @Suppress("DEPRECATION")
-    private fun mainThreadPing(budgetMs: Long): Pair<Long, String> {
-        val ran = CountDownLatch(1)
-        val start = System.currentTimeMillis()
-        Handler(Looper.getMainLooper()).post { ran.countDown() }
-        if (ran.await(budgetMs, TimeUnit.MILLISECONDS)) {
-            return (System.currentTimeMillis() - start) to ""
-        }
-        val stack = Looper.getMainLooper().thread.stackTrace
-            .take(30)
-            .joinToString("\n") { "    at $it" }
-        return -1L to stack
+    private val appProcessName: String get() = targetContext.packageName + ":browser"
+
+    /**
+     * The app process's own view of its health, asked of the SYSTEM rather than
+     * of this JVM.
+     *
+     * WHY NOT A LOOPER PING -- the instrument this replaced, and the reason it
+     * was wrong. Posting a no-op to `Looper.getMainLooper()` and timing it is
+     * the obvious way to answer "was the UI thread blocked", and it is a trap
+     * here: `getMainLooper()` in androidTest is the INSTRUMENTATION process's
+     * looper. That process is idle by construction -- the test thread is asleep
+     * between samples -- so the ping reported `main=0ms` at all 72 samples of a
+     * run in which the label being awaited did not appear for twenty seconds,
+     * and the reading was taken as proof that the app's UI thread was fine. It
+     * had never once looked at the app's UI thread.
+     *
+     * So this asks `dumpsys` instead:
+     *
+     *  - `gfxinfo <pkg>:browser framestats` carries that window's recent frame
+     *    timeline. A stalled UI thread does not hide there: the frame it is in
+     *    the middle of shows up with an enormous completed-minus-intended span
+     *    (the emulator logs the same event as `Davey! duration=711ms`).
+     *  - `ps` answers a question the frame timeline cannot: whether that process
+     *    is still the same process. A pid change mid-test means the activity was
+     *    recreated under the test's feet, which resets every `remember` in the
+     *    composition -- including the one that holds this screen's reveal state.
+     *
+     * Failure path only: two shell round-trips per call is too much to pay per
+     * sample, and neither reading means anything until something has failed.
+     */
+    private fun appProcessHealth(): String = buildString {
+        append("gfxinfo ").append(appProcessName).append(":\n")
+        append(
+            runCatching {
+                device.executeShellCommand("dumpsys gfxinfo $appProcessName framestats")
+            }.getOrDefault("<gfxinfo unavailable>").takeLast(2_500)
+        )
+        append("\nprocesses matching ").append(targetContext.packageName).append(":\n")
+        append(
+            runCatching {
+                // Plain `ps -A`: toybox has no `-o NAME`, and the filtering
+                // has to happen here anyway (`executeShellCommand` starts no
+                // shell, so a `| grep` would arrive as an argument).
+                device.executeShellCommand("ps -A")
+                    .lineSequence()
+                    .filter { it.contains(targetContext.packageName) }
+                    .joinToString("\n")
+            }.getOrDefault("<ps unavailable>")
+        )
     }
 
     /**
@@ -1418,48 +1455,59 @@ class WalletE2eTest {
         // Scroll-aware: on the 320x640 CI screen the Reveal button can sit
         // below the fold under the one-time-phrase copy.
         assertTrue("Reveal must be tappable", clickTextWithScroll("Reveal"))
-        // Wait for the label to flip, sampling BOTH query shapes, and sample
-        // the main thread alongside them.
+        // Wait for the label to flip, sampling the whole screen state per
+        // sample rather than one label.
         //
         // WHAT THE SAMPLES ALREADY SETTLED. The first version of this wait was
         // a single `hasText`, and the first repair assumed the accessibility
         // pipeline was at fault -- that one query had sampled a tree seconds
         // stale. The 20 s / 72-sample run that followed killed that reading.
         // Every fresh sample, over the exact shape and the substring shape
-        // alike, returned false, and a `uiTree()` issued immediately after the
-        // last one found "Hide phrase". The pipeline was not stale and the
-        // query shape was never the variable: the label genuinely flipped
-        // about twenty seconds after the tap.
+        // alike, returned false, and a `uiTree()` issued in the same second
+        // found "Hide phrase". The pipeline was not stale and the query shape
+        // was never the variable.
         //
-        // That is not a slow reveal. `WalletOnboarding` reveals by flipping a
-        // `remember { mutableStateOf(false) }` from the Button's own onClick,
-        // so the only things between the tap and the repaint are the main
-        // thread's message queue and the frame it produces. `mainThreadPing`
-        // measures that queue: a posted no-op is the cheapest message there
-        // is, so its latency is a floor on how long the tap and the frame
-        // callback behind it had to wait, and when the no-op does not run at
-        // all the main thread's own stack is captured and names the reason.
-        // A run that reports `main=0ms` at every sample while the label stays
-        // stale rules the main thread out and says so.
+        // WHAT THE NEXT RUN SETTLED ABOUT THE FIRST INSTRUMENT. That timeline
+        // carried a `main=Nms` column, from a no-op posted to
+        // `Looper.getMainLooper()` -- and it read `0ms` at every sample, which
+        // was taken as "the app's UI thread is fine, the reveal is just slow".
+        // It was measuring the wrong process. Six activities carry
+        // `android:process=":browser"`, so this test runs in the app's default
+        // process while the button, the screen and the tap are all in
+        // `:browser`; `getMainLooper()` here is the instrumentation's. That
+        // column could not have read anything but 0ms, and it answered a
+        // question nobody had asked.
+        //
+        // WHY THE SAMPLES ARE SHAPED THE WAY THEY ARE. A single label leaves
+        // two readings indistinguishable when the query and the screen
+        // disagree: "the app has not flipped yet" and "the label this test is
+        // looking for is not the label on screen". So each sample reads the
+        // screen, not the assertion: the other label of the same toggle
+        // (`Reveal`), the screen's own title, and how many masked cells the tree
+        // carries. An empty `Reveal` AND an empty `Hide phrase` is a partial
+        // tree, not a state; a full grid with the wrong label is a different
+        // screen; and a title that has gone missing while the button is present
+        // is the tree dropping nodes, which is what a clipped scroller looks
+        // like from outside.
         //
         // This still fails when the label never flips -- `revealed` is set only
         // from a live query and nothing here taps a second time, so a screen
         // that stayed on "Reveal" still ends the test.
         //
         // The samples accumulate in memory and are emitted only on the failure
-        // path, so a green run pays one ArrayList, one cheap post per sample
-        // and no logcat.
+        // path, so a green run pays one ArrayList and no logcat.
         val timeline = mutableListOf<String>()
-        var blockedStack: String? = null
+        var appHealth: String? = null
         val revealStartedAt = System.currentTimeMillis()
         val revealed = waitUntil(20_000) {
             val exact = device.findObjects(By.text("Hide phrase")).isNotEmpty()
             val sweep = device.findObjects(By.textContains("Hide phrase")).isNotEmpty()
-            val (pingMs, pingStack) = mainThreadPing(budgetMs = 200)
-            if (pingMs < 0 && blockedStack == null) blockedStack = pingStack
+            val revealBtn = device.findObjects(By.text("Reveal")).isNotEmpty()
+            val title = device.findObjects(By.text("Your recovery phrase")).isNotEmpty()
+            val cells = device.findObjects(By.textContains(MASK_BULLET)).size
             timeline += "${System.currentTimeMillis() - revealStartedAt}ms " +
-                "exact=$exact sweep=$sweep " +
-                (if (pingMs < 0) "main=BLOCKED" else "main=${pingMs}ms")
+                "exact=$exact sweep=$sweep revealBtn=$revealBtn " +
+                "title=$title cells=$cells"
             exact || sweep
         }
         val failTree = if (revealed) "" else uiTree()
@@ -1471,7 +1519,8 @@ class WalletE2eTest {
             // state it is measuring.
             val flipWindowClosed = System.currentTimeMillis()
             val flippedLate = waitUntil(10_000) {
-                device.findObjects(By.textContains("Hide phrase")).isNotEmpty()
+                device.findObjects(By.textContains("Hide phrase")).isNotEmpty() ||
+                    device.findObjects(By.text("Hide phrase")).isNotEmpty()
             }
             logProbe(
                 "reveal-late-flip",
@@ -1485,7 +1534,12 @@ class WalletE2eTest {
             )
             logProbe("reveal-not-shown", failTree)
             logProbe("reveal-timeline", timeline.joinToString(", "))
-            blockedStack?.let { logProbe("reveal-main-thread-stack", it) }
+            // Read once and kept in both places on purpose: a local `val` here,
+            // because `appHealth` is a `var` captured by the failure message
+            // below and Kotlin will not smart-cast one of those to non-null.
+            val health = appProcessHealth()
+            appHealth = health
+            logProbe("app-process-health", health)
         }
         assertTrue(
             buildString {
@@ -1539,13 +1593,11 @@ class WalletE2eTest {
                     // -- destroying the very state the probe was called in to
                     // describe. A probe may not change what it measures.
                     append("\nprobe: reveal_timeline=").append(timeline.joinToString(", "))
-                    // Only ever present when a posted no-op did not run, i.e.
-                    // when the main thread was provably not draining its
-                    // queue. Its absence is a finding too, and the timeline
-                    // above is where that reads.
-                    blockedStack?.let {
-                        append("\nprobe: main_thread_stack_while_stale:\n").append(it)
-                    }
+                    // The app process's own frame timeline and process table,
+                    // captured once on the failure path on purpose: the failure
+                    // this probe exists for happened in `:browser`, and a
+                    // measurement taken in the test process cannot see it.
+                    appHealth?.let { append("\nprobe: app_process=").append(it) }
                     append("\nprobe tree at failure:\n").append(failTree)
                 }
             },
