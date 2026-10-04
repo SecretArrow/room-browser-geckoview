@@ -46,6 +46,13 @@ object AppStateKeys {
 
     /** Pending profile-network decision (NetworkWarningActivity gate). */
     const val PENDING_NET_DECISION = "net_decision_pending"
+
+    /**
+     * The profile id whose "import your passwords?" offer is still owed.
+     * A one-shot key: written when a profile is created, read and cleared by
+     * the profile list when it shows the offer.
+     */
+    const val PASSWORD_IMPORT_OFFER = "password_import_offer"
 }
 
 /** AI agent behavior settings (app-global, stored as JSON in app_state). */
@@ -353,6 +360,32 @@ class AppStateRepository(private val dao: AppStateDao) {
     }
 
     suspend fun sessionId(): String? = dao.get(AppStateKeys.SESSION_ID)
+
+    // ---------- Post-create password-import offer ----------
+
+    /**
+     * The profile id whose "import your passwords?" offer has not been shown
+     * yet, or null when none is owed.
+     *
+     * WHY A PERSISTED ONE-SHOT KEY rather than a dialog shown straight from the
+     * create callback: a profile can also be created from the browser
+     * quick-switcher, which then RESTARTS the process to bind the new profile —
+     * so at the moment of creation there is no UI left to show anything in, and
+     * the offer would be lost. Writing the id here means the profile list shows
+     * the offer on its next appearance whichever path created the profile.
+     *
+     * Room's multi-instance invalidation is enabled, so the browser process
+     * writing this and the default process (which owns the profile list)
+     * observing it is a supported path, not a coincidence.
+     */
+    fun observePasswordImportOffer(): Flow<String?> =
+        dao.observe(AppStateKeys.PASSWORD_IMPORT_OFFER)
+
+    /** Owed, or, with null, settled — the offer is shown once and only once. */
+    suspend fun setPasswordImportOffer(profileId: String?) {
+        if (profileId == null) dao.remove(AppStateKeys.PASSWORD_IMPORT_OFFER)
+        else dao.put(AppStateEntity(AppStateKeys.PASSWORD_IMPORT_OFFER, profileId))
+    }
 
     // ---------- AI agent settings ----------
 

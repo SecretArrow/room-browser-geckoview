@@ -154,7 +154,6 @@ fun MainScreen(
     var editTarget by remember { mutableStateOf<Profile?>(null) }
     var duplicateTarget by remember { mutableStateOf<Profile?>(null) }
     var resetTarget by remember { mutableStateOf<Profile?>(null) }
-    var deleteTarget by remember { mutableStateOf<Profile?>(null) }
     var exportTarget by remember { mutableStateOf<Profile?>(null) }
     var showImport by remember { mutableStateOf(false) }
 
@@ -179,6 +178,21 @@ fun MainScreen(
         if (uri != null) {
             viewModel.readImportFile(uri)
             showImport = false
+        }
+    }
+
+    // Pick a password file for the profile whose menu asked for one. One
+    // launcher and one ViewModel entry point serve all five sources — Chrome,
+    // Brave, Edge, Firefox and our own sealed export — because which one it is
+    // is decided from the file's content, not from the picker.
+    val pickPasswordFileLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        if (uri != null) {
+            viewModel.readPasswordFile(uri)
+        } else {
+            // Backing out of the picker is a cancel, not a failure.
+            viewModel.cancelPasswordImport()
         }
     }
 
@@ -287,8 +301,16 @@ fun MainScreen(
                             onEdit = { editTarget = profile },
                             onDuplicate = { duplicateTarget = profile },
                             onReset = { resetTarget = profile },
-                            onDelete = { deleteTarget = profile },
+                            // The delete prompt is the ViewModel's: it has to
+                            // count the profile's saved logins, which needs the
+                            // vault, before it can say what deleting costs.
+                            onDelete = { viewModel.requestDeleteProfile(profile) },
                             onExport = { exportTarget = profile },
+                            onImportPasswords = {
+                                viewModel.startPasswordImport(profile)
+                                pickPasswordFileLauncher.launch(passwordFileTypes)
+                            },
+                            onExportPasswords = { viewModel.startPasswordExport(profile) },
                             onSetDefault = { viewModel.setDefault(profile.id) },
                             onToggleLock = { viewModel.setLocked(profile.id, !profile.isLocked) }
                         )
@@ -376,17 +398,90 @@ fun MainScreen(
         )
     }
 
-    deleteTarget?.let { target ->
-        ConfirmDialog(
-            title = "Delete Profile",
-            text = "This permanently deletes \"${target.name}\" and ALL of its isolated data (cookies, storage, history, downloads).",
-            confirmLabel = "Delete",
-            onDismiss = { deleteTarget = null },
-            onConfirm = {
-                viewModel.deleteProfile(target.id)
-                deleteTarget = null
+    // Deleting a profile destroys its saved passwords with it — the rows and
+    // the Keystore key that decrypts them, in one step — so the offer to take
+    // them along has to come BEFORE the delete, which is what this prompt is.
+    // It has three ways out, and the middle one exists because a user who
+    // declines the export is still entitled to delete.
+    viewModel.deletePrompt?.let { prompt ->
+        val target = prompt.profile
+        val passwords = when (val count = prompt.credentialCount) {
+            null -> "This profile may hold saved passwords that will be destroyed with it."
+            0 -> null
+            1 -> "1 saved password will be destroyed with it and cannot be recovered."
+            else -> "$count saved passwords will be destroyed with it and cannot be recovered."
+        }
+        AlertDialog(
+            onDismissRequest = { viewModel.dismissDeletePrompt() },
+            title = { Text("Delete Profile") },
+            text = {
+                Column {
+                    Text(
+                        "This permanently deletes \"${target.name}\" and ALL of its " +
+                            "isolated data (cookies, storage, history, downloads)."
+                    )
+                    if (passwords != null) {
+                        Spacer(Modifier.height(12.dp))
+                        Text(passwords)
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { viewModel.confirmDeleteWithoutExport() }) {
+                    // "without exporting" only means something when there is
+                    // something that could have been exported.
+                    Text(if (prompt.credentialCount == 0) "Delete" else "Delete without exporting")
+                }
+            },
+            dismissButton = {
+                Row {
+                    TextButton(onClick = { viewModel.dismissDeletePrompt() }) { Text("Cancel") }
+                    if (prompt.credentialCount != 0) {
+                        Spacer(Modifier.width(4.dp))
+                        Button(onClick = { viewModel.confirmDeleteWithExport() }) {
+                            Text("Export first")
+                        }
+                    }
+                }
             }
         )
+    }
+
+    // The offer the profile list owes after a creation. Raised here rather than
+    // from the create callback because a profile can also be created from the
+    // browser quick-switcher, which restarts the process to bind it — there is
+    // no UI left at that moment to raise anything in, so the offer is recorded
+    // and shown the next time this list is visible. One-shot by construction:
+    // the key is cleared as soon as the prompt is answered.
+    viewModel.passwordImportOfferId?.let { offeredId ->
+        profiles.firstOrNull { it.id.value == offeredId }?.let { created ->
+            AlertDialog(
+                onDismissRequest = { viewModel.consumePasswordImportOffer() },
+                title = { Text("Bring your passwords over?") },
+                text = {
+                    Text(
+                        "\"${created.name}\" is ready and starts empty. You can import " +
+                            "saved logins into it from Chrome, Brave, Edge or Firefox " +
+                            "(their exported passwords.csv), or from a Room Browser " +
+                            "password file."
+                    )
+                },
+                confirmButton = {
+                    Button(
+                        onClick = {
+                            viewModel.consumePasswordImportOffer()
+                            viewModel.startPasswordImport(created)
+                            pickPasswordFileLauncher.launch(passwordFileTypes)
+                        }
+                    ) { Text("Import passwords") }
+                },
+                dismissButton = {
+                    TextButton(onClick = { viewModel.consumePasswordImportOffer() }) {
+                        Text("Later")
+                    }
+                }
+            )
+        }
     }
 
     exportTarget?.let { target ->
@@ -549,6 +644,19 @@ private fun CreateProfileLabel() {
     Text("Create Profile")
 }
 
+/**
+ * What the password-file picker offers.
+ *
+ * The narrow types come first and `*/*` is last, exactly as the profile-import
+ * launcher does it: a browser's export is a `.csv` and ours is a `.txt`, but a
+ * picker provider is free to report either as `application/octet-stream`, and a
+ * file the user can see but not select has no workaround at all. Nothing is
+ * trusted by being selectable — the content decides what the file is, and a
+ * file that is neither a browser CSV nor one of our sealed exports is reported
+ * as such with nothing written.
+ */
+private val passwordFileTypes = arrayOf("text/csv", "text/plain", "*/*")
+
 @Composable
 private fun ProfileCard(
     profile: Profile,
@@ -559,6 +667,8 @@ private fun ProfileCard(
     onReset: () -> Unit,
     onDelete: () -> Unit,
     onExport: () -> Unit,
+    onImportPasswords: () -> Unit,
+    onExportPasswords: () -> Unit,
     onSetDefault: () -> Unit,
     onToggleLock: () -> Unit
 ) {
@@ -670,6 +780,14 @@ private fun ProfileCard(
                         DropdownMenuItem(
                             text = { Text("Export settings") },
                             onClick = { menuOpen = false; onExport() }
+                        )
+                        DropdownMenuItem(
+                            text = { Text("Import passwords…") },
+                            onClick = { menuOpen = false; onImportPasswords() }
+                        )
+                        DropdownMenuItem(
+                            text = { Text("Export passwords…") },
+                            onClick = { menuOpen = false; onExportPasswords() }
                         )
                         DropdownMenuItem(
                             text = { Text("Reset profile data") },
@@ -1156,8 +1274,18 @@ private fun VaultPassphraseDialog(
                             " of \"${prompt.profileName}\" will be sealed under this passphrase. " +
                             "You will need it on the receiving device — it cannot be recovered."
                     } else {
-                        "The export of \"${prompt.profileName}\" carries an encrypted password " +
-                            "vault. Enter the passphrase it was exported with."
+                        // A standalone passwords file gets its own sentence: it
+                        // carries no profile name outside its encryption, so
+                        // naming one here would be inventing an origin for it.
+                        // The whole-profile export still says which profile it
+                        // came from, because that file really does carry it.
+                        if (prompt.passwordsFile) {
+                            "This is a sealed Room Browser password file. Enter the " +
+                                "passphrase it was exported with."
+                        } else {
+                            "The export of \"${prompt.profileName}\" carries an encrypted password " +
+                                "vault. Enter the passphrase it was exported with."
+                        }
                     }
                 )
                 Spacer(Modifier.height(12.dp))

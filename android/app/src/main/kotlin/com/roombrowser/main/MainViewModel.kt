@@ -9,11 +9,15 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.roombrowser.RoomBrowserApp
 import com.roombrowser.data.repo.AppStateRepository
+import com.roombrowser.domain.credentials.PasswordCsv
+import com.roombrowser.domain.credentials.PasswordImportMerge
 import com.roombrowser.domain.credentials.PasswordVaultCrypto
 import com.roombrowser.domain.credentials.SavedCredential
 import com.roombrowser.domain.credentials.VaultAuthException
 import com.roombrowser.domain.credentials.VaultFormatException
 import com.roombrowser.domain.engine.UrlIntelligence
+import com.roombrowser.domain.export.PasswordTransfer
+import com.roombrowser.domain.export.PasswordTransferFormatException
 import com.roombrowser.domain.export.ProfileBackup
 import com.roombrowser.domain.export.ProfileBackupResult
 import com.roombrowser.domain.model.Profile
@@ -40,6 +44,13 @@ class PendingExport(val fileName: String, val json: String, val sizeBytes: Int)
  *   export (two fields, min length enforced by the dialog); false = the user
  *   is ENTERING the passphrase an import file was sealed with.
  * @param error inline retry hint (import only), e.g. "Wrong passphrase".
+ * @param passwordsFile the import is a standalone passwords file rather than a
+ *   whole-profile backup. Both are sealed the same way and open the same way,
+ *   but they word themselves differently to the user: a passwords file carries
+ *   no profile name outside its encryption (see
+ *   [com.roombrowser.domain.export.PasswordTransfer]), so the dialog must not
+ *   name an origin it cannot know. Defaulted, so every caller that predates the
+ *   passwords flow keeps its exact wording.
  * @param id identity of THIS prompt instance. Like [VaultGateRequest.id] it
  *   exists so an equal-looking prompt is still a NEW prompt: the dialog keys
  *   its passphrase fields on it. Without it, a second wrong passphrase
@@ -52,6 +63,7 @@ data class PassphrasePrompt(
     val profileName: String,
     val credentialCount: Int,
     val error: String? = null,
+    val passwordsFile: Boolean = false,
     val id: Int
 )
 
@@ -69,6 +81,18 @@ enum class MessageAction { OPEN_NOTIFICATION_SETTINGS }
  * request a fresh LaunchedEffect key even when they otherwise look equal.
  */
 data class VaultGateRequest(val id: Int)
+
+/**
+ * The state of the "delete this profile?" prompt.
+ *
+ * @param credentialCount how many saved logins the profile holds, or null when
+ *   the vault is locked and reading them would have required unlocking it just
+ *   to ask a question. The two are different sentences to the user — "this
+ *   profile has 12 saved passwords" versus "this profile may have saved
+ *   passwords" — and collapsing them would mean either claiming a count we did
+ *   not read or dropping the warning for every locked profile.
+ */
+data class DeletePrompt(val profile: Profile, val credentialCount: Int?)
 
 /**
  * Main-process ViewModel: profile CRUD, first-run state, external-link
@@ -136,10 +160,63 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     var vaultGateRequest by mutableStateOf<VaultGateRequest?>(null)
         private set
 
-    /** Export-in-progress inputs — intermediate work data, not UI state. */
-    private class ExportDraft(val profile: Profile, val includeBookmarks: Boolean)
+    // ---------- Passwords transfer ----------
+
+    /** Profile id whose post-create "import your passwords?" offer is owed. */
+    var passwordImportOfferId by mutableStateOf<String?>(null)
+        private set
+
+    /**
+     * The pre-delete prompt for a profile, or null when the user is not
+     * deleting anything. [credentialCount] is null when the vault is locked
+     * and the count could not be read — see [requestDeleteProfile].
+     */
+    var deletePrompt by mutableStateOf<DeletePrompt?>(null)
+        private set
+
+    /**
+     * Export-in-progress inputs — intermediate work data, not UI state.
+     *
+     * [passwordsOnly] selects the passwords-transfer file instead of a
+     * whole-profile backup. The two exports share every step except the last
+     * one — gate, unlock, read, passphrase, stage, deliver — so they share
+     * this draft and [confirmExportPassphrase] branches on the flag rather
+     * than duplicating the flow. What differs is the payload: a backup carries
+     * bookmarks, permissions and settings as well, and is delivered as
+     * `ProfileBackup` JSON.
+     */
+    private class ExportDraft(
+        val profile: Profile,
+        val includeBookmarks: Boolean,
+        val passwordsOnly: Boolean = false
+    )
 
     private var exportDraft: ExportDraft? = null
+
+    /**
+     * A passwords import in flight: the profile it is landing in, and the
+     * picked file's text when that file is one of our sealed exports (null for
+     * a plain CSV, which needs no passphrase and completes immediately).
+     */
+    private class PasswordImport(val profile: Profile, val sealedText: String?)
+
+    private var passwordImport: PasswordImport? = null
+
+    /**
+     * The profile whose export must be followed by its deletion — set when the
+     * user chose "Export" in the pre-delete prompt, cleared by anything that
+     * does not produce a delivered file. Deleting only after a file has
+     * actually been written is the whole point of asking.
+     */
+    private var deleteAfterPasswordExport: ProfileId? = null
+
+    /**
+     * What a staged passwords export could not carry, held until the file is
+     * delivered so it is said in the same sentence as the confirmation — and
+     * again in the delete message, which is the one that outlives the snackbar.
+     * Cleared when a new export starts and by [dropExportState].
+     */
+    private var pendingExportNote: String? = null
 
     /**
      * Plaintext credentials of the in-flight export. Deliberately NOT Compose
@@ -182,6 +259,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             val url = appState.externalUrl()
             if (url != null) pendingExternalUrl = url
         }
+        // Observed rather than read once: the offer can be written by THIS
+        // process (the create dialog) or by the browser process (the
+        // quick-switcher, which restarts before any UI could show it), and a
+        // profile list that is already on screen must pick it up either way.
+        viewModelScope.launch {
+            appState.observePasswordImportOffer().collect { passwordImportOfferId = it }
+        }
     }
 
     /**
@@ -212,6 +296,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    /**
+     * Creates a profile, then owes the user the passwords-import offer.
+     *
+     * The offer is RECORDED here and shown by the profile list rather than
+     * raised from [onCreated], because this same creation also happens from the
+     * browser quick-switcher, which restarts the process — an offer raised
+     * in-process would simply never be seen on that path. See
+     * [AppStateRepository.observePasswordImportOffer].
+     */
     fun createProfile(
         name: String,
         icon: String,
@@ -223,10 +316,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             runCatching { profileManager.create(name, icon, colorArgb, settings) }
                 .onSuccess {
                     message = "Profile \"${it.name}\" is ready"
+                    appState.setPasswordImportOffer(it.id.value)
                     onCreated(it)
                 }
                 .onFailure { message = it.message ?: "Could not create profile" }
         }
+    }
+
+    /** The offer was shown (imported or declined) — never show it again. */
+    fun consumePasswordImportOffer() {
+        viewModelScope.launch { appState.setPasswordImportOffer(null) }
     }
 
     fun duplicateProfile(id: ProfileId, options: CopyOptions) {
@@ -283,10 +382,19 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun deleteProfile(id: ProfileId) {
+    /**
+     * @param successMessage what to say when it worked. The pre-delete password
+     *   prompt's two ways out both end here and the user needs to be told WHICH
+     *   one happened: "Profile deleted with all its data" after an export that
+     *   succeeded reads as though the passwords went with it.
+     */
+    fun deleteProfile(
+        id: ProfileId,
+        successMessage: String = "Profile deleted with all its data"
+    ) {
         viewModelScope.launch {
             runCatching { profileManager.delete(id) }
-                .onSuccess { message = "Profile deleted with all its data" }
+                .onSuccess { message = successMessage }
                 .onFailure { message = it.message ?: "Could not delete profile" }
         }
     }
@@ -352,6 +460,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         exportDraft = ExportDraft(profile, includeBookmarks)
         pendingExport = null
         passphrasePrompt = null
+        pendingExportNote = null
         if (vaultUnlocked()) {
             readVaultForExport()
         } else {
@@ -370,6 +479,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 graph.credentialRepo.exportAll(draft.profile.id)
             }.onSuccess { creds ->
                 if (creds.isEmpty()) {
+                    // A passwords-only export has nothing to fall back on. The
+                    // whole-profile path below writes a file with no vault,
+                    // which is right for a backup and wrong here: the user
+                    // asked for their passwords, and handing them a settings
+                    // backup named "passwords" is the silent partial transfer
+                    // this feature exists to avoid.
+                    if (draft.passwordsOnly) {
+                        abortExport("this profile has no saved passwords yet")
+                        return@onSuccess
+                    }
                     // No saved logins → nothing to seal; the file has no vault.
                     buildExport(creds, vault = null)
                 } else {
@@ -394,6 +513,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val creds = exportCredentials
         if (creds.isEmpty()) {
             passphrasePrompt = null
+            return
+        }
+        val draft = exportDraft
+        if (draft != null && draft.passwordsOnly) {
+            sealPasswordExport(draft, creds, passphrase)
             return
         }
         viewModelScope.launch {
@@ -467,6 +591,84 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    /**
+     * Export step 3 for a passwords-only file: seal just the logins and stage
+     * the result.
+     *
+     * Same PBKDF2 + AES-GCM as the backup path ([confirmExportPassphrase]) and
+     * the same wipe discipline, but a different payload: [PasswordTransfer]
+     * writes a CSV inside the cipher rather than the profile's JSON, so what
+     * comes out is a file that Chrome, Brave or Firefox can also read once the
+     * user opens it.
+     *
+     * The count reported here is the number of logins ACTUALLY in the file,
+     * not the number the profile holds. [PasswordTransfer.carryable] drops a
+     * login with an empty password (the CSV reader would count it incomplete on
+     * the way back in), and the difference is named rather than absorbed: an
+     * export that quietly carries less than it claims is how a user deletes a
+     * profile believing everything was saved.
+     */
+    private fun sealPasswordExport(
+        draft: ExportDraft,
+        creds: List<SavedCredential>,
+        passphrase: String
+    ) {
+        viewModelScope.launch {
+            val entries = creds.map {
+                PasswordTransfer.Entry(
+                    domain = it.domain,
+                    username = it.username,
+                    password = it.password,
+                    title = it.title
+                )
+            }
+            val carried = PasswordTransfer.carryable(entries)
+            val dropped = entries.size - carried.size
+            if (carried.isEmpty()) {
+                abortExport("this profile has no saved passwords to export")
+                return@launch
+            }
+            val outcome = runCatching {
+                val chars = passphrase.toCharArray()
+                withContext(Dispatchers.Default) {
+                    try {
+                        PasswordTransfer.seal(PasswordTransfer.Contents(carried), chars)
+                    } finally {
+                        PasswordVaultCrypto.wipe(chars)
+                    }
+                }
+            }
+            passphrasePrompt = null
+            outcome.onSuccess { text ->
+                exportCredentials = emptyList() // plaintext list dropped for good
+                exportDraft = null
+                pendingExport = PendingExport(
+                    fileName = PasswordTransfer.fileName(draft.profile.name, System.currentTimeMillis()),
+                    json = text,
+                    sizeBytes = text.toByteArray(Charsets.UTF_8).size
+                )
+                if (dropped > 0) {
+                    // Carried to the delivery message rather than posted now:
+                    // this is the one fact that has to reach the user BEFORE
+                    // the delete that may follow, and a snackbar posted here
+                    // would be replaced by the export's own confirmation.
+                    pendingExportNote = "$dropped saved login(s) had no password and were left out — " +
+                        "the file holds ${carried.size}"
+                }
+            }.onFailure {
+                abortExport(it.message ?: "could not seal the password file")
+            }
+        }
+    }
+
+    /** What to say when [fileName] reached the disk or the share sheet. */
+    private fun exportDeliveredMessage(fileName: String): String = buildString {
+        append("Exported \"")
+        append(fileName)
+        append('"')
+        pendingExportNote?.let { append(" — "); append(it) }
+    }
+
     /** SAF save — write the staged export where the user picked. On failure
      *  the export stays staged so Save can be retried or Share used. */
     fun writeExportTo(uri: Uri) {
@@ -480,7 +682,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 }
             }.onSuccess {
                 pendingExport = null
-                message = "Exported \"${export.fileName}\""
+                message = exportDeliveredMessage(export.fileName)
+                afterPasswordExportDelivered()
             }.onFailure {
                 message = "Export failed — ${it.message ?: "could not write the file"}"
             }
@@ -490,6 +693,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     /** The staged export was delivered another way (Share): drop it. */
     fun consumePendingExport() {
         pendingExport = null
+        afterPasswordExportDelivered()
     }
 
     /** User canceled at a dialog — drop everything quietly but visibly. */
@@ -516,6 +720,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         exportCredentials = emptyList()
         passphrasePrompt = null
         pendingExport = null
+        // A cancel or a failure is exactly the case where the pending delete
+        // must NOT survive: the profile is the only remaining copy of those
+        // passwords, so it stays.
+        deleteAfterPasswordExport = null
+        pendingExportNote = null
     }
 
     // ---------- Backup v2: import ----------
@@ -573,6 +782,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
      * anything; a corrupt vault aborts the whole import.
      */
     fun confirmImportPassphrase(passphrase: String) {
+        // A sealed passwords file reaches this dialog by the same route as a
+        // whole-profile backup — one passphrase prompt, two things it can be
+        // about — so the branch is here rather than in the dialog, and the
+        // dialog stays untouched by the passwords flow.
+        if (passwordImport != null) {
+            confirmPasswordImportPassphrase(passphrase)
+            return
+        }
         val vault = importPayload?.vault ?: run {
             passphrasePrompt = null
             return
@@ -714,11 +931,348 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         passphrasePrompt = null
         dropExportState()
         importPayload = null
+        // The passwords import rides this same dialog, so it is abandoned by
+        // this same action. The file is not held on to: a passphrase the user
+        // backed out of is not a passphrase to keep waiting for.
+        passwordImport = null
         message = if (wasExport) "Export canceled" else "Import canceled"
     }
 
     fun dismissImportError() {
         importError = null
+    }
+
+    // ---------- Passwords transfer (import / export) ----------
+
+    /**
+     * Export a profile's saved passwords to a sealed file of its own, as
+     * opposed to the whole-profile backup that [startExport] builds.
+     *
+     * @param deleteAfter true when this export is the pre-delete prompt's
+     *   "Export" choice: the profile is then deleted only once a file has
+     *   actually been delivered — saved or shared — never merely because the
+     *   export was attempted.
+     */
+    fun startPasswordExport(profile: Profile, deleteAfter: Boolean = false) {
+        exportDraft = ExportDraft(profile, includeBookmarks = false, passwordsOnly = true)
+        deleteAfterPasswordExport = if (deleteAfter) profile.id else null
+        pendingExport = null
+        passphrasePrompt = null
+        pendingExportNote = null
+        passwordImport = null
+        if (vaultUnlocked()) readVaultForExport() else requestVaultGate { readVaultForExport() }
+    }
+
+    /** "Import passwords…" — records the destination; the screen opens the picker. */
+    fun startPasswordImport(profile: Profile) {
+        passwordImport = PasswordImport(profile, sealedText = null)
+    }
+
+    /** The picker closed with nothing chosen — stop waiting for a file. */
+    fun cancelPasswordImport() {
+        passwordImport = null
+    }
+
+    /**
+     * Reads a content URI into a String, refusing anything past [limit].
+     *
+     * Hand-rolled rather than `InputStream.readNBytes`, which is API 33 and this
+     * app's minSdk is 28. The cap is not politeness: the URI comes from a file
+     * picker, so the user can hand us any file on the device, and reading a
+     * multi-gigabyte one into a String on the main-process heap is a crash
+     * rather than an error message.
+     */
+    private fun readCapped(uri: Uri, limit: Int, what: String): String {
+        val resolver = getApplication<Application>().contentResolver
+        val input = resolver.openInputStream(uri)
+            ?: error("the selected file could not be opened")
+        return input.use { stream ->
+            val out = java.io.ByteArrayOutputStream()
+            val buffer = ByteArray(64 * 1024)
+            var total = 0
+            while (true) {
+                val read = stream.read(buffer)
+                if (read < 0) break
+                total += read
+                if (total > limit) error("that file is too large to be $what")
+                out.write(buffer, 0, read)
+            }
+            out.toString("UTF-8")
+        }
+    }
+
+    /**
+     * Reads the picked password file and routes it by CONTENT.
+     *
+     * One entry point serves both "import from Chrome/Brave/Firefox/Edge" and
+     * "import from Room Browser", because a sealed export decrypts to exactly
+     * the CSV the browsers write — so the second is the first with a passphrase
+     * step in front. Detection is on the text, before any passphrase exists,
+     * because asking for the passphrase is the screen's first question and it
+     * cannot be asked after the fact.
+     */
+    fun readPasswordFile(uri: Uri) {
+        val target = passwordImport?.profile ?: return
+        viewModelScope.launch {
+            runCatching {
+                withContext(Dispatchers.IO) {
+                    readCapped(uri, MAX_PASSWORD_FILE_BYTES, "a password export")
+                }
+            }.onSuccess { text -> dispatchPasswordImport(target, text) }
+                .onFailure {
+                    passwordImport = null
+                    importError = "Import failed — ${it.message ?: "the file could not be read"}"
+                }
+        }
+    }
+
+    private fun dispatchPasswordImport(profile: Profile, text: String) {
+        if (PasswordTransfer.isSealedFile(text)) {
+            passwordImport = PasswordImport(profile, sealedText = text)
+            passphrasePrompt = PassphrasePrompt(
+                forExport = false,
+                // Deliberately not the profile's name: a sealed file carries no
+                // profile name outside its encryption, so naming one here would
+                // be inventing an origin for it. The dialog words itself
+                // differently for this case.
+                profileName = "",
+                credentialCount = 0,
+                passwordsFile = true,
+                id = ++promptSeq
+            )
+            return
+        }
+        when (val parsed = PasswordCsv.parse(text)) {
+            is PasswordCsv.Result.NotAPasswordCsv -> {
+                passwordImport = null
+                importError = "That file is not a password export, so nothing was imported.\n\n" +
+                    "Room Browser reads the CSV that Chrome, Brave, Edge and Firefox " +
+                    "export, and the sealed password file it writes itself."
+            }
+            is PasswordCsv.Result.Parsed -> {
+                if (parsed.rows.isEmpty()) {
+                    // A real password file that held nothing importable. Reported
+                    // with its reasons rather than as a silent success: the user
+                    // would otherwise delete an export that was never read.
+                    passwordImport = null
+                    message = "Nothing to import into \"${profile.name}\" — ${describeSkips(parsed.skipped)}"
+                } else if (vaultUnlocked()) {
+                    writePasswordImport(profile, parsed.rows, parsed.skipped)
+                } else {
+                    // Writing into the device vault is gated like reading it.
+                    requestVaultGate { writePasswordImport(profile, parsed.rows, parsed.skipped) }
+                }
+            }
+        }
+    }
+
+    /**
+     * Import step 2 for a sealed file — the passphrase. Mirrors
+     * [confirmImportPassphrase]'s retry contract exactly: a wrong passphrase
+     * keeps the dialog open with a fresh id, and nothing is written.
+     */
+    private fun confirmPasswordImportPassphrase(passphrase: String) {
+        val pending = passwordImport ?: return
+        val text = pending.sealedText ?: return
+        viewModelScope.launch {
+            val chars = passphrase.toCharArray()
+            val contents = try {
+                withContext(Dispatchers.Default) {
+                    try {
+                        PasswordTransfer.open(text, chars)
+                    } finally {
+                        PasswordVaultCrypto.wipe(chars)
+                    }
+                }
+            } catch (e: VaultAuthException) {
+                passphrasePrompt = passphrasePrompt?.copy(
+                    error = "Wrong passphrase — try again",
+                    id = ++promptSeq
+                )
+                return@launch
+            } catch (e: PasswordTransferFormatException) {
+                passphrasePrompt = null
+                passwordImport = null
+                importError = "${e.message ?: "That file is not a Room Browser password export"}." +
+                    " Nothing was imported."
+                return@launch
+            }
+            passphrasePrompt = null
+            val rows = contents.entries.map {
+                PasswordCsv.Row(
+                    domain = it.domain,
+                    username = it.username,
+                    password = it.password,
+                    title = it.title
+                )
+            }
+            if (rows.isEmpty()) {
+                passwordImport = null
+                message = "Nothing to import into \"${pending.profile.name}\" — that file held no passwords"
+            } else if (vaultUnlocked()) {
+                writePasswordImport(pending.profile, rows, emptyMap())
+            } else {
+                requestVaultGate { writePasswordImport(pending.profile, rows, emptyMap()) }
+            }
+        }
+    }
+
+    /**
+     * Import final step — decide what is new, then write.
+     *
+     * The merge happens here rather than in the insert because the insert
+     * cannot see the profile's existing logins: `importAll` mints a fresh row
+     * id per entry by design, so a plain re-import of the same file would save
+     * every password twice. See [PasswordImportMerge] for what counts as the
+     * same login and why a changed password is kept rather than overwritten.
+     */
+    private fun writePasswordImport(
+        profile: Profile,
+        rows: List<PasswordCsv.Row>,
+        skipped: Map<PasswordCsv.SkipReason, Int>
+    ) {
+        viewModelScope.launch {
+            runCatching {
+                graph.credentialRepo.unlock()
+                val plan = PasswordImportMerge.plan(
+                    existing = graph.credentialRepo.exportAll(profile.id),
+                    incoming = rows
+                )
+                if (plan.fresh.isNotEmpty()) {
+                    val now = System.currentTimeMillis()
+                    graph.credentialRepo.importAll(
+                        profile.id,
+                        plan.fresh.map { row ->
+                            SavedCredential(
+                                // Minted inside importAll — an import can never
+                                // collide with, or overwrite, an existing row.
+                                id = "",
+                                profileId = profile.id.value,
+                                domain = row.domain,
+                                username = row.username,
+                                password = row.password,
+                                title = row.title,
+                                createdAt = now,
+                                updatedAt = now
+                            )
+                        }
+                    )
+                }
+                Triple(plan, skipped, profile)
+            }.onSuccess { (plan, skips, target) ->
+                passwordImport = null
+                message = describeImport(target, plan, skips)
+            }.onFailure {
+                passwordImport = null
+                importError = "Import failed — ${it.message ?: "nothing was imported"}"
+            }
+        }
+    }
+
+    /**
+     * The one-line result. Every row of the file is accounted for in it —
+     * imported, already saved, kept beside a different saved password, or
+     * skipped for a named reason. A partial import reported as a total one is
+     * how a user ends up deleting the export they still needed.
+     */
+    private fun describeImport(
+        profile: Profile,
+        plan: PasswordImportMerge.Plan,
+        skipped: Map<PasswordCsv.SkipReason, Int>
+    ): String {
+        val parts = mutableListOf(
+            if (plan.fresh.size == 1) "1 password imported" else "${plan.fresh.size} passwords imported"
+        )
+        if (plan.duplicates > 0) parts += "${plan.duplicates} already saved"
+        if (plan.conflicts > 0) {
+            parts += "${plan.conflicts} added beside a different saved password for the same site"
+        }
+        val skippedText = describeSkips(skipped)
+        val head = parts.joinToString(", ")
+        return if (skippedText.isEmpty()) {
+            "$head into \"${profile.name}\""
+        } else {
+            "$head into \"${profile.name}\" — skipped $skippedText"
+        }
+    }
+
+    /** The skip counters as words; empty when nothing was skipped. */
+    private fun describeSkips(skipped: Map<PasswordCsv.SkipReason, Int>): String {
+        if (skipped.isEmpty()) return ""
+        return skipped.entries
+            .sortedBy { it.key.ordinal }
+            .mapNotNull { (reason, count) ->
+                val what = when (reason) {
+                    PasswordCsv.SkipReason.ENCRYPTED -> "locked by a Firefox primary password"
+                    PasswordCsv.SkipReason.NO_URL -> "with no site"
+                    PasswordCsv.SkipReason.UNSUPPORTED_URL -> "for non-web origins"
+                    PasswordCsv.SkipReason.INCOMPLETE -> "with no password"
+                }
+                count.takeIf { it > 0 }?.let { "$it $what" }
+            }
+            .joinToString(", ")
+    }
+
+    // ---------- Deleting a profile, which its passwords do not survive ----------
+
+    /**
+     * The delete action asks first.
+     *
+     * `ProfileRepositoryImpl.delete` destroys the profile's credential rows and
+     * the Keystore key that decrypts them, in that order and in one step, so a
+     * password offered for export AFTER the delete has nothing left to read.
+     * Hence a prompt that runs before it — and hence this method, which is what
+     * the delete button now calls.
+     *
+     * The count needs an unlocked vault. When it is locked the count is left
+     * null rather than unlocking to ask a question, and the prompt says "may
+     * have" instead of naming a number: a profile whose passwords we could not
+     * count is exactly the one most worth warning about.
+     */
+    fun requestDeleteProfile(profile: Profile) {
+        viewModelScope.launch {
+            val count = runCatching {
+                if (!vaultUnlocked()) null else graph.credentialRepo.exportAll(profile.id).size
+            }.getOrNull()
+            deletePrompt = DeletePrompt(profile, count)
+        }
+    }
+
+    /** "Cancel" — the profile stays, nothing is exported. */
+    fun dismissDeletePrompt() {
+        deletePrompt = null
+    }
+
+    /** "Delete without exporting" — the user has been told what that costs. */
+    fun confirmDeleteWithoutExport() {
+        val profile = deletePrompt?.profile ?: return
+        deletePrompt = null
+        deleteProfile(profile.id)
+    }
+
+    /** "Export first" — the export flow runs, and deletes only on delivery. */
+    fun confirmDeleteWithExport() {
+        val profile = deletePrompt?.profile ?: return
+        deletePrompt = null
+        startPasswordExport(profile, deleteAfter = true)
+    }
+
+    /**
+     * A staged passwords export was delivered (saved to a file, or shared).
+     * Carries out a pending delete — and only here, because a file that was
+     * never written is not a backup.
+     */
+    private fun afterPasswordExportDelivered() {
+        val id = deleteAfterPasswordExport ?: return
+        deleteAfterPasswordExport = null
+        deleteProfile(
+            id,
+            buildString {
+                append("Passwords exported")
+                pendingExportNote?.let { append(" — "); append(it) }
+                append(" — profile deleted with all its data")
+            }
+        )
     }
 
     // ---------- Vault gate plumbing (the screen owns BiometricGate) ----------
@@ -738,6 +1292,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         if (!success) {
             dropExportState()
             importPayload = null
+            // A gate that could not run is not a reason to forget the file:
+            // but the file cannot be READ without the vault either, so the
+            // import is abandoned and can be started again from the menu.
+            passwordImport = null
             message = "Vault not unlocked — nothing was exported or imported"
             return
         }
@@ -782,3 +1340,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         messageAction = null
     }
 }
+
+/**
+ * The largest password file this app will read into memory.
+ *
+ * Chosen against the real thing rather than a round number: a browser's
+ * `passwords.csv` is a few hundred KB for a heavy user (each row is well under
+ * 200 bytes), and our own sealed export adds a base64 armoured GCM blob over
+ * that CSV — still comfortably inside a megabyte. Eight megabytes is far above
+ * any real file and far below the point where reading it costs anything.
+ */
+private const val MAX_PASSWORD_FILE_BYTES = 8 * 1024 * 1024
