@@ -2,6 +2,7 @@ package com.roombrowser.engine.gecko
 
 import android.content.Context
 import android.graphics.Bitmap
+import android.net.Uri
 import android.os.Handler
 import android.os.Looper
 import android.view.View
@@ -12,14 +13,22 @@ import com.roombrowser.engine.EnginePageScripts
 import com.roombrowser.engine.EngineSession
 import com.roombrowser.engine.EngineSessionListener
 import com.roombrowser.engine.EngineState
+import com.roombrowser.engine.HttpAuthResponder
+import com.roombrowser.engine.NavigationDecision
+import com.roombrowser.engine.PageErrorKind
+import com.roombrowser.engine.PermissionResponder
 import org.json.JSONObject
+import org.mozilla.geckoview.AllowOrDeny
 import org.mozilla.geckoview.GeckoResult
 import org.mozilla.geckoview.GeckoRuntime
 import org.mozilla.geckoview.GeckoSession
 import org.mozilla.geckoview.GeckoSessionSettings
 import org.mozilla.geckoview.GeckoView
 import org.mozilla.geckoview.WebExtension
+import org.mozilla.geckoview.WebRequestError
+import org.mozilla.geckoview.WebResponse
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
 
 /**
@@ -407,6 +416,18 @@ internal class GeckoEngineSession(
     }
 
     // ---- delegates --------------------------------------------------------
+    //
+    // ONE LISTENER MEMBER HAS NO OVERRIDE HERE, and its absence is a fact
+    // rather than an oversight. `EngineSessionListener.onResourceRequest`
+    // cannot be served by GeckoView 153: there is no `shouldInterceptRequest`
+    // equivalent, and the only per-request hooks the engine exposes are the
+    // two load-request callbacks below, which fire for navigations -- an
+    // iframe's document, a link -- and never for the scripts, images and
+    // `fetch` calls that member exists to block. The GeckoView edition gets
+    // this signal from a bundled WebExtension when that lands. Overriding
+    // nothing is the honest encoding of "this engine cannot answer"; an
+    // override that always returned false would read as "checked, and not
+    // blocked", which is the one thing it must not read as.
 
     private val navigationDelegate = object : GeckoSession.NavigationDelegate {
 
@@ -436,14 +457,52 @@ internal class GeckoEngineSession(
             listener?.onNavigationStateChanged(this@GeckoEngineSession, backAvailable, forwardAvailable)
         }
 
+        /**
+         * The app's navigation policy, for a TOP-LEVEL navigation.
+         *
+         * GeckoView splits the policy question across two callbacks with
+         * identical shapes, and which one ran IS the frame signal: there is no
+         * field on [GeckoSession.NavigationDelegate.LoadRequest] that says
+         * main-frame. So this one reports isTopLevel = true and its twin
+         * reports false, and neither invents the flag.
+         */
+        override fun onLoadRequest(
+            session: GeckoSession,
+            request: GeckoSession.NavigationDelegate.LoadRequest
+        ): GeckoResult<AllowOrDeny>? = decideNavigation(request, isTopLevel = true)
+
+        /** The same policy for a non-top-level navigation -- an iframe's document. */
+        override fun onSubframeLoadRequest(
+            session: GeckoSession,
+            request: GeckoSession.NavigationDelegate.LoadRequest
+        ): GeckoResult<AllowOrDeny>? = decideNavigation(request, isTopLevel = false)
+
         override fun onLoadError(
             session: GeckoSession,
             uri: String?,
-            error: org.mozilla.geckoview.WebRequestError
+            error: WebRequestError
         ): GeckoResult<String>? {
+            // isTopLevel is TRUE. GeckoView's onLoadError carries no frame flag
+            // of its own, and it is the callback that feeds the engine's error
+            // page -- a top-level concept, and the meaning the facade documents
+            // for this member ("a main-frame load failed"). One case is a
+            // slight overclaim: GeckoView also routes a frame's rejection of an
+            // unsafe scheme through this same callback, and nothing here can
+            // tell that apart from a document failure. Reporting false instead
+            // would be the larger error -- it would mark every real top-level
+            // failure as a frame failure -- so true is reported, and the one
+            // imprecise case is recorded here rather than hidden.
+            //
+            // The engine's own code is passed alongside the mapped kind rather
+            // than instead of it: the kind is what the shared policy branches
+            // on, the code is what the diagnostics screen prints, and
+            // collapsing them would put a GeckoView numbering system into code
+            // that must not know one.
             listener?.onPageError(
                 this@GeckoEngineSession,
                 uri,
+                pageErrorKind(error),
+                true,
                 error.code,
                 "category=" + error.category
             )
@@ -468,7 +527,17 @@ internal class GeckoEngineSession(
             session: GeckoSession,
             uri: String
         ): GeckoResult<GeckoSession>? {
-            listener?.onNewWindowRequest(this@GeckoEngineSession, uri)
+            // hasUserGesture is FALSE, and that is a report rather than a
+            // guess: GeckoView 153's `onNewSession` takes the session and the
+            // URI and nothing else -- there is no gesture flag anywhere in the
+            // callback. The shared popup policy blocks a window request that
+            // arrives without one, so in this edition EVERY popup is blocked
+            // until a gesture source is found. That is a known, recorded gap,
+            // not something to paper over: reporting `true` here would invent
+            // a fact about a navigation the engine never described, and would
+            // give a script's unsolicited `window.open()` the same standing as
+            // a link the user pressed.
+            listener?.onNewWindowRequest(this@GeckoEngineSession, uri, false)
             // Null anyway, even when the app just opened the URL as its own
             // new tab: answering with a session would hand GeckoView a second
             // session for a window the app has already opened, and the user
@@ -482,6 +551,58 @@ internal class GeckoEngineSession(
         override fun onTitleChange(session: GeckoSession, title: String?) {
             currentTitle = title
             listener?.onTitleChanged(this@GeckoEngineSession, title)
+        }
+
+        /**
+         * The download hook. GeckoView routes anything it will not render
+         * itself -- a download, a navigation to a type it has no viewer for --
+         * through here.
+         *
+         * THE BODY STREAM IS CLOSED UNCONDITIONALLY, in a `finally` that runs
+         * even when the listener is absent or answers "handled". The stream is
+         * the read side of a live connection: leaving it open holds the socket
+         * until the stream is finalised by the GC, which on a page that fires
+         * several downloads is a leaked file descriptor, not a tidy-up. Closing
+         * it here cannot break a handler, because the listener signature
+         * carries no stream for a handler to have taken -- an app that wants
+         * the bytes re-fetches from the URL, which is the only thing it can do
+         * with what it was given.
+         */
+        override fun onExternalResponse(session: GeckoSession, response: WebResponse) {
+            try {
+                // `response.headers` is the RESPONSE header map, and there is no
+                // accessor for content type, disposition or length -- they are
+                // read out of it and nowhere else. A missing or unparseable
+                // Content-Length becomes -1, which is the same value the WebView
+                // edition's DownloadListener already reports for "unknown", so
+                // the shape above the facade is identical in both editions.
+                listener?.onDownloadRequest(
+                    this@GeckoEngineSession,
+                    response.uri,
+                    // null, and it cannot be anything else: WebResponse carries
+                    // response headers only, so the request's User-Agent is never
+                    // echoed back to us, and GeckoView exposes no query for the
+                    // effective UA of a session either.
+                    null,
+                    response.headers["Content-Disposition"],
+                    response.headers["Content-Type"],
+                    response.headers["Content-Length"]?.toLongOrNull() ?: -1L
+                )
+            } finally {
+                runCatching { response.body?.close() }
+            }
+        }
+
+        /**
+         * Fullscreen is a state notification here, because GeckoView renders
+         * fullscreen content in its own view -- there is no second surface to
+         * hand the app and none to hand back, which is why the facade carries a
+         * boolean and not a view. Leaving fullscreen is `GeckoSession.exitFullScreen()`
+         * on the engine side; the facade has no member for the app to ask for
+         * that yet, so this direction is report-only.
+         */
+        override fun onFullScreen(session: GeckoSession, fullScreen: Boolean) {
+            listener?.onFullScreen(this@GeckoEngineSession, fullScreen)
         }
 
         override fun onCrash(session: GeckoSession) {
@@ -518,21 +639,302 @@ internal class GeckoEngineSession(
         }
     }
 
+    private val permissionDelegate = object : GeckoSession.PermissionDelegate {
+
+        /**
+         * Geolocation, the only content permission the facade has a member
+         * for.
+         *
+         * A NULL return is treated by GeckoView as VALUE_PROMPT, and that is
+         * the right answer for every other permission type: it neither grants
+         * nor persists anything, and leaves the engine's own behaviour in
+         * place. The facade has no vocabulary for notifications, autoplay or
+         * storage access, and inventing one here would be the adapter deciding
+         * product policy.
+         *
+         * VALUE_ALLOW and VALUE_DENY are more than an answer to this request:
+         * GeckoView writes them into its own permission store for the site, so
+         * the app is choosing what happens on every later visit as well. That
+         * is the engine's semantics and the facade's contract; the adapter
+         * must not soften it by resolving PROMPT on a real answer.
+         */
+        override fun onContentPermissionRequest(
+            session: GeckoSession,
+            perm: GeckoSession.PermissionDelegate.ContentPermission
+        ): GeckoResult<Int>? {
+            if (perm.permission != GeckoSession.PermissionDelegate.PERMISSION_GEOLOCATION) {
+                return null
+            }
+            val result = GeckoResult<Int>()
+            val answered = AtomicBoolean(false)
+            val responder = object : PermissionResponder {
+                override fun grant() {
+                    // A second resolution throws in GeckoView and would throw
+                    // on whatever thread the app answered from. The guard is
+                    // what makes the facade's "answer exactly once" rule
+                    // enforceable here instead of merely documented.
+                    if (answered.compareAndSet(false, true)) {
+                        result.complete(GeckoSession.PermissionDelegate.ContentPermission.VALUE_ALLOW)
+                    }
+                }
+
+                override fun deny() {
+                    if (answered.compareAndSet(false, true)) {
+                        result.complete(GeckoSession.PermissionDelegate.ContentPermission.VALUE_DENY)
+                    }
+                }
+            }
+            val listener = this@GeckoEngineSession.listener
+            if (listener == null) {
+                // No listener must not mean a hung request: a geolocation call
+                // that never settles is a page that never recovers. With
+                // nothing to ask, PROMPT is the one answer that grants nothing
+                // and persists nothing.
+                result.complete(
+                    GeckoSession.PermissionDelegate.ContentPermission.VALUE_PROMPT
+                )
+            } else {
+                listener.onGeolocationRequest(this@GeckoEngineSession, perm.uri, responder)
+            }
+            return result
+        }
+
+        /**
+         * Camera and microphone.
+         *
+         * Each list is the engine's own device list for that kind, and either
+         * may be null when nothing of that kind was requested -- so "wants" is
+         * asked of the list rather than inferred from the document. Granting
+         * passes the first source of each requested kind back to the callback,
+         * which wants sources it gave us or null for a kind that was not
+         * requested. The facade's grant() is deliberately all-or-nothing
+         * because the sheet that answers it is.
+         */
+        override fun onMediaPermissionRequest(
+            session: GeckoSession,
+            uri: String,
+            video: Array<out GeckoSession.PermissionDelegate.MediaSource>?,
+            audio: Array<out GeckoSession.PermissionDelegate.MediaSource>?,
+            callback: GeckoSession.PermissionDelegate.MediaCallback
+        ) {
+            val answered = AtomicBoolean(false)
+            val responder = object : PermissionResponder {
+                override fun grant() {
+                    if (!answered.compareAndSet(false, true)) return
+                    val videoSource = video?.firstOrNull()
+                    val audioSource = audio?.firstOrNull()
+                    // The callback is @UiThread and the responder is not:
+                    // nothing in the facade promises the sheet answers on the
+                    // UI thread, so the call is posted there rather than run
+                    // inline. When the sheet already is on the main thread
+                    // this executes immediately and nothing is delayed.
+                    runOnMain { callback.grant(videoSource, audioSource) }
+                }
+
+                override fun deny() {
+                    if (!answered.compareAndSet(false, true)) return
+                    runOnMain { callback.reject() }
+                }
+            }
+            val listener = this@GeckoEngineSession.listener
+            if (listener == null) {
+                // There is no PROMPT to leave this at -- MediaCallback has
+                // only grant and reject -- and this override is what replaces
+                // GeckoView's own default, which rejects. An unanswered
+                // request is a `getUserMedia` promise that never settles, so
+                // "no listener" has to resolve rather than return quietly.
+                callback.reject()
+            } else {
+                listener.onMediaPermissionRequest(
+                    this@GeckoEngineSession,
+                    uri,
+                    !video.isNullOrEmpty(),
+                    !audio.isNullOrEmpty(),
+                    responder
+                )
+            }
+        }
+    }
+
+    private val promptDelegate = object : GeckoSession.PromptDelegate {
+
+        /**
+         * HTTP authentication, the only prompt the facade models.
+         *
+         * Every other prompt type -- JavaScript dialogs, choices, file pickers
+         * -- is left to GeckoView by returning null, which is how this override
+         * says "not mine" without pretending to have handled it. GeckoView's
+         * default for those is to dismiss, so a null here is a cancel and not
+         * a hang.
+         *
+         * The navigation stays open until the returned result resolves, which
+         * is why the responder resolves exactly once and why the
+         * absent-listener case resolves immediately: an unresolved prompt is a
+         * page that never finishes loading.
+         */
+        override fun onAuthPrompt(
+            session: GeckoSession,
+            prompt: GeckoSession.PromptDelegate.AuthPrompt
+        ): GeckoResult<GeckoSession.PromptDelegate.PromptResponse>? {
+            val result = GeckoResult<GeckoSession.PromptDelegate.PromptResponse>()
+            val answered = AtomicBoolean(false)
+            val responder = object : HttpAuthResponder {
+                override fun proceed(username: String, password: String) {
+                    if (!answered.compareAndSet(false, true)) return
+                    // confirm() and dismiss() both THROW once the prompt has
+                    // been completed, so the guard above is not only about the
+                    // GeckoResult: a second call would throw out of whatever
+                    // thread the app answered on.
+                    runOnMain { result.complete(prompt.confirm(username, password)) }
+                }
+
+                override fun cancel() {
+                    if (!answered.compareAndSet(false, true)) return
+                    runOnMain { result.complete(prompt.dismiss()) }
+                }
+            }
+            val listener = this@GeckoEngineSession.listener
+            if (listener == null) {
+                result.complete(prompt.dismiss())
+            } else {
+                // The realm is reported EMPTY, and that is the honest answer
+                // rather than a lost value: GeckoView 153's AuthPrompt has no
+                // `httpRealm` field anywhere -- the challenged site is carried
+                // by `authOptions.uri`, which is what authHost() reads.
+                // Inventing a realm from the URL or the message would put text
+                // in front of the user that the engine never said.
+                listener.onHttpAuthRequest(
+                    this@GeckoEngineSession,
+                    authHost(prompt.authOptions.uri),
+                    "",
+                    responder
+                )
+            }
+            return result
+        }
+    }
+
+    // ---- policy mapping ---------------------------------------------------
+
+    /**
+     * Run one load request through the app's navigation policy.
+     *
+     * The whole decision vocabulary is honoured here: ALLOW hands the load
+     * back to GeckoView, BLOCK abandons it, and LoadDifferent abandons the
+     * original and starts the substitute. That last one is the https upgrade,
+     * and it is the reason the facade carries a decision instead of a boolean
+     * -- the substitute load is issued from here, so it stays inside the
+     * session's own navigation accounting rather than escaping as a
+     * side-effecting call the caller made.
+     *
+     * A SUBSTITUTE CANNOT BE ISSUED FOR A SUBFRAME, and the code refuses to
+     * pretend otherwise: `loadUri` navigates the top-level document, so using
+     * it to "upgrade" an iframe's request would turn a frame load into a page
+     * load -- a worse outcome than the one the caller was avoiding. The caller
+     * asked for the original NOT to load, so the faithful answer is BLOCK: the
+     * frame does not load, and nothing is loaded in its place.
+     *
+     * NO "PROCEED ANYWAY" IS EXPRESSIBLE HERE. A certificate failure never
+     * reaches this method -- GeckoView reports it as a load error instead --
+     * and a DENY here is a policy judgement about a URL, never an override of
+     * a failed validation.
+     */
+    private fun decideNavigation(
+        request: GeckoSession.NavigationDelegate.LoadRequest,
+        isTopLevel: Boolean
+    ): GeckoResult<AllowOrDeny> {
+        val listener = this.listener ?: return GeckoResult.allow()
+        val decision = listener.onNavigationRequest(
+            this,
+            request.uri,
+            isTopLevel,
+            request.hasUserGesture
+        )
+        return when (decision) {
+            NavigationDecision.Allow -> GeckoResult.allow()
+            NavigationDecision.Block -> GeckoResult.deny()
+            is NavigationDecision.LoadDifferent -> {
+                if (isTopLevel) {
+                    // Loaded with the delegate explicitly bypassed, and not
+                    // through the session's own `loadUri`. GeckoView runs
+                    // `onLoadRequest` for the app's direct loads as well --
+                    // LOAD_FLAGS_NONE is the Loader default, and only
+                    // LOAD_FLAGS_BYPASS_LOAD_URI_DELEGATE skips the callback
+                    // -- so a plain `loadUri(substitute)` would come straight
+                    // back through this method. The caller has already
+                    // classified the substitute; asking it about a URL it
+                    // chose is not a second opinion, it is a loop.
+                    runOnMain {
+                        session.load(
+                            GeckoSession.Loader()
+                                .uri(decision.url)
+                                .flags(GeckoSession.LOAD_FLAGS_BYPASS_LOAD_URI_DELEGATE)
+                        )
+                    }
+                }
+                GeckoResult.deny()
+            }
+        }
+    }
+
+    /**
+     * Map a GeckoView load error onto the facade's three categories.
+     *
+     * The category is checked first because GeckoView gives its certificate
+     * failures a category of their own; the individual codes are checked as
+     * well because this mapping exists to be exact, not to be clever. The one
+     * error that must NOT be read as a certificate failure is ERROR_HTTPS_ONLY:
+     * it means https-only mode blocked a plaintext load, so the site is
+     * unreachable rather than untrusted, and showing the "not secure" screen
+     * for it would tell the user something untrue.
+     */
+    private fun pageErrorKind(error: WebRequestError): PageErrorKind = when {
+        error.category == WebRequestError.ERROR_CATEGORY_SECURITY -> PageErrorKind.CERTIFICATE
+        error.code == WebRequestError.ERROR_SECURITY_SSL ||
+            error.code == WebRequestError.ERROR_SECURITY_BAD_CERT ||
+            error.code == WebRequestError.ERROR_BAD_HSTS_CERT -> PageErrorKind.CERTIFICATE
+        error.category == WebRequestError.ERROR_CATEGORY_NETWORK -> PageErrorKind.TRANSPORT
+        error.code == WebRequestError.ERROR_NET_RESET ||
+            error.code == WebRequestError.ERROR_NET_INTERRUPT ||
+            error.code == WebRequestError.ERROR_NET_TIMEOUT ||
+            error.code == WebRequestError.ERROR_OFFLINE ||
+            error.code == WebRequestError.ERROR_PORT_BLOCKED ||
+            error.code == WebRequestError.ERROR_UNKNOWN_HOST ||
+            error.code == WebRequestError.ERROR_PROXY_CONNECTION_REFUSED -> PageErrorKind.TRANSPORT
+        else -> PageErrorKind.OTHER
+    }
+
+    /**
+     * The host of an auth challenge, for the sheet that has to show it.
+     *
+     * GeckoView 153 carries the challenged site in `AuthOptions.uri` and has no
+     * `httpRealm` field at all. When the URI has no parseable host -- an opaque
+     * or malformed authority -- the whole URI is reported: it is less precise,
+     * but it is still the thing the user is being asked to authenticate
+     * against, and an empty string would hide exactly that.
+     */
+    private fun authHost(uri: String?): String {
+        if (uri == null) return ""
+        return Uri.parse(uri).host ?: uri
+    }
+
     /**
      * Wiring, deliberately LAST in the file.
      *
      * Kotlin runs property initialisers and `init` blocks in the order they
-     * appear, so this has to sit after the three delegate properties it
+     * appear, so this has to sit after the five delegate properties it
      * installs. Placed at the top -- where it reads better -- it would pass
-     * three not-yet-initialised nulls to GeckoView, which accepts null
-     * delegates happily and would then silently deliver no callbacks at all:
-     * no URL, no title, no progress, no error surface, with nothing in the
-     * log to say why.
+     * five not-yet-initialised nulls to GeckoView, which accepts null delegates
+     * happily and would then silently deliver no callbacks at all: no URL, no
+     * title, no progress, no error surface, no permission sheet and no auth
+     * sheet, with nothing in the log to say why.
      */
     init {
         session.setNavigationDelegate(navigationDelegate)
         session.setContentDelegate(contentDelegate)
         session.setProgressDelegate(progressDelegate)
+        session.setPermissionDelegate(permissionDelegate)
+        session.setPromptDelegate(promptDelegate)
         session.open(runtime)
         geckoView.setSession(session)
     }
