@@ -7,7 +7,7 @@
  *   native  --port-->  isolated.js  --postMessage-->  main.js  -->  page
  *   native  <--port--  isolated.js  <--postMessage--  main.js  <--  page
  *
- * Deliberately NOT allFrames: one port per document is what the app-side
+ * Deliberately NOT `all_frames`: one port per document is what the app-side
  * bookkeeping assumes, and a port per iframe would multiply the eval
  * round-trips and the pending-result map for no gain -- the page-world half
  * already runs in every frame for the shim's sake, and it is the frame that
