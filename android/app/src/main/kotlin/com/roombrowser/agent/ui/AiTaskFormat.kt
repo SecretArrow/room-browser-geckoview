@@ -13,10 +13,12 @@ import java.time.format.DateTimeFormatter
 import java.time.format.TextStyle
 import java.util.Locale
 
-/** Human-readable schedule text for the list and confirmations. */
+/** Human-readable schedule text for the list and confirmations. An INTERVAL
+ *  reads as the cadence it will actually be delivered at, not the one it was
+ *  asked for — [scheduleClampNotice] says what was changed. */
 fun scheduleSummary(s: TaskSchedule): String {
     val core = when (s.kind) {
-        ScheduleKind.INTERVAL -> "Every ${humanInterval(s.intervalMinutes)}"
+        ScheduleKind.INTERVAL -> "Every ${humanInterval(ScheduleMath.effective(s).intervalMinutes)}"
         ScheduleKind.DAILY -> "Daily at ${formatMinuteOfDay(s.minuteOfDay ?: 0)}"
         ScheduleKind.WEEKLY -> {
             val days = if (s.daysOfWeek.isEmpty()) "every day"
@@ -43,7 +45,8 @@ fun scheduleSummary(s: TaskSchedule): String {
  * of month) — never silently "later".
  */
 fun nextRunText(s: TaskSchedule, nowMs: Long, zone: ZoneId): String =
-    ScheduleMath.nextRunAt(s, nowMs, zone)?.let { "Next run: ${formatInstant(it, zone)}" }
+    ScheduleMath.nextRunAt(ScheduleMath.effective(s), nowMs, zone)
+        ?.let { "Next run: ${formatInstant(it, zone)}" }
         ?: "This schedule can never fire — check its interval or day of month."
 
 /** One line for the last delivery, honest about a run that only deferred. */
@@ -58,9 +61,14 @@ fun lastRunText(task: AiTaskEntity, zone: ZoneId): String? {
     }
 }
 
-/** True when the requested interval is below what WorkManager can deliver. */
-fun scheduleIsClamped(s: TaskSchedule): Boolean =
-    s.kind == ScheduleKind.INTERVAL && ScheduleMath.requiresHighFrequency(s.intervalMinutes)
+/** Why the cadence that will be delivered differs from the one requested, or
+ *  null when they are the same. Android clamps an INTERVAL at both ends. */
+fun scheduleClampNotice(s: TaskSchedule): String? {
+    val effective = ScheduleMath.effective(s).intervalMinutes
+    if (effective == s.intervalMinutes) return null
+    return "Android's background scheduler clamps this interval: the task runs every " +
+        "${humanInterval(effective)}, not every ${humanInterval(s.intervalMinutes)}."
+}
 
 fun formatMinuteOfDay(minuteOfDay: Int): String =
     String.format(Locale.US, "%02d:%02d", minuteOfDay / 60, minuteOfDay % 60)

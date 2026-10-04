@@ -21,8 +21,10 @@ import java.util.concurrent.TimeUnit
  */
 object AiTaskWorkScheduler {
 
-    /** The task's next delivery, or cancels when there is none. A null [task]
-     *  (deleted while a worker was enqueued) cancels too. */
+    /** Enqueues the task's next delivery, or cancels its slot when the task is
+     *  disabled or its schedule can never fire. A null [task] (a row deleted
+     *  while a worker was enqueued) has nothing to enqueue and nothing left
+     *  pending to cancel. */
     fun scheduleNext(context: Context, task: AiTaskEntity?) {
         if (task == null) return
         if (!task.enabled) {

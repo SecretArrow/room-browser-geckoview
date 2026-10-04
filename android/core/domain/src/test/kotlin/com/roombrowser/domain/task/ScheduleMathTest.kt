@@ -14,6 +14,9 @@ class ScheduleMathTest {
 
     private fun ms(iso: String): Long = Instant.parse(iso).toEpochMilli()
 
+    private fun interval(minutes: Int) =
+        TaskSchedule(ScheduleKind.INTERVAL, intervalMinutes = minutes)
+
     @Test
     fun `intervals below the WorkManager floor are clamped and flagged high-frequency`() {
         assertThat(ScheduleMath.effectiveWorkManagerInterval(5)).isEqualTo(15L)
@@ -34,6 +37,20 @@ class ScheduleMathTest {
             .isEqualTo(ceiling.toLong())
         assertThat(ScheduleMath.effectiveWorkManagerInterval(ceiling))
             .isEqualTo(ceiling.toLong())
+    }
+
+    @Test
+    fun `the effective schedule clamps an interval at both ends and leaves other kinds alone`() {
+        assertThat(ScheduleMath.effective(interval(5)).intervalMinutes).isEqualTo(15)
+        assertThat(ScheduleMath.effective(interval(45)).intervalMinutes).isEqualTo(45)
+        assertThat(ScheduleMath.effective(interval(ScheduleMath.MAX_WORKMANAGER_INTERVAL_MINUTES + 1)).intervalMinutes)
+            .isEqualTo(ScheduleMath.MAX_WORKMANAGER_INTERVAL_MINUTES)
+
+        // A schedule that can never fire must not be floored into a valid one.
+        assertThat(ScheduleMath.effective(interval(0))).isEqualTo(interval(0))
+
+        val daily = TaskSchedule(ScheduleKind.DAILY, minuteOfDay = 9 * 60)
+        assertThat(ScheduleMath.effective(daily)).isEqualTo(daily)
     }
 
     @Test

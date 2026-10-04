@@ -36,18 +36,33 @@ class AiTaskWorker(
 ) : CoroutineWorker(context, params) {
 
     override suspend fun doWork(): Result {
-        return runCatching { runDelivery() }.getOrElse {
+        val taskId = inputData.getLong(KEY_TASK_ID, -1L)
+        return runCatching { runDelivery(taskId) }.getOrElse { error ->
+            // Cancellation is WorkManager stopping this delivery, not a fault.
+            if (error is CancellationException) throw error
             // Same policy as RetentionCleanupWorker: a transient fault (SQLite
             // busy, a profile database swapped mid-flight) deserves backoff; a
-            // permanent one must not wake the device forever. After
-            // MAX_ATTEMPTS the attempt chain is abandoned — the next scheduled
-            // delivery still fires, because nothing was stamped.
-            if (runAttemptCount >= MAX_ATTEMPTS) Result.failure() else Result.retry()
+            // permanent one must not wake the device forever.
+            if (runAttemptCount < MAX_ATTEMPTS) return@getOrElse Result.retry()
+            // Abandoning the chain still owes the task its next delivery.
+            // Nothing else in the app re-enqueues one, so without this a task
+            // that failed MAX_ATTEMPTS deliveries would stop, silently and for
+            // good, until the user happened to edit it.
+            reschedule(taskId)
+            Result.failure()
         }
     }
 
-    private suspend fun runDelivery(): Result {
-        val taskId = inputData.getLong(KEY_TASK_ID, -1L)
+    /** Best-effort: a delivery that could not even read its own row leaves the
+     *  slot as it is rather than cancelling work it cannot identify. */
+    private suspend fun reschedule(taskId: Long) {
+        val app = applicationContext as? RoomBrowserApp ?: return
+        runCatching {
+            AiTaskWorkScheduler.scheduleNext(applicationContext, app.graph.aiTaskRepo.get(taskId))
+        }
+    }
+
+    private suspend fun runDelivery(taskId: Long): Result {
         if (taskId <= 0L) return Result.success()
         val app = applicationContext as? RoomBrowserApp ?: return Result.success()
         val repo = app.graph.aiTaskRepo

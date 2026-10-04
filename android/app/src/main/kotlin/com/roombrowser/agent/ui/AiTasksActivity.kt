@@ -253,10 +253,9 @@ private fun TaskRow(
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
-        if (scheduleIsClamped(schedule)) {
+        scheduleClampNotice(schedule)?.let {
             Text(
-                "Android runs background work at most every 15 minutes, so this task runs " +
-                    "every 15 minutes rather than the interval requested.",
+                it,
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.error
             )

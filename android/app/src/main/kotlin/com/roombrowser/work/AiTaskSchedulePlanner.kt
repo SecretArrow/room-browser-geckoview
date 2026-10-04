@@ -7,35 +7,14 @@ import java.time.ZoneId
 
 /**
  * The worker's arithmetic, kept pure and separate so it fails in the fast
- * `quality` job instead of on a device.
- *
- * WorkManager will not deliver work more often than
- * [ScheduleMath.WORKMANAGER_FLOOR_MINUTES] and caps an interval at
- * [ScheduleMath.MAX_WORKMANAGER_INTERVAL_MINUTES]. An INTERVAL schedule is
- * therefore judged and scheduled through [effectiveSchedule], so a 5-minute
- * task is honestly a 15-minute one rather than a task whose every delivery
- * finds itself not yet due. Sub-floor tasks are also flagged
- * ([requiresForeground]) so the worker can take the foreground path and the
- * UI can say what the real cadence is.
+ * `quality` job instead of on a device. The clamping rule itself lives in
+ * [ScheduleMath.effective], so the scheduler, the due test and the UI all read
+ * the same cadence.
  */
 object AiTaskSchedulePlanner {
 
-    /**
-     * The schedule as WorkManager can actually honour. Only INTERVAL is
-     * clamped: DAILY/WEEKLY/MONTHLY name an instant, and a one-time delayed
-     * delivery has no minimum. A non-positive interval is passed through, not
-     * floored — clamping it would turn a schedule that can never fire into a
-     * valid 15-minute one.
-     */
-    fun effectiveSchedule(schedule: TaskSchedule): TaskSchedule =
-        if (schedule.kind == ScheduleKind.INTERVAL && schedule.intervalMinutes > 0) {
-            schedule.copy(
-                intervalMinutes =
-                    ScheduleMath.effectiveWorkManagerInterval(schedule.intervalMinutes).toInt()
-            )
-        } else {
-            schedule
-        }
+    /** The schedule as WorkManager can actually deliver it. */
+    fun effectiveSchedule(schedule: TaskSchedule): TaskSchedule = ScheduleMath.effective(schedule)
 
     /** The next instant WorkManager should deliver this task; null when the
      *  schedule can never fire (a non-positive interval, a missing day of

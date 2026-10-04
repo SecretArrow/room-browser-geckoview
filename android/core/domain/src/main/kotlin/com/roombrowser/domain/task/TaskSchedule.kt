@@ -66,6 +66,20 @@ object ScheduleMath {
             .toLong()
 
     /**
+     * [s] as its deliveries can actually happen. Every reader — the scheduler,
+     * the due test, and anything that formats a cadence for the user — must ask
+     * for this rather than the requested schedule, or it promises an interval
+     * the delivery will not keep. Non-positive intervals pass through: flooring
+     * one would turn a schedule that can never fire into a valid 15-minute one.
+     */
+    fun effective(s: TaskSchedule): TaskSchedule =
+        if (s.kind == ScheduleKind.INTERVAL && s.intervalMinutes > 0) {
+            s.copy(intervalMinutes = effectiveWorkManagerInterval(s.intervalMinutes).toInt())
+        } else {
+            s
+        }
+
+    /**
      * First instant strictly after [fromEpochMs]; a run inside quiet hours is deferred, not dropped.
      * null means this schedule can never fire (an INTERVAL with a non-positive interval, or a
      * MONTHLY with no day of month) — that is an invalid schedule to surface, not "later".

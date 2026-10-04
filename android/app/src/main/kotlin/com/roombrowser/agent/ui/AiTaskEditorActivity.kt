@@ -370,11 +370,10 @@ private fun TaskEditorRoot(
                             .fillMaxWidth()
                             .semantics { contentDescription = "ai_task_interval_field" }
                     )
-                    if ((intervalText.toIntOrNull() ?: 0) in 1 until 15) {
+                    scheduleClampNotice(schedule)?.let {
                         Spacer(Modifier.height(4.dp))
                         Text(
-                            "Intervals below 15 minutes are clamped: Android runs background work " +
-                                "at most every 15 minutes.",
+                            it,
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.error
                         )
