@@ -23,10 +23,12 @@ object AiTaskSchedulePlanner {
     /**
      * The schedule as WorkManager can actually honour. Only INTERVAL is
      * clamped: DAILY/WEEKLY/MONTHLY name an instant, and a one-time delayed
-     * delivery has no minimum.
+     * delivery has no minimum. A non-positive interval is passed through, not
+     * floored — clamping it would turn a schedule that can never fire into a
+     * valid 15-minute one.
      */
     fun effectiveSchedule(schedule: TaskSchedule): TaskSchedule =
-        if (schedule.kind == ScheduleKind.INTERVAL) {
+        if (schedule.kind == ScheduleKind.INTERVAL && schedule.intervalMinutes > 0) {
             schedule.copy(
                 intervalMinutes =
                     ScheduleMath.effectiveWorkManagerInterval(schedule.intervalMinutes).toInt()
@@ -48,10 +50,14 @@ object AiTaskSchedulePlanner {
     /**
      * Due when an occurrence lies in `(lastRunAtMs, now]` (catch-up after a
      * late Doze delivery). A task that has never run has no such window — its
-     * first delivery IS the occurrence it was scheduled for, so it is due.
+     * first delivery IS the occurrence it was scheduled for, so it is due, as
+     * long as the schedule can fire at all.
      */
-    fun isDue(schedule: TaskSchedule, lastRunAtMs: Long?, nowMs: Long, zone: ZoneId): Boolean =
-        lastRunAtMs == null || ScheduleMath.isDue(effectiveSchedule(schedule), nowMs, lastRunAtMs, zone)
+    fun isDue(schedule: TaskSchedule, lastRunAtMs: Long?, nowMs: Long, zone: ZoneId): Boolean {
+        val effective = effectiveSchedule(schedule)
+        if (lastRunAtMs == null) return ScheduleMath.nextRunAt(effective, nowMs, zone) != null
+        return ScheduleMath.isDue(effective, nowMs, lastRunAtMs, zone)
+    }
 
     /**
      * Whether this task asks for a cadence WorkManager cannot deliver, so the

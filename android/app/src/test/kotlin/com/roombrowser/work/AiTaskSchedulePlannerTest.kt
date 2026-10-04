@@ -83,6 +83,22 @@ class AiTaskSchedulePlannerTest {
     }
 
     @Test
+    fun a_schedule_that_can_never_fire_is_never_due_even_before_its_first_run() {
+        // The zero interval must survive effectiveSchedule: flooring it to 15
+        // would make an invalid schedule look like a valid quarter-hourly one.
+        assertThat(AiTaskSchedulePlanner.isDue(interval(0), null, noon, utc)).isFalse()
+        assertThat(
+            AiTaskSchedulePlanner.isDue(
+                TaskSchedule(kind = ScheduleKind.MONTHLY, dayOfMonth = null),
+                null,
+                noon,
+                utc
+            )
+        ).isFalse()
+        assertThat(AiTaskSchedulePlanner.isDue(interval(60), null, noon, utc)).isTrue()
+    }
+
+    @Test
     fun a_task_that_has_never_run_is_due_because_its_first_delivery_is_the_occurrence() {
         assertThat(AiTaskSchedulePlanner.isDue(interval(60), lastRunAtMs = null, nowMs = noon, zone = utc))
             .isTrue()
