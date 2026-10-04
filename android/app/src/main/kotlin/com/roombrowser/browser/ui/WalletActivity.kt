@@ -291,7 +291,7 @@ private fun WalletRoot(
     /** Opens a URL outside the app (explorer links). */
     fun openLink(url: String) {
         val opened = runCatching {
-            context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
+            context.startActivity(Intent(Intent.ACTION_VIEW, url.toUri()))
         }.isSuccess
         if (!opened) onMessage("Could not open link")
     }

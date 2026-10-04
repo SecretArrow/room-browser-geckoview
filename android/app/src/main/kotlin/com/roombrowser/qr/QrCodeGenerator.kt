@@ -17,10 +17,10 @@ object QrCodeGenerator {
         val matrix = QRCodeWriter().encode(
             content, BarcodeFormat.QR_CODE, size, size, hints
         )
-        val bitmap = Bitmap.createBitmap(size, size, Bitmap.Config.RGB_565)
+        val bitmap = createBitmap(size, size, Bitmap.Config.RGB_565)
         for (x in 0 until size) {
             for (y in 0 until size) {
-                bitmap.setPixel(x, y, if (matrix.get(x, y)) Color.BLACK else Color.WHITE)
+                bitmap[x, y] = if (matrix.get(x, y)) Color.BLACK else Color.WHITE
             }
         }
         return bitmap

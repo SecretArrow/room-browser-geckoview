@@ -511,7 +511,7 @@ class DownloadEngine(
 
     /** Removes a published file, whether MediaStore owns it or the filesystem does. */
     private fun deletePublished(destination: String) {
-        val uri = Uri.parse(destination)
+        val uri = destination.toUri()
         when (uri.scheme) {
             "content" -> context.contentResolver.delete(uri, null, null)
             "file" -> uri.path?.let { File(it).delete() }
@@ -523,7 +523,7 @@ class DownloadEngine(
         scope.launch {
             val dl = repo.download(id) ?: return@launch
             if (dl.status != DownloadStatus.COMPLETED.name) return@launch
-            val uri = Uri.parse(dl.destination)
+            val uri = dl.destination.toUri()
             val intent = Intent(Intent.ACTION_VIEW).apply {
                 setDataAndType(uri, dl.mimeType)
                 addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
@@ -536,7 +536,7 @@ class DownloadEngine(
         scope.launch {
             val dl = repo.download(id) ?: return@launch
             if (dl.status != DownloadStatus.COMPLETED.name) return@launch
-            val uri = Uri.parse(dl.destination)
+            val uri = dl.destination.toUri()
             val intent = Intent(Intent.ACTION_SEND).apply {
                 type = dl.mimeType
                 putExtra(Intent.EXTRA_STREAM, uri)
@@ -623,7 +623,7 @@ class DownloadEngine(
      * broadcast the action buttons use.
      */
     private fun contentIntent(id: Long, destination: String): PendingIntent? = runCatching {
-        val uri = Uri.parse(destination)
+        val uri = destination.toUri()
         val intent = Intent(Intent.ACTION_VIEW).apply {
             setDataAndType(uri, context.contentResolver.getType(uri) ?: "*/*")
             addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)

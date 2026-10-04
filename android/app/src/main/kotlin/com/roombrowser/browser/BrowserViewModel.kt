@@ -1504,7 +1504,7 @@ class BrowserViewModel(
         val window = (root.context as? android.app.Activity)?.window ?: return
         if (root.width == 0 || root.height == 0) return
         try {
-            val full = Bitmap.createBitmap(root.width, root.height, Bitmap.Config.ARGB_8888)
+            val full = createBitmap(root.width, root.height)
             android.view.PixelCopy.request(
                 window,
                 full,
