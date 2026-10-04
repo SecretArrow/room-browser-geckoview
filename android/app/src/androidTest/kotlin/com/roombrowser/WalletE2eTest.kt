@@ -1321,31 +1321,42 @@ class WalletE2eTest {
         // Scroll-aware: on the 320x640 CI screen the Reveal button can sit
         // below the fold under the one-time-phrase copy.
         assertTrue("Reveal must be tappable", clickTextWithScroll("Reveal"))
-        // ONE-CYCLE DIAGNOSTIC (GeckoView edition only; the WebView edition
-        // passes this step in every cached run). This test fails here with
-        // "Hide phrase must show once revealed" while the tap that precedes
-        // it is byte-for-byte the same as the passing run's -- same node,
-        // same bounds, same `input tap 85 526`, timelines within ~40 ms. So
-        // the tree and the tap are not the variable; the app's response is.
+        // Wait for the label to flip. POLLING, OVER BOTH QUERY SHAPES, and
+        // both halves of that are load-bearing.
         //
-        // Evaluating the wait into a value FIRST, then building the message,
-        // is the whole point: the eager `${uiTree()}` idiom used by the
-        // assertions above would dump the tree BEFORE the wait and describe
-        // the pre-tap screen. Here every probe runs after the wait and
-        // describes the FAILURE-TIME state, which separates the two live
-        // hypotheses:
-        //   (A) the tap never reached the Button -- `revealed` is still
-        //       false, the tree still says "Reveal", and a second tap
-        //       flips it (retap=true after_retap=true);
-        //   (B) the tap landed and the label flipped but the a11y tree did
-        //       not follow -- the tree already says "Hide phrase" while the
-        //       wait could not see it.
-        // The probes are on the FAILURE PATH ONLY, so a green run pays
-        // nothing for them, and the assertion still fails whenever the wait
-        // failed -- they diagnose, they never paper over.
-        val revealed = hasText("Hide phrase", 5_000)
+        // It used to be one `hasText` -- a single `Until.hasObject` on the
+        // active-window tree with an exact match -- and that shape is exactly
+        // what this screen defeated. The one-cycle probe that used to sit here
+        // ran in a GeckoView job and logged "Hide phrase" in the all-windows
+        // sweep (`uiTree`) while the active-window exact query, issued in the
+        // same second, still returned the pre-tap label; the same job's
+        // UiAutomator log answers only TWO a11y queries in the five seconds the
+        // wait allowed, so the wait effectively asked once and reported the
+        // answer as it had been seconds earlier. The tap was never the
+        // variable: the probe's own bounds and the `input tap` that produced
+        // them are byte-identical to the passing WebView runs.
+        //
+        // A fresh query per sample, both shapes, first hit wins. This still
+        // fails when the label never flips -- `revealed` is only ever set from
+        // a live query and nothing here taps a second time, so a screen that
+        // stayed on "Reveal" still ends the test.
+        //
+        // The samples accumulate in memory and are only ever emitted on the
+        // failure path, so a green run pays one ArrayList and no logcat.
+        val timeline = mutableListOf<String>()
+        val revealStartedAt = System.currentTimeMillis()
+        val revealed = waitUntil(20_000) {
+            val exact = device.findObjects(By.text("Hide phrase")).isNotEmpty()
+            val sweep = device.findObjects(By.textContains("Hide phrase")).isNotEmpty()
+            timeline += "${System.currentTimeMillis() - revealStartedAt}ms " +
+                "exact=$exact sweep=$sweep"
+            exact || sweep
+        }
         val failTree = if (revealed) "" else uiTree()
-        if (!revealed) logProbe("reveal-not-shown", failTree)
+        if (!revealed) {
+            logProbe("reveal-not-shown", failTree)
+            logProbe("reveal-timeline", timeline.joinToString(", "))
+        }
         assertTrue(
             buildString {
                 append("Hide phrase must show once revealed")
@@ -1391,32 +1402,13 @@ class WalletE2eTest {
                     }.getOrDefault("?")
                     append("\nprobe: ime_up=").append(imeUp)
                     append("\nprobe: focus=").append(focus)
-                    val retap = clickTextWithScroll("Reveal", attempts = 3)
-                    val afterRetap = hasText("Hide phrase", 3_000)
-                    append("\nprobe: retap=").append(retap)
-                    append(" after_retap=").append(afterRetap)
-                    if (!afterRetap) {
-                        // Same node, DIFFERENT point on it: separates "this
-                        // Button never gets a touch" from "something covers
-                        // the middle of it". Only reached when the centre tap
-                        // has already failed twice, so a green run never pays
-                        // for it.
-                        val edge = runCatching {
-                            val b = device.findObjects(By.text("Reveal"))
-                                .firstOrNull()?.visibleBounds
-                            if (b == null) {
-                                "no-node"
-                            } else {
-                                device.executeShellCommand(
-                                    "input tap ${b.left + 6} ${b.top + 6}"
-                                )
-                                device.waitForIdle(1_000)
-                                "(${b.left + 6},${b.top + 6})"
-                            }
-                        }.getOrElse { "err:$it" }
-                        append("\nprobe: edge_tap=").append(edge)
-                        append(" after_edge_tap=").append(hasText("Hide phrase", 3_000))
-                    }
+                    // There used to be `retap` and `edge_tap` probes here, and
+                    // they were actively harmful: "Reveal" is the SAME button
+                    // that toggles the label, so on a screen that had already
+                    // revealed, re-tapping it flips the phrase back to hidden
+                    // -- destroying the very state the probe was called in to
+                    // describe. A probe may not change what it measures.
+                    append("\nprobe: reveal_timeline=").append(timeline.joinToString(", "))
                     append("\nprobe tree at failure:\n").append(failTree)
                 }
             },
