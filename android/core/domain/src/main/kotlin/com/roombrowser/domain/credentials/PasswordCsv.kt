@@ -113,13 +113,20 @@ object PasswordCsv {
         if (records.isEmpty()) return Result.NotAPasswordCsv
 
         val header = records.first().map { normaliseHeader(it) }
-        val urlColumn = header.indexOfFirst { it in URL_COLUMNS }
+        // Every URL-ish column the header carries, in preference order — not
+        // one column chosen here. The host is resolved PER ROW across these,
+        // because a real Firefox export has both `url` and `formActionOrigin`
+        // and a given login may fill only one of them: a login saved on a page
+        // whose form posts to another origin can have an empty `url`. Picking a
+        // column once would drop that row as "no site" while the file says
+        // plainly where it goes.
+        val urlColumns = URL_COLUMNS.map { name -> header.indexOf(name) }.filter { it >= 0 }
         val passwordColumn = header.indexOfFirst { it in PASSWORD_COLUMNS }
         val ciphertextColumn = header.indexOfFirst { it in CIPHERTEXT_COLUMNS }
         // A password export without a URL column cannot be matched to a site,
         // and one with neither a password nor a ciphertext column is not a
         // password file. Everything else is optional.
-        if (urlColumn < 0 || (passwordColumn < 0 && ciphertextColumn < 0)) {
+        if (urlColumns.isEmpty() || (passwordColumn < 0 && ciphertextColumn < 0)) {
             return Result.NotAPasswordCsv
         }
 
@@ -140,10 +147,15 @@ object PasswordCsv {
             // is a row, so neither is counted as a skipped one.
             if (record.all { it.isBlank() }) continue
 
-            val rawUrl = record.getOrNull(urlColumn).orEmpty().trim()
-            val url = webHostOf(rawUrl)
-            if (url == null) {
-                skip(if (rawUrl.isEmpty()) SkipReason.NO_URL else SkipReason.UNSUPPORTED_URL)
+            val host = hostOf(record, urlColumns)
+            if (host == null) {
+                // "No site" and "a site we cannot use" are different things to
+                // tell the user, and only the first of them means the file is
+                // missing something. A row is only NO_URL when every URL column
+                // it has is empty — one that held a `moz-extension:` origin said
+                // where the login goes and the answer was "not the web".
+                val heldSomething = urlColumns.any { record.getOrNull(it).orEmpty().isNotBlank() }
+                skip(if (heldSomething) SkipReason.UNSUPPORTED_URL else SkipReason.NO_URL)
                 continue
             }
 
@@ -159,7 +171,7 @@ object PasswordCsv {
             }
 
             rows += Row(
-                domain = url,
+                domain = host,
                 username = usernameColumn.takeIf { it >= 0 }
                     ?.let { record.getOrNull(it) }
                     .orEmpty()
@@ -173,6 +185,21 @@ object PasswordCsv {
         }
 
         return Result.Parsed(rows = rows, skipped = skipped)
+    }
+
+    /**
+     * The first usable host among [record]'s URL columns, in preference order,
+     * or null when none of them holds an http/https URL.
+     *
+     * Takes the columns rather than one index so a row can fall through from an
+     * empty `url` to a populated `formActionOrigin` — see the call site.
+     */
+    private fun hostOf(record: List<String>, urlColumns: List<Int>): String? {
+        for (column in urlColumns) {
+            val host = webHostOf(record.getOrNull(column).orEmpty().trim())
+            if (host != null) return host
+        }
+        return null
     }
 
     /**
