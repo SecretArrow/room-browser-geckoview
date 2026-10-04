@@ -717,3 +717,44 @@ interface WalletActivityDao {
     @Query("DELETE FROM wallet_activities WHERE profile_id = :profileId")
     suspend fun deleteAllForProfile(profileId: String)
 }
+
+// =========================================================================
+// SCHEDULED AI TASKS
+// =========================================================================
+
+@Dao
+interface AiTaskDao {
+    @Query("SELECT * FROM ai_tasks ORDER BY created_at DESC")
+    fun observeAll(): Flow<List<AiTaskEntity>>
+
+    @Query("SELECT * FROM ai_tasks ORDER BY created_at DESC")
+    suspend fun all(): List<AiTaskEntity>
+
+    @Query("SELECT * FROM ai_tasks WHERE id = :id")
+    suspend fun get(id: Long): AiTaskEntity?
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsert(entity: AiTaskEntity): Long
+
+    @Query("UPDATE ai_tasks SET enabled = :enabled WHERE id = :id")
+    suspend fun setEnabled(id: Long, enabled: Boolean)
+
+    /**
+     * Stamps the occurrence this delivery accounted for, together with what
+     * happened. Written in ONE statement so a crash between the run and the
+     * stamp cannot leave a task that ran looking like it never did (which
+     * would fire it again) or vice versa.
+     */
+    @Query(
+        "UPDATE ai_tasks SET last_run_at_ms = :atMs, last_run_status = :status, " +
+            "last_result_summary = :summary WHERE id = :id"
+    )
+    suspend fun recordRun(id: Long, atMs: Long, status: String, summary: String?)
+
+    @Query("DELETE FROM ai_tasks WHERE id = :id")
+    suspend fun delete(id: Long)
+
+    /** Profile-deletion cascade. */
+    @Query("DELETE FROM ai_tasks WHERE profile_id = :profileId")
+    suspend fun deleteAllForProfile(profileId: String)
+}

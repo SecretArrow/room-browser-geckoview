@@ -465,3 +465,49 @@ data class WalletActiveNetworkEntity(
     /** The chosen wallet_networks.id for that chain. */
     @ColumnInfo(name = "network_id") val networkId: String
 )
+
+// =========================================================================
+// SCHEDULED AI TASKS — schema v11
+// =========================================================================
+
+/**
+ * One user-defined AI task on a schedule: a prompt the agent runs against a
+ * profile at the times described by [scheduleJson].
+ *
+ * [scheduleJson] is a TaskSchedule serialized the same way profiles store
+ * `settings_json` — a TEXT column the domain type owns, so adding a schedule
+ * field never needs a migration. [permissionsJson] is an AiTaskPermissions
+ * the same way.
+ *
+ * [lastRunAtMs] is the schedule occurrence the task has been ACCOUNTED for,
+ * whether it ran or was explicitly deferred — not "last time it succeeded".
+ * That is what makes catch-up fire exactly once: a delivery that was missed
+ * (Doze) is one occurrence, and once stamped it is never owed again. It is
+ * null until the first delivery, so a task whose time already passed when it
+ * was created waits for the next occurrence instead of firing at once.
+ *
+ * [lastRunStatus] is an AiTaskRunStatus name ("", "COMPLETED", "DEFERRED",
+ * "FAILED"); [lastResultSummary] carries the human-readable detail (a
+ * deferral reason included). Both are written together with [lastRunAtMs].
+ */
+@Entity(
+    tableName = "ai_tasks",
+    indices = [Index("profile_id")]
+)
+data class AiTaskEntity(
+    @PrimaryKey(autoGenerate = true) @ColumnInfo(name = "id") val id: Long = 0,
+    @ColumnInfo(name = "name") val name: String,
+    /** The instruction the agent is sent when the task fires. */
+    @ColumnInfo(name = "prompt") val prompt: String,
+    /** The profile the task runs against. */
+    @ColumnInfo(name = "profile_id") val profileId: String,
+    /** TaskSchedule JSON. */
+    @ColumnInfo(name = "schedule_json") val scheduleJson: String,
+    /** AiTaskPermissions JSON. */
+    @ColumnInfo(name = "permissions_json") val permissionsJson: String,
+    @ColumnInfo(name = "enabled") val enabled: Boolean = true,
+    @ColumnInfo(name = "last_run_at_ms") val lastRunAtMs: Long? = null,
+    @ColumnInfo(name = "last_run_status") val lastRunStatus: String = "",
+    @ColumnInfo(name = "last_result_summary") val lastResultSummary: String? = null,
+    @ColumnInfo(name = "created_at") val createdAt: Long
+)

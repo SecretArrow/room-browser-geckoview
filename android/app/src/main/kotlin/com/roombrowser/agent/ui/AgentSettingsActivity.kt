@@ -33,6 +33,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.DateRange
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Memory
@@ -351,6 +352,19 @@ private fun AgentSettingsRoot(
                 subtitle = "Install, import and export on-device models — pause/resume downloads, GPU tuning",
                 leadingIcon = Icons.Filled.Memory,
                 onClick = { LocalAiActivity.launch(localAiContext, null) }
+            )
+
+            // ================= AI tasks =================
+            // Scheduled prompts are app-visible (each is tied to a profile,
+            // but the list is not per-profile), so the entry sits here next
+            // to the other agent settings rather than under a profile.
+            SectionHeader("AI tasks")
+            SettingActionRow(
+                title = "Scheduled tasks",
+                subtitle = "Run a prompt against a profile on a schedule — pick the profile, " +
+                    "the schedule and what the task may do",
+                leadingIcon = Icons.Filled.DateRange,
+                onClick = { AiTasksActivity.launch(localAiContext) }
             )
 
             // ================= Behavior =================

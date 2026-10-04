@@ -163,6 +163,26 @@
             android:windowSoftInputMode="adjustResize" />
 
         <!--
+          Scheduled AI tasks — list and editor, its OWN activities (default
+          process, no WebView), exactly like the other agent screens. The
+          DEFAULT process is load-bearing: WorkManager has one owner
+          (RoomBrowserApp.setDefaultProcessName), so the AiTaskWorker that
+          drives a task's schedule runs here, and these screens are the
+          default process's view of the same Room rows (:browser gets the
+          change through Room multi-instance invalidation).
+        -->
+        <activity
+            android:name=".agent.ui.AiTasksActivity"
+            android:exported="false"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboard|keyboardHidden|density|uiMode"
+            android:windowSoftInputMode="adjustResize" />
+        <activity
+            android:name=".agent.ui.AiTaskEditorActivity"
+            android:exported="false"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboard|keyboardHidden|density|uiMode"
+            android:windowSoftInputMode="adjustResize" />
+
+        <!--
           Per-profile Theme Studio — its OWN activity (default process):
           live preview, 18 presets, full palette/gradient/shape editor,
           custom theme gallery, JSON import/export.
@@ -237,6 +257,19 @@
             android:process=":browser"
             android:exported="false"
             android:foregroundServiceType="dataSync" />
+
+        <!--
+          The foreground path a high-frequency AiTaskWorker takes. WorkManager
+          declares this service itself; the explicit entry only pins
+          foregroundServiceType="dataSync" so the type the worker passes to
+          ForegroundInfo is declared on API 34+, where an undeclared type is a
+          SecurityException. tools:node="merge" unions it with WorkManager's.
+        -->
+        <service
+            android:name="androidx.work.impl.foreground.SystemForegroundService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync"
+            tools:node="merge" />
 
         <!--
           Download notification actions (Pause / Resume / Cancel / Retry / Open).

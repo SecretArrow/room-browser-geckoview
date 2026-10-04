@@ -40,9 +40,10 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         WalletNetworkEntity::class,
         DappPermissionEntity::class,
         WalletActivityEntity::class,
-        WalletActiveNetworkEntity::class
+        WalletActiveNetworkEntity::class,
+        AiTaskEntity::class
     ],
-    version = 10,
+    version = 11,
     exportSchema = true
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -63,6 +64,7 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun walletNetworkDao(): WalletNetworkDao
     abstract fun dappPermissionDao(): DappPermissionDao
     abstract fun walletActivityDao(): WalletActivityDao
+    abstract fun aiTaskDao(): AiTaskDao
 
     companion object {
         const val NAME = "room-browser.db"
@@ -385,6 +387,42 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
+        /**
+         * v10 → v11: adds the scheduled-AI-tasks table. Purely additive
+         * CREATE TABLE + INDEX statements — no existing table is touched, so
+         * the migration is lossless. The column set mirrors AiTaskEntity
+         * exactly (snake_case names, NOT NULL only on non-null Kotlin types),
+         * which is what Room's schema validation compares against after a
+         * migration.
+         *
+         * `internal` rather than private for the same reason as
+         * [MIGRATION_9_10]: a fresh install creates v11 directly and never
+         * executes this, so only AiTaskMigrationTest would notice a migration
+         * that bricks the upgrade for existing installs.
+         */
+        internal val MIGRATION_10_11 = object : Migration(10, 11) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `ai_tasks` (" +
+                        "`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, " +
+                        "`name` TEXT NOT NULL, " +
+                        "`prompt` TEXT NOT NULL, " +
+                        "`profile_id` TEXT NOT NULL, " +
+                        "`schedule_json` TEXT NOT NULL, " +
+                        "`permissions_json` TEXT NOT NULL, " +
+                        "`enabled` INTEGER NOT NULL, " +
+                        "`last_run_at_ms` INTEGER, " +
+                        "`last_run_status` TEXT NOT NULL, " +
+                        "`last_result_summary` TEXT, " +
+                        "`created_at` INTEGER NOT NULL)"
+                )
+                db.execSQL(
+                    "CREATE INDEX IF NOT EXISTS `index_ai_tasks_profile_id` " +
+                        "ON `ai_tasks` (`profile_id`)"
+                )
+            }
+        }
+
         @Volatile
         private var instance: AppDatabase? = null
 
@@ -399,7 +437,7 @@ abstract class AppDatabase : RoomDatabase() {
                 .addMigrations(
                     MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4,
                     MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8,
-                    MIGRATION_8_9, MIGRATION_9_10
+                    MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11
                 )
                 .build()
     }

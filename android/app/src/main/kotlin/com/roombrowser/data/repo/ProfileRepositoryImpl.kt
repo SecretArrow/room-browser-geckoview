@@ -44,6 +44,7 @@ class ProfileRepositoryImpl(db: AppDatabase) : ProfileStore {
     private val walletNetworkDao = db.walletNetworkDao()
     private val dappPermissionDao = db.dappPermissionDao()
     private val walletActivityDao = db.walletActivityDao()
+    private val aiTaskDao = db.aiTaskDao()
 
     private val json = Json { ignoreUnknownKeys = true; encodeDefaults = true }
 
@@ -95,6 +96,9 @@ class ProfileRepositoryImpl(db: AppDatabase) : ProfileStore {
             walletNetworkDao.deleteActiveNetworksForProfile(id.value)
             dappPermissionDao.deleteAllForProfile(id.value)
             walletActivityDao.deleteAllForProfile(id.value)
+            // Scheduled tasks belong to the profile they run against; a task
+            // pointing at a deleted profile could never run anyway.
+            aiTaskDao.deleteAllForProfile(id.value)
             WalletKeyCrypto.deleteKey(id)
         }
     }

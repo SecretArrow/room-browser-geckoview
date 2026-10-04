@@ -61,6 +61,21 @@ class AppGraph(context: Context) {
         com.roombrowser.data.repo.AgentRepository(database)
     }
 
+    /** Scheduled AI tasks: definitions plus their run bookkeeping. */
+    val aiTaskRepo: com.roombrowser.data.repo.AiTaskRepository by lazy {
+        com.roombrowser.data.repo.AiTaskRepository(database.aiTaskDao())
+    }
+
+    /**
+     * The execution seam a scheduled task's worker asks to run a turn. Today
+     * this is the deferred runner (see DeferredAiTaskRunner for why a worker
+     * cannot drive the ':browser' agent stack yet); the headless answer swaps
+     * in at AiTaskRunners.forContext without the worker changing.
+     */
+    val aiTaskRunner: com.roombrowser.agent.AiTaskRunner by lazy {
+        com.roombrowser.agent.AiTaskRunners.forContext(appContext)
+    }
+
     /**
      * Password manager: per-profile credential vault. The DAO is plain Room
      * (multi-instance invalidation already keeps both processes in sync);
