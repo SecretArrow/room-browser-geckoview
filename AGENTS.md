@@ -35,7 +35,8 @@ change belongs in the sibling:
 - `android/core/domain/` — pure Kotlin: profiles, devices, user agents, filters, agent
   protocol, credentials, URL intelligence.
 - `android/core/wallet/` — chain adapters, HD keys, RPC transport. No engine types.
-- `android/app/src/main/kotlin/com/roombrowser/wallet/` — wallet contract/engine/repo/UI.
+- `android/app/src/main/kotlin/com/roombrowser/browser/wallet/` — wallet
+  contract/engine/repo/UI. Everything here is shared except `dapp/WalletBridge.kt`.
 - `android/app/src/main/kotlin/com/roombrowser/agent/` — the AI agent. It drives pages
   through the engine facade, never through a raw engine type.
 - `android/app/src/main/kotlin/com/roombrowser/data/`, `theme/`, `qr/`, `ui/` (except the
@@ -53,6 +54,12 @@ change belongs in the sibling:
 - `android/app/src/main/kotlin/com/roombrowser/browser/WebClients.kt` — request/chrome
   delegates. WebView uses `WebViewClient`/`WebChromeClient`; GeckoView uses
   `NavigationDelegate`/`ContentDelegate`/`PromptDelegate`/`PermissionDelegate`.
+- `android/app/src/main/kotlin/com/roombrowser/browser/BrowserViewModel.kt` — the tab model
+  sits above the facade, but the file does not: it names `EngineSession` where the sibling
+  names `WebView`. Read the sibling's version before assuming a change here copies over.
+- `.../browser/wallet/dapp/WalletBridge.kt` — the same split one layer down. This edition
+  binds a bridge to an `EngineSession`; the WebView edition hands the object straight to
+  `addJavascriptInterface` and keeps it in a map instead.
 - `android/app/build.gradle.kts` — the engine dependency, ABI splits, native packaging.
 - `android/gradle/libs.versions.toml` — `geckoview` here, `webkit` there.
 - `android/app/src/main/AndroidManifest.xml` — `<queries>` (WebView provider probe) and
@@ -74,8 +81,10 @@ outside `:engine`; run it in the fast `quality` job, never discover it in e2e.
 - Repository: `https://maven.mozilla.org/maven2/`, declared with a group filter in
   `android/settings.gradle.kts` (the project uses `FAIL_ON_PROJECT_REPOS`).
 - **`minCompileSdk` is a hard gate and it moves.** The AAR declares it in
-  `META-INF/com/android/build/gradle/aar-metadata.properties`. The project is on
-  `compileSdk = 35`, so:
+  `META-INF/com/android/build/gradle/aar-metadata.properties`. `compileSdk` is **36** —
+  raised for the AAR metadata of `androidx.core 1.18.0` and `androidx.media3 1.10.1`, which
+  GeckoView's POM pulls in and which refuse to be consumed below API 36 (see
+  `android/engine/build.gradle.kts`). `targetSdk` is a separate decision and is 35. So:
   - `153.0.20260810162159` → `minCompileSdk=1` — **the newest usable version.**
   - `154.0.20260824154132` and later → `minCompileSdk=37` — these require raising
     `compileSdk` to 37, which drags AGP and Gradle with it. Do not bump the engine past
