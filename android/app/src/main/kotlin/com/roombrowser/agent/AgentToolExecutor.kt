@@ -59,7 +59,15 @@ class AgentToolExecutor(
     private var tabId: String? = null,
     /** Narration for waits long enough to look like a hang. */
     private val onStatus: (String) -> Unit = {},
-    private val confirmGate: suspend (name: String, label: String) -> ActionVerdict
+    private val confirmGate: suspend (name: String, label: String) -> ActionVerdict,
+    /**
+     * The user's answer to a wallet approval, asked directly and never
+     * delegated to [confirmGate]: the generic gate is bypassed by YOLO, by the
+     * local decision model and by "Confirm actions" being off, and none of
+     * those may ever green-light a wallet request. Default DENY so a caller
+     * that forgets to wire it cannot approve anything.
+     */
+    private val walletConfirm: suspend (label: String) -> Boolean = { false }
 ) : ToolExecutor {
 
     /**
@@ -72,6 +80,20 @@ class AgentToolExecutor(
      * alone, and they want opposite treatment.
      */
     val currentTabId: String? get() = tabId
+
+    /**
+     * The wallet tools, built on first use.
+     *
+     * LAZY on purpose: `vm.walletEngine` loads the whole crypto stack
+     * (web3j/BC/jackson) the first time it is touched, and a turn that never
+     * mentions the wallet must not pay for it — or stall a frame doing it.
+     */
+    private val walletTools: AgentWalletTools by lazy {
+        AgentWalletTools(
+            wallet = { WalletEngineAccess(vm.walletEngine) },
+            confirmApproval = walletConfirm
+        )
+    }
 
     override suspend fun execute(name: String, argsJson: String): ToolResult =
         withContext(Dispatchers.Main) {
@@ -102,6 +124,11 @@ class AgentToolExecutor(
                     AgentTools.AUTO_REPLY -> autoReply(str(args, "text"))
                     AgentTools.AUTO_POST -> autoPost(str(args, "text"))
                     AgentTools.WAIT -> waitTool(intOrNull(args, "ms"))
+                    AgentTools.WALLET_STATE -> walletTools.readState()
+                    AgentTools.WALLET_REQUESTS -> walletTools.listRequests()
+                    AgentTools.WALLET_APPROVE -> walletTools.approve(str(args, "request_id"))
+                    AgentTools.WALLET_REJECT -> walletTools.reject(str(args, "request_id"))
+                    AgentTools.WALLET_SWITCH_NETWORK -> walletTools.switchNetwork(str(args, "network_id"))
                     else -> ToolResult(false, "unknown tool: $name")
                 }
             } catch (ce: CancellationException) {
@@ -545,9 +572,9 @@ class AgentToolExecutor(
  * link, or a submit, IS a page load by another name.
  *
  * The rest — read_page, scroll, list_tabs, open_new_tab, switch_tab,
- * close_tab, wait — start no navigation of their own and stay available while
- * the user is elsewhere, which is what lets a turn keep working in the
- * background instead of stalling on a tab switch.
+ * close_tab, wait, and the wallet tools — start no navigation of their own and
+ * stay available while the user is elsewhere, which is what lets a turn keep
+ * working in the background instead of stalling on a tab switch.
  *
  * Top-level and `internal` rather than private to the class so that
  * [AgentToolForegroundPolicyTest] can hold it to the full tool list: a tool

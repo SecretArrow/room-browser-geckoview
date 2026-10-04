@@ -39,7 +39,14 @@ class AgentToolForegroundPolicyTest {
         AgentTools.LIST_TABS,
         AgentTools.SWITCH_TAB,
         AgentTools.CLOSE_TAB,
-        AgentTools.WAIT
+        AgentTools.WAIT,
+        // Wallet tools talk to the wallet engine, never to a page, so they
+        // start no navigation and are safe on a background tab.
+        AgentTools.WALLET_STATE,
+        AgentTools.WALLET_REQUESTS,
+        AgentTools.WALLET_APPROVE,
+        AgentTools.WALLET_REJECT,
+        AgentTools.WALLET_SWITCH_NETWORK
     )
 
     @Test
