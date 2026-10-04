@@ -30,6 +30,7 @@ import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
@@ -74,6 +75,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
@@ -289,6 +291,20 @@ fun MainScreen(
                         ProfileCard(
                             profile = profile,
                             tabCount = viewModel.tabCounts[profile.id.value] ?: 0,
+                            // The offer a creation owes is raised ON THE CARD,
+                            // never as a dialog over the list: a profile is
+                            // also created from the browser quick-switcher,
+                            // which restarts the process to bind it, so the
+                            // offer has to survive until this list is next
+                            // visible — and a recorded offer that surfaces at
+                            // some later launch must not be able to stand
+                            // between the user and their profiles, nor between
+                            // a create and the engine boot that follows it.
+                            offerPasswordImport =
+                                viewModel.passwordImportOfferId == profile.id.value,
+                            onDismissPasswordImportOffer = {
+                                viewModel.consumePasswordImportOffer()
+                            },
                             onOpen = {
                                 if (profile.isLocked) {
                                     activity.gateProfile(profile.name) {
@@ -445,43 +461,6 @@ fun MainScreen(
                 }
             }
         )
-    }
-
-    // The offer the profile list owes after a creation. Raised here rather than
-    // from the create callback because a profile can also be created from the
-    // browser quick-switcher, which restarts the process to bind it — there is
-    // no UI left at that moment to raise anything in, so the offer is recorded
-    // and shown the next time this list is visible. One-shot by construction:
-    // the key is cleared as soon as the prompt is answered.
-    viewModel.passwordImportOfferId?.let { offeredId ->
-        profiles.firstOrNull { it.id.value == offeredId }?.let { created ->
-            AlertDialog(
-                onDismissRequest = { viewModel.consumePasswordImportOffer() },
-                title = { Text("Bring your passwords over?") },
-                text = {
-                    Text(
-                        "\"${created.name}\" is ready and starts empty. You can import " +
-                            "saved logins into it from Chrome, Brave, Edge or Firefox " +
-                            "(their exported passwords.csv), or from a Room Browser " +
-                            "password file."
-                    )
-                },
-                confirmButton = {
-                    Button(
-                        onClick = {
-                            viewModel.consumePasswordImportOffer()
-                            viewModel.startPasswordImport(created)
-                            pickPasswordFileLauncher.launch(passwordFileTypes)
-                        }
-                    ) { Text("Import passwords") }
-                },
-                dismissButton = {
-                    TextButton(onClick = { viewModel.consumePasswordImportOffer() }) {
-                        Text("Later")
-                    }
-                }
-            )
-        }
     }
 
     exportTarget?.let { target ->
@@ -664,6 +643,8 @@ private val passwordFileTypes = arrayOf("text/csv", "text/plain", "*/*")
 private fun ProfileCard(
     profile: Profile,
     tabCount: Int,
+    offerPasswordImport: Boolean,
+    onDismissPasswordImportOffer: () -> Unit,
     onOpen: () -> Unit,
     onEdit: () -> Unit,
     onDuplicate: () -> Unit,
@@ -801,6 +782,66 @@ private fun ProfileCard(
                             leadingIcon = { Icon(Icons.Filled.Delete, contentDescription = null) },
                             onClick = { menuOpen = false; onDelete() }
                         )
+                    }
+                }
+            }
+            if (offerPasswordImport) {
+                // The offer a creation is owed, raised ON THE CARD. It was a
+                // dialog over the list until a CI run proved why it cannot be
+                // one: a profile is also created from the browser
+                // quick-switcher, which restarts the process to bind it, so the
+                // offer has to be recorded and shown the next time this list is
+                // visible — and an offer that surfaces at some later launch
+                // must not be able to stand between the user and their
+                // profiles, nor between a create and the engine boot that
+                // follows it. Inline is also the honest weight for something
+                // optional: it asks, and gets out of the way.
+                Spacer(Modifier.height(12.dp))
+                Column(
+                    Modifier
+                        .fillMaxWidth()
+                        .background(
+                            extras.primary.copy(alpha = 0.10f),
+                            RoundedCornerShape(12.dp)
+                        )
+                        .border(
+                            1.dp,
+                            extras.primary.copy(alpha = 0.35f),
+                            RoundedCornerShape(12.dp)
+                        )
+                        .padding(12.dp)
+                ) {
+                    Text(
+                        "Bring your passwords over?",
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.SemiBold,
+                        color = extras.textPrimary
+                    )
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        "\"${profile.name}\" starts empty. Import saved logins from " +
+                            "Chrome, Brave, Edge or Firefox (their exported " +
+                            "passwords.csv), or from a Room Browser password file.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = extras.textSecondary
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    Row(
+                        Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        TextButton(onClick = onDismissPasswordImportOffer) {
+                            Text("Later")
+                        }
+                        Spacer(Modifier.weight(1f))
+                        Button(
+                            onClick = {
+                                // Answering the offer IS importing into this
+                                // profile, so it clears in the same tap.
+                                onDismissPasswordImportOffer()
+                                onImportPasswords()
+                            }
+                        ) { Text("Import passwords") }
                     }
                 }
             }

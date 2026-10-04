@@ -394,7 +394,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     ) {
         viewModelScope.launch {
             runCatching { profileManager.delete(id) }
-                .onSuccess { message = successMessage }
+                .onSuccess {
+                    message = successMessage
+                    // A pending import offer dies with the profile it named.
+                    // The key is only ever consumed by an answer, so without
+                    // this it outlives its profile in app state for good.
+                    if (passwordImportOfferId == id.value) consumePasswordImportOffer()
+                }
                 .onFailure { message = it.message ?: "Could not delete profile" }
         }
     }
