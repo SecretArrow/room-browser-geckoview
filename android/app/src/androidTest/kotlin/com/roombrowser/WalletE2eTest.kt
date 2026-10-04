@@ -315,17 +315,39 @@ class WalletE2eTest {
         return device.findObjects(By.text(text)).isEmpty()
     }
 
+    /**
+     * The marker poll's window. The mock page retries a 4900 DISCONNECTED up to
+     * 12 times at 1s, so its own worst case is about 13s; a 15s window lost that
+     * race on three runs whose dumps, taken milliseconds later, held the right
+     * answer.
+     */
+    private val dappResultTimeoutMs = 45_000L
+
     /** Polls the WebView's DOM-rendered result marker (page a11y text). */
     private fun pageResultText(prefix: String, timeoutMs: Long): String? {
         fun probe(): List<String> =
             device.findObjects(By.textContains(prefix)).mapNotNull { it.text }
-        val deadline = System.currentTimeMillis() + timeoutMs
+        val started = System.currentTimeMillis()
+        val deadline = started + timeoutMs
         var result = probe()
         while (result.isEmpty() && System.currentTimeMillis() < deadline) {
             try { Thread.sleep(250) } catch (_: InterruptedException) { }
             result = probe()
         }
-        return result.firstOrNull()
+        val found = result.firstOrNull()
+        // The failure artifacts could not separate "the app answered late" from
+        // "the poll gave up early": the only timestamp they hold is the one the
+        // poll itself produced. This prints the latency, so a PASSING run
+        // answers it too.
+        logProbe(
+            "marker",
+            if (found == null) {
+                "$prefix absent after ${System.currentTimeMillis() - started}ms"
+            } else {
+                "$prefix seen after ${System.currentTimeMillis() - started}ms"
+            }
+        )
+        return found
     }
 
     private fun clickCenter(node: UiObject2): Boolean = try {
@@ -1240,7 +1262,7 @@ class WalletE2eTest {
         // Every other sheet button in this suite is clicked this way.
         assertTrue("Approve must be clickable", clickTextWithScroll("Approve", attempts = 6))
         assertTrue("The sheet must leave after Approve", waitGone("Connect site", 8_000))
-        val connectResult = pageResultText("RESULT:", 15_000)
+        val connectResult = pageResultText("RESULT:", dappResultTimeoutMs)
         assertTrue(
             "The page must render the connect result (found ${connectResult ?: "nothing"})\n${uiTree()}",
             connectResult != null && connectResult.substringAfter("RESULT:")
@@ -1253,7 +1275,7 @@ class WalletE2eTest {
             "The silent re-connect page must load\n${uiTree()}",
             loadInOmnibox(urlSilent, "WS2-$tag")
         )
-        val silentResult = pageResultText("SILENT:", 15_000)
+        val silentResult = pageResultText("SILENT:", dappResultTimeoutMs)
         assertTrue(
             "The permitted re-connect must resolve with the address (found ${silentResult ?: "nothing"})\n${uiTree()}",
             silentResult != null && silentResult.substringAfter("SILENT:")
@@ -1273,7 +1295,7 @@ class WalletE2eTest {
         assertTrue("The Connect sheet must appear for the new host", hasText("Connect site", 20_000))
         assertTrue("The sheet must name the localhost host", hasTextContains("localhost", 10_000))
         assertTrue("Reject must be clickable", clickTextWithScroll("Reject", attempts = 6))
-        val rejectResult = pageResultText("ERR:", 15_000)
+        val rejectResult = pageResultText("ERR:", dappResultTimeoutMs)
         assertTrue(
             "The rejected connect must surface error 4001 (found ${rejectResult ?: "nothing"})\n${uiTree()}",
             rejectResult != null && rejectResult.substringAfter("ERR:") == "4001"
