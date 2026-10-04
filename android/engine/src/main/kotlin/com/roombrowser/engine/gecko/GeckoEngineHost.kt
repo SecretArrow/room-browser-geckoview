@@ -1,6 +1,7 @@
 package com.roombrowser.engine.gecko
 
 import android.content.Context
+import android.os.Handler
 import android.os.Looper
 import com.roombrowser.domain.model.Profile
 import com.roombrowser.domain.model.ProfileId
@@ -11,6 +12,7 @@ import org.mozilla.geckoview.GeckoRuntime
 import org.mozilla.geckoview.StorageController
 import org.mozilla.geckoview.WebExtension
 import java.io.File
+import java.util.concurrent.CountDownLatch
 
 /**
  * The GeckoView implementation of [EngineHost].
@@ -74,6 +76,24 @@ internal class GeckoEngineHost : EngineHost {
     )
 
     override fun bind(context: Context, profileId: ProfileId): Boolean {
+        // GeckoRuntime.create() installs process-wide state and must run on
+        // the main thread. That is an ENGINE requirement, and the facade is
+        // the only place it is allowed to exist: every caller above the facade
+        // -- :app, and the androidTest suite -- is byte-identical between the
+        // two editions and was written against an engine that had no threading
+        // rule at all, so pushing the rule outward would make one edition's
+        // code wrong on the other. Marshal instead.
+        //
+        // The check this replaces (`Looper.myLooper() != null`) accepted ANY
+        // Looper thread, which is not the thread GeckoView needs; it happened
+        // to hold in production and threw in the one caller that runs on a
+        // plain thread, turning ProfileIsolationTest's subject -- "a second
+        // bind to a different profile returns false" -- into an
+        // IllegalStateException out of a method whose contract has no throw.
+        return onMainThread { bindOnMainThread(context, profileId) }
+    }
+
+    private fun bindOnMainThread(context: Context, profileId: ProfileId): Boolean {
         val current = bound
         if (current == profileId) return true
         // Already committed to a different profile: the on-disk state belongs
@@ -82,19 +102,47 @@ internal class GeckoEngineHost : EngineHost {
         // and the same reason, as the WebView edition's data-directory suffix.
         if (current != null) return false
 
-        // GeckoRuntime.create requires a Looper thread, and it installs
-        // process-wide state, so this must not race a second caller. A clear
-        // failure here is better than the opaque crash GeckoView would give.
-        check(Looper.myLooper() != null) {
-            "EngineHost.bind must run on a Looper thread (the main thread)"
-        }
-
         val app = context.applicationContext
         val created = GeckoRuntime.create(app)
         runtime = created
         bound = profileId
         installBridge(created)
         return true
+    }
+
+    /**
+     * Runs [block] on the main thread and returns its value, blocking the
+     * caller until it has finished.
+     *
+     * Re-entrant by construction: a caller already on the main thread runs
+     * [block] inline. That is both the production path and the only way to
+     * avoid deadlocking against the very looper the work must run on.
+     *
+     * A Handler and a latch rather than a coroutine because this module has no
+     * coroutines dependency, and a thread hop is not a reason to add one.
+     */
+    private fun <T> onMainThread(block: () -> T): T {
+        if (Looper.myLooper() == Looper.getMainLooper()) return block()
+        val done = CountDownLatch(1)
+        var value: T? = null
+        var failure: Throwable? = null
+        Handler(Looper.getMainLooper()).post {
+            try {
+                value = block()
+            } catch (t: Throwable) {
+                // Carried back rather than logged: the caller's contract is a
+                // Boolean return, and a bind that could not create a runtime
+                // must fail where it was called, not on a thread it does not
+                // own.
+                failure = t
+            } finally {
+                done.countDown()
+            }
+        }
+        done.await()
+        failure?.let { throw it }
+        @Suppress("UNCHECKED_CAST")
+        return value as T
     }
 
     /**
@@ -265,6 +313,19 @@ internal class GeckoEngineHost : EngineHost {
         /**
          * Only `resource://android` URIs are accepted by ensureBuiltIn; the
          * assets of a library module merge into the consuming APK.
+         *
+         * THE MANIFEST'S CONTENT-SCRIPT KEYS ARE SNAKE_CASE, and getting them
+         * wrong is silent. `run_at`, `all_frames` and `match_about_blank` are
+         * the manifest spellings; the camelCase forms (`runAt`, `allFrames`,
+         * `matchAboutBlank`) belong to the `contentScripts.register()` JS API.
+         * A manifest that uses the camelCase forms does not fail to load --
+         * GeckoConsole logs one `WARN ... An unexpected property was found in
+         * the WebExtension manifest` per key and then IGNORES it, so the
+         * scripts fall back to `document_idle` and the top frame only. The
+         * whole point of main.js is to run before the page's own first script,
+         * and the device shim's WebRTC claim is void if it does not; the
+         * failure is invisible in the app and shows up only as a page that
+         * never calls the bridge.
          */
         const val BRIDGE_URI = "resource://android/assets/roombridge/"
 
