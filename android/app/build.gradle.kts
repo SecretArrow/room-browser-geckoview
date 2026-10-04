@@ -42,7 +42,20 @@ android {
     ndkVersion = "27.0.12077973"
 
     defaultConfig {
-        applicationId = "com.roombrowser"
+        // Deliberately NOT the WebView edition's `com.roombrowser` (owner's
+        // decision, 2026-10-04). Both editions are signed with the same
+        // release key, and versionCode is `abiRank * 100_000 +
+        // GITHUB_RUN_NUMBER` — a per-repo counter. This repo has had ~25
+        // pipeline runs against the sibling's ~150, so an identical
+        // applicationId made the two APKs fight over one install slot: the
+        // GeckoView APK carried a versionCode ~120 lower than the sibling's
+        // published one, which Android refuses to install over it
+        // (INSTALL_FAILED_VERSION_DOWNGRADE) rather than replacing it.
+        // A distinct id makes the two editions two separate apps that can sit
+        // on one device side by side. The consequence, accepted: they do not
+        // share profiles, wallet data or the data directory, so switching
+        // engines is a fresh install rather than an in-place upgrade.
+        applicationId = "com.roombrowser.gecko"
         minSdk = 28
         targetSdk = 35
         versionCode = baseVersionCode
