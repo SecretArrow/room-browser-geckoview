@@ -15,7 +15,7 @@ import java.io.File
  *    content script hold a port at all;
  *  - `"world": "MAIN"` on the page-world half, without which the app's globals
  *    are defined in a world the page cannot see;
- *  - `runAt: document_start`, without which the device shim runs after the
+ *  - `run_at: document_start`, without which the device shim runs after the
  *    page has already measured the environment it claims to hide;
  *  - an extension id matching the one the host passes to ensureBuiltIn.
  *
@@ -25,6 +25,19 @@ import java.io.File
  * out through an emulator run costs the better part of an hour; finding it out
  * here costs milliseconds. That asymmetry is the entire justification for a
  * test whose subject is a text file.
+ *
+ * THE SPELLING IS snake_case, AND THIS TEST ONCE ASSERTED THE WRONG ONE.
+ * `run_at`, `all_frames` and `match_about_blank` are the manifest keys; the
+ * camelCase forms (`runAt`, `allFrames`, `matchAboutBlank`) belong to the
+ * separate `contentScripts.register()` JS API. The first version of this file
+ * asserted the camelCase forms, so it did not merely fail to catch the bug --
+ * it *held it in place*: the manifest, the test and a green quality job all
+ * agreed on a spelling GeckoView warned about once and then dropped, and the
+ * only place the truth surfaced was an emulator run an hour long. A guard test
+ * is written from the specification, never from the file it is guarding.
+ *
+ * Hence [no_camel_case_manifest_keys]: asserting the right keys is not enough,
+ * because a manifest can carry both, and the wrong one is the one that warns.
  *
  * Deliberately a text scan rather than a JSON parse: the JVM unit-test
  * classpath has no JSON implementation (android.jar's org.json is a stub that
@@ -47,7 +60,7 @@ class BridgeManifestTest {
 
     @Test
     fun both_halves_start_at_document_start() {
-        val occurrences = Regex("\"runAt\":\\s*\"document_start\"").findAll(manifest).count()
+        val occurrences = Regex("\"run_at\":\\s*\"document_start\"").findAll(manifest).count()
         assertThat(occurrences).isEqualTo(2)
     }
 
@@ -61,8 +74,27 @@ class BridgeManifestTest {
         // One port per document is what the app-side pending-result bookkeeping
         // assumes; the page-world half needs every frame because the device
         // shim must be installed in each of them.
-        assertThat(manifest).contains("\"allFrames\": true")
-        assertThat(manifest).contains("\"allFrames\": false")
+        assertThat(manifest).contains("\"all_frames\": true")
+        assertThat(manifest).contains("\"all_frames\": false")
+    }
+
+    @Test
+    fun page_world_half_matches_about_blank_documents() {
+        assertThat(manifest).contains("\"match_about_blank\": true")
+    }
+
+    @Test
+    fun no_camel_case_manifest_keys() {
+        // GeckoView does not reject these: it logs one
+        // "An unexpected property was found in the WebExtension manifest" per
+        // key and drops the key, so `runAt` degrades `document_start` to
+        // `document_idle` and `allFrames` degrades to the top frame only. Both
+        // are invisible from the app side -- the page just never calls the
+        // bridge -- which is exactly why this asserts absence rather than
+        // trusting the keys above to imply it.
+        listOf("runAt", "allFrames", "matchAboutBlank").forEach { key ->
+            assertThat(manifest).doesNotContain("\"$key\"")
+        }
     }
 
     private companion object {
