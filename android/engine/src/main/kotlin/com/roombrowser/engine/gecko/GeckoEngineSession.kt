@@ -57,10 +57,28 @@ internal class GeckoEngineSession(
     override val id: String,
     private val runtime: GeckoRuntime,
     context: Context,
-    profile: Profile
+    profile: Profile,
+    private val isPrivate: Boolean
 ) : EngineSession {
 
-    private val session: GeckoSession = GeckoSession(settingsFor(profile))
+    /**
+     * The storage context this session reads and writes.
+     *
+     * A private session gets its OWN key rather than the profile's, and that
+     * is what makes [clearSessionData] safe to implement at all: the erase
+     * below names this key, so it cannot reach the profile's own jar. Without
+     * the separate key the only reachable erase would be the whole profile's
+     * cookies, which is the failure [EngineSession.clearSessionData]'s KDoc
+     * spells out.
+     *
+     * The suffix is appended to the profile's own identity rather than
+     * replacing it, so a private context is unambiguously derived from the
+     * profile it belongs to and cannot collide with another profile's key.
+     */
+    private val contextId: String =
+        if (isPrivate) profile.id.safeSuffix + PRIVATE_CONTEXT_SUFFIX else profile.id.safeSuffix
+
+    private val session: GeckoSession = GeckoSession(settingsFor(profile, isPrivate))
     private val geckoView: GeckoView = GeckoView(context)
 
     @Volatile
@@ -155,15 +173,24 @@ internal class GeckoEngineSession(
 
     // ---- settings ---------------------------------------------------------
 
-    private fun settingsFor(profile: Profile): GeckoSessionSettings {
+    private fun settingsFor(profile: Profile, isPrivate: Boolean): GeckoSessionSettings {
         val s = profile.settings
         val builder = GeckoSessionSettings.Builder()
             // THE isolation key inside the process. Derived from the immutable
             // profile UUID, never the display name, and identical to the value
             // the WebView edition used as its data-directory suffix -- so the
-            // two editions partition storage by the same identity.
-            .contextId(profile.id.safeSuffix)
-            .usePrivateMode(false)
+            // two editions partition storage by the same identity. A private
+            // session adds its own suffix; see [contextId].
+            .contextId(contextId)
+            // THE bit that makes a private tab private. With it false -- as it
+            // was for every session -- GeckoView writes a private tab's cookies
+            // and DOM storage into the profile's on-disk jar, where they
+            // outlive the tab and are readable by any later session. With it
+            // true the session lives in the engine's private context: nothing
+            // is written to disk, and the context is discarded when the last
+            // private session closes, so the private-tab promise holds by
+            // construction rather than by an erase somebody must remember.
+            .usePrivateMode(isPrivate)
             .allowJavascript(s.javascriptEnabled)
         applyUserAgent(builder, profile, desktop = s.desktopModeDefault)
         return builder.build()
@@ -462,30 +489,56 @@ internal class GeckoEngineSession(
     }
 
     /**
-     * NOT IMPLEMENTED FOR THIS ENGINE, and the reason is not laziness.
+     * A REAL ERASE FOR A PRIVATE SESSION, and deliberately nothing for a
+     * normal one.
      *
-     * A session-scoped cookie erase is only meaningful when the session has
-     * its own cookie context. This one does not: [settingsFor] builds every
-     * session with `usePrivateMode(false)` and the profile's own `contextId`,
-     * so all of a profile's sessions share a single cookie jar. A
-     * session-scoped clear would therefore erase the WHOLE profile's cookies
-     * while claiming to close one private tab -- signing the user out of every
-     * site they are logged into. That is strictly worse than doing nothing,
-     * and it is the exact failure the facade's KDoc warns against.
+     * The private case is the one the facade's contract is about, and it is
+     * safe to serve now because [contextId] gives a private session a storage
+     * context of its own: the erase below names that key, so it cannot reach
+     * the profile's own jar. Two mechanisms stand behind the private-tab
+     * promise, and the split is deliberate. The first is structural -- private
+     * sessions run in GeckoView's private context ([settingsFor] passes
+     * `usePrivateMode(true)`), which never writes to disk and is discarded
+     * when the last private session closes, so the promise holds even if this
+     * method were never called. The second is this call, which erases the
+     * context on demand; it is what makes the method DO something rather than
+     * document something.
      *
-     * THE REAL FIX, named rather than deferred silently: a private context per
-     * private session (`usePrivateMode(true)`, or a distinct `contextId`),
-     * whose cookies die with the session by construction instead of by an
-     * erase somebody has to remember to run. That changes the isolation model,
-     * so it is a decision and not a detail. Until it is made, this method must
-     * stay empty -- an implementation here could only be the harmful one.
+     * THE TWO SIDES OF THE ERASE SPELL THE ID THE SAME WAY, which is worth
+     * stating because a mismatch would be silent: `clearDataForSessionContext`
+     * hex-encodes its argument (`StorageController.createSafeSessionContextId`)
+     * and `GeckoSessionSettings.Builder.contextId` encodes it identically, so
+     * the RAW id is the right thing to pass to both. Passing the encoded form
+     * to either would name a context nothing lives in, and the erase would
+     * return having cleared nothing.
      *
-     * The WebView edition has the same gap in a weaker form and closes it the
-     * only way that edition can: `CookieManager.removeSessionCookies`. There
-     * is no equivalent here that is both session-scoped and safe.
+     * The erase is also best-effort by the API's own account: GeckoView's
+     * documentation notes that an open session may re-accumulate cleared data
+     * and that only closing every session in the context guarantees nothing is
+     * left. That is acceptable here precisely because of the structural half
+     * above -- what a live private session re-accumulates is in memory, and
+     * dies with the process -- so this call narrows the window rather than
+     * being the thing the promise rests on.
+     *
+     * FOR A NORMAL SESSION THIS STAYS EMPTY, and that is not the old blocker
+     * coming back. Every normal session of a profile shares ONE cookie jar by
+     * design -- that sharing is what keeps a login alive across a tab switch
+     * -- so there is no session-scoped erase to implement. Anything added here
+     * could only be `EngineHost.clearBrowsingData` under a narrower name,
+     * which is precisely the failure the facade's KDoc names: the user signed
+     * out of every site to close one tab.
+     *
+     * The per-site half of the facade's KDoc is therefore still unserved, and
+     * it is a different operation rather than a missing line here: it needs a
+     * host-scoped member (`StorageController.clearDataFromHost(host, flags)`
+     * is the call it would make), and the facade has no such member yet.
      */
     override fun clearSessionData() {
-        // Intentionally empty: see the KDoc above for the blocker.
+        if (!isPrivate) return
+        // @AnyThread on the GeckoView side, and a fire-and-forget dispatch on
+        // the engine's own channel: there is no GeckoResult to await and
+        // nothing for the caller to do with one.
+        runtime.storageController.clearDataForSessionContext(contextId)
     }
 
     override fun close() {
@@ -511,11 +564,20 @@ internal class GeckoEngineSession(
     // equivalent, and the only per-request hooks the engine exposes are the
     // two load-request callbacks below, which fire for navigations -- an
     // iframe's document, a link -- and never for the scripts, images and
-    // `fetch` calls that member exists to block. The GeckoView edition gets
-    // this signal from a bundled WebExtension when that lands. Overriding
-    // nothing is the honest encoding of "this engine cannot answer"; an
-    // override that always returned false would read as "checked, and not
-    // blocked", which is the one thing it must not read as.
+    // `fetch` calls that member exists to block. Overriding nothing is the
+    // honest encoding of "this engine cannot answer"; an override that always
+    // returned false would read as "checked, and not blocked", which is the
+    // one thing it must not read as.
+    //
+    // THE SIGNAL DOES REACH THE APP NOW, through a different door. The bundled
+    // bridge extension registers a blocking `webRequest.onBeforeRequest`
+    // listener (`blocker.js`), so a sub-resource CAN be cancelled in this
+    // edition -- but the report comes back on the EXTENSION's native port,
+    // which has no session behind it, and is therefore delivered to
+    // `EngineHost.setResourceFilter`'s sink rather than to this per-session
+    // listener. That is the accurate shape rather than a shortcut: a block is
+    // a host-and-category fact, and attributing it to whichever tab happened
+    // to be active would be a guess.
 
     private val navigationDelegate = object : GeckoSession.NavigationDelegate {
 
@@ -1102,6 +1164,12 @@ internal class GeckoEngineSession(
     private companion object {
         /** Must match the native app name in the bridge extension's port. */
         const val BRIDGE_NATIVE_APP = "roombridge"
+
+        /**
+         * Appended to the profile's storage-context key for a private session.
+         * See [contextId] for why a private session needs a key of its own.
+         */
+        const val PRIVATE_CONTEXT_SUFFIX = "-private"
 
         /**
          * How many scripts may wait for a document to exist. See [queuedEvals]

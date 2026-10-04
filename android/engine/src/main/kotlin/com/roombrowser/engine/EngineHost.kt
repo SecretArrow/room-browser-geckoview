@@ -65,8 +65,25 @@ interface EngineHost {
      * something the engine invents because the app reads it back off the
      * session to answer "which tab owns this engine?" from a background
      * thread, and a value the engine made up could not answer that.
+     *
+     * [isPrivate] says whether the tab this session serves is a private one,
+     * and it has NO default: the app tracks privacy on the tab, so a caller
+     * that omits the argument would be asking for a session whose isolation
+     * nobody chose. This parameter exists because privacy is not something the
+     * engine can infer and not something the app can fix after the fact --
+     * GeckoView decides a session's storage context when the session is
+     * CONSTRUCTED, so a session built without knowing it is private is a
+     * private tab writing to the profile's on-disk jar from its first request.
+     * It is deliberately a plain Boolean and not a new type, unlike the
+     * desktop-mode pair: there is one bit here and no second value it must
+     * agree with.
      */
-    fun createSession(context: Context, profile: Profile, sessionId: String): EngineSession
+    fun createSession(
+        context: Context,
+        profile: Profile,
+        sessionId: String,
+        isPrivate: Boolean
+    ): EngineSession
 
     /**
      * Apply [profile]'s settings to a live session. Safe to call repeatedly:
@@ -77,6 +94,30 @@ interface EngineHost {
 
     /** Per-session desktop-mode toggle. */
     fun applyDesktopMode(session: EngineSession, profile: Profile, desktop: Boolean)
+
+    /**
+     * Hand the current sub-resource filter to an engine that decides
+     * sub-resources in its OWN process, and tell it where to report what it
+     * blocked.
+     *
+     * WHO NEEDS THIS. Only an engine with no per-request hook on the app side.
+     * Android WebView reports every sub-resource to `shouldInterceptRequest`,
+     * so the WebView edition decides in the app and implements this as a
+     * documented no-op -- its [blocked] sink is never called because the app
+     * reports those blocks itself, at the moment it makes the decision.
+     * GeckoView has no such hook, so the filter travels to a WebExtension
+     * whose `webRequest.onBeforeRequest` listener applies it, and [blocked] is
+     * how the decisions come back.
+     *
+     * Called on every settings change and every site-settings change, so an
+     * implementation must REPLACE the previous filter rather than accumulate
+     * one, and must tolerate being called before any session exists.
+     *
+     * [blocked] describes a block that has ALREADY happened; an implementation
+     * makes no promise about how promptly it arrives, and must not deliver a
+     * report for a request it allowed.
+     */
+    fun setResourceFilter(filter: ResourceFilter, blocked: BlockedResourceSink)
 
     /**
      * Erase all engine storage for the bound profile.

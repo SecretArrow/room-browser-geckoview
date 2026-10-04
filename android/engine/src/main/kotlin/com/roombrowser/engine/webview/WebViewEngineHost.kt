@@ -7,9 +7,11 @@ import android.webkit.WebView
 import android.webkit.WebViewDatabase
 import com.roombrowser.domain.model.Profile
 import com.roombrowser.domain.model.ProfileId
+import com.roombrowser.engine.BlockedResourceSink
 import com.roombrowser.engine.EngineHost
 import com.roombrowser.engine.EngineOption
 import com.roombrowser.engine.EngineSession
+import com.roombrowser.engine.ResourceFilter
 import java.io.File
 
 /**
@@ -172,7 +174,8 @@ internal class WebViewEngineHost : EngineHost {
     override fun createSession(
         context: Context,
         profile: Profile,
-        sessionId: String
+        sessionId: String,
+        isPrivate: Boolean
     ): EngineSession {
         val id = bound
         check(id == profile.id) {
@@ -181,7 +184,8 @@ internal class WebViewEngineHost : EngineHost {
         return WebViewEngineSession(
             id = sessionId,
             context = context.applicationContext,
-            profile = profile
+            profile = profile,
+            isPrivate = isPrivate
         )
     }
 
@@ -191,6 +195,29 @@ internal class WebViewEngineHost : EngineHost {
 
     override fun applyDesktopMode(session: EngineSession, profile: Profile, desktop: Boolean) {
         (session as? WebViewEngineSession)?.applyDesktopMode(profile, desktop)
+    }
+
+    /**
+     * DELIBERATELY A NO-OP, and the reason is the engine's, not a gap.
+     *
+     * Android WebView reports every sub-resource to
+     * `WebViewClient.shouldInterceptRequest`, which the app implements
+     * (`WebClients.onResourceRequest`): the app holds the filter, applies it
+     * in-process, and reports the blocks it makes itself. There is nothing
+     * below the facade to configure, and no blocker that could call [blocked]
+     * -- the app reaches its own report path directly, at the moment it
+     * decides, which is *earlier* than a round trip through an engine could
+     * be.
+     *
+     * The GeckoView edition is the one that needs this member: it has no
+     * per-request callback, so the filter travels to a WebExtension and
+     * [blocked] is how those decisions come back. Accepting the argument and
+     * ignoring it is honest here; the alternative -- throwing, or storing a
+     * filter nothing reads -- would make the WebView edition refuse a call
+     * that is correct for the app to make in both editions.
+     */
+    override fun setResourceFilter(filter: ResourceFilter, blocked: BlockedResourceSink) {
+        // Intentionally empty: see the KDoc above. Not a TODO.
     }
 
     /**

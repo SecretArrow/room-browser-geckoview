@@ -29,6 +29,46 @@ class FilterEngine(
     private val malicious: Set<String> = maliciousHosts.map { it.lowercase() }.toSet()
 
     /**
+     * The loaded rule sets, read-only, for a caller that has to run the SAME
+     * rules somewhere this class cannot reach.
+     *
+     * WHY THESE EXIST. A sub-resource can be blocked in two places and only
+     * one of them is reachable from Kotlin: Android WebView reports every
+     * sub-resource to `shouldInterceptRequest`, but GeckoView has no
+     * per-request callback at all — a request can only be cancelled from a
+     * WebExtension's `webRequest.onBeforeRequest`, which is JavaScript. That
+     * listener has to answer SYNCHRONOUSLY, so it cannot ask this engine for a
+     * decision; it has to hold the rules itself.
+     *
+     * The alternative was to ship a second copy of the host list inside the
+     * extension, which is a second source of truth for a privacy decision:
+     * the two lists would drift, and the drift would be invisible — the app
+     * would answer "not on the list" for a navigation while the blocker
+     * cancelled the very same host as a sub-resource. Exposing the loaded sets
+     * instead keeps ONE list, read from `assets/filters/hosts.txt` by
+     * [com.roombrowser.data.filters.FilterListLoader] and handed to whichever
+     * blocker the engine provides.
+     *
+     * These are the NORMALISED sets (lowercased at construction), not the
+     * constructor arguments: a caller matching against them must lowercase its
+     * own host first, exactly as [decide] does.
+     */
+    val adRuleHosts: Set<String> get() = ads
+
+    /** See [adRuleHosts]. */
+    val trackerRuleHosts: Set<String> get() = trackers
+
+    /** See [adRuleHosts]. */
+    val maliciousRuleHosts: Set<String> get() = malicious
+
+    /**
+     * The keyword rules, in the order [decide] applies them — first match
+     * wins, and it is the order that decides which category a URL lands in
+     * when two patterns both match.
+     */
+    val keywordRules: List<KeywordRule> get() = keywordPatterns
+
+    /**
      * Decide what to do with a (sub)resource request.
      *
      * @param requestHost host of the requested resource

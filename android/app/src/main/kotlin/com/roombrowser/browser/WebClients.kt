@@ -237,12 +237,24 @@ class RoomSessionListener(
      * session's own URL authoritative instead, so nothing here has to keep a
      * parallel copy of it.
      *
-     * ENGINE NOTE, carried as a real gap rather than hidden: the GeckoView
-     * edition has no per-request delegate for arbitrary sub-resources and
-     * answers this from a bundled WebExtension, so until that lands it blocks
-     * nothing here and the profile's own tracking-protection settings are the
-     * only thing between the page and a tracker. The decision below is still
-     * written once, for both editions.
+     * ENGINE NOTE. In THIS edition nothing calls this method for a
+     * sub-resource: `WebViewEngineSession` is the only caller in the build, and
+     * `GeckoEngineSession` explains at its own site why it cannot supply one --
+     * GeckoView 153 has no `shouldInterceptRequest` equivalent. What used to be
+     * deferred to "when the extension lands" has landed: the bridge extension's
+     * `blocker.js` registers a blocking `webRequest.onBeforeRequest` listener,
+     * so a sub-resource is cancelled inside Gecko and reported back through
+     * `EngineHost.setResourceFilter`'s sink. A block therefore still reaches
+     * [Callbacks.onBlocked] and [Callbacks.recordBlockEvent] -- the same two
+     * calls this method makes below, which is why the dashboard counts a block
+     * identically in both editions.
+     *
+     * THE DECISION IS THUS WRITTEN TWICE, and that is the one duplication this
+     * design accepts: here in Kotlin, and mirrored in `blocker.js`, because a
+     * blocking listener must answer synchronously and cannot call into the app.
+     * The RULES are not duplicated -- the app reads its one bundled list and
+     * hands it over the native port -- so the two copies can disagree only
+     * about the control flow, never about what is on the list.
      */
     override fun onResourceRequest(
         session: EngineSession,

@@ -88,7 +88,17 @@ import java.util.concurrent.atomic.AtomicBoolean
 internal class WebViewEngineSession(
     override val id: String,
     context: Context,
-    profile: Profile
+    profile: Profile,
+    /**
+     * Carried because the facade requires it, and used for one thing: see
+     * [clearSessionData]. This port cannot do what the GeckoView
+     * implementation does with it -- WebView has no per-session storage
+     * context to put a session in, so there is no flag here that could give a
+     * private tab a private cookie jar. The flag is therefore recorded rather
+     * than acted on, and the erase below is gated on it instead of pretending
+     * the scope is narrower than it is.
+     */
+    private val isPrivate: Boolean
 ) : EngineSession {
 
     private val webView: WebView = WebView(context)
@@ -604,6 +614,14 @@ internal class WebViewEngineSession(
      * it exists for.
      */
     override fun clearSessionData() {
+        // Gated on privacy for the same reason the GeckoView implementation
+        // is: only a private session's artifacts are about THAT session rather
+        // than about the profile. WebView cannot narrow the scope any further
+        // -- `removeSessionCookies` is process-wide -- so calling this for a
+        // normal session would drop every session cookie the user holds, which
+        // is the facade's named failure mode rather than a smaller version of
+        // the same operation.
+        if (!isPrivate) return
         runOnMain {
             runCatching {
                 val cookies = CookieManager.getInstance()

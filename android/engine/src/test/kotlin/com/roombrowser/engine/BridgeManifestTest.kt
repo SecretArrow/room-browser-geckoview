@@ -1,8 +1,10 @@
 package com.roombrowser.engine
 
 import com.google.common.truth.Truth.assertThat
+import com.google.common.truth.Truth.assertWithMessage
 import org.junit.Test
 import java.io.File
+import java.security.MessageDigest
 
 /**
  * Validates the bridge extension's manifest without running an engine.
@@ -77,6 +79,80 @@ class BridgeManifestTest {
     }
 
     @Test
+    fun manifest_grants_the_blocking_webrequest_permissions() {
+        // The sub-resource blocker is a `webRequest.onBeforeRequest` listener
+        // with `["blocking"]`, and each of these three is separately capable of
+        // making it do nothing:
+        //
+        //  - `webRequest` puts the API on `browser.webRequest` at all;
+        //  - `webRequestBlocking` is what makes the third `addListener`
+        //    argument legal -- without it the listener still registers and
+        //    still runs, and its return value is DISCARDED, so every request
+        //    it "cancels" is made anyway;
+        //  - `<all_urls>` is the host permission that lets it see requests to
+        //    third-party hosts, which is the entire population it is aimed at.
+        //
+        // `webRequestBlocking` is asserted in its QUOTED form for the reason
+        // given above: it contains `webRequest` as a prefix, so a bare
+        // substring check would be satisfied by `webRequest` alone -- the test
+        // would pass on a manifest that cannot block anything.
+        listOf("webRequest", "webRequestBlocking", "<all_urls>").forEach { permission ->
+            assertThat(manifest).contains("\"$permission\"")
+        }
+    }
+
+    @Test
+    fun manifest_declares_the_background_page_the_blocker_registers_from() {
+        // A blocking listener has to exist BEFORE the request it is meant to
+        // cancel, and the only place an extension can register one that early
+        // is a background script loaded at extension startup. A content script
+        // cannot stand in for it: it runs per document, it has no `webRequest`
+        // access, and it starts too late to see the document's own
+        // sub-resources.
+        assertThat(manifest).contains("\"background\"")
+        assertThat(manifest).contains("\"blocker.js\"")
+    }
+
+    @Test
+    fun the_extension_version_is_bumped_whenever_the_extension_changes() {
+        // WHY A FINGERPRINT AND NOT JUST THE VERSION FIELD.
+        //
+        // `WebExtensionController.ensureBuiltIn` -- the call the host makes --
+        // does NOT reinstall an extension that is already present with the
+        // SAME VERSION. That is the whole point of it, and it means the version
+        // string is not documentation: it is the switch that decides whether a
+        // changed script, a changed permission or a changed background page
+        // ever reaches a device that already has the previous one. Nothing
+        // else in the build notices. The release is cut, the APK installs, the
+        // extension keeps running its previous code, and the only symptom is
+        // the feature that was supposed to change.
+        //
+        // So the assets are hashed here, and an edit to any of them fails
+        // until the constant below is updated -- at which point the failure
+        // message says what else has to be updated with it. This is the same
+        // trade the rest of this file makes: a text scan for a silent failure
+        // that an emulator run would surface an hour later, if at all.
+        val directory = File(EXTENSION_DIR)
+        assertThat(directory.isDirectory).isTrue()
+        val digest = MessageDigest.getInstance("SHA-256")
+        directory.listFiles().orEmpty().sortedBy { it.name }.forEach { file ->
+            // The NAME is hashed too, so that adding or removing a script is a
+            // change even when the remaining bytes are identical.
+            digest.update(file.name.toByteArray(Charsets.UTF_8))
+            digest.update(0)
+            digest.update(file.readBytes())
+        }
+        val actual = digest.digest().joinToString("") { "%02x".format(it) }
+        assertWithMessage(
+            "The bridge extension's assets changed. GeckoView does NOT reinstall a " +
+                "built-in extension whose manifest version is unchanged, so this edit " +
+                "reaches no device that already has the previous version installed. " +
+                "Bump \"version\" in $MANIFEST_PATH and set EXTENSION_FINGERPRINT to " +
+                "the value above."
+        ).that(actual).isEqualTo(EXTENSION_FINGERPRINT)
+    }
+
+    @Test
     fun page_world_half_is_declared_as_the_main_world() {
         assertThat(manifest).contains("\"world\": \"MAIN\"")
     }
@@ -123,5 +199,17 @@ class BridgeManifestTest {
     private companion object {
         /** Relative to the module directory, which Gradle makes the test's cwd. */
         const val MANIFEST_PATH = "src/main/assets/roombridge/manifest.json"
+
+        /** The extension's own directory: everything `ensureBuiltIn` ships. */
+        const val EXTENSION_DIR = "src/main/assets/roombridge"
+
+        /**
+         * SHA-256 over the extension's files, name then bytes, in name order.
+         *
+         * Update this ONLY together with `"version"` in the manifest -- see
+         * [the_extension_version_is_bumped_whenever_the_extension_changes].
+         */
+        const val EXTENSION_FINGERPRINT =
+            "4fa5c8837f76f5aecd3bbb3ba16008385e52959081eccc248a929bcc4f0c954d"
     }
 }

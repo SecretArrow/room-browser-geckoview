@@ -3,11 +3,16 @@ package com.roombrowser.engine.gecko
 import android.content.Context
 import android.os.Handler
 import android.os.Looper
+import com.roombrowser.domain.engine.FilterEngine
 import com.roombrowser.domain.model.Profile
 import com.roombrowser.domain.model.ProfileId
+import com.roombrowser.engine.BlockedResourceSink
 import com.roombrowser.engine.EngineHost
 import com.roombrowser.engine.EngineOption
 import com.roombrowser.engine.EngineSession
+import com.roombrowser.engine.ResourceFilter
+import org.json.JSONArray
+import org.json.JSONObject
 import org.mozilla.geckoview.GeckoRuntime
 import org.mozilla.geckoview.StorageController
 import org.mozilla.geckoview.WebExtension
@@ -58,6 +63,37 @@ internal class GeckoEngineHost : EngineHost {
     private var bridge: WebExtension? = null
 
     private val bridgeWaiters = mutableListOf<(WebExtension) -> Unit>()
+
+    /**
+     * The background page's native port -- the sub-resource blocker's channel.
+     *
+     * A SEPARATE PORT FROM THE PAGE BRIDGES, and a separate delegate kind. The
+     * content scripts' ports are session-scoped: GeckoView routes each one to
+     * the `MessageDelegate` its own session registered. A background script has
+     * no session, and GeckoView routes its port to the delegate registered on
+     * the EXTENSION instead (see `WebExtension.setMessageDelegate`). Two ports,
+     * two lookups, one extension -- and they must not be given the same
+     * native-app name, or the log would attribute a page bridge message to the
+     * blocker and vice versa.
+     */
+    @Volatile
+    private var blockerPort: WebExtension.Port? = null
+
+    /**
+     * The filter the app last handed over, or null before the first push.
+     *
+     * Held here rather than pushed straight at the port because the port and
+     * the filter arrive in either order: the app configures its settings as
+     * soon as it has a profile, while the background page connects when Gecko
+     * gets round to it. Whichever arrives second causes the push, so neither
+     * ordering can silently leave the blocker without rules.
+     */
+    @Volatile
+    private var resourceFilter: ResourceFilter? = null
+
+    /** Where a block the extension cancelled is reported. */
+    @Volatile
+    private var blockedSink: BlockedResourceSink? = null
 
     override fun engineName(context: Context): String = ENGINE_LABEL
 
@@ -146,6 +182,20 @@ internal class GeckoEngineHost : EngineHost {
     }
 
     /**
+     * Run [block] on the main thread without waiting for it.
+     *
+     * For work whose thread is fixed by an annotation but whose RESULT nothing
+     * depends on: registering the blocker's message delegate, and posting a
+     * message on its port. `onMainThread` would block the Gecko handler thread
+     * waiting on the main thread -- the direction that deadlocks if the main
+     * thread is meanwhile waiting on that same handler thread -- so it is the
+     * wrong tool for a call nobody is waiting on.
+     */
+    private fun postToMain(block: () -> Unit) {
+        Handler(Looper.getMainLooper()).post(block)
+    }
+
+    /**
      * Install the page-bridge extension.
      *
      * The URI form is not a choice: `WebExtensionController.ensureBuiltIn`
@@ -161,6 +211,34 @@ internal class GeckoEngineHost : EngineHost {
                 { extension ->
                     if (extension == null) return@accept
                     bridge = extension
+                    // GeckoView does NOT let an extension run in private
+                    // browsing unless it is told to, and that gate covers
+                    // content scripts too. This session's private tabs run in
+                    // the engine's private context, so without the call below
+                    // the wallet, vault and device-shim bridges would simply
+                    // stop existing in every private tab -- and they would
+                    // fail the one way this bridge always fails: the install
+                    // succeeds, the delegate installs, and the port is never
+                    // opened.
+                    created.webExtensionController
+                        .setAllowedInPrivateBrowsing(extension, true)
+                        .accept(
+                            { allowed ->
+                                android.util.Log.i(
+                                    BRIDGE_LOG_TAG,
+                                    "bridge allowedInPrivateBrowsing=" +
+                                        "${allowed?.allowedInPrivateBrowsing}"
+                                )
+                            },
+                            { error ->
+                                android.util.Log.e(
+                                    BRIDGE_LOG_TAG,
+                                    "Could not allow the bridge in private browsing: " +
+                                        "the page bridges will be dead in private tabs",
+                                    error
+                                )
+                            }
+                        )
                     // Read the flag back instead of assuming it. A content
                     // script may only hold a port when GeckoView set
                     // ALLOW_CONTENT_MESSAGING, which it derives from the
@@ -194,6 +272,7 @@ internal class GeckoEngineHost : EngineHost {
                         copy
                     }
                     waiting.forEach { it(extension) }
+                    installBlocker(extension)
                 },
                 { error ->
                     // No bridge means no wallet, no vault and no device shim.
@@ -218,12 +297,174 @@ internal class GeckoEngineHost : EngineHost {
         }
     }
 
+    // ---- the sub-resource blocker ----------------------------------------
+
+    /**
+     * Attach the blocker's channel to the extension that is already installed.
+     *
+     * THE EXTENSION, NOT A SESSION. `webRequest.onBeforeRequest` is registered
+     * by a background script, so its port belongs to the extension as a whole
+     * -- there is no session to hang it on, and the blocks it reports are
+     * reported without one. The app's block statistics are host-and-category
+     * facts (`recordBlockEvent(host, category)`) with no session in them
+     * either, which is why nothing here has to answer "which tab?".
+     *
+     * Posted rather than called inline because `setMessageDelegate` is
+     * @UiThread and this runs on Gecko's handler thread. Nothing waits on the
+     * registration: a port opened before the delegate exists is queued by
+     * GeckoView and released by this very call (see
+     * `WebExtensionController.releasePendingMessages`), so a connect that
+     * races the install is not lost, and it is not lost silently either --
+     * the port connects and the filter is pushed a moment later.
+     */
+    private fun installBlocker(extension: WebExtension) {
+        postToMain {
+            extension.setMessageDelegate(blockerDelegate, BLOCKER_NATIVE_APP)
+            android.util.Log.i(
+                BRIDGE_LOG_TAG,
+                "blocker delegate installed on port=$BLOCKER_NATIVE_APP"
+            )
+        }
+    }
+
+    private val blockerDelegate = object : WebExtension.MessageDelegate {
+        override fun onConnect(port: WebExtension.Port) {
+            blockerPort = port
+            port.setDelegate(blockerPortDelegate)
+            if (resourceFilter == null) {
+                // Not fatal, and not silent. The blocker fails OPEN: until the
+                // app pushes a filter it has no rules, so it allows everything.
+                // That window looks exactly like "blocking is broken", which
+                // is why the order is recorded here.
+                android.util.Log.w(
+                    BRIDGE_LOG_TAG,
+                    "blocker port connected before the app handed over a filter: " +
+                        "sub-resources are unfiltered until setResourceFilter arrives"
+                )
+            }
+            pushFilter(port)
+        }
+    }
+
+    private val blockerPortDelegate = object : WebExtension.PortDelegate {
+        override fun onPortMessage(message: Any, port: WebExtension.Port) {
+            // Every message the blocker sends is an object (see `report` in
+            // blocker.js), so anything else is a protocol mismatch -- and a
+            // dropped report is a block missing from the dashboard, which is
+            // the failure that looks like "the blocker stopped working".
+            val json = message as? JSONObject
+            if (json == null) {
+                android.util.Log.w(
+                    BRIDGE_LOG_TAG,
+                    "blocker port message was not a JSON object: " +
+                        message.javaClass.name
+                )
+                return
+            }
+            when (val type = json.optString("type")) {
+                "blocked" -> reportBlocked(json)
+                else -> android.util.Log.w(
+                    BRIDGE_LOG_TAG,
+                    "blocker port message with unknown type=$type"
+                )
+            }
+        }
+
+        override fun onDisconnect(port: WebExtension.Port) {
+            if (blockerPort !== port) return
+            blockerPort = null
+            // A background page is restarted by Gecko when it dies, and the
+            // restart opens a new port which pushes the filter again. So this
+            // is a gap in blocking, not the end of it -- and one worth seeing,
+            // since the alternative explanation for "the dashboard stopped
+            // counting" is a code defect in the blocker itself.
+            android.util.Log.w(
+                BRIDGE_LOG_TAG,
+                "blocker port disconnected: sub-resources are unfiltered until it reconnects"
+            )
+        }
+    }
+
+    private fun reportBlocked(json: JSONObject) {
+        val host = json.optString("host")
+        val category = runCatching {
+            FilterEngine.FilterCategory.valueOf(json.optString("category"))
+        }.getOrNull()
+        if (host.isEmpty() || category == null) {
+            android.util.Log.w(
+                BRIDGE_LOG_TAG,
+                "blocker reported an unreadable block: host='$host' " +
+                    "category='${json.optString("category")}'"
+            )
+            return
+        }
+        // Delivered on the UI thread (PortDelegate is @UiThread). The sink is
+        // the app's own report path, the same one the WebView edition reaches
+        // from `shouldInterceptRequest`, so a block is counted identically in
+        // both editions.
+        blockedSink?.onBlocked(host, category)
+    }
+
+    /**
+     * Send the current filter to the blocker, or do nothing when the app has
+     * not handed one over yet.
+     *
+     * THE RULESET IS SENT AS SETS, NOT AS A LIST OF RULES TO INSTALL. The
+     * blocker replaces its whole view of the filter on every push, so the
+     * app can hand over a snapshot whenever anything changes -- a settings
+     * toggle, a per-site exemption, a profile switch -- without this side
+     * having to compute a difference. That is what makes the push safe to
+     * repeat unconditionally, which is the only way it can be driven from the
+     * paths that already reload those snapshots.
+     */
+    private fun pushFilter(port: WebExtension.Port) {
+        val filter = resourceFilter ?: return
+        val keywords = JSONArray()
+        filter.keywordRules.forEach { rule ->
+            keywords.put(
+                JSONObject()
+                    .put("pattern", rule.pattern)
+                    .put("category", rule.category.name)
+            )
+        }
+        val message = JSONObject()
+            .put("type", "filter")
+            .put("adHosts", JSONArray(filter.adHosts.toList()))
+            .put("trackerHosts", JSONArray(filter.trackerHosts.toList()))
+            .put("maliciousHosts", JSONArray(filter.maliciousHosts.toList()))
+            .put("keywordRules", keywords)
+            .put("blockAds", filter.blockAds)
+            .put("blockTrackers", filter.blockTrackers)
+            .put("blockCrossSite", filter.blockCrossSite)
+            .put("blockMalicious", filter.blockMalicious)
+            .put("shieldsDisabledHosts", JSONArray(filter.shieldsDisabledHosts.toList()))
+        runCatching { port.postMessage(message) }.onFailure { error ->
+            android.util.Log.e(
+                BRIDGE_LOG_TAG,
+                "could not push the resource filter to the blocker: it keeps the " +
+                    "previous rules until the next push",
+                error
+            )
+        }
+    }
+
+    override fun setResourceFilter(filter: ResourceFilter, blocked: BlockedResourceSink) {
+        resourceFilter = filter
+        blockedSink = blocked
+        // A port that is not open yet is not a lost push: [blockerDelegate]
+        // sends the filter on connect. The reverse order -- port first, filter
+        // second -- is this line.
+        val port = blockerPort ?: return
+        postToMain { pushFilter(port) }
+    }
+
     override fun boundProfile(): ProfileId? = bound
 
     override fun createSession(
         context: Context,
         profile: Profile,
-        sessionId: String
+        sessionId: String,
+        isPrivate: Boolean
     ): EngineSession {
         val id = bound
         check(id == profile.id) {
@@ -239,7 +480,8 @@ internal class GeckoEngineHost : EngineHost {
             id = sessionId,
             runtime = active,
             context = context,
-            profile = profile
+            profile = profile,
+            isPrivate = isPrivate
         )
         // The bridge is only useful once a session can carry it, and a session
         // created before installation finishes must still get one.
@@ -330,12 +572,27 @@ internal class GeckoEngineHost : EngineHost {
         runtime = null
         bound = null
         bridge = null
+        blockerPort = null
+        resourceFilter = null
+        blockedSink = null
         synchronized(bridgeWaiters) { bridgeWaiters.clear() }
     }
 
     private companion object {
         /** Matches `browser_specific_settings.gecko.id` in the manifest. */
         const val BRIDGE_ID = "roombridge@roombrowser.com"
+
+        /**
+         * The native-app name the BACKGROUND page's port is opened under.
+         *
+         * Deliberately not `roombridge`: that name is the content scripts', and
+         * GeckoView looks a port's delegate up by (extension, nativeApp) --
+         * content-script ports on the session, background ports on the
+         * extension. Two different lookups under one name would work, and
+         * would make every log line ambiguous about which half of the bridge
+         * it came from. Must match `NATIVE_APP` in `blocker.js`.
+         */
+        const val BLOCKER_NATIVE_APP = "roomblock"
 
         /**
          * Only `resource://android` URIs are accepted by ensureBuiltIn; the

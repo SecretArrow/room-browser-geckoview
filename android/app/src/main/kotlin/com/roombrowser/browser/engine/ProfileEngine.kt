@@ -11,11 +11,13 @@ import com.roombrowser.domain.model.ProfileSettings
 import com.roombrowser.domain.model.UserAgents
 import com.roombrowser.domain.model.WebRtcPolicy
 import com.roombrowser.domain.model.claimedScreen
+import com.roombrowser.engine.BlockedResourceSink
 import com.roombrowser.engine.EngineHost
 import com.roombrowser.engine.EngineOption
 import com.roombrowser.engine.EnginePageScripts
 import com.roombrowser.engine.EngineRuntime
 import com.roombrowser.engine.EngineSession
+import com.roombrowser.engine.ResourceFilter
 
 /**
  * Profile engine — configures engine sessions for exactly ONE profile per
@@ -115,9 +117,20 @@ object ProfileEngine {
      * [sessionId] is the app's own identity for the tab (its row id) — the
      * facade carries it through so an engine callback can be traced back to
      * its tab, and the app owns the value.
+     *
+     * [isPrivate] is the tab's own privacy, and it is passed straight through
+     * rather than looked up here: this is called while a tab is being
+     * (re)created, so the tab manager may not hold it yet, and a lookup that
+     * silently answered `false` would put a private tab in the profile's
+     * on-disk cookie jar.
      */
-    fun createSession(context: Context, profile: Profile, sessionId: String): EngineSession {
-        val session = host.createSession(context, profile, sessionId)
+    fun createSession(
+        context: Context,
+        profile: Profile,
+        sessionId: String,
+        isPrivate: Boolean
+    ): EngineSession {
+        val session = host.createSession(context, profile, sessionId, isPrivate)
         configure(session, profile)
         return session
     }
@@ -213,6 +226,21 @@ object ProfileEngine {
      */
     fun clearEngineStorage(context: Context, profileId: ProfileId) {
         host.clearBrowsingData(context, profileId)
+    }
+
+    /**
+     * Hand the sub-resource filter to the engine that decides sub-resources in
+     * its own process, and tell it where to report what it blocked.
+     *
+     * The app builds [filter] from the one bundled rule list plus the profile's
+     * switches, and re-sends it whenever any of those change -- so this is a
+     * REPLACEMENT, not an addition, and calling it twice with the same filter
+     * changes nothing. The WebView edition ignores it entirely: it decides
+     * sub-resources in the app and reports them itself. See
+     * [EngineHost.setResourceFilter].
+     */
+    fun setResourceFilter(filter: ResourceFilter, blocked: BlockedResourceSink) {
+        host.setResourceFilter(filter, blocked)
     }
 
     /**

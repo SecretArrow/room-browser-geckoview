@@ -36,9 +36,11 @@ import com.roombrowser.domain.model.ProfileSettings
 import com.roombrowser.domain.theme.BuiltInThemes
 import com.roombrowser.domain.theme.RoomThemeSpec
 import com.roombrowser.domain.theme.ThemeJson
+import com.roombrowser.engine.BlockedResourceSink
 import com.roombrowser.engine.EngineSession
 import com.roombrowser.engine.PageErrorKind
 import com.roombrowser.engine.PermissionResponder
+import com.roombrowser.engine.ResourceFilter
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -998,7 +1000,8 @@ class BrowserViewModel(
             if (newTab || targetId == null) {
                 openNewTab(url, isPrivate)
             } else {
-                val session = activeSession ?: createSession(targetId).also { engine ->
+                val targetPrivate = tabs.firstOrNull { it.id == targetId }?.isPrivate == true
+                val session = activeSession ?: createSession(targetId, targetPrivate).also { engine ->
                     activeSession = engine
                     // The engine belongs to THIS tab: its session must exist
                     // before attaching, or the engine goes untracked (leak +
@@ -1129,7 +1132,7 @@ class BrowserViewModel(
             // switching tabs never reloads a still-live page. The session is
             // created BEFORE the attach — an untracked engine was why young
             // tabs reloaded (and leaked) instead of switching cleanly.
-            val session = createSession(entity.id)
+            val session = createSession(entity.id, entity.isPrivate)
             activeSession = session
             tabManager.ensureSession(entity)
             tabManager.attachEngine(entity.id, session)
@@ -1240,7 +1243,7 @@ class BrowserViewModel(
         val live = tabManager.get(tab.id)?.engine
         if (live != null) return live
         if (networkGate.value) return null
-        val session = createSession(tab.id)
+        val session = createSession(tab.id, tab.isPrivate)
         tabManager.ensureSession(tab)
         tabManager.attachEngine(tab.id, session)
         val saved = tabManager.engineState(tab.id)
@@ -1384,8 +1387,17 @@ class BrowserViewModel(
         viewModelScope.launch { openNewTab("about:home", isPrivate = true) }
     }
 
-    private fun createSession(tabId: String): EngineSession {
-        val session = ProfileEngine.createSession(getApplication(), profile, tabId)
+    /**
+     * Build an engine for a tab, telling it up front whether that tab is
+     * private.
+     *
+     * [isPrivate] has no default on purpose. Privacy is a property of the tab,
+     * not of the engine, so a caller that omits it is not choosing a safe
+     * default -- it is building a session whose storage context nobody
+     * decided. Every caller here has the tab in hand and passes what it holds.
+     */
+    private fun createSession(tabId: String, isPrivate: Boolean): EngineSession {
+        val session = ProfileEngine.createSession(getApplication(), profile, tabId, isPrivate)
         // ONE LISTENER PER ENGINE, bound to the session it serves. The facade
         // allows exactly one, and it is the only handle on the tab that asked:
         // a permission or auth request arrives naming its session, and the
@@ -1560,6 +1572,10 @@ class BrowserViewModel(
         tabManager.liveEngineSessions().forEach { session ->
             session.engine?.let { ProfileEngine.configure(it, profile) }
         }
+        // The block switches are profile settings too, and they are read by a
+        // blocker that is NOT a session — so re-configuring the sessions would
+        // leave it running the previous profile's switches.
+        pushResourceFilter()
     }
 
     // ---------- Engine lifecycle helpers ----------
@@ -1761,7 +1777,60 @@ class BrowserViewModel(
     private fun loadSiteSettingsSnapshot() {
         viewModelScope.launch {
             siteSettingsSnapshot = browserRepo.allSiteSettings(profileId).associateBy { it.host }
+            // The snapshot IS the engine-side filter's exemption list, so the
+            // two are refreshed together and cannot disagree: a site the user
+            // just turned shields off for is exempt on the next request, not
+            // on the next launch.
+            pushResourceFilter()
         }
+    }
+
+    /**
+     * Hand the engine the rules for blocking SUB-RESOURCES, plus the sink that
+     * counts them.
+     *
+     * WHY THIS EXISTS AT ALL. The two editions block sub-resources in
+     * different places, and only one of them can see a Kotlin object. WebView
+     * calls the app back for every request (`shouldInterceptRequest`), so the
+     * app decides and reports. GeckoView has no such callback: a request can
+     * only be cancelled from a WebExtension's blocking `webRequest` listener,
+     * which is JavaScript in another process and must answer synchronously.
+     * So the RULES travel to the decision -- this is that hand-over.
+     *
+     * WHAT IS SENT, AND WHAT IS NOT. The rule data is read from the one
+     * bundled list, through the same [FilterEngine] the navigation policy uses,
+     * so a host cannot be blocked as a navigation and allowed as a
+     * sub-resource. The matching algorithm is the one thing that is written
+     * twice, in Kotlin and in the extension's `blocker.js`, because no
+     * synchronous call can cross between them.
+     *
+     * The sink is the app's ordinary report path -- the same two calls
+     * `RoomSessionListener.onResourceRequest` makes for a block it decided
+     * itself -- so the privacy dashboard counts a block the same way in both
+     * editions, whichever side cancelled the request.
+     */
+    private fun pushResourceFilter() {
+        val settings = profile.settings
+        val engine = graph.filterEngine
+        ProfileEngine.setResourceFilter(
+            ResourceFilter(
+                adHosts = engine.adRuleHosts,
+                trackerHosts = engine.trackerRuleHosts,
+                maliciousHosts = engine.maliciousRuleHosts,
+                keywordRules = engine.keywordRules,
+                blockAds = settings.blockAds,
+                blockTrackers = settings.blockTrackers,
+                blockCrossSite = settings.blockCrossSiteTrackers,
+                blockMalicious = settings.blockMalicious,
+                shieldsDisabledHosts = siteSettingsSnapshot
+                    .filterValues { it.shieldsDisabled }
+                    .keys
+            ),
+            BlockedResourceSink { host, category ->
+                sessionCallbacks.onBlocked(host, category)
+                sessionCallbacks.recordBlockEvent(host, StatCategories.from(category))
+            }
+        )
     }
 
     // ---------- Privacy dashboard ----------
