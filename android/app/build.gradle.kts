@@ -34,7 +34,10 @@ val geckoViewAbis = listOf("arm64-v8a", "armeabi-v7a", "x86_64")
 
 android {
     namespace = "com.roombrowser"
-    compileSdk = 35
+    // 36 is forced by the engine, not chosen: see android/engine/build.gradle.kts
+    // and the note on `geckoview` in gradle/libs.versions.toml. targetSdk below
+    // is a separate decision and stays where it was.
+    compileSdk = 36
     buildToolsVersion = "35.0.0"
     ndkVersion = "27.0.12077973"
 

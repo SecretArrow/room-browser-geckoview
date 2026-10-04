@@ -15,7 +15,12 @@ plugins {
 // module differ between the WebView edition and the GeckoView edition.
 android {
     namespace = "com.roombrowser.engine"
-    compileSdk = 35
+    // 36, not 35: GeckoView's POM drags in androidx.core 1.18.0 and
+    // androidx.media3 1.10.1, and their AAR metadata refuses to be consumed by
+    // anything compiled below API 36. targetSdk stays 35 in :app — compiling
+    // against newer APIs and opting in to newer runtime behaviour are separate
+    // decisions and only the first one is forced here.
+    compileSdk = 36
     buildToolsVersion = "35.0.0"
     ndkVersion = "27.0.12077973"
 

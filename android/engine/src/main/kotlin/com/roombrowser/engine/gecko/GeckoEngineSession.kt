@@ -262,9 +262,22 @@ internal class GeckoEngineSession(
         }
 
         override fun onDisconnect(port: WebExtension.Port) {
-            if (this@GeckoEngineSession.port === port) {
-                this@GeckoEngineSession.port = null
-            }
+            if (this@GeckoEngineSession.port !== port) return
+            this@GeckoEngineSession.port = null
+            // Every evaluation still outstanding was sent to a document that
+            // no longer exists, so none of them can ever be answered. Leaving
+            // them in the map is not a leak of memory but a leak of PROMISES:
+            // the dApp awaits a result that never arrives, and the wallet UI
+            // waits forever on a request the page has already forgotten. The
+            // interface says a null result means "could not be delivered",
+            // and that is exactly what happened.
+            //
+            // NOT re-queued for the next document on purpose. The next
+            // document is a different origin, and replaying a script written
+            // for one origin against another is the failure mode the trust
+            // anchor exists to prevent.
+            val abandoned = pendingEval.keys.toList()
+            abandoned.forEach { id -> pendingEval.remove(id)?.invoke(null) }
         }
     }
 

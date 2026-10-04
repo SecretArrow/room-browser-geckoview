@@ -97,6 +97,21 @@ jobs:
           test -f "$NDK/source.properties" || { echo "NDK source.properties missing after install"; exit 1; }
           test -d "$CMAKE_DIR" || test -d /usr/local/lib/android/sdk/cmake/3.22.1 || { echo "cmake 3.22.1 missing after install"; exit 1; }
 
+      - name: Ensure the android-36 platform is installed
+        # compileSdk is 36 because GeckoView's own POM pulls androidx.core
+        # 1.18.0 and androidx.media3 1.10.1, and their AAR metadata refuses any
+        # consumer compiled below API 36. The runner image does not promise to
+        # carry that platform and AGP's SDK auto-download is not something to
+        # bet a pipeline on, so ask for it directly: a couple of seconds when
+        # the image already has it, and a clear failure here instead of an
+        # obscure one inside gradle when it does not.
+        run: |
+          PLATFORM="$ANDROID_HOME/platforms/android-36"
+          if [ ! -f "$PLATFORM/android.jar" ]; then
+            yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-36" > /dev/null || true
+          fi
+          test -f "$PLATFORM/android.jar" || { echo "::error::platforms;android-36 could not be installed"; exit 1; }
+
       - name: Cache Gradle
         uses: gradle/actions/setup-gradle@v5
 
@@ -191,6 +206,21 @@ jobs:
           fi
           test -f "$NDK/source.properties" || { echo "NDK source.properties missing after install"; exit 1; }
           test -d "$CMAKE_DIR" || test -d /usr/local/lib/android/sdk/cmake/3.22.1 || { echo "cmake 3.22.1 missing after install"; exit 1; }
+
+      - name: Ensure the android-36 platform is installed
+        # compileSdk is 36 because GeckoView's own POM pulls androidx.core
+        # 1.18.0 and androidx.media3 1.10.1, and their AAR metadata refuses any
+        # consumer compiled below API 36. The runner image does not promise to
+        # carry that platform and AGP's SDK auto-download is not something to
+        # bet a pipeline on, so ask for it directly: a couple of seconds when
+        # the image already has it, and a clear failure here instead of an
+        # obscure one inside gradle when it does not.
+        run: |
+          PLATFORM="$ANDROID_HOME/platforms/android-36"
+          if [ ! -f "$PLATFORM/android.jar" ]; then
+            yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-36" > /dev/null || true
+          fi
+          test -f "$PLATFORM/android.jar" || { echo "::error::platforms;android-36 could not be installed"; exit 1; }
 
       - name: Cache Gradle
         uses: gradle/actions/setup-gradle@v5
@@ -409,6 +439,21 @@ jobs:
           fi
           test -f "$NDK/source.properties" || { echo "NDK source.properties missing after install"; exit 1; }
           test -d "$CMAKE_DIR" || test -d /usr/local/lib/android/sdk/cmake/3.22.1 || { echo "cmake 3.22.1 missing after install"; exit 1; }
+
+      - name: Ensure the android-36 platform is installed
+        # compileSdk is 36 because GeckoView's own POM pulls androidx.core
+        # 1.18.0 and androidx.media3 1.10.1, and their AAR metadata refuses any
+        # consumer compiled below API 36. The runner image does not promise to
+        # carry that platform and AGP's SDK auto-download is not something to
+        # bet a pipeline on, so ask for it directly: a couple of seconds when
+        # the image already has it, and a clear failure here instead of an
+        # obscure one inside gradle when it does not.
+        run: |
+          PLATFORM="$ANDROID_HOME/platforms/android-36"
+          if [ ! -f "$PLATFORM/android.jar" ]; then
+            yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-36" > /dev/null || true
+          fi
+          test -f "$PLATFORM/android.jar" || { echo "::error::platforms;android-36 could not be installed"; exit 1; }
 
       - name: Cache Gradle
         uses: gradle/actions/setup-gradle@v5
@@ -741,6 +786,21 @@ jobs:
           fi
           test -f "$NDK/source.properties" || { echo "NDK source.properties missing after install"; exit 1; }
           test -d "$CMAKE_DIR" || test -d /usr/local/lib/android/sdk/cmake/3.22.1 || { echo "cmake 3.22.1 missing after install"; exit 1; }
+
+      - name: Ensure the android-36 platform is installed
+        # compileSdk is 36 because GeckoView's own POM pulls androidx.core
+        # 1.18.0 and androidx.media3 1.10.1, and their AAR metadata refuses any
+        # consumer compiled below API 36. The runner image does not promise to
+        # carry that platform and AGP's SDK auto-download is not something to
+        # bet a pipeline on, so ask for it directly: a couple of seconds when
+        # the image already has it, and a clear failure here instead of an
+        # obscure one inside gradle when it does not.
+        run: |
+          PLATFORM="$ANDROID_HOME/platforms/android-36"
+          if [ ! -f "$PLATFORM/android.jar" ]; then
+            yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-36" > /dev/null || true
+          fi
+          test -f "$PLATFORM/android.jar" || { echo "::error::platforms;android-36 could not be installed"; exit 1; }
 
       - name: Cache Gradle
         uses: gradle/actions/setup-gradle@v5

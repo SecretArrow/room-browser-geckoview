@@ -7,8 +7,16 @@
 
   Worth stating explicitly, since it is the kind of thing a later change gets
   wrong: NOTHING here may add a permission to the consuming app. The engine
-  needs none -- it is a library inside the app's own process, not a separate
-  one -- and a permission that appears here would be merged into the APK's
+  needs none (it is a library inside the app's own process, not a separate
+  one), and a permission that appears here would be merged into the APK's
   manifest without appearing anywhere in :app's source.
+
+  And keep double hyphens out of these comments: XML forbids two hyphens in a
+  row inside a comment, and a strict parser rejects the WHOLE FILE for it. This
+  manifest shipped once with the prose dash between "none" and "it is a
+  library" written that way, and :engine:processDebugManifest died with "Error
+  parsing AndroidManifest.xml", which reads like a structural problem and is
+  not one. Any dash you want here, write as a single hyphen or restructure the
+  sentence.
 -->
 <manifest />
