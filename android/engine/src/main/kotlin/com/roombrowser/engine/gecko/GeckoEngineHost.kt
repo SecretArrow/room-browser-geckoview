@@ -161,10 +161,33 @@ internal class GeckoEngineHost : EngineHost {
                 { extension ->
                     if (extension == null) return@accept
                     bridge = extension
+                    // Read the flag back instead of assuming it. A content
+                    // script may only hold a port when GeckoView set
+                    // ALLOW_CONTENT_MESSAGING, which it derives from the
+                    // manifest -- and a manifest missing `geckoViewAddons`,
+                    // `nativeMessaging` or `nativeMessagingFromContent` still
+                    // produces a successful install, a successful
+                    // setMessageDelegate, and a port that is never opened. That
+                    // failure has no other symptom on either side, so it is
+                    // recorded here, where the value is still knowable.
+                    val contentMessaging =
+                        (extension.flags and WebExtension.Flags.ALLOW_CONTENT_MESSAGING) != 0L
                     android.util.Log.i(
                         BRIDGE_LOG_TAG,
-                        "extension installed uri=$BRIDGE_URI id=$BRIDGE_ID"
+                        "extension installed uri=$BRIDGE_URI id=$BRIDGE_ID " +
+                            "builtIn=${extension.isBuiltIn} flags=${extension.flags} " +
+                            "contentMessaging=$contentMessaging"
                     )
+                    if (!contentMessaging) {
+                        android.util.Log.e(
+                            BRIDGE_LOG_TAG,
+                            "Bridge extension lacks ALLOW_CONTENT_MESSAGING: the " +
+                                "isolated-world content script cannot open a port " +
+                                "and every page bridge is dead. The manifest must " +
+                                "list geckoViewAddons, nativeMessaging and " +
+                                "nativeMessagingFromContent."
+                        )
+                    }
                     val waiting = synchronized(bridgeWaiters) {
                         val copy = bridgeWaiters.toList()
                         bridgeWaiters.clear()

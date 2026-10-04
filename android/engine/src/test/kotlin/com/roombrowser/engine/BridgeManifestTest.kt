@@ -11,8 +11,9 @@ import java.io.File
  * vault bridge, the device shim -- depends on four things being spelled
  * exactly right in a JSON file that nothing else in the build reads:
  *
- *  - the permission `nativeMessagingFromContent`, which is what lets a
- *    content script hold a port at all;
+ *  - the permission TRIO `geckoViewAddons`, `nativeMessaging` and
+ *    `nativeMessagingFromContent`, which together are what let a content
+ *    script hold a port at all;
  *  - `"world": "MAIN"` on the page-world half, without which the app's globals
  *    are defined in a world the page cannot see;
  *  - `run_at: document_start`, without which the device shim runs after the
@@ -39,6 +40,19 @@ import java.io.File
  * Hence [no_camel_case_manifest_keys]: asserting the right keys is not enough,
  * because a manifest can carry both, and the wrong one is the one that warns.
  *
+ * THE SAME MISTAKE WAS THEN MADE A SECOND TIME, WITH THE PERMISSIONS. The
+ * first version of the permission test asserted `nativeMessagingFromContent`
+ * alone -- because that was the one the manifest happened to carry -- and the
+ * GeckoView example lists three. `geckoViewAddons` is what makes the extension
+ * privileged enough for a message delegate to exist at all, `nativeMessaging`
+ * is what puts `connectNative` on `runtime`, and `nativeMessagingFromContent`
+ * is what extends that to a content script rather than a background page.
+ * Missing two of the three produced an extension that installed cleanly, a
+ * delegate that installed cleanly, and a port that was never opened -- and the
+ * guard test passed throughout, because it had been read off the file instead
+ * of off the specification. The lesson of the paragraph above had already been
+ * written down when this happened.
+ *
  * Deliberately a text scan rather than a JSON parse: the JVM unit-test
  * classpath has no JSON implementation (android.jar's org.json is a stub that
  * throws), and adding a dependency to validate eight fields would be the
@@ -49,8 +63,17 @@ class BridgeManifestTest {
     private val manifest = File(MANIFEST_PATH).readText()
 
     @Test
-    fun manifest_grants_the_permission_that_allows_a_content_script_port() {
-        assertThat(manifest).contains("\"nativeMessagingFromContent\"")
+    fun manifest_grants_the_documented_permission_trio() {
+        // All three, from the GeckoView web-extensions example rather than from
+        // the manifest. Asserting one and finding it present is not evidence
+        // about the other two: `nativeMessaging` is a strict prefix of
+        // `nativeMessagingFromContent`, so the quoted forms are compared, and
+        // an absent permission fails here in a minute instead of in an
+        // emulator run an hour long.
+        listOf("geckoViewAddons", "nativeMessaging", "nativeMessagingFromContent")
+            .forEach { permission ->
+                assertThat(manifest).contains("\"$permission\"")
+            }
     }
 
     @Test

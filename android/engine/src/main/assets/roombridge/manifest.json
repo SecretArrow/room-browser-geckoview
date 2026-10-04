@@ -7,7 +7,11 @@
       "id": "roombridge@roombrowser.com"
     }
   },
-  "permissions": ["nativeMessagingFromContent"],
+  "permissions": [
+    "nativeMessaging",
+    "nativeMessagingFromContent",
+    "geckoViewAddons"
+  ],
   "content_scripts": [
     {
       "matches": ["<all_urls>"],

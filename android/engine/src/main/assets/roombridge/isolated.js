@@ -32,9 +32,20 @@
   try {
     port = browser.runtime.connectNative(NATIVE_APP);
   } catch (e) {
-    // Without a port the page sees no wallet, no vault and no device shim.
-    // Nothing can be done from here -- the app side logs the same failure --
-    // and throwing would only replace a silent absence with a broken page.
+    // Without a port the page sees no wallet, no vault and no device shim, so
+    // this is the loudest failure in the extension -- and until the manifest
+    // carried the full permission trio it was also the quietest, because
+    // GeckoView reports a missing privileged permission by leaving
+    // `browser.runtime.connectNative` undefined rather than by refusing to
+    // install the extension. The install succeeded, the app-side delegate was
+    // installed, and neither end logged anything.
+    //
+    // The console is the only channel left: reporting this needs native
+    // messaging, which is exactly what just failed. An earlier version of this
+    // catch said "the app side logs the same failure" and returned silently --
+    // it did not, and could not, since a failure to open a port never reaches
+    // the app as a message.
+    console.error("[roombridge] connectNative failed: " + e);
     return;
   }
 
@@ -48,6 +59,16 @@
   });
 
   port.onDisconnect.addListener(function () {
+    // A disconnect this early is the app-side gate, not the page: GeckoView
+    // refuses a content-script sender whose extension lacks
+    // WebExtension.Flags.ALLOW_CONTENT_MESSAGING and answers with
+    // "This NativeApp can't receive messages from Content Scripts." on this
+    // exact channel. `lastError` is only readable synchronously here, so it is
+    // read before anything else can clear it.
+    var error = browser.runtime.lastError;
+    if (error) {
+      console.error("[roombridge] port closed by the app: " + error.message);
+    }
     port = null;
   });
 
