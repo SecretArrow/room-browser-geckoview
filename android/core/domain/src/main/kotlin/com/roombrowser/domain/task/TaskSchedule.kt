@@ -15,6 +15,11 @@ import kotlinx.serialization.descriptors.SerialDescriptor
 import kotlinx.serialization.encoding.Decoder
 import kotlinx.serialization.encoding.Encoder
 
+/**
+ * All minute fields are minutes past local midnight (0..1439); [daysOfWeek] and [dayOfMonth] are
+ * ignored unless [kind] uses them. Quiet hours are local, start-inclusive and end-exclusive, and
+ * `quietFromMinute == quietToMinute` means "no quiet hours" rather than "all day".
+ */
 @Serializable
 data class TaskSchedule(
     val kind: ScheduleKind,
@@ -60,7 +65,11 @@ object ScheduleMath {
             .coerceIn(WORKMANAGER_FLOOR_MINUTES, MAX_WORKMANAGER_INTERVAL_MINUTES)
             .toLong()
 
-    /** First instant strictly after [fromEpochMs]; a run inside quiet hours is deferred, not dropped. */
+    /**
+     * First instant strictly after [fromEpochMs]; a run inside quiet hours is deferred, not dropped.
+     * null means this schedule can never fire (an INTERVAL with a non-positive interval, or a
+     * MONTHLY with no day of month) — that is an invalid schedule to surface, not "later".
+     */
     fun nextRunAt(s: TaskSchedule, fromEpochMs: Long, zone: ZoneId): Long? {
         val base = baseNextRunAt(s, fromEpochMs, zone) ?: return null
         return deferPastQuietHours(s, base, zone)
@@ -80,7 +89,12 @@ object ScheduleMath {
         return occurrences
     }
 
-    /** Catch-up for a late (Doze) delivery: true when an occurrence lies in `(lastRunAtMs, nowMs]`. */
+    /**
+     * Catch-up for a late (Doze) delivery: true when an occurrence lies in `(lastRunAtMs, nowMs]`.
+     * A task that has never run is not due, so creating a schedule whose time already passed today
+     * waits for the next occurrence instead of firing at once. Any number of missed occurrences
+     * still owes exactly one run, which the caller runs once and then stamps as done.
+     */
     fun isDue(s: TaskSchedule, nowMs: Long, lastRunAtMs: Long?, zone: ZoneId): Boolean {
         if (lastRunAtMs == null) return false
         if (lastRunAtMs >= nowMs) return false

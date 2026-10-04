@@ -174,6 +174,20 @@ class ScheduleMathTest {
     }
 
     @Test
+    fun `a zero-length quiet window suppresses nothing all day`() {
+        val schedule = TaskSchedule(
+            kind = ScheduleKind.DAILY,
+            minuteOfDay = 12 * 60,
+            quietFromMinute = 9 * 60,
+            quietToMinute = 9 * 60
+        )
+        assertThat(ScheduleMath.suppressForQuietHours(schedule, ms("2026-01-05T09:00:00Z"), utc))
+            .isFalse()
+        assertThat(ScheduleMath.nextRunAt(schedule, ms("2026-01-05T00:00:00Z"), utc))
+            .isEqualTo(ms("2026-01-05T12:00:00Z"))
+    }
+
+    @Test
     fun `isDue catches up a run WorkManager delivered late`() {
         val schedule = TaskSchedule(kind = ScheduleKind.DAILY, minuteOfDay = 9 * 60)
         assertThat(
