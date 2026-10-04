@@ -370,7 +370,7 @@ private fun TaskEditorRoot(
                             .fillMaxWidth()
                             .semantics { contentDescription = "ai_task_interval_field" }
                     )
-                    scheduleClampNotice(schedule)?.let {
+                    schedule?.let { scheduleClampNotice(it) }?.let {
                         Spacer(Modifier.height(4.dp))
                         Text(
                             it,
