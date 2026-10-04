@@ -53,6 +53,20 @@ static int g_checks = 0;
 
 #define STREQ(a, b) (strcmp((a), (b)) == 0)
 
+/* A catalogue row's identity is the whole fingerprint, not its User-Agent:
+ * the generator deliberately lets machines that run the same OS and the same
+ * Chrome release share a UA, and separates them on GPU, cores and memory. */
+static int same_device_identity(const rb_device *a, const rb_device *b)
+{
+    return STREQ(a->ua, b->ua) && STREQ(a->arch, b->arch) &&
+           STREQ(a->platform, b->platform) &&
+           STREQ(a->ua_platform, b->ua_platform) &&
+           STREQ(a->platform_version, b->platform_version) &&
+           STREQ(a->gpu_vendor, b->gpu_vendor) &&
+           STREQ(a->gpu_renderer, b->gpu_renderer) &&
+           a->cores == b->cores && a->memory == b->memory;
+}
+
 /* --------------------------------- rb_str -------------------------------- */
 
 static void test_rb_str(void)
@@ -2336,10 +2350,13 @@ static void test_rb_profile(void)
         CHECK(STREQ(rb_settings_get(pa->settings, RB_PREF_CUSTOM_USER_AGENT, ""),
                     ""));
 
-        /* ...and the two machines really do send different User-Agent
-         * strings, which is the whole point of handing each profile its
-         * own. */
-        CHECK(strcmp(rb_device_by_id(da)->ua, rb_device_by_id(db)->ua) != 0);
+        /* ...and the two rows are two different machines. The UA alone does
+         * not decide that: the catalogue shares one between machines on the
+         * same OS and Chrome, and separates them on GPU, cores and memory
+         * (test_rb_devices proves every pair differs), so a page can still
+         * tell the two profiles apart. */
+        CHECK(!same_device_identity(rb_device_by_id(da),
+                                    rb_device_by_id(db)));
     }
 
     /* ... unless the caller says not to (import/restore) */
@@ -4652,13 +4669,7 @@ static void test_rb_devices(void)
         for (j = i + 1; j < n; j++) {
             const rb_device *b = rb_device_at(j);
             CHECK(!STREQ(a->id, b->id));
-            CHECK(!(STREQ(a->ua, b->ua) && STREQ(a->arch, b->arch) &&
-                    STREQ(a->platform, b->platform) &&
-                    STREQ(a->ua_platform, b->ua_platform) &&
-                    STREQ(a->platform_version, b->platform_version) &&
-                    STREQ(a->gpu_vendor, b->gpu_vendor) &&
-                    STREQ(a->gpu_renderer, b->gpu_renderer) &&
-                    a->cores == b->cores && a->memory == b->memory));
+            CHECK(!same_device_identity(a, b));
         }
     }
 }
