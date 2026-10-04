@@ -16,14 +16,8 @@ import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.contentOrNull
 
 /**
- * The wallet surface the agent's wallet tools need — a slice of
- * [WalletEngineApi] rather than the whole contract, so the tools can be
- * driven from a JVM test with a small fake and reused by a future scheduled
- * runner that has no chat UI.
- *
- * The read side is synchronous because the engine holds it in [StateFlow]s and
- * every wallet-tool call runs on the main thread (the executor dispatches
- * there). Only the two operations that mutate the engine are suspending.
+ * Narrow slice of [WalletEngineApi] so the tools are JVM-testable and usable
+ * without the chat UI. Reads are synchronous (StateFlow); mutations suspend.
  */
 interface AgentWalletAccess {
     val lockState: WalletLockState
@@ -37,7 +31,6 @@ interface AgentWalletAccess {
     suspend fun setActiveNetwork(chainType: ChainType, networkId: String)
 }
 
-/** Adapts the app-wide [WalletEngineApi] to the narrow agent surface. */
 class WalletEngineAccess(private val engine: WalletEngineApi) : AgentWalletAccess {
     override val lockState: WalletLockState get() = engine.lockState.value
     override val pendingRequests: List<DappRequest> get() = engine.pendingRequests.value
@@ -52,49 +45,21 @@ class WalletEngineAccess(private val engine: WalletEngineApi) : AgentWalletAcces
 }
 
 /**
- * The agent's wallet tools: inspect the wallet, list the dApp requests waiting
- * for a decision, approve or reject one, and switch the active network.
+ * Wallet tools for the dApp request queue and the active network.
  *
- * SAFETY, because an LLM approving wallet requests is how funds leave:
- *
- *  - REJECT ALWAYS WORKS. [reject] asks nothing and is gated by nothing — it is
- *    the safe direction, and a request the model cannot evaluate must be
- *    refusable without friction.
- *  - APPROVE IS NEVER BLIND. The model can only approve a request it has
- *    surfaced through [listRequests] in this same turn ([surfaced]); an id it
- *    has not listed is refused. The detail shown to the model ([WalletRequestFormat.detail])
- *    is the SAME text handed to the confirmation, so the user sees exactly what
- *    the model saw — host, method, and the to/value/data or message being
- *    signed.
- *  - APPROVAL IS ALWAYS CONFIRMED. [confirmApproval] must return true before
- *    anything is decided, and the production wiring asks the user directly,
- *    bypassing the agent's generic gate (see `BrowserAgentController`): an
- *    approval can never ride the YOLO / local-model shortcuts. The default when
- *    no confirmation is wired is DENY.
- *  - APPROVAL SETTLES THROUGH THE ENGINE'S OWN ENTRY POINT:
- *    [AgentWalletAccess.decideDappRequest] is the same call the wallet's
- *    interactive confirmation sheet makes, so the same validation and the same
- *    page outcome apply. The tool never grants a permission or signs anything
- *    itself.
- *  - SWITCHING CANNOT INVENT A NETWORK. [switchNetwork] only accepts an id
- *    already in [AgentWalletAccess.networks] and enabled, and still lets the
- *    engine re-validate it; adding a network is not something these tools can
- *    do.
- *
- * IRREVERSIBLE: approving [DappRequest.SendTransaction] broadcasts a
- * transaction (funds move), and approving [DappRequest.SignMessage] /
- * [DappRequest.SignTypedData] produces a signature the site can use and that
- * cannot be recalled. [switchNetwork] moves no funds and is reversible.
+ * Reject is never gated. Approve requires the request to have been listed this
+ * turn AND the user's explicit confirmation, then settles through the engine's
+ * own [AgentWalletAccess.decideDappRequest]. Switching accepts only a known,
+ * enabled network; a new network cannot be added here.
  */
 class AgentWalletTools(
     private val wallet: () -> AgentWalletAccess,
     private val confirmApproval: suspend (String) -> Boolean = { false }
 ) {
 
-    /** Request ids this turn has shown the user; approval requires membership. */
+    /** Request ids listed this turn; approve requires membership. */
     private val surfaced = mutableSetOf<String>()
 
-    /** Accounts, lock state, active networks and known networks. */
     fun readState(): ToolResult {
         val w = wallet()
         val text = buildString {
@@ -126,10 +91,7 @@ class AgentWalletTools(
         return ToolResult(true, text)
     }
 
-    /**
-     * Lists the pending dApp requests with full detail and records them as
-     * surfaced, which is what makes a later approval possible.
-     */
+    /** Lists pending requests with full detail and marks them approvable. */
     fun listRequests(): ToolResult {
         val pending = wallet().pendingRequests
         if (pending.isEmpty()) return ToolResult(true, "No wallet requests are waiting for a decision.")
@@ -145,11 +107,7 @@ class AgentWalletTools(
         )
     }
 
-    /**
-     * Approves one pending request after the user confirms it. Refuses when the
-     * request was never listed, when it is no longer pending, or when the user
-     * does not approve.
-     */
+    /** Approves one listed, still-pending request after the user confirms. */
     suspend fun approve(requestId: String?): ToolResult {
         val id = requestId?.takeIf { it.isNotBlank() }
             ?: return ToolResult(false, "missing 'request_id' argument")
@@ -162,13 +120,10 @@ class AgentWalletTools(
                     "Call wallet_requests, read the request, then approve it — or refuse it with wallet_reject."
             )
         }
-        // The user sees the SAME detail the model saw. A prompt the user cannot
-        // audit is not a confirmation.
+        // The user must see the same detail the model saw.
         if (!confirmApproval("Approve wallet request:\n${WalletRequestFormat.detail(request)}")) {
             return ToolResult(false, "the user did not approve this wallet request")
         }
-        // The engine's own decision entry point, shared with the interactive
-        // sheet — never a direct permission grant or a bypass around it.
         wallet().decideDappRequest(DappDecision(requestId = id, approved = true))
         return ToolResult(
             true,
@@ -178,10 +133,7 @@ class AgentWalletTools(
         )
     }
 
-    /**
-     * Rejects one pending request. No confirmation and no prior listing: the
-     * safe direction must never be hard to take.
-     */
+    /** Rejects one pending request; never confirmed, never requires listing. */
     fun reject(requestId: String?): ToolResult {
         val id = requestId?.takeIf { it.isNotBlank() }
             ?: return ToolResult(false, "missing 'request_id' argument")
@@ -195,11 +147,7 @@ class AgentWalletTools(
         )
     }
 
-    /**
-     * Switches the active network for a chain the wallet already knows and has
-     * enabled, after the user confirms. Unknown or disabled ids are refused,
-     * and the engine re-validates the switch.
-     */
+    /** Switches to a known, enabled network after the user confirms. */
     suspend fun switchNetwork(networkId: String?): ToolResult {
         val id = networkId?.takeIf { it.isNotBlank() }
             ?: return ToolResult(false, "missing 'network_id' argument")
@@ -223,8 +171,7 @@ class AgentWalletTools(
             return ToolResult(false, "the user did not approve the network switch")
         }
         return try {
-            // setActiveNetwork re-checks existence and chain, so a guessed id
-            // cannot select a network the wallet does not have.
+            // The engine re-checks existence and chain, so a guessed id fails.
             w.setActiveNetwork(record.config.chainType, record.config.id)
             ToolResult(
                 true,
@@ -237,21 +184,12 @@ class AgentWalletTools(
     }
 }
 
-/**
- * Renders a [DappRequest] for the model and the user. Pure: no engine, no
- * Android, so the wording of an approval prompt is testable on the JVM.
- *
- * The transaction fields matter more than anything else here: `to`, `value`
- * and `data` are what a person has to read to know where funds go, and a
- * signature's message is what they are actually authorising. Everything is
- * clipped rather than truncated silently, and nothing is summarised away.
- */
+/** Renders a [DappRequest] for the model and the user; pure and JVM-testable. */
 object WalletRequestFormat {
 
     const val MAX_FIELD_CHARS = 400
     const val MAX_RAW_CHARS = 1600
 
-    /** The request kind, in the wallet's own vocabulary. */
     fun methodName(request: DappRequest): String = when (request) {
         is DappRequest.Connect -> "connect"
         is DappRequest.SignMessage -> "sign_message"
@@ -261,11 +199,11 @@ object WalletRequestFormat {
         is DappRequest.AddChain -> "add_chain"
     }
 
-    /** One line, for a result sentence (not for a decision). */
+    /** One line, for a result sentence rather than a decision. */
     fun summary(request: DappRequest): String =
         "${methodName(request)} from ${request.host} on ${request.chainType.displayName}"
 
-    /** The full detail shown both to the model and to the confirming user. */
+    /** The detail shown identically to the model and to the confirming user. */
     fun detail(request: DappRequest): String = buildString {
         appendLine("id: ${request.id}")
         appendLine("host: ${request.host}")
@@ -301,10 +239,8 @@ object WalletRequestFormat {
     }.trimEnd()
 
     /**
-     * `to`/`value`/`data` when the payload carries them (EVM), otherwise the
-     * raw chain-specific payload clipped — a Solana/Aptos/Cosmos transaction
-     * has no `to`/`value` pair to show, and hiding it behind "contract call"
-     * would be exactly the blindness this is here to prevent.
+     * `to`/`value`/`data` when present (EVM); otherwise the clipped raw payload,
+     * since a Solana/Aptos/Cosmos transaction has no such pair.
      */
     private fun transactionFields(txParamsJson: String): String {
         val obj = runCatching { AgentJson.parseToJsonElement(txParamsJson) as? JsonObject }.getOrNull()

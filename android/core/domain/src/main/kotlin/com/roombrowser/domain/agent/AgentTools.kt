@@ -63,9 +63,7 @@ object AgentTools {
     val INTERACTIVE_TOOLS = setOf(
         CLICK, FILL_INPUT, PRESS_ENTER,
         AUTO_LIKE, AUTO_REPOST, AUTO_REPLY, AUTO_POST,
-        // Wallet approval and network switching change wallet state and are
-        // confirmed with the user. WALLET_REJECT is deliberately NOT here:
-        // rejecting is the safe direction and must always work.
+        // Reject is deliberately absent: the safe direction must never be gated.
         WALLET_APPROVE, WALLET_SWITCH_NETWORK
     )
 
@@ -140,8 +138,7 @@ object AgentTools {
             (args[key] as? JsonPrimitive)?.contentOrNull?.takeIf { it.isNotBlank() }
         fun int(key: String): Int? =
             (args[key] as? JsonPrimitive)?.intOrNull
-        // A request id is a UUID; the card shows only its head so the label
-        // stays readable. The model still passes the whole id to the tool.
+        // A UUID, shortened for the label; the model still passes the whole id.
         fun shortId(id: String?): String = id?.take(8) ?: "?"
 
         when (name) {

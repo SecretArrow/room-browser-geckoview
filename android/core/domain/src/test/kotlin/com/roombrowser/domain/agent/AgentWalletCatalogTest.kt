@@ -3,11 +3,7 @@ package com.roombrowser.domain.agent
 import com.google.common.truth.Truth.assertThat
 import org.junit.Test
 
-/**
- * The wallet half of the tool catalogue, held to the rules the model (and the
- * confirmation UI) rely on: the tools exist with the right schemas, approval
- * and network switching are interactive, and rejecting deliberately is not.
- */
+/** Schemas, interactivity and wording of the wallet tools in the catalogue. */
 class AgentWalletCatalogTest {
 
     @Test
@@ -21,8 +17,7 @@ class AgentWalletCatalogTest {
             AgentTools.WALLET_REJECT,
             AgentTools.WALLET_SWITCH_NETWORK
         )
-        // Last on purpose: containsAtLeast returns a value, and JUnit4 would
-        // then refuse the whole class.
+        // Last on purpose: containsAtLeast is non-void and would break JUnit4.
         assertThat(names).contains(AgentTools.WALLET_APPROVE)
     }
 

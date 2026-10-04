@@ -61,11 +61,9 @@ class AgentToolExecutor(
     private val onStatus: (String) -> Unit = {},
     private val confirmGate: suspend (name: String, label: String) -> ActionVerdict,
     /**
-     * The user's answer to a wallet approval, asked directly and never
-     * delegated to [confirmGate]: the generic gate is bypassed by YOLO, by the
-     * local decision model and by "Confirm actions" being off, and none of
-     * those may ever green-light a wallet request. Default DENY so a caller
-     * that forgets to wire it cannot approve anything.
+     * Wallet approvals ask the user directly, never through [confirmGate]:
+     * YOLO, the local decision model and "Confirm actions: off" all bypass
+     * that gate, and none of them may approve a wallet request. Default DENY.
      */
     private val walletConfirm: suspend (label: String) -> Boolean = { false }
 ) : ToolExecutor {
@@ -81,13 +79,7 @@ class AgentToolExecutor(
      */
     val currentTabId: String? get() = tabId
 
-    /**
-     * The wallet tools, built on first use.
-     *
-     * LAZY on purpose: `vm.walletEngine` loads the whole crypto stack
-     * (web3j/BC/jackson) the first time it is touched, and a turn that never
-     * mentions the wallet must not pay for it — or stall a frame doing it.
-     */
+    /** Built on first use: `vm.walletEngine` loads the whole crypto stack. */
     private val walletTools: AgentWalletTools by lazy {
         AgentWalletTools(
             wallet = { WalletEngineAccess(vm.walletEngine) },

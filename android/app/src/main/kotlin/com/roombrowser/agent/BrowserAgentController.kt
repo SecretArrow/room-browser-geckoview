@@ -715,10 +715,7 @@ class BrowserAgentController(
                 tabId = tabId,
                 onStatus = { setStatus(it) },
                 confirmGate = { name, label -> gate(name, label) },
-                // Wallet approvals skip the generic gate on purpose: it is
-                // bypassed by YOLO, by the local decision model and by
-                // "Confirm actions" being off, and none of those may approve a
-                // wallet request. This path always asks the user.
+                // Wallet approvals must not ride the bypassable generic gate.
                 walletConfirm = { label -> requestWalletApproval(label) }
             )
             // Only the native Ollama protocol consumes the tuning; the other
@@ -942,19 +939,9 @@ class BrowserAgentController(
     }
 
     /**
-     * Asks the user to confirm ONE wallet approval or network switch.
-     *
-     * DELIBERATELY NOT [gate] AND NOT [requestApproval]: both can return
-     * "allowed" without the user ever seeing a prompt — YOLO bypasses them,
-     * the local decision model can settle them, and `requestApproval` returns
-     * Allow when Confirm actions is off — and none of that may ever approve a
-     * request that moves funds or signs data. This method always shows the
-     * prompt, and every failure (timeout, cancelled turn) denies.
-     *
-     * "Always allow" is answered as a one-time Allow here and does NOT turn on
-     * YOLO: there is no "trust this dApp forever" for the wallet, and the
-     * agent's generic YOLO switch is not a wallet trust store. The notice says
-     * so, so the answer is not silently narrower than its label.
+     * Always shows the prompt: unlike [gate]/[requestApproval] it can never
+     * return allow without the user seeing it, and every failure denies.
+     * "Always allow" is one-time here — there is no wallet-wide trust store.
      */
     private suspend fun requestWalletApproval(label: String): Boolean {
         setStatus("Approve wallet request? ${label.lineSequence().firstOrNull().orEmpty()}")
