@@ -1,6 +1,6 @@
 package com.roombrowser.engine
 
-import com.roombrowser.engine.webview.WebViewEngineHost
+import com.roombrowser.engine.gecko.GeckoEngineHost
 
 /**
  * The only symbol the app needs in order to reach an engine.
@@ -11,20 +11,22 @@ import com.roombrowser.engine.webview.WebViewEngineHost
  * writes above the facade is byte-identical in both editions -- which is what
  * makes "apply the feature to both" a file copy rather than a rewrite.
  *
- * TEMPORARY, and it is worth being explicit about that because this is the
- * GeckoView edition: the line below names the WEBVIEW engine on purpose, for
- * one landing only. The app has just been converted from `android.webkit`
- * types to this facade -- 14 files, ~350 symbol references, a mechanical
- * change but a large one -- and both engines on either side of it are code
- * that has never executed. Pointing at GeckoView in the same commit that lands
- * the conversion would mean every e2e failure had two possible authors, and no
- * way to tell them apart.
+ * THIS EDITION RUNS GECKOVIEW, and the line below is the flip that makes it
+ * so. It was WebView for exactly one landing, and deliberately: the app had
+ * just been moved off `android.webkit` types onto this facade, and both engine
+ * implementations were code that had never executed. Naming GeckoView in the
+ * same commit would have given every failure two possible authors with no way
+ * to tell them apart.
  *
- * So the conversion lands against the engine whose behaviour it was written
- * against. The e2e suite passing UNEDITED is the evidence that the conversion
- * itself changed nothing; the one-line flip to `GeckoEngineHost` follows as
- * its own commit, and from then on a red e2e run means the engine and nothing
- * else. Do not read this line as the geckoview edition's settled choice.
+ * That proving run came back at PARITY, which is the claim it was run to test,
+ * not green: 41 tests, one failure, and that failure is the same test failing
+ * the same way two commits earlier, before the facade existed. The conversion
+ * introduced no new failure -- and from here a red e2e run means the engine
+ * and nothing else.
+ *
+ * The remainder of the facade is untouched by the flip; if a future change
+ * needs the WebView edition to run this same app, this one line is the whole
+ * difference.
  */
 object EngineRuntime {
 
@@ -40,6 +42,6 @@ object EngineRuntime {
      */
     fun host(): EngineHost =
         instance ?: synchronized(this) {
-            instance ?: WebViewEngineHost().also { instance = it }
+            instance ?: GeckoEngineHost().also { instance = it }
         }
 }
