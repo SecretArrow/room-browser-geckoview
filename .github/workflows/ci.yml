@@ -605,8 +605,18 @@ jobs:
             # The two fallback commands below are duplicated verbatim on
             # purpose: a failure in either invocation must produce the same
             # artifact.
-            cd android && ./gradlew connectedDebugAndroidTest --console=plain -Pandroid.testInstrumentationRunnerArguments.class=com.roombrowser.A00WarmupTest,com.roombrowser.WalletE2eTest || (adb exec-out logcat -d -b crash > "$GITHUB_WORKSPACE/e2e-logcat-crash.txt"; adb exec-out logcat -d > "$GITHUB_WORKSPACE/e2e-logcat-full.txt"; adb shell uiautomator dump /sdcard/e2e-ui.xml >/dev/null 2>&1; adb pull /sdcard/e2e-ui.xml "$GITHUB_WORKSPACE/" >/dev/null 2>&1; adb pull /sdcard/e2e-shots "$GITHUB_WORKSPACE/" >/dev/null 2>&1; exit 1)
+            #
+            # The FIRST invocation records its failure instead of exiting, so
+            # the second still runs: an `exit 1` there aborted the step and the
+            # remaining suites never executed at all (run 37223325211 — a red
+            # WalletE2eTest hid every other suite). The step below makes the
+            # job red anyway.
+            cd android && ./gradlew connectedDebugAndroidTest --console=plain -Pandroid.testInstrumentationRunnerArguments.class=com.roombrowser.A00WarmupTest,com.roombrowser.WalletE2eTest || (adb exec-out logcat -d -b crash > "$GITHUB_WORKSPACE/e2e-logcat-crash.txt"; adb exec-out logcat -d > "$GITHUB_WORKSPACE/e2e-logcat-full.txt"; adb shell uiautomator dump /sdcard/e2e-ui.xml >/dev/null 2>&1; adb pull /sdcard/e2e-ui.xml "$GITHUB_WORKSPACE/" >/dev/null 2>&1; adb pull /sdcard/e2e-shots "$GITHUB_WORKSPACE/" >/dev/null 2>&1; : > "$GITHUB_WORKSPACE/e2e-first-invocation-failed")
             cd android && ./gradlew connectedDebugAndroidTest --console=plain -Pandroid.testInstrumentationRunnerArguments.notClass=com.roombrowser.A00WarmupTest,com.roombrowser.WalletE2eTest || (adb exec-out logcat -d -b crash > "$GITHUB_WORKSPACE/e2e-logcat-crash.txt"; adb exec-out logcat -d > "$GITHUB_WORKSPACE/e2e-logcat-full.txt"; adb shell uiautomator dump /sdcard/e2e-ui.xml >/dev/null 2>&1; adb pull /sdcard/e2e-ui.xml "$GITHUB_WORKSPACE/" >/dev/null 2>&1; adb pull /sdcard/e2e-shots "$GITHUB_WORKSPACE/" >/dev/null 2>&1; exit 1)
+
+      - name: Fail when the first invocation failed
+        if: always()
+        run: test ! -f "$GITHUB_WORKSPACE/e2e-first-invocation-failed"
 
       - name: Upload instrumented test reports
         if: always()
