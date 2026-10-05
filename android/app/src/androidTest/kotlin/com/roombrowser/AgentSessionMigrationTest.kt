@@ -34,8 +34,9 @@ import org.junit.runner.RunWith
  * test is about, and any LATER change to that table makes the revert below
  * incomplete and this test wrong — which is why the revert is written out in
  * full, with the v9 shape named explicitly, instead of being derived from the
- * entity it is testing. Tables added by later versions are left alone: they
- * stay at the current shape, which is what the migration list below expects.
+ * entity it is testing. A table a later version CREATED is dropped instead, so
+ * that the replay creates it again: `ai_tasks` arrives at v11 and is given a
+ * column at v12, and ADD COLUMN cannot run over a table that already has it.
  */
 @RunWith(AndroidJUnit4::class)
 class AgentSessionMigrationTest {
@@ -146,6 +147,9 @@ class AgentSessionMigrationTest {
             db.execSQL(
                 "CREATE INDEX `index_agent_sessions_profile_id` ON `agent_sessions` (`profile_id`)"
             )
+            // A later version's table is dropped rather than left at its current
+            // shape: the replay creates it again from its own migration.
+            db.execSQL("DROP TABLE IF EXISTS `ai_tasks`")
             db.execSQL("DROP TABLE IF EXISTS `room_master_table`")
             db.version = 9
         } finally {
