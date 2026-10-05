@@ -50,17 +50,24 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.input.pointer.PointerInputScope
+import androidx.compose.ui.input.pointer.changedToDownIgnoreConsumed
+import androidx.compose.ui.input.pointer.changedToUpIgnoreConsumed
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
@@ -90,7 +97,11 @@ fun BrowserContent(
 ) {
     val page = viewModel.pageState
     val extras = LocalRoomExtras.current
-    var omniInput by remember(page.url) { mutableStateOf(if (page.isHomepage) "" else UrlIntelligence.displayUrl(page.url)) }
+    // A TextFieldValue, not a String: the selection has to survive the
+    // double-tap below, and only an explicit range can express "all of it".
+    var omniInput by remember(page.url) {
+        mutableStateOf(TextFieldValue(if (page.isHomepage) "" else UrlIntelligence.displayUrl(page.url)))
+    }
     val context = LocalContext.current
     Column(Modifier.fillMaxSize()) {
         // ---------- Omnibox row (floating pill) ---------------------------
@@ -160,9 +171,20 @@ fun BrowserContent(
                 }
                 Spacer(Modifier.width(4.dp))
                 val omniFocus = remember { FocusRequester() }
+                // The pointerInput below is keyed on Unit, so it reads the
+                // action through rememberUpdatedState rather than capturing
+                // the field from the first composition.
+                val selectAllText = rememberUpdatedState { omniInput = selectAllIn(omniInput) }
                 Box(
                     Modifier
                         .weight(1f)
+                        // Not clickable/detectTapGestures: the field's own
+                        // tap handler is nested inside and consumes the down
+                        // first, which would starve either. This reads raw
+                        // changes and consumes nothing.
+                        .pointerInput(Unit) {
+                            detectDoubleTap { selectAllText.value() }
+                        }
                         // Tap anywhere on the bar to edit. No ripple
                         // indication: the caret is the feedback, and a
                         // ripple would paint over the URL.
@@ -176,7 +198,7 @@ fun BrowserContent(
                         // resolves is the node that focuses the field.
                         .semantics { contentDescription = "omni_field" }
                 ) {
-                    if (omniInput.isEmpty()) {
+                    if (omniInput.text.isEmpty()) {
                         Text(
                             if (page.isPrivate) "Private tab — search or type URL" else "Search or type URL",
                             style = MaterialTheme.typography.bodyMedium,
@@ -193,7 +215,7 @@ fun BrowserContent(
                         cursorBrush = SolidColor(extras.primary),
                         keyboardOptions = KeyboardOptions(imeAction = ImeAction.Go),
                         keyboardActions = KeyboardActions(
-                            onGo = { viewModel.onOmniBoxInput(omniInput) }
+                            onGo = { viewModel.onOmniBoxInput(omniInput.text) }
                         ),
                         modifier = Modifier
                             .fillMaxWidth()
@@ -277,6 +299,39 @@ fun BrowserContent(
                     onOmniSubmit = { viewModel.onOmniBoxInput(it) }
                 )
                 else -> EngineViewHost(viewModel = viewModel)
+            }
+        }
+    }
+}
+
+/**
+ * Calls [onDoubleTap] on the second UP of two taps in the view's double-tap
+ * window and slop. Nothing is consumed, and firing on the up (after the
+ * field has placed its caret) is what makes the selection stick.
+ */
+private suspend fun PointerInputScope.detectDoubleTap(onDoubleTap: () -> Unit) {
+    awaitPointerEventScope {
+        var lastDownTime = 0L
+        var lastDownPosition = Offset.Zero
+        var secondDownTime = 0L
+        while (true) {
+            val event = awaitPointerEvent()
+            for (change in event.changes) {
+                if (change.changedToDownIgnoreConsumed()) {
+                    val isSecondTap = lastDownTime != 0L &&
+                        change.uptimeMillis - lastDownTime <= viewConfiguration.doubleTapTimeoutMillis &&
+                        (change.position - lastDownPosition).getDistance() <= viewConfiguration.touchSlop
+                    lastDownTime = change.uptimeMillis
+                    lastDownPosition = change.position
+                    secondDownTime = if (isSecondTap) change.uptimeMillis else 0L
+                } else if (
+                    secondDownTime != 0L &&
+                    change.changedToUpIgnoreConsumed() &&
+                    change.uptimeMillis - secondDownTime <= viewConfiguration.longPressTimeoutMillis
+                ) {
+                    secondDownTime = 0L
+                    onDoubleTap()
+                }
             }
         }
     }
