@@ -218,6 +218,21 @@ class AgentDtosTest {
     }
 
     @Test
+    fun `prompt teaches the direct page and app tools`() {
+        // A tool the model is never told about is a tool it does not reach for,
+        // so every one of these is named in the prompt.
+        val prompt = AgentPrompts.DEFAULT
+        listOf(
+            AgentTools.RUN_JS, AgentTools.SELECT_OPTION, AgentTools.PRESS_KEYS, AgentTools.WAIT_FOR,
+            AgentTools.APP_OPEN, AgentTools.APP_TABS, AgentTools.APP_DATA,
+            AgentTools.APP_SETTINGS, AgentTools.APP_SHIELDS,
+            AgentTools.APP_SITE_PERMISSION, AgentTools.APP_PAGE
+        ).forEach { name ->
+            assertThat(prompt).contains(name)
+        }
+    }
+
+    @Test
     fun `prompt renders placeholders`() {
         val rendered = AgentPrompts.render(java.time.LocalDate.of(2026, 9, 27), "Google")
         assertThat(rendered).contains("2026-09-27")

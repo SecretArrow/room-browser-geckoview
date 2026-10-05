@@ -813,18 +813,27 @@ private fun ApprovalCard(approval: com.roombrowser.agent.AgentApproval, agent: B
             ) {
                 Button(onClick = { agent.respondApproval(ApprovalAnswer.Allow) }) { Text("Allow") }
                 OutlinedButton(onClick = { agent.respondApproval(ApprovalAnswer.Deny) }) { Text("Deny") }
-                // Third answer, and the one that outlives the action. It sits
-                // last and is labelled with its consequence rather than a
-                // joke: tapping it stops the agent asking about anything ever
-                // again, which is too much to hide behind the word "YOLO".
-                TextButton(onClick = { agent.respondApproval(ApprovalAnswer.AlwaysAllow) }) {
-                    Text("Always allow")
+                if (!approval.destructive) {
+                    // Third answer, and the one that outlives the action. It
+                    // sits last and is labelled with its consequence rather
+                    // than a joke: tapping it stops the agent asking about
+                    // anything ever again, which is too much to hide behind
+                    // the word "YOLO". An action that cannot be undone never
+                    // shows it — there is no way to pre-approve those.
+                    TextButton(onClick = { agent.respondApproval(ApprovalAnswer.AlwaysAllow) }) {
+                        Text("Always allow")
+                    }
                 }
             }
             Spacer(Modifier.height(2.dp))
             Text(
-                "\"Always allow\" stops the agent asking about anything, until you turn it " +
-                    "off in AI Agent settings.",
+                if (approval.destructive) {
+                    "This cannot be undone, and it asks every time — there is no answer here " +
+                        "that stops the asking."
+                } else {
+                    "\"Always allow\" stops the agent asking about anything, until you turn it " +
+                        "off in AI Agent settings."
+                },
                 style = MaterialTheme.typography.labelSmall
             )
         }

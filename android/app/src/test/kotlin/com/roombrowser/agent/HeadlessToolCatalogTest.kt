@@ -1,11 +1,12 @@
 package com.roombrowser.agent
 
 import com.google.common.truth.Truth.assertThat
+import com.roombrowser.domain.agent.AgentAppActions
 import com.roombrowser.domain.agent.AgentTools
 import org.junit.Test
 
 /**
- * Holds the whole tool catalogue to the three sets [HeadlessToolExecutor] knows
+ * Holds the whole tool catalogue to the four sets [HeadlessToolExecutor] knows
  * about.
  *
  * A scheduled run is offered the same tool list as a chat turn, so a tool added
@@ -23,10 +24,11 @@ import org.junit.Test
 class HeadlessToolCatalogTest {
 
     @Test
-    fun `every catalogue tool is either supported, a tab tool, or a wallet tool`() {
+    fun `every catalogue tool is supported, a tab tool, an app tool or a wallet tool`() {
         val everyTool = AgentTools.toolDefs().map { it.function.name }
         val classified = HeadlessToolExecutor.SUPPORTED_TOOLS +
             HeadlessToolExecutor.TAB_TOOLS +
+            HeadlessToolExecutor.APP_TOOLS +
             AgentTools.WALLET_TOOLS
 
         assertThat(classified).containsExactlyElementsIn(everyTool)
@@ -34,13 +36,19 @@ class HeadlessToolCatalogTest {
     }
 
     @Test
-    fun `no tool is on both sides`() {
-        val overlap = HeadlessToolExecutor.SUPPORTED_TOOLS
-            .intersect(HeadlessToolExecutor.TAB_TOOLS) +
-            AgentTools.WALLET_TOOLS.intersect(HeadlessToolExecutor.SUPPORTED_TOOLS) +
-            AgentTools.WALLET_TOOLS.intersect(HeadlessToolExecutor.TAB_TOOLS)
+    fun `no tool is on two sides`() {
+        val sets = listOf(
+            HeadlessToolExecutor.SUPPORTED_TOOLS,
+            HeadlessToolExecutor.TAB_TOOLS,
+            HeadlessToolExecutor.APP_TOOLS,
+            AgentTools.WALLET_TOOLS
+        )
 
-        assertThat(overlap).isEmpty()
+        sets.forEachIndexed { i, a ->
+            sets.drop(i + 1).forEach { b ->
+                assertThat(a.intersect(b)).isEmpty()
+            }
+        }
     }
 
     @Test
@@ -56,13 +64,22 @@ class HeadlessToolCatalogTest {
     }
 
     @Test
-    fun `every tool that would have to ask the user is supported or a wallet tool`() {
+    fun `the app tools are exactly the vocabulary that drives the browser itself`() {
+        assertThat(HeadlessToolExecutor.APP_TOOLS).containsExactlyElementsIn(AgentAppActions.TOOLS)
+        assertThat(HeadlessToolExecutor.SUPPORTED_TOOLS)
+            .containsNoneIn(HeadlessToolExecutor.APP_TOOLS)
+    }
+
+    @Test
+    fun `every tool that would have to ask the user is classified`() {
         // confirmActions turns these into a refusal, so a missing one would go
         // unrefused in an unattended run — the exact action the switch exists
-        // to hold back. The wallet tools are refused on their own, earlier and
-        // unconditionally, so they count as handled without being supported.
-        assertThat(HeadlessToolExecutor.SUPPORTED_TOOLS + AgentTools.WALLET_TOOLS)
-            .containsAtLeastElementsIn(AgentTools.INTERACTIVE_TOOLS)
+        // to hold back. The app and wallet tools answer differently (a run
+        // cannot use them at all), which is why the union is the set to check.
+        val classified = HeadlessToolExecutor.SUPPORTED_TOOLS +
+            HeadlessToolExecutor.APP_TOOLS +
+            AgentTools.WALLET_TOOLS
+        assertThat(classified).containsAtLeastElementsIn(AgentTools.INTERACTIVE_TOOLS)
         assertThat(AgentTools.INTERACTIVE_TOOLS).isNotEmpty()
     }
 }

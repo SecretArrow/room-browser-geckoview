@@ -1,8 +1,10 @@
 package com.roombrowser.agent
 
 import android.os.SystemClock
+import com.roombrowser.domain.agent.AgentAppActions
 import com.roombrowser.domain.agent.AgentJson
 import com.roombrowser.domain.agent.AgentTools
+import com.roombrowser.domain.agent.KeyChord
 import com.roombrowser.domain.agent.PageSnapshotDto
 import com.roombrowser.domain.agent.PageSnapshotFormatter
 import com.roombrowser.domain.agent.ToolExecutor
@@ -95,6 +97,10 @@ class HeadlessToolExecutor(
                     AgentTools.AUTO_REPLY -> autoReply(str(args, "text"))
                     AgentTools.AUTO_POST -> autoPost(str(args, "text"))
                     AgentTools.WAIT -> waitTool(intOrNull(args, "ms"))
+                    AgentTools.RUN_JS -> runJs(str(args, "script"))
+                    AgentTools.SELECT_OPTION -> selectOption(int(args, "ref"), str(args, "value"))
+                    AgentTools.PRESS_KEYS -> pressKeys(str(args, "keys"), intOrNull(args, "ref"))
+                    AgentTools.WAIT_FOR -> waitFor(str(args, "text"), intOrNull(args, "timeout_ms"))
                     else -> ToolResult(false, "unknown tool: $name")
                 }
             } catch (ce: CancellationException) {
@@ -254,7 +260,75 @@ class HeadlessToolExecutor(
         return ToolResult(true, "waited ${formatDurationMs(bounded.toInt())}")
     }
 
+    // ------------------------------------------------- direct page control
+
+    private suspend fun runJs(script: String?): ToolResult {
+        val code = nonBlank(script) ?: return ToolResult(false, "missing 'script' argument")
+        val raw = evaluateJs(session, PageInjector.runJs(jsonString(code)))
+            ?: return ToolResult(false, "run_js failed (JavaScript error or page still loading)")
+        return ToolResult(true, clip(unquote(raw)))
+    }
+
+    private suspend fun selectOption(ref: Int?, value: String?): ToolResult {
+        if (ref == null || value == null) {
+            return ToolResult(false, "missing 'ref' or 'value' argument")
+        }
+        val raw = evaluateJs(session, PageInjector.selectOptionJs(ref, jsonString(value)))
+            ?: return ToolResult(false, "select_option failed (JavaScript error or page still loading)")
+        return ToolResult(true, unquote(raw))
+    }
+
+    private suspend fun pressKeys(keys: String?, ref: Int?): ToolResult {
+        val chord = KeyChord.parse(keys) ?: return ToolResult(
+            false,
+            "unsupported key chord '${keys.orEmpty()}'. Supported keys: ${KeyChord.SUPPORTED_KEYS}"
+        )
+        val script = PageInjector.pressKeysJs(
+            ref, jsonString(chord.key), jsonString(chord.code), chord.keyCode,
+            chord.ctrl, chord.shift, chord.alt, chord.meta, jsonString(chord.label())
+        )
+        val raw = evaluateJs(session, script)
+            ?: return ToolResult(false, "press_keys failed (JavaScript error or page still loading)")
+        return ToolResult(true, unquote(raw))
+    }
+
+    private suspend fun waitFor(text: String?, timeoutMs: Int?): ToolResult {
+        val needle = nonBlank(text) ?: return ToolResult(false, "missing 'text' argument")
+        val timeout = (timeoutMs ?: DEFAULT_WAIT_FOR_MS).coerceIn(500, 30_000).toLong()
+        val probe = PageInjector.waitProbeJs(jsonString(needle))
+        val startedAt = SystemClock.elapsedRealtime()
+        val found = withTimeoutOrNull(timeout) {
+            var hit = false
+            while (!hit) {
+                hit = unquote(evaluateJs(session, probe).orEmpty()).trim() == "1"
+                if (!hit) delay(POLL_MS)
+            }
+            true
+        } ?: false
+        val waited = SystemClock.elapsedRealtime() - startedAt
+        return if (found) {
+            ToolResult(true, "\"$needle\" appeared after ${formatDurationMs(waited.toInt())}")
+        } else {
+            ToolResult(
+                false,
+                "\"$needle\" did not appear within ${formatDurationMs(waited.toInt())} — the page may " +
+                    "load it later, show it only after a click, or never show it at all."
+            )
+        }
+    }
+
     // ------------------------------------------------------------- helpers
+
+    private fun jsonString(value: String): String =
+        AgentJson.encodeToString(String.serializer(), value)
+
+    /** A script's own output is not a place to spend the context window. */
+    private fun clip(text: String): String =
+        if (text.length <= MAX_JS_RESULT_CHARS) {
+            text
+        } else {
+            text.take(MAX_JS_RESULT_CHARS) + "\n…[truncated at $MAX_JS_RESULT_CHARS characters]"
+        }
 
     private suspend fun formatSnapshot(): String? {
         if (session.progress < 100) {
@@ -344,21 +418,25 @@ class HeadlessToolExecutor(
         private const val NAV_START_WINDOW_MS = 1800L
         private const val NAV_FINISH_TIMEOUT_MS = 25_000L
         private const val POLL_MS = 150L
+        private const val DEFAULT_WAIT_FOR_MS = 10_000
+        private const val MAX_JS_RESULT_CHARS = 4000
 
         /**
          * The tools a headless run performs, declared rather than inferred so
          * [HeadlessToolCatalogTest] can hold the WHOLE catalogue to
-         * [SUPPORTED_TOOLS] ∪ [TAB_TOOLS] ∪ [AgentTools.WALLET_TOOLS]: a tool
-         * added to the catalogue later must be classified deliberately, because
-         * the wrong answer is either a tool the model is offered and refused, or
-         * one refused silently.
+         * [SUPPORTED_TOOLS] ∪ [TAB_TOOLS] ∪ [APP_TOOLS] ∪
+         * [AgentTools.WALLET_TOOLS]: a tool added to the catalogue later must
+         * be classified deliberately, because the wrong answer is either a tool
+         * the model is offered and refused, or one refused silently.
          */
         internal val SUPPORTED_TOOLS: Set<String> = setOf(
             AgentTools.NAVIGATE, AgentTools.SEARCH_WEB, AgentTools.READ_PAGE,
             AgentTools.CLICK, AgentTools.FILL_INPUT, AgentTools.PRESS_ENTER,
             AgentTools.SCROLL, AgentTools.GO_BACK, AgentTools.AUTO_LIKE,
             AgentTools.AUTO_REPOST, AgentTools.AUTO_REPLY, AgentTools.AUTO_POST,
-            AgentTools.WAIT
+            AgentTools.WAIT,
+            AgentTools.RUN_JS, AgentTools.SELECT_OPTION, AgentTools.PRESS_KEYS,
+            AgentTools.WAIT_FOR
         )
 
         /**
@@ -371,5 +449,20 @@ class HeadlessToolExecutor(
             AgentTools.SWITCH_TAB,
             AgentTools.CLOSE_TAB
         )
+
+        /**
+         * The tools that act on the BROWSER rather than on the page — its
+         * screens, tabs, saved data, settings, shields and permissions. A
+         * scheduled run has one headless page and nobody to ask, so none of
+         * them can mean anything here: there is no screen to open, no second
+         * tab, and an action that changes the user's browser is not something
+         * a run may do while they are asleep.
+         *
+         * Declared rather than inferred so [HeadlessToolCatalogTest] can hold
+         * the whole catalogue to these sets. The refusal itself comes from
+         * [AiTaskPermissions], which denies the APP group outright — so there
+         * is one message for it, not two.
+         */
+        internal val APP_TOOLS: Set<String> = AgentAppActions.TOOLS
     }
 }

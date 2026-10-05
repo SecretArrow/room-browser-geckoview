@@ -190,6 +190,11 @@ data class AgentApproval(
     val name: String,
     val label: String,
     val at: Long,
+    /**
+     * True for an action that cannot be undone. The prompt then offers Allow
+     * and Deny only: there is no answer here that switches the asking off.
+     */
+    val destructive: Boolean = false,
     val respond: (ApprovalAnswer) -> Unit
 )
 
@@ -716,7 +721,8 @@ class BrowserAgentController(
                 onStatus = { setStatus(it) },
                 confirmGate = { name, label -> gate(name, label) },
                 // Wallet approvals must not ride the bypassable generic gate.
-                walletConfirm = { label -> requestWalletApproval(label) }
+                walletConfirm = { label -> requestWalletApproval(label) },
+                destructiveGate = { name, label -> destructiveVerdict(name, label) }
             )
             // Only the native Ollama protocol consumes the tuning; the other
             // gateways ignore it (default null keeps their wire format intact).
@@ -972,6 +978,50 @@ class BrowserAgentController(
             approval = null
         }
     }
+
+    /**
+     * Asks the user about an action that cannot be undone — closing the tabs
+     * they opened, clearing history, removing a history entry, cancelling a
+     * download, wiping the profile's site data.
+     *
+     * Deliberately NOT [requestApproval] with a flag, because the two answer
+     * to different things. That one runs under the Confirm actions switch and
+     * honours YOLO, and both of those are statements about not wanting to be
+     * INTERRUPTED. This one asks a person every time, whatever either says:
+     * the whole point of the destructive set is that no switch exists which
+     * lets the agent delete the user's data unasked. The prompt offers Allow
+     * and Deny only, and a timeout or a cancelled turn denies.
+     */
+    private suspend fun requestDestructiveApproval(name: String, label: String): ApprovalAnswer {
+        setStatus("Approve? $label")
+        return try {
+            withTimeout(APPROVAL_TIMEOUT_MS) {
+                suspendCancellableCoroutine { continuation ->
+                    approval = AgentApproval(
+                        name = name,
+                        label = label,
+                        at = SystemClock.elapsedRealtime(),
+                        destructive = true
+                    ) { answer ->
+                        if (continuation.isActive) continuation.resume(answer)
+                    }
+                }
+            }
+        } catch (ce: CancellationException) {
+            ApprovalAnswer.Deny // timeout or turn cancelled → deny
+        } finally {
+            approval = null
+        }
+    }
+
+    private suspend fun destructiveVerdict(name: String, label: String): ActionVerdict =
+        when (requestDestructiveApproval(name, label)) {
+            // AlwaysAllow is unreachable from the prompt this raises; mapping
+            // it to a plain Allow is the safe reading — it can never switch
+            // the asking off.
+            ApprovalAnswer.Allow, ApprovalAnswer.AlwaysAllow -> ActionVerdict.Allow
+            ApprovalAnswer.Deny -> ActionVerdict.Deny("the user denied this action, which cannot be undone")
+        }
 
     /**
      * The gate every state-changing tool call passes through.

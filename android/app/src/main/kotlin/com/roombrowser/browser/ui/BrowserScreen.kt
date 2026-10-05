@@ -90,6 +90,26 @@ sealed interface BrowserRoute {
 }
 
 /**
+ * The route an agent-requested screen name maps to, or null when that name is
+ * not one of this activity's screens (the others are activities of their own,
+ * started by BrowserViewModel.openScreen). Internal so a unit test can hold it
+ * against AgentAppActions — a name that maps to nothing would otherwise be a
+ * tool that silently does nothing.
+ */
+internal fun agentRoute(screen: String): BrowserRoute? = when (screen) {
+    "home" -> BrowserRoute.Browser
+    "tabs" -> BrowserRoute.Tabs
+    "bookmarks" -> BrowserRoute.Bookmarks
+    "history" -> BrowserRoute.History
+    "downloads" -> BrowserRoute.Downloads
+    "privacy" -> BrowserRoute.PrivacyDashboard
+    "settings" -> BrowserRoute.Settings
+    "profile_settings" -> BrowserRoute.ProfileSettings
+    "about" -> BrowserRoute.About
+    else -> null
+}
+
+/**
  * A request to open [url] in the engine.
  *
  * The nonce is load-bearing. An engine launch can arrive twice with the SAME
@@ -156,6 +176,16 @@ fun BrowserScreen(
     val switcherSignal by viewModel.quickSwitcherSignal.collectAsState()
     LaunchedEffect(switcherSignal) {
         if (switcherSignal > 0) showQuickSwitcher = true
+    }
+
+    // A screen the agent asked for (app_open). The request is cleared the
+    // moment it is applied, so a request that arrives while another screen is
+    // already open still lands, and the user's own later navigation is theirs.
+    val screenRequest by viewModel.screenRequest.collectAsState()
+    LaunchedEffect(screenRequest) {
+        val target = screenRequest?.let { agentRoute(it) } ?: return@LaunchedEffect
+        route = target
+        viewModel.screenRequest.value = null
     }
 
     // AI settings & chat history live in their OWN activities (default

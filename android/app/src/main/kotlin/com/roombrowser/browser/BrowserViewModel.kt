@@ -1,6 +1,7 @@
 package com.roombrowser.browser
 
 import android.app.Application
+import android.content.Intent
 import android.os.SystemClock
 import android.util.Log
 import androidx.compose.runtime.getValue
@@ -10,18 +11,27 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.roombrowser.RoomBrowserApp
 import com.roombrowser.agent.BrowserAgentController
+import com.roombrowser.agent.ui.AgentSessionsActivity
+import com.roombrowser.agent.ui.AgentSettingsActivity
+import com.roombrowser.agent.ui.AiTasksActivity
+import com.roombrowser.agent.ui.LocalAiActivity
 import com.roombrowser.browser.engine.DnsMonitor
 import com.roombrowser.browser.engine.DownloadEngine
 import com.roombrowser.browser.engine.NetworkIdentity
 import com.roombrowser.browser.engine.ProfileEngine
+import com.roombrowser.browser.ui.DevicePickerActivity
+import com.roombrowser.browser.ui.PasswordsActivity
+import com.roombrowser.browser.ui.WalletActivity
 import com.roombrowser.data.db.BookmarkEntity
 import com.roombrowser.data.db.DownloadEntity
 import com.roombrowser.data.db.HistoryEntity
+import com.roombrowser.data.db.SitePermissionEntity
 import com.roombrowser.data.db.SiteSettingEntity
 import com.roombrowser.data.db.TabEntity
 import com.roombrowser.data.repo.BrowserRepository
 import com.roombrowser.data.repo.PendingNetDecision
 import com.roombrowser.data.repo.PermissionKind
+import com.roombrowser.domain.agent.AgentAppActions
 import com.roombrowser.domain.credentials.CredentialDomainMatcher
 import com.roombrowser.domain.credentials.SavedCredential
 import com.roombrowser.domain.engine.FilterEngine
@@ -41,6 +51,7 @@ import com.roombrowser.engine.EngineSession
 import com.roombrowser.engine.PageErrorKind
 import com.roombrowser.engine.PermissionResponder
 import com.roombrowser.engine.ResourceFilter
+import com.roombrowser.theme.ui.ThemeStudioActivity
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -220,6 +231,15 @@ class BrowserViewModel(
     /** One-shot counter: >0 asks BrowserScreen to (re)open the profile
      *  quick switcher ("Switch Profile" decision on the network warning). */
     val quickSwitcherSignal = MutableStateFlow(0)
+
+    /**
+     * A screen the agent asked for, as a route key from
+     * [com.roombrowser.domain.agent.AgentAppActions.IN_APP_ROUTES], or null.
+     * The route itself lives in BrowserScreen's own state, so it has to be
+     * handed over as a request the screen consumes (and then clears) rather
+     * than set from here.
+     */
+    val screenRequest = MutableStateFlow<String?>(null)
 
     /** The live engine session of the ACTIVE tab — each tab owns its own
      *  engine (kept alive in its TabManager session while in the background).
@@ -1675,6 +1695,40 @@ class BrowserViewModel(
         viewModelScope.launch { browserRepo.clearHistory(profileId, since) }
     }
 
+    /**
+     * Adds a bookmark for an explicit URL — the agent's `app_data bookmarks
+     * add`, which may name any page rather than the open one. Returns the new
+     * id, or null when the URL was already saved (the repo's own add is
+     * idempotent and reports -1 in that case).
+     */
+    suspend fun addBookmarkFor(url: String, title: String): Long? =
+        browserRepo.addBookmark(profileId, url, title.ifBlank { url })
+            .takeIf { it > 0 }
+            ?.also { refreshBookmarks() }
+
+    /**
+     * Adds or removes the bookmark for the OPEN page. Returns whether the page
+     * is bookmarked afterwards, or null when it cannot be bookmarked at all
+     * (the start page).
+     *
+     * Deliberately not the app's own toggle: an agent that asked to add and got
+     * the bookmark deleted because it was already there would be a data loss
+     * nobody asked for.
+     */
+    suspend fun setBookmarkForCurrentPage(bookmarked: Boolean): Boolean? {
+        val url = pageState.url.takeIf { it.isNotBlank() && it != "about:home" } ?: return null
+        if (browserRepo.isBookmarked(profileId, url) == bookmarked) return bookmarked
+        if (bookmarked) {
+            browserRepo.addBookmark(profileId, url, pageState.title.ifBlank { url })
+        } else {
+            browserRepo.bookmarks(profileId).firstOrNull { it.url == url }?.let {
+                browserRepo.deleteBookmark(it.id)
+            }
+        }
+        refreshBookmarks()
+        return bookmarked
+    }
+
     // ---------- Downloads ----------
 
     fun download(url: String, suggestedName: String, mime: String, userAgent: String? = null) {
@@ -1900,6 +1954,18 @@ class BrowserViewModel(
             browserRepo.setPermission(profileId, host, kind, decision)
             emitMessage("${kind.name.lowercase().replaceFirstChar { it.uppercase() }}: $decision for $host")
         }
+    }
+
+    /**
+     * The permission decisions saved for the host of the open page.
+     *
+     * The agent's `app_site_permission` reads this: an absent key means "never
+     * decided", which is a different answer from "blocked" and cannot be told
+     * apart from the write path alone.
+     */
+    suspend fun sitePermissionsForCurrentHost(): List<SitePermissionEntity> {
+        val host = UrlIntelligence.hostOf(pageState.url) ?: return emptyList()
+        return browserRepo.permissions(profileId).filter { it.host == host }
     }
 
     /**
@@ -2195,6 +2261,49 @@ class BrowserViewModel(
         )
         allProfiles = graph.profileRepo.profiles()
         return created
+    }
+
+    /**
+     * Opens one of the app's own screens for the agent's `app_open` tool.
+     * Returns null when the screen was opened, otherwise the reason it was not.
+     *
+     * Two kinds of screen, two ways in. The browser activity's own screens are
+     * Compose routes whose state lives in BrowserScreen, so they are handed
+     * over as a REQUEST the screen consumes; every other screen is an activity
+     * of its own and is started with the profile extras its launcher uses.
+     */
+    fun openScreen(name: String): String? {
+        if (name in AgentAppActions.IN_APP_ROUTES) {
+            screenRequest.value = name
+            return null
+        }
+        val context = getApplication<Application>()
+        val id = profileId.value
+        val label = profile.name.ifBlank { id }
+        val intent = when (name) {
+            "theme" -> Intent(context, ThemeStudioActivity::class.java)
+            "agent_settings" -> Intent(context, AgentSettingsActivity::class.java)
+                .putExtra(AgentSettingsActivity.EXTRA_PROFILE_ID, id)
+            "agent_chats" -> Intent(context, AgentSessionsActivity::class.java)
+                .putExtra(AgentSessionsActivity.EXTRA_PROFILE_ID, id)
+            "ai_tasks" -> Intent(context, AiTasksActivity::class.java)
+            "local_ai" -> Intent(context, LocalAiActivity::class.java)
+                .putExtra(LocalAiActivity.EXTRA_PROFILE_ID, id)
+            "devices" -> Intent(context, DevicePickerActivity::class.java)
+                .putExtra(DevicePickerActivity.EXTRA_PROFILE_ID, id)
+            "passwords" -> Intent(context, PasswordsActivity::class.java)
+                .putExtra(PasswordsActivity.EXTRA_PROFILE_ID, id)
+                .putExtra(PasswordsActivity.EXTRA_PROFILE_NAME, label)
+            "wallet" -> Intent(context, WalletActivity::class.java)
+                .putExtra(WalletActivity.EXTRA_PROFILE_ID, id)
+                .putExtra(WalletActivity.EXTRA_PROFILE_NAME, label)
+            else -> return "there is no '$name' screen"
+        }
+        // From an application context, never an activity one.
+        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        return runCatching { context.startActivity(intent) }.exceptionOrNull()?.let {
+            "'$name' could not be opened: ${it.message ?: it::class.java.simpleName}"
+        }
     }
 
     // ---------- Password vault: login autofill + save prompt ----------

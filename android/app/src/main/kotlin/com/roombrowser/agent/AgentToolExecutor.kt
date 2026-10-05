@@ -8,6 +8,7 @@ import com.roombrowser.domain.agent.ActionVerdict
 import com.roombrowser.domain.agent.AgentJson
 import com.roombrowser.domain.agent.AgentTools
 import com.roombrowser.domain.agent.formatDurationMs
+import com.roombrowser.domain.agent.KeyChord
 import com.roombrowser.domain.agent.PageSnapshotDto
 import com.roombrowser.domain.agent.PageSnapshotFormatter
 import com.roombrowser.domain.agent.ToolExecutor
@@ -65,8 +66,18 @@ class AgentToolExecutor(
      * YOLO, the local decision model and "Confirm actions: off" all bypass
      * that gate, and none of them may approve a wallet request. Default DENY.
      */
-    private val walletConfirm: suspend (label: String) -> Boolean = { false }
+    private val walletConfirm: suspend (label: String) -> Boolean = { false },
+    /**
+     * The gate for actions that cannot be undone. Deliberately a DIFFERENT
+     * callback from [confirmGate]: this one always reaches a person, whatever
+     * the app's Confirm actions switch and whatever YOLO mode says.
+     */
+    private val destructiveGate: suspend (name: String, label: String) -> ActionVerdict
 ) : ToolExecutor {
+
+    private val appTools by lazy {
+        AgentAppTools(vm, { tabId }, onStatus, confirmGate, destructiveGate)
+    }
 
     /**
      * The tab this turn is acting on right now: its start tab, or a tab the
@@ -91,13 +102,13 @@ class AgentToolExecutor(
         withContext(Dispatchers.Main) {
             val args: Map<String, Any?> = parseArgs(argsJson)
             try {
-                // Asked once, here, rather than inside each of the ten tools:
-                // "can this action start a navigation?" is a property of the
-                // tool, and one place that answers it cannot drift out of step
-                // with ten.
-                if (name in MOVES_THE_PAGE) {
+                // Asked once, here, rather than inside each tool: "needs the
+                // tab on screen" is a property of the tool, and one place that
+                // answers it cannot drift out of step with the list.
+                if (name in MOVES_THE_PAGE || name in NEEDS_SCREEN_TAB) {
                     awaitBoundTabActive()?.let { return@withContext it }
                 }
+                appTools.execute(name, argsJson)?.let { return@withContext it }
                 when (name) {
                     AgentTools.NAVIGATE -> navigate(str(args, "url"))
                     AgentTools.SEARCH_WEB -> searchWeb(str(args, "query"))
@@ -121,6 +132,10 @@ class AgentToolExecutor(
                     AgentTools.WALLET_APPROVE -> walletTools.approve(str(args, "request_id"))
                     AgentTools.WALLET_REJECT -> walletTools.reject(str(args, "request_id"))
                     AgentTools.WALLET_SWITCH_NETWORK -> walletTools.switchNetwork(str(args, "network_id"))
+                    AgentTools.RUN_JS -> runJs(str(args, "script"))
+                    AgentTools.SELECT_OPTION -> selectOption(int(args, "ref"), str(args, "value"))
+                    AgentTools.PRESS_KEYS -> pressKeys(str(args, "keys"), intOrNull(args, "ref"))
+                    AgentTools.WAIT_FOR -> waitFor(str(args, "text"), intOrNull(args, "timeout_ms"))
                     else -> ToolResult(false, "unknown tool: $name")
                 }
             } catch (ce: CancellationException) {
@@ -340,6 +355,82 @@ class AgentToolExecutor(
         return ToolResult(true, "waited ${formatDurationMs(bounded.toInt())}")
     }
 
+    // ------------------------------------------------- direct page control
+
+    /**
+     * Runs a script the model wrote. NOT settled afterwards: a script that
+     * starts a navigation gets its own page events, and waiting on every
+     * read-only script would cost the foreground window for nothing — the
+     * tool's answer says to follow up with wait_for or read_page.
+     */
+    private suspend fun runJs(script: String?): ToolResult {
+        val code = nonBlank(script) ?: return ToolResult(false, "missing 'script' argument")
+        val session = boundSession() ?: return ToolResult(false, "no page is loaded in this chat's tab")
+        val raw = evaluateJs(session, PageInjector.runJs(jsonString(code)))
+            ?: return ToolResult(false, "run_js failed (JavaScript error or page still loading)")
+        return ToolResult(true, clip(unquote(raw)))
+    }
+
+    private suspend fun selectOption(ref: Int?, value: String?): ToolResult {
+        if (ref == null || value == null) {
+            return ToolResult(false, "missing 'ref' or 'value' argument")
+        }
+        refuse(AgentTools.SELECT_OPTION, "choose \"${value.take(40)}\" in [$ref]")?.let { return it }
+        val session = boundSession() ?: return ToolResult(false, "no page is loaded in this chat's tab")
+        val triggerAt = SystemClock.elapsedRealtime()
+        val raw = evaluateJs(session, PageInjector.selectOptionJs(ref, jsonString(value)))
+            ?: return ToolResult(false, "select_option failed (JavaScript error or page still loading)")
+        // A select's change handler is a submit by another name.
+        awaitPageSettle(triggerAt)
+        delay(SETTLE_MS)
+        return ToolResult(true, unquote(raw))
+    }
+
+    private suspend fun pressKeys(keys: String?, ref: Int?): ToolResult {
+        val chord = KeyChord.parse(keys) ?: return ToolResult(
+            false,
+            "unsupported key chord '${keys.orEmpty()}'. Supported keys: ${KeyChord.SUPPORTED_KEYS}"
+        )
+        refuse(AgentTools.PRESS_KEYS, "press ${chord.label()}")?.let { return it }
+        val session = boundSession() ?: return ToolResult(false, "no page is loaded in this chat's tab")
+        val triggerAt = SystemClock.elapsedRealtime()
+        val script = PageInjector.pressKeysJs(
+            ref, jsonString(chord.key), jsonString(chord.code), chord.keyCode,
+            chord.ctrl, chord.shift, chord.alt, chord.meta, jsonString(chord.label())
+        )
+        val raw = evaluateJs(session, script)
+            ?: return ToolResult(false, "press_keys failed (JavaScript error or page still loading)")
+        awaitPageSettle(triggerAt)
+        delay(SETTLE_MS)
+        return ToolResult(true, unquote(raw))
+    }
+
+    private suspend fun waitFor(text: String?, timeoutMs: Int?): ToolResult {
+        val needle = nonBlank(text) ?: return ToolResult(false, "missing 'text' argument")
+        val timeout = (timeoutMs ?: DEFAULT_WAIT_FOR_MS).coerceIn(500, 30_000).toLong()
+        val session = boundSession() ?: return ToolResult(false, "no page is loaded in this chat's tab")
+        val probe = PageInjector.waitProbeJs(jsonString(needle))
+        val startedAt = SystemClock.elapsedRealtime()
+        val found = withTimeoutOrNull(timeout) {
+            var hit = false
+            while (!hit) {
+                hit = unquote(evaluateJs(session, probe).orEmpty()).trim() == "1"
+                if (!hit) delay(POLL_MS)
+            }
+            true
+        } ?: false
+        val waited = SystemClock.elapsedRealtime() - startedAt
+        return if (found) {
+            ToolResult(true, "\"$needle\" appeared after ${formatDurationMs(waited.toInt())}")
+        } else {
+            ToolResult(
+                false,
+                "\"$needle\" did not appear within ${formatDurationMs(waited.toInt())} — the page may " +
+                    "load it later, show it only after a click, or never show it at all."
+            )
+        }
+    }
+
     // ------------------------------------------------------------- helpers
 
     /**
@@ -465,6 +556,18 @@ class AgentToolExecutor(
         } else jsResult
     }.getOrDefault(jsResult)
 
+    /** Encodes a value for embedding in a script — quotes and newlines included. */
+    private fun jsonString(value: String): String =
+        AgentJson.encodeToString(String.serializer(), value)
+
+    /** A script's own output is not a place to spend the context window. */
+    private fun clip(text: String): String =
+        if (text.length <= MAX_JS_RESULT_CHARS) {
+            text
+        } else {
+            text.take(MAX_JS_RESULT_CHARS) + "\n…[truncated at $MAX_JS_RESULT_CHARS characters]"
+        }
+
     /**
      * Waits for a navigation that started at/after [triggerAt] to finish.
      * Pure-JS actions (no navigation) resolve immediately after a short
@@ -540,6 +643,10 @@ class AgentToolExecutor(
         /** Poll interval shared by every wait in this class. */
         private const val POLL_MS = 150L
 
+        /** wait_for's default budget, and the ceiling a run_js result is cut to. */
+        private const val DEFAULT_WAIT_FOR_MS = 10_000
+        private const val MAX_JS_RESULT_CHARS = 4000
+
         /**
          * How long an action that moves the page waits for this chat's tab to
          * come to the front before refusing it. Long enough to cover a glance
@@ -561,7 +668,8 @@ class AgentToolExecutor(
  * 36833914913). A background tab's engine is exactly that parentless view:
  * WebViewHost hosts the ACTIVE engine only, so every other engine is
  * detached. `click` and `fill_input` are on the list because a click on a
- * link, or a submit, IS a page load by another name.
+ * link, or a submit, IS a page load by another name, and `select_option` and
+ * `press_keys` are the same thing reached by a dropdown or a chord.
  *
  * The rest — read_page, scroll, list_tabs, open_new_tab, switch_tab,
  * close_tab, wait, and the wallet tools — start no navigation of their own and
@@ -580,8 +688,32 @@ internal val MOVES_THE_PAGE: Set<String> = setOf(
     AgentTools.FILL_INPUT,
     AgentTools.PRESS_ENTER,
     AgentTools.GO_BACK,
+    AgentTools.SELECT_OPTION,
+    AgentTools.PRESS_KEYS,
     AgentTools.AUTO_LIKE,
     AgentTools.AUTO_REPOST,
     AgentTools.AUTO_REPLY,
     AgentTools.AUTO_POST
+)
+
+/**
+ * The tools that act on the page the user is LOOKING AT rather than on this
+ * chat's own engine: the find bar, reader and desktop mode, the page's
+ * bookmark state, the shields and permission records of the site in the
+ * visible tab.
+ *
+ * That is not a shortcut — it is what these features ARE. The ViewModel keeps
+ * one find bar, one reader mode and one shields view, all describing the tab
+ * on screen, and the per-site records are keyed by that tab's host. Holding
+ * them until this chat's tab is the visible one is what makes the tool's
+ * answer about the page the model has been reading.
+ *
+ * Classified here rather than inside [AgentAppTools] for the same reason as
+ * [MOVES_THE_PAGE]: [AgentToolForegroundPolicyTest] holds the three sets to
+ * the whole catalogue, so a tool added later must be placed deliberately.
+ */
+internal val NEEDS_SCREEN_TAB: Set<String> = setOf(
+    AgentTools.APP_PAGE,
+    AgentTools.APP_SHIELDS,
+    AgentTools.APP_SITE_PERMISSION
 )

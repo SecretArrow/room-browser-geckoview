@@ -334,4 +334,131 @@ object PageInjector {
           return state + '; typing and submitting - call wait (~2s) then read_page to verify';
         })()
     """.trimIndent()
+
+    // ------------------------------------------------------------------
+    //  Direct page control (run_js / select_option / press_keys / wait_for)
+    // ------------------------------------------------------------------
+
+    /**
+     * Runs an arbitrary script the model wrote and hands its value back as
+     * text.
+     *
+     * The script goes through `eval` rather than a wrapping function body so
+     * statements AND a final expression both work the way they do in a
+     * browser console. Nothing is awaited: a script that returns a Promise is
+     * reported as such instead of hanging the tool.
+     *
+     * [jsonScript] MUST be a JSON-encoded string, which is also what keeps a
+     * script containing quotes or newlines from breaking out of the wrapper.
+     */
+    fun runJs(jsonScript: String): String = """
+        (function(){
+          try {
+            var v = eval($jsonScript);
+            if (v === undefined) return 'undefined';
+            if (v === null) return 'null';
+            if (typeof v === 'object') {
+              try { return JSON.stringify(v); } catch (e) { return String(v); }
+            }
+            return String(v);
+          } catch (e) {
+            return 'ERROR: ' + (e && e.message ? e.message : String(e));
+          }
+        })()
+    """.trimIndent()
+
+    /**
+     * Chooses an option in the `<select>` with the given ref. [jsonChoice] is
+     * matched against the option's `value` first, then against its visible
+     * text, so a model that only saw the label still selects the right row.
+     * On a miss the available options are returned to correct the next call.
+     */
+    fun selectOptionJs(ref: Int, jsonChoice: String): String = """
+        (function(){
+          var el = document.querySelector('[$REF_ATTR="$ref"]');
+          if (!el) return 'element [$ref] not found — call read_page again for fresh refs';
+          if (el.tagName !== 'SELECT') return 'element [$ref] is a <' + el.tagName.toLowerCase() + '>, not a <select>';
+          var want = $jsonChoice;
+          var opts = el.options || [];
+          var picked = null;
+          for (var i = 0; i < opts.length; i++) {
+            if (opts[i].value === want) { picked = opts[i]; break; }
+          }
+          if (!picked) {
+            var norm = String(want).replace(/\s+/g, ' ').trim().toLowerCase();
+            for (var j = 0; j < opts.length; j++) {
+              var t = (opts[j].text || '').replace(/\s+/g, ' ').trim().toLowerCase();
+              if (t === norm) { picked = opts[j]; break; }
+            }
+          }
+          if (!picked) {
+            var names = [];
+            for (var k = 0; k < opts.length && k < 40; k++) {
+              names.push(opts[k].value + ' ("' + (opts[k].text || '').trim().slice(0, 40) + '")');
+            }
+            return 'no option matching "' + want + '" in [$ref]. Available: ' + names.join(', ');
+          }
+          var proto = HTMLSelectElement.prototype;
+          var d = Object.getOwnPropertyDescriptor(proto, 'value');
+          var setter = (Object.getOwnPropertyDescriptor(proto, 'selectedIndex') || {}).set;
+          var idx = picked.index;
+          if (setter) setter.call(el, idx); else el.selectedIndex = idx;
+          if (d && d.set) d.set.call(el, picked.value);
+          el.dispatchEvent(new Event('input', {bubbles: true}));
+          el.dispatchEvent(new Event('change', {bubbles: true}));
+          return 'selected "' + (picked.text || picked.value).trim().slice(0, 60) + '" in [$ref]';
+        })()
+    """.trimIndent()
+
+    /**
+     * Dispatches a real key chord on the focused element (or on the element
+     * with [ref]). [jsonKey] and [jsonCode] are JSON-encoded strings; the
+     * legacy `keyCode`/`which` fields are set because pages still branch on
+     * them, and a keydown that a page cancels does not get a keypress.
+     */
+    fun pressKeysJs(
+        ref: Int?,
+        jsonKey: String,
+        jsonCode: String,
+        keyCode: Int,
+        ctrl: Boolean,
+        shift: Boolean,
+        alt: Boolean,
+        meta: Boolean,
+        jsonLabel: String
+    ): String {
+        val target = if (ref != null) {
+            "var el = document.querySelector('[$REF_ATTR=\"$ref\"]');"
+        } else {
+            "var el = document.activeElement || document.body;"
+        }
+        return """
+            (function(){
+              $target
+              if (!el) return 'no element to send the key to — call read_page first';
+              try { if (el.focus) el.focus(); } catch (e) {}
+              var init = {key: $jsonKey, code: $jsonCode, keyCode: $keyCode, which: $keyCode,
+                bubbles: true, cancelable: true, composed: true,
+                ctrlKey: $ctrl, shiftKey: $shift, altKey: $alt, metaKey: $meta};
+              var notCancelled = el.dispatchEvent(new KeyboardEvent('keydown', init));
+              if (notCancelled && $jsonKey.length === 1) {
+                el.dispatchEvent(new KeyboardEvent('keypress', init));
+              }
+              el.dispatchEvent(new KeyboardEvent('keyup', init));
+              return 'sent ' + $jsonLabel;
+            })()
+        """.trimIndent()
+    }
+
+    /**
+     * Cheap presence probe for wait_for: '1' when the visible text contains
+     * [jsonText] (case-insensitive), '0' otherwise. The polling loop lives in
+     * Kotlin because JS cannot suspend.
+     */
+    fun waitProbeJs(jsonText: String): String = """
+        (function(){
+          var body = document.body ? (document.body.innerText || '') : '';
+          return body.toLowerCase().indexOf(String($jsonText).toLowerCase()) !== -1 ? '1' : '0';
+        })()
+    """.trimIndent()
 }

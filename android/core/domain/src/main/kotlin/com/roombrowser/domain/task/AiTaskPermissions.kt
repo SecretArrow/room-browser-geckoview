@@ -17,6 +17,10 @@ import kotlinx.serialization.Serializable
  * request signs or broadcasts, and the confirmation it needs can only come from
  * a person, so no task grant reaches them (see [ToolGroup.WALLET]).
  *
+ * App control is the sixth, and is denied for the same reason: it changes the
+ * browser itself — its settings, its saved per-site permissions, what it has
+ * kept — and some of it cannot be undone (see [ToolGroup.APP]).
+ *
  * An unknown tool name is denied, not allowed — a tool added to the catalogue
  * later must be granted explicitly rather than inheriting a blanket yes.
  */
@@ -28,14 +32,19 @@ data class AiTaskPermissions(
     val allowPost: Boolean = false
 ) {
     fun groupOf(toolName: String): ToolGroup? = when (toolName) {
-        AgentTools.READ_PAGE, AgentTools.SCROLL, AgentTools.WAIT -> ToolGroup.READ_PAGE
+        AgentTools.READ_PAGE, AgentTools.SCROLL, AgentTools.WAIT,
+        AgentTools.WAIT_FOR -> ToolGroup.READ_PAGE
         AgentTools.NAVIGATE, AgentTools.SEARCH_WEB, AgentTools.GO_BACK,
         AgentTools.OPEN_NEW_TAB, AgentTools.LIST_TABS,
         AgentTools.SWITCH_TAB, AgentTools.CLOSE_TAB -> ToolGroup.NAVIGATE
-        AgentTools.CLICK, AgentTools.FILL_INPUT, AgentTools.PRESS_ENTER -> ToolGroup.INTERACT
+        AgentTools.CLICK, AgentTools.FILL_INPUT, AgentTools.PRESS_ENTER,
+        AgentTools.SELECT_OPTION, AgentTools.PRESS_KEYS, AgentTools.RUN_JS -> ToolGroup.INTERACT
         AgentTools.AUTO_LIKE, AgentTools.AUTO_REPOST,
         AgentTools.AUTO_REPLY, AgentTools.AUTO_POST -> ToolGroup.POST
         in AgentTools.WALLET_TOOLS -> ToolGroup.WALLET
+        AgentTools.APP_OPEN, AgentTools.APP_TABS, AgentTools.APP_DATA,
+        AgentTools.APP_SETTINGS, AgentTools.APP_SHIELDS,
+        AgentTools.APP_SITE_PERMISSION, AgentTools.APP_PAGE -> ToolGroup.APP
         else -> null
     }
 
@@ -45,6 +54,9 @@ data class AiTaskPermissions(
         ToolGroup.INTERACT -> allowInteract
         ToolGroup.POST -> allowPost
         ToolGroup.WALLET -> false
+        // Nobody is watching a scheduled run, and these change the browser
+        // itself — including irreversibly. A chat turn is the only route.
+        ToolGroup.APP -> false
         null -> false
     }
 
@@ -64,7 +76,10 @@ enum class ToolGroup(val label: String) {
     POST("posting"),
 
     /** Never granted to a task; see [walletUnattendedRefusal]. */
-    WALLET("wallet requests")
+    WALLET("wallet requests"),
+
+    /** Never granted to a task; see [appUnattendedRefusal]. */
+    APP("the app's own screens, settings and data")
 }
 
 /**
@@ -76,8 +91,19 @@ enum class ToolGroup(val label: String) {
 internal fun refusalMessage(toolName: String, group: ToolGroup?): String = when (group) {
     null -> "unknown tool: $toolName"
     ToolGroup.WALLET -> walletUnattendedRefusal(toolName)
+    ToolGroup.APP -> appUnattendedRefusal(toolName)
     else -> "tool '$toolName' is switched off for this task: ${group.label} is not permitted"
 }
+
+/**
+ * The refusal for app control in a scheduled run: these actions change the
+ * browser itself — its settings, its per-site permissions, what it has saved —
+ * and some of them cannot be undone. The confirmation they need can only come
+ * from a person, so a chat turn is the only route.
+ */
+fun appUnattendedRefusal(toolName: String): String =
+    "tool '$toolName' changes the app itself and works only in a chat, where you can be asked " +
+        "first. Run this as a chat, or do it from the app's own screens."
 
 /**
  * The refusal for an action the task DOES allow but an unattended run must not
