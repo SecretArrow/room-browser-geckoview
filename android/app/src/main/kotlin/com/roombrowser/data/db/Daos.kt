@@ -751,6 +751,9 @@ interface AiTaskDao {
     )
     suspend fun recordRun(id: Long, atMs: Long, status: String, summary: String?)
 
+    @Query("SELECT * FROM ai_tasks WHERE last_run_status = :status AND enabled = 1 ORDER BY last_run_at_ms ASC")
+    fun observeByStatus(status: String): Flow<List<AiTaskEntity>>
+
     @Query("DELETE FROM ai_tasks WHERE id = :id")
     suspend fun delete(id: Long)
 

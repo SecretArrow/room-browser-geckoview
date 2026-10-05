@@ -23,18 +23,57 @@ data class AiTaskPermissions(
     val allowInteract: Boolean = true,
     val allowPost: Boolean = false
 ) {
-    fun allows(toolName: String): Boolean = when (toolName) {
-        AgentTools.READ_PAGE, AgentTools.SCROLL, AgentTools.WAIT -> allowReadPage
+    fun groupOf(toolName: String): ToolGroup? = when (toolName) {
+        AgentTools.READ_PAGE, AgentTools.SCROLL, AgentTools.WAIT -> ToolGroup.READ_PAGE
         AgentTools.NAVIGATE, AgentTools.SEARCH_WEB, AgentTools.GO_BACK,
         AgentTools.OPEN_NEW_TAB, AgentTools.LIST_TABS,
-        AgentTools.SWITCH_TAB, AgentTools.CLOSE_TAB -> allowNavigate
-        AgentTools.CLICK, AgentTools.FILL_INPUT, AgentTools.PRESS_ENTER -> allowInteract
+        AgentTools.SWITCH_TAB, AgentTools.CLOSE_TAB -> ToolGroup.NAVIGATE
+        AgentTools.CLICK, AgentTools.FILL_INPUT, AgentTools.PRESS_ENTER -> ToolGroup.INTERACT
         AgentTools.AUTO_LIKE, AgentTools.AUTO_REPOST,
-        AgentTools.AUTO_REPLY, AgentTools.AUTO_POST -> allowPost
-        else -> false
+        AgentTools.AUTO_REPLY, AgentTools.AUTO_POST -> ToolGroup.POST
+        else -> null
     }
+
+    fun allows(toolName: String): Boolean = when (groupOf(toolName)) {
+        ToolGroup.READ_PAGE -> allowReadPage
+        ToolGroup.NAVIGATE -> allowNavigate
+        ToolGroup.INTERACT -> allowInteract
+        ToolGroup.POST -> allowPost
+        null -> false
+    }
+
+    /** The refusal a denied tool answers with, or null when it is allowed. */
+    fun refusal(toolName: String): String? =
+        if (allows(toolName)) null else refusalMessage(toolName, groupOf(toolName))
 
     companion object {
         val DEFAULT = AiTaskPermissions()
     }
 }
+
+enum class ToolGroup(val label: String) {
+    READ_PAGE("reading the page"),
+    NAVIGATE("navigating"),
+    INTERACT("clicking and typing"),
+    POST("posting")
+}
+
+/**
+ * What the model reads back when it asks for a tool the task does not allow.
+ * It has to say the permission is missing, not that the tool is unknown:
+ * "unknown tool" sends it looking for another route to the same action, and it
+ * retries a refusal that reads like a typo.
+ */
+internal fun refusalMessage(toolName: String, group: ToolGroup?): String = group
+    ?.let { "tool '$toolName' is switched off for this task: ${it.label} is not permitted" }
+    ?: "unknown tool: $toolName"
+
+/**
+ * The refusal for an action the task DOES allow but an unattended run must not
+ * take: the confirmation the user asked for can only come from a person, and a
+ * scheduled run has nobody to ask. It names the setting that would allow it,
+ * so the refusal is actionable rather than a dead end.
+ */
+fun unattendedRefusal(toolName: String): String =
+    "tool '$toolName' would ask you to confirm it first, and a scheduled run has nobody to ask. " +
+        "Turn off \"Confirm actions before running\" in AI Agent settings, or run this in a chat."

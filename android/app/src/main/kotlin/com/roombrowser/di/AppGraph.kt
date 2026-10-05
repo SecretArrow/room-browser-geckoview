@@ -67,13 +67,21 @@ class AppGraph(context: Context) {
     }
 
     /**
-     * The execution seam a scheduled task's worker asks to run a turn. Today
-     * this is the deferred runner (see DeferredAiTaskRunner for why a worker
-     * cannot drive the ':browser' agent stack yet); the headless answer swaps
-     * in at AiTaskRunners.forContext without the worker changing.
+     * The WORKER's execution seam: it records a due occurrence and says why it
+     * could not run it (see DeferredAiTaskRunner). The run itself happens in
+     * ':browser', through [aiTaskDelivery].
      */
     val aiTaskRunner: com.roombrowser.agent.AiTaskRunner by lazy {
         com.roombrowser.agent.AiTaskRunners.forContext(appContext)
+    }
+
+    /**
+     * Executes the occurrences the worker recorded. Only ':browser' starts it:
+     * that is the process that owns the engine runtime, and a second one over
+     * the same profile data is the thing this design exists to avoid.
+     */
+    val aiTaskDelivery: com.roombrowser.agent.AiTaskDelivery by lazy {
+        com.roombrowser.agent.AiTaskDelivery.forBrowserProcess(this, appContext)
     }
 
     /**

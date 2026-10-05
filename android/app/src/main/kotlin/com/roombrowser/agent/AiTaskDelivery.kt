@@ -1,0 +1,68 @@
+package com.roombrowser.agent
+
+import android.content.Context
+import com.roombrowser.data.repo.AiTaskRepository
+import com.roombrowser.di.AppGraph
+import com.roombrowser.domain.task.AiTaskRunStatus
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.launch
+
+/**
+ * Runs the occurrences the scheduler recorded but could not execute, in the
+ * one process that is allowed to start the engine.
+ *
+ * THE SPLIT, and why it is a split at all: WorkManager is pinned to the default
+ * process (`RoomBrowserApp.workManagerConfiguration`), so the worker can decide
+ * that a task is due and can do nothing else — the engine lives in ':browser',
+ * and one process may hold one runtime over the profile data both processes
+ * share. So the worker RECORDS (a DEFERRED row, with the reason) and this
+ * object, alive in ':browser' for as long as that process is, turns those rows
+ * into real runs. Room's multi-instance invalidation is what carries the record
+ * across, which is why this is a query and not an IPC channel.
+ *
+ * A row that cannot run (the user is browsing a different profile, the agent is
+ * switched off) is LEFT in place, still deferred, so a later attempt — the next
+ * time that process starts, or the profile in use changes — can pick it up.
+ * Nothing here writes on a decline, which is also what keeps a declined row
+ * from re-triggering itself through the invalidation a write would cause.
+ */
+class AiTaskDelivery(
+    private val repo: AiTaskRepository,
+    private val runner: AiTaskRunner
+) {
+
+    /** Sequential on purpose: two tasks must not drive two sessions at once
+     *  through one engine, and a run that takes minutes may not be interrupted
+     *  by the next row to appear while it works. */
+    fun start(scope: CoroutineScope) {
+        scope.launch {
+            repo.observeDeferred().collect { tasks ->
+                for (task in tasks) {
+                    val outcome = runCatching { runner.run(task) }.getOrElse { error ->
+                        AiTaskRunOutcome.Failed(error.message ?: error.javaClass.simpleName)
+                    }
+                    val at = System.currentTimeMillis()
+                    when (outcome) {
+                        is AiTaskRunOutcome.Completed ->
+                            repo.recordRun(task.id, at, AiTaskRunStatus.COMPLETED.name, outcome.summary)
+                        is AiTaskRunOutcome.Failed ->
+                            repo.recordRun(task.id, at, AiTaskRunStatus.FAILED.name, outcome.message)
+                        // Unchanged: the reason on the row already says why, and
+                        // rewriting it would re-emit the very row this collector
+                        // is reading.
+                        is AiTaskRunOutcome.Deferred -> Unit
+                    }
+                }
+            }
+        }
+    }
+
+    companion object {
+        /** The observer for the process that owns the engine. */
+        fun forBrowserProcess(app: AppGraph, context: Context): AiTaskDelivery =
+            AiTaskDelivery(
+                repo = app.aiTaskRepo,
+                runner = HeadlessAiTaskRunner(context, app)
+            )
+    }
+}

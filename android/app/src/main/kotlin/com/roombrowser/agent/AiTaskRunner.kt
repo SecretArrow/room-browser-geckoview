@@ -27,32 +27,29 @@ fun interface AiTaskRunner {
 }
 
 /**
- * Today's only runner: it never invents an execution path, and records why.
+ * The runner the WORKER uses: it never runs a turn and never pretends to.
  *
  * THE EVIDENCE. WorkManager here is pinned to the default process
  * (`RoomBrowserApp.workManagerConfiguration` sets
  * `setDefaultProcessName(packageName)`), so an [androidx.work.Worker] always
- * runs outside ':browser'. The agent stack lives in ':browser' and only there:
- * `BrowserActivity` is declared `android:process=":browser"`, and it is a
- * `BrowserViewModel` — created by that Activity — that `BrowserAgentController`
- * needs to act on a page. The headless-session spike (`spike/headless-session`)
- * exists precisely because a GeckoView session without an attached view is
- * the open question; until it is answered and wired, no honest worker can run
- * a turn.
+ * runs outside ':browser' — and ':browser' is where the engine lives. One
+ * process may hold one runtime, over profile data both processes share, so the
+ * worker must not start a second one.
  *
- * So this runner reports Deferred, distinguishing the two real cases so the
- * recorded reason is true rather than generic: the browser is open (the stack
- * exists, but is unreachable across the process boundary) versus it is not
- * running at all. The process probe is a fact read from the OS, not a guess.
+ * So the worker RECORDS and ':browser' RUNS: a Deferred outcome is a queue
+ * entry (see [AiTaskDelivery], which watches exactly these rows and executes
+ * them), and the reason it records is the wait, read from the OS rather than
+ * guessed — the browser is up and will take it now, or it is not running and
+ * the occurrence waits for the next time it is.
  */
 class DeferredAiTaskRunner(private val context: Context) : AiTaskRunner {
 
     override suspend fun run(task: AiTaskEntity): AiTaskRunOutcome {
         val reason = if (browserProcessRunning()) {
-            "Deferred: the browser is open, but a background worker cannot drive a turn " +
-                "across the process boundary yet."
+            "Queued: the browser is open, and scheduled runs execute there."
         } else {
-            "Deferred: the browser process and its agent stack are not running."
+            "Queued: no browser process is running, so this waits for the next time " +
+                "Room Browser is open."
         }
         return AiTaskRunOutcome.Deferred(reason)
     }
@@ -71,9 +68,9 @@ class DeferredAiTaskRunner(private val context: Context) : AiTaskRunner {
 }
 
 /**
- * One place to choose the runner implementation. When the headless answer is
- * proven, a `HeadlessSessionTaskRunner` slots in on the `forContext` line and
- * nothing else — worker, scheduler, UI — changes.
+ * One place to choose the WORKER's runner. The process that can actually run a
+ * turn does not come through here: it is [AiTaskDelivery] in ':browser', which
+ * picks up the rows this one leaves behind.
  */
 object AiTaskRunners {
     fun forContext(context: Context): AiTaskRunner = DeferredAiTaskRunner(context)

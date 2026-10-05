@@ -92,4 +92,39 @@ class AiTaskPermissionsTest {
         assertThat(everything.allows("run_shell")).isFalse()
         assertThat(everything.allows("")).isFalse()
     }
+
+    @Test
+    fun every_catalogue_tool_belongs_to_exactly_one_group() {
+        val catalogue = AgentTools.toolDefs().map { it.function.name }
+        listOf(
+            ToolGroup.READ_PAGE, ToolGroup.NAVIGATE, ToolGroup.INTERACT, ToolGroup.POST
+        ).forEach { group ->
+            assertThat(catalogue.filter { all.groupOf(it) == group }).isNotEmpty()
+        }
+        assertThat(catalogue.filter { all.groupOf(it) == null }).isEmpty()
+    }
+
+    @Test
+    fun a_permitted_tool_has_no_refusal() {
+        assertThat(all.refusal(AgentTools.READ_PAGE)).isNull()
+        val granted = all.copy(allowPost = true)
+        assertThat(granted.refusal(AgentTools.AUTO_POST)).isNull()
+    }
+
+    @Test
+    fun a_refusal_names_the_group_that_is_switched_off() {
+        val noInteract = all.copy(allowInteract = false)
+        val message = noInteract.refusal(AgentTools.CLICK)
+        assertThat(message).isNotNull()
+        assertThat(message).contains(AgentTools.CLICK)
+        assertThat(message).contains(ToolGroup.INTERACT.label)
+        // Honest about WHY, so the model stops rather than retrying the same call.
+        assertThat(message).doesNotContain("unknown tool")
+    }
+
+    @Test
+    fun a_refusal_for_an_unknown_tool_says_unknown_rather_than_forbidden() {
+        val message = all.refusal("run_shell")
+        assertThat(message).isEqualTo("unknown tool: run_shell")
+    }
 }
