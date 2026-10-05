@@ -67,6 +67,15 @@ object AgentTools {
         WALLET_APPROVE, WALLET_SWITCH_NETWORK
     )
 
+    /**
+     * The wallet tools as one set. Every one of them answers a dApp request or
+     * moves the active network, so none has a meaning without the user watching
+     * the sheet — a scheduled run refuses the whole group.
+     */
+    val WALLET_TOOLS = setOf(
+        WALLET_STATE, WALLET_REQUESTS, WALLET_APPROVE, WALLET_REJECT, WALLET_SWITCH_NETWORK
+    )
+
     /** OpenAI `tools` array for the chat request. */
     fun toolDefs(): List<ToolDef> = listOf(
         def(NAVIGATE, "Navigate the current tab to a URL. Use complete URLs (https://...).", SCHEMA_NAVIGATE),

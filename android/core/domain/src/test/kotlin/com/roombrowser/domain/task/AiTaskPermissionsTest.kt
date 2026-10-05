@@ -97,11 +97,32 @@ class AiTaskPermissionsTest {
     fun every_catalogue_tool_belongs_to_exactly_one_group() {
         val catalogue = AgentTools.toolDefs().map { it.function.name }
         listOf(
-            ToolGroup.READ_PAGE, ToolGroup.NAVIGATE, ToolGroup.INTERACT, ToolGroup.POST
+            ToolGroup.READ_PAGE, ToolGroup.NAVIGATE, ToolGroup.INTERACT,
+            ToolGroup.POST, ToolGroup.WALLET
         ).forEach { group ->
             assertThat(catalogue.filter { all.groupOf(it) == group }).isNotEmpty()
         }
         assertThat(catalogue.filter { all.groupOf(it) == null }).isEmpty()
+    }
+
+    @Test
+    fun wallet_tools_are_denied_however_the_task_is_granted() {
+        val everything = AiTaskPermissions(
+            allowReadPage = true,
+            allowNavigate = true,
+            allowInteract = true,
+            allowPost = true
+        )
+        AgentTools.WALLET_TOOLS.forEach { tool ->
+            assertThat(all.groupOf(tool)).isEqualTo(ToolGroup.WALLET)
+            assertThat(all.allows(tool)).isFalse()
+            assertThat(everything.allows(tool)).isFalse()
+        }
+        // The refusal has to name the route that DOES work, or the model retries.
+        val refusal = everything.refusal(AgentTools.WALLET_APPROVE)
+        assertThat(refusal).isNotNull()
+        assertThat(refusal).contains(AgentTools.WALLET_APPROVE)
+        assertThat(refusal).doesNotContain("unknown tool")
     }
 
     @Test

@@ -5,7 +5,7 @@ import com.roombrowser.domain.agent.AgentTools
 import org.junit.Test
 
 /**
- * Holds the whole tool catalogue to the two sets [HeadlessToolExecutor] knows
+ * Holds the whole tool catalogue to the three sets [HeadlessToolExecutor] knows
  * about.
  *
  * A scheduled run is offered the same tool list as a chat turn, so a tool added
@@ -23,9 +23,11 @@ import org.junit.Test
 class HeadlessToolCatalogTest {
 
     @Test
-    fun `every catalogue tool is either supported or a tab tool`() {
+    fun `every catalogue tool is either supported, a tab tool, or a wallet tool`() {
         val everyTool = AgentTools.toolDefs().map { it.function.name }
-        val classified = HeadlessToolExecutor.SUPPORTED_TOOLS + HeadlessToolExecutor.TAB_TOOLS
+        val classified = HeadlessToolExecutor.SUPPORTED_TOOLS +
+            HeadlessToolExecutor.TAB_TOOLS +
+            AgentTools.WALLET_TOOLS
 
         assertThat(classified).containsExactlyElementsIn(everyTool)
         assertThat(everyTool).containsNoDuplicates()
@@ -34,7 +36,9 @@ class HeadlessToolCatalogTest {
     @Test
     fun `no tool is on both sides`() {
         val overlap = HeadlessToolExecutor.SUPPORTED_TOOLS
-            .intersect(HeadlessToolExecutor.TAB_TOOLS)
+            .intersect(HeadlessToolExecutor.TAB_TOOLS) +
+            AgentTools.WALLET_TOOLS.intersect(HeadlessToolExecutor.SUPPORTED_TOOLS) +
+            AgentTools.WALLET_TOOLS.intersect(HeadlessToolExecutor.TAB_TOOLS)
 
         assertThat(overlap).isEmpty()
     }
@@ -52,11 +56,12 @@ class HeadlessToolCatalogTest {
     }
 
     @Test
-    fun `every tool that would have to ask the user is supported`() {
+    fun `every tool that would have to ask the user is supported or a wallet tool`() {
         // confirmActions turns these into a refusal, so a missing one would go
         // unrefused in an unattended run — the exact action the switch exists
-        // to hold back.
-        assertThat(HeadlessToolExecutor.SUPPORTED_TOOLS)
+        // to hold back. The wallet tools are refused on their own, earlier and
+        // unconditionally, so they count as handled without being supported.
+        assertThat(HeadlessToolExecutor.SUPPORTED_TOOLS + AgentTools.WALLET_TOOLS)
             .containsAtLeastElementsIn(AgentTools.INTERACTIVE_TOOLS)
         assertThat(AgentTools.INTERACTIVE_TOOLS).isNotEmpty()
     }

@@ -11,6 +11,7 @@ import com.roombrowser.domain.agent.formatDurationMs
 import com.roombrowser.domain.engine.UrlIntelligence
 import com.roombrowser.domain.task.AiTaskPermissions
 import com.roombrowser.domain.task.unattendedRefusal
+import com.roombrowser.domain.task.walletUnattendedRefusal
 import com.roombrowser.engine.EngineSession
 import com.roombrowser.engine.EngineSessionListener
 import java.util.concurrent.atomic.AtomicLong
@@ -104,13 +105,14 @@ class HeadlessToolExecutor(
         }
 
     /**
-     * The refusals that come from the RUN rather than from the page: a tool the
-     * task does not allow (whose message names the switch), a tool with no
-     * meaning without tabs, and an action that would have to ask a user who is
-     * not there. Checked before dispatch so no tool can be reached by a route
-     * that forgot to ask.
+     * The refusals that come from the RUN rather than from the page: a wallet
+     * tool (never available without a person), a tool the task does not allow
+     * (whose message names the switch), a tool with no meaning without tabs, and
+     * an action that would have to ask a user who is not there. Checked before
+     * dispatch so no tool can be reached by a route that forgot to ask.
      */
     private fun refusal(name: String): ToolResult? {
+        if (name in AgentTools.WALLET_TOOLS) return ToolResult(false, walletUnattendedRefusal(name))
         permissions.refusal(name)?.let { return ToolResult(false, it) }
         if (name in TAB_TOOLS) {
             return ToolResult(
@@ -346,9 +348,10 @@ class HeadlessToolExecutor(
         /**
          * The tools a headless run performs, declared rather than inferred so
          * [HeadlessToolCatalogTest] can hold the WHOLE catalogue to
-         * [SUPPORTED_TOOLS] ∪ [TAB_TOOLS]: a tool added to the catalogue later
-         * must be classified deliberately, because the wrong answer is either a
-         * tool the model is offered and refused, or one refused silently.
+         * [SUPPORTED_TOOLS] ∪ [TAB_TOOLS] ∪ [AgentTools.WALLET_TOOLS]: a tool
+         * added to the catalogue later must be classified deliberately, because
+         * the wrong answer is either a tool the model is offered and refused, or
+         * one refused silently.
          */
         internal val SUPPORTED_TOOLS: Set<String> = setOf(
             AgentTools.NAVIGATE, AgentTools.SEARCH_WEB, AgentTools.READ_PAGE,
