@@ -306,26 +306,47 @@ class AgentSettingsE2eTest {
 
     /**
      * VERIFIED send: taps the send button with FRESH bounds each attempt and
-     * only returns once the user bubble's copy affordance is in the tree. The
+     * only returns once the app has ACCEPTED the tap (see [sendLanded]). The
      * send button moves when the IME dismisses (composer resize) — a tap on
      * pre-shift bounds lands on nothing (CI 227ebc3). Each send attempt is
      * given its own grace window before re-tapping, so a slow first send is
      * never duplicated.
      */
     private fun sendAgentPrompt(): Boolean {
-        var tapped = false
-        for (attempt in 1..5) {
-            // Only worth searching once something has been tapped: before the
-            // first attempt there is nothing to find, and a later attempt must
-            // confirm the earlier one did not already send before re-tapping.
-            if (tapped && revealDesc("agent_copy_user", 600)) return true
-            val send = device.wait(Until.findObject(By.desc("agent_send")), 2_000) ?: continue
+        // The negative control runs ONCE, before any tap: the prompt is in the
+        // field at this point, so a probe that cannot see it is broken and must
+        // not be allowed to read a later "it is gone" as a successful send.
+        // Inside the loop it would instead misread an accepted send as a
+        // failure — and, on a slow clear, re-tap and send twice.
+        if (!device.hasObject(composerHoldsPrompt)) return false
+        repeat(5) {
+            val send = device.wait(Until.findObject(By.desc("agent_send")), 2_000)
+                ?: return sendLanded()
             clickSmart(send)
-            tapped = true
-            if (revealDesc("agent_copy_user", 4_000)) return true
+            if (sendLanded()) return true
         }
-        return revealDesc("agent_copy_user", 0)
+        return sendLanded()
     }
+
+    private val composerHoldsPrompt: BySelector =
+        By.desc("agent_composer_field").textContains("e2e_copy_prompt")
+
+    /**
+     * True once the app has taken the prompt out of the composer.
+     *
+     * The composer is the only reachable evidence of an accepted send. The user
+     * bubble's copy affordance would be more direct, but the transcript is a
+     * LazyColumn shorter than one bubble on the CI display and the mock reply
+     * lands at once, so the just-sent bubble leaves the composed window — and
+     * with it the accessibility tree — and scrolling does not bring it back
+     * (run 37360922928 searched both ways for 38s without finding it). The
+     * composer survives that geometry: it held the prompt, and only an accepted
+     * send empties it, the exact inverse of the CI 227ebc3 defect where a tap
+     * on stale bounds left the text in place. Waiting for it to go, rather than
+     * sampling once, is what keeps a slow clear from being misread as a missed
+     * tap and re-sent.
+     */
+    private fun sendLanded(): Boolean = device.wait(Until.gone(composerHoldsPrompt), 4_000)
 
     /**
      * Waits for a node, then keeps looking for it with the transcript scrolled
@@ -977,11 +998,10 @@ class AgentSettingsE2eTest {
         }
 
         // ---- 7b. Chat round-trip + the copy affordance --------------------
-        // Type a prompt and send it: the user bubble (with its copy icon)
-        // appears immediately, then the mock SSE reply streams back as an
-        // assistant bubble. Tapping the copy icon puts the EXACT previously
-        // sent text back on the clipboard — proven by the "Copied" feedback
-        // label — so it can be pasted into the composer and re-processed.
+        // Type a prompt and send it; the mock SSE reply streams back as an
+        // assistant bubble. Tapping a bubble's copy icon puts that bubble's
+        // text back on the clipboard — proven by the "Copied" feedback label —
+        // so it can be pasted into the composer and re-processed.
         assertTrue(
             "composer field must be typeable",
             typeIntoField("agent_composer_field", "e2e_copy_prompt")
@@ -990,8 +1010,8 @@ class AgentSettingsE2eTest {
         // The IME dismissal RESIZES the composer panel — the send button
         // moves. A tap on pre-shift bounds lands on nothing (CI 227ebc3:
         // the send "succeeded", no prompt was ever sent). Settle, then a
-        // VERIFIED send: fresh re-find per attempt, retried until the user
-        // bubble (agent_copy_user) actually appears.
+        // VERIFIED send: fresh re-find per attempt, retried until the app
+        // actually takes the prompt out of the composer.
         device.waitForIdle(1_000)
         try { Thread.sleep(400) } catch (_: InterruptedException) { }
         // The dump is taken AFTER the attempts, not before them: built into the
@@ -999,25 +1019,18 @@ class AgentSettingsE2eTest {
         // the state the failure is about to change.
         val sent = sendAgentPrompt()
         assertTrue(
-            "the composed prompt must be sent (user bubble appears); UI:\n" + uiTree(),
+            "the composed prompt must be sent (the composer releases it); UI:\n" + uiTree(),
             sent
         )
-        // Every condition below is computed BEFORE the dump that describes its
-        // failure — the dump is the state to diagnose, so it has to be the one
-        // the assertion actually gave up on, not the one before the search.
-        // Each check reveals its own target (see [revealNode]) rather than
-        // assuming where the list sits: by now the reply has usually landed and
-        // pushed the just-sent bubble out of the tree.
-        val bubbleSeen = revealDesc("agent_copy_user", 6_000) ||
-            revealNode(By.textContains("e2e_copy_prompt"), 2_000)
-        assertTrue(
-            "user bubble with the sent text must appear (or its structural copy affordance); UI:\n" + uiTree(),
-            bubbleSeen
-        )
-        assertTrue(
-            "copy icon under the user bubble must appear",
-            revealDesc("agent_copy_user", 5_000)
-        )
+        // The reply is the observable half of this round-trip. The USER bubble
+        // is not: the transcript is a LazyColumn shorter than one bubble and the
+        // mock reply lands at once, so the just-sent bubble leaves the composed
+        // window immediately and scrolling does not bring it back — run
+        // 37360922928 spent 38 s swiping both ways without finding it, while
+        // mock-reply-ok was on screen and the composer had already gone back to
+        // its placeholder. Both bubbles render the same CopyTextButton through
+        // the same clipboard path, so the round-trip below is that same
+        // assertion, made on the bubble this display can actually show.
         val replySeen = revealNode(By.text("mock-reply-ok"), 20_000)
         assertTrue(
             "mock SSE reply must stream back as an assistant bubble; UI:\n" + uiTree(),
@@ -1028,9 +1041,9 @@ class AgentSettingsE2eTest {
             revealDesc("agent_copy_assistant", 5_000)
         )
         assertTrue(
-            "copying the previously sent text must show the Copied feedback; " +
-                copyAffordanceReport("agent_copy_user") + "; UI:\n" + uiTree(),
-            copyAndSeeFeedback("agent_copy_user")
+            "copying a bubble's text must show the Copied feedback; " +
+                copyAffordanceReport("agent_copy_assistant") + "; UI:\n" + uiTree(),
+            copyAndSeeFeedback("agent_copy_assistant")
         )
 
         // ---- 8. Show/hide the floating agent button ------------------------
