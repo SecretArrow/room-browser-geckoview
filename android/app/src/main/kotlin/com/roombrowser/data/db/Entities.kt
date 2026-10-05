@@ -505,6 +505,9 @@ data class AiTaskEntity(
     @ColumnInfo(name = "schedule_json") val scheduleJson: String,
     /** AiTaskPermissions JSON. */
     @ColumnInfo(name = "permissions_json") val permissionsJson: String,
+    /** AiTaskRunConfig JSON: which provider, which model, which surface. Empty
+     *  on rows written before the choice existed — those read as AUTO. */
+    @ColumnInfo(name = "run_config_json", defaultValue = "") val runConfigJson: String = "",
     @ColumnInfo(name = "enabled") val enabled: Boolean = true,
     @ColumnInfo(name = "last_run_at_ms") val lastRunAtMs: Long? = null,
     @ColumnInfo(name = "last_run_status") val lastRunStatus: String = "",

@@ -15,6 +15,8 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
+import com.roombrowser.agent.AiTaskPageHost
+import com.roombrowser.agent.AiTaskPageHosts
 import com.roombrowser.browser.engine.ProfileEngine
 import com.roombrowser.browser.ui.BrowserScreen
 import com.roombrowser.browser.ui.LaunchRequest
@@ -43,6 +45,7 @@ class BrowserActivity : FragmentActivity() {
     private var boundProfileId: ProfileId? = null
     private var pendingSwitch = false
     private var browserViewModel: BrowserViewModel? = null
+    private var taskPageHost: AiTaskPageHost? = null
 
     /**
      * The engine's outstanding open request, as Compose state.
@@ -116,6 +119,13 @@ class BrowserActivity : FragmentActivity() {
         }
         val viewModel = ViewModelProvider(this, factory)[BrowserViewModel::class.java]
         browserViewModel = viewModel
+
+        // The surface a task saved as Headed or Standard runs on. Registered
+        // here because it needs a live tab strip, and dropped in onDestroy so a
+        // run can never open a tab on a dead ViewModel.
+        val pageHost = BrowserTaskPageHost(viewModel)
+        taskPageHost = pageHost
+        AiTaskPageHosts.register(pageHost)
 
         // ---- Profile network warning (replaces the old IpWarningDialog) ---
         // The pending decision is STATE, not a dialog: while the gate stands,
@@ -275,6 +285,12 @@ class BrowserActivity : FragmentActivity() {
     override fun onSaveInstanceState(outState: Bundle) {
         super.onSaveInstanceState(outState)
         launchRequest?.let { outState.putString(EXTRA_INITIAL_URL, it.url) }
+    }
+
+    override fun onDestroy() {
+        taskPageHost?.let { AiTaskPageHosts.unregister(it) }
+        taskPageHost = null
+        super.onDestroy()
     }
 
     /**

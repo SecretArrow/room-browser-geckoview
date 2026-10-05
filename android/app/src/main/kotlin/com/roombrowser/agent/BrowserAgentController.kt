@@ -8,6 +8,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import com.roombrowser.RoomBrowserApp
 import com.roombrowser.browser.BrowserViewModel
+import com.roombrowser.browser.engine.ProfileEngine
 import com.roombrowser.data.db.AgentMessageEntity
 import com.roombrowser.data.db.AgentProviderEntity
 import com.roombrowser.data.db.AgentSessionEntity
@@ -15,15 +16,20 @@ import com.roombrowser.data.repo.AgentSettings
 import com.roombrowser.domain.agent.ActionGate
 import com.roombrowser.domain.agent.ActionVerdict
 import com.roombrowser.domain.agent.AgentEvent
+import com.roombrowser.domain.agent.AgentGateway
 import com.roombrowser.domain.agent.AgentHttpException
 import com.roombrowser.domain.agent.AgentLoop
 import com.roombrowser.domain.agent.AgentPrompts
 import com.roombrowser.domain.agent.AgentTools
+import com.roombrowser.domain.agent.AutoModelPicker
 import com.roombrowser.domain.agent.ChatMessage
 import com.roombrowser.domain.agent.LocalAiTuning
+import com.roombrowser.domain.agent.ToolExecutor
 import com.roombrowser.domain.agent.formatDurationMs
 import com.roombrowser.domain.model.ProfileId
 import com.roombrowser.domain.model.SearchEngines
+import com.roombrowser.domain.task.AiTaskPermissions
+import com.roombrowser.engine.EngineSession
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -206,8 +212,20 @@ data class AgentApproval(
  *  - action approvals when "confirm actions" is enabled
  *  - persistence of messages
  *
- * The controller runs in the ':browser' process (it needs the WebView).
+ * The controller runs in the ':browser' process (it needs the engine).
  */
+/**
+ * A turn that did not finish — the provider errored, the turn threw, or the
+ * user stopped it — kept exactly as it was asked so it can be sent again.
+ * Retyping it is the only other way, and the failure is usually the provider's
+ * rather than the request's.
+ */
+data class RetryableTurn(
+    val text: String,
+    val includePage: Boolean,
+    val attachments: List<AgentAttachment>
+)
+
 class BrowserAgentController(
     application: Application,
     private val profileId: ProfileId,
@@ -237,6 +255,13 @@ class BrowserAgentController(
     var activeSessionId by mutableStateOf<Long?>(null)
         private set
     /**
+     * The last turn that did not finish, or null once one completes cleanly.
+     * Non-null is what puts the Retry button in the composer; it survives a
+     * stop on purpose, since the work is still wanted.
+     */
+    var retryable by mutableStateOf<RetryableTurn?>(null)
+        private set
+    /**
      * The tab whose conversation is on screen, or null while none is
      * resolved yet. Read by the panel to notice that the chat it is showing
      * is not the one belonging to the tab behind it (which happens while a
@@ -259,6 +284,21 @@ class BrowserAgentController(
     var activeProvider by mutableStateOf<AgentProviderEntity?>(null)
         private set
     var activeModel by mutableStateOf<String?>(null)
+        private set
+    /**
+     * The chat is set to AUTO: each turn asks the provider which of its models
+     * answers rather than sending [activeModel]. Surfaced so the header says
+     * AUTO instead of a model that this turn may not use.
+     */
+    var chatModelAuto by mutableStateOf(false)
+        private set
+    /**
+     * The chat is set to HEADLESS: each turn drives a hidden page of this
+     * profile's own rather than the tab on screen. Surfaced so the panel can
+     * say so — a hidden turn cannot see a tab, and the user has to be able to
+     * tell that from the conversation.
+     */
+    var chatHeadless by mutableStateOf(false)
         private set
     var modelsLoading by mutableStateOf(false)
         private set
@@ -370,6 +410,8 @@ class BrowserAgentController(
         val model = settings.defaultModel?.takeIf { it.isNotBlank() && provider != null }
             ?: provider?.defaultModel?.takeIf { it.isNotBlank() }
         activeModel = model
+        chatModelAuto = settings.defaultModelAuto && provider != null
+        chatHeadless = settings.chatHeadless
     }
 
     // ------------------------------------------------------------- provider & model
@@ -410,7 +452,7 @@ class BrowserAgentController(
             // must not drag every setting changed since the mirror was filled
             // back to its old value (see AppStateRepository.updateAgentSettings).
             settings = appState.updateAgentSettings {
-                it.copy(defaultProviderId = null, defaultModel = null)
+                it.copy(defaultProviderId = null, defaultModel = null, defaultModelAuto = false)
             }
         }
     }
@@ -467,12 +509,62 @@ class BrowserAgentController(
     fun setDefault(provider: AgentProviderEntity, model: String) {
         scope.launch {
             settings = appState.updateAgentSettings {
-                it.copy(defaultProviderId = provider.id, defaultModel = model)
+                it.copy(defaultProviderId = provider.id, defaultModel = model, defaultModelAuto = false)
             }
             activeProvider = provider
             activeModel = model
+            chatModelAuto = false
             messages.value = "Agent set to ${provider.name} · $model"
         }
+    }
+
+    /**
+     * Sets the chat to AUTO on [provider]: every turn tries the provider's own
+     * default and then the first of its models that answers (see
+     * [AutoModelPicker]), so a name the account cannot actually call does not
+     * fail the whole conversation.
+     */
+    fun setAutoModel(provider: AgentProviderEntity) {
+        scope.launch {
+            // defaultModel is deliberately kept: it is the last explicit pick,
+            // and turning AUTO off should give it back rather than forget it.
+            settings = appState.updateAgentSettings {
+                it.copy(defaultProviderId = provider.id, defaultModelAuto = true)
+            }
+            activeProvider = provider
+            chatModelAuto = true
+            messages.value = "Agent set to ${provider.name} · Auto"
+        }
+    }
+
+    /**
+     * Chooses what a chat turn runs ON: the tab the user is looking at, or a
+     * hidden page of this profile's own. Persisted, because it is a standing
+     * choice about how this profile's agent works, not a per-turn switch.
+     */
+    fun setChatHeadless(headless: Boolean) {
+        scope.launch {
+            settings = appState.updateAgentSettings { it.copy(chatHeadless = headless) }
+            chatHeadless = headless
+        }
+    }
+
+    /**
+     * The model an AUTO turn runs on: the one that was picked by hand first,
+     * then whatever of the provider's own models answers. Null means none of
+     * them did, which the caller reports instead of sending a turn the provider
+     * is going to refuse.
+     */
+    private suspend fun resolveAutoModel(
+        provider: AgentProviderEntity,
+        gateway: AgentGateway
+    ): String? {
+        setStatus("Looking for a model that answers…")
+        val configured = activeModel?.takeIf { it.isNotBlank() }
+            ?: provider.defaultModel.takeIf { it.isNotBlank() }
+        val chosen = AutoModelPicker.firstWorkingOn(gateway, configured)
+        setStatus(null)
+        return chosen
     }
 
     /**
@@ -504,6 +596,9 @@ class BrowserAgentController(
         val previous = activeSessionId
         activeSessionId = null
         entries = emptyList()
+        // A failed turn belongs to the chat it was asked in; a fresh chat is
+        // not where its Retry button should still be waiting.
+        retryable = null
         if (previous != null) {
             scope.launch { repo.bindSessionToTab(previous, "") }
         }
@@ -533,6 +628,7 @@ class BrowserAgentController(
             }
             activeSessionId = session.id
             entries = repo.messages(id).mapNotNull(::entryFromRow)
+            retryable = null
         }
     }
 
@@ -611,8 +707,10 @@ class BrowserAgentController(
             messages.value = "Configure an AI provider first (Agent → settings)"
             return
         }
-        val model = activeModel ?: provider.defaultModel
-        if (model.isBlank()) {
+        // Null means AUTO: the model is not known until a provider answers, and
+        // asking which one does is work the turn itself has to do.
+        val model: String? = if (chatModelAuto) null else activeModel ?: provider.defaultModel
+        if (model != null && model.isBlank()) {
             messages.value = "Pick a model for ${provider.name} first"
             return
         }
@@ -637,6 +735,12 @@ class BrowserAgentController(
         entries = entries + AgentEntry.Notice("Stopped by user", error = true, at = System.currentTimeMillis())
     }
 
+    /** Sends the turn that did not finish again, word for word. */
+    fun retry() {
+        val last = retryable ?: return
+        send(last.text, last.includePage, last.attachments)
+    }
+
     fun respondApproval(answer: ApprovalAnswer) {
         approval?.let { it.respond(answer) }
         approval = null
@@ -647,7 +751,8 @@ class BrowserAgentController(
         includePage: Boolean,
         attachments: List<AgentAttachment>,
         provider: AgentProviderEntity,
-        model: String,
+        // Null means AUTO — see [send] and [resolveAutoModel].
+        requestedModel: String?,
         // The tab the user was on when they sent; see [send].
         tabId: String?
     ) {
@@ -674,6 +779,11 @@ class BrowserAgentController(
         val display = if (attachments.isEmpty()) text
         else text + "\n📎 " + attachments.joinToString(", ") { it.name }
         entries = entries + AgentEntry.User(display, System.currentTimeMillis())
+        // Offered for retry until this turn finishes cleanly. Set here, before
+        // anything can fail, so every failure path below — an error event, a
+        // throw, the user's Stop — leaves the button up without each of them
+        // having to remember to raise it.
+        retryable = RetryableTurn(text, includePage, attachments)
         // YOLO has no prompt to remind anyone it is on, which is exactly why
         // it needs saying: the user turned it on at a prompt, possibly days
         // ago, and every turn since has looked identical to one where the
@@ -686,6 +796,12 @@ class BrowserAgentController(
             )
         }
         var streamingIndex = -1
+        // An error reported as an EVENT rather than thrown still means the turn
+        // did not do what was asked, so it must not clear the retry offer.
+        var turnFailed = false
+        // A headless turn's page. Declared out here because the finally below
+        // is where it is destroyed, and that runs whatever path left the try.
+        var ownedPage: EngineSession? = null
         try {
             // The turn belongs to the tab it was started from. Every tool
             // resolves its engine from this id rather than from whatever is on
@@ -695,35 +811,7 @@ class BrowserAgentController(
             // try so the finally below lifts it even if a step from here on
             // throws.
             vm.pinTabForAgent(tabId)
-            // "Delete all agent chats" can run in the settings ACTIVITY while
-            // a session is active here — verify it still exists, else start a
-            // fresh one instead of writing to a dead row (FK safety).
-            val sessionId = activeSessionId
-                ?.takeIf { runCatching { repo.session(it) != null }.getOrDefault(false) }
-                ?: repo.createSession(
-                    profileId = profileId.value,
-                    title = text.take(64),
-                    providerId = provider.id,
-                    model = model,
-                    // The new chat belongs to this tab, so coming back to the
-                    // tab brings the conversation back with it.
-                    tabId = tabId.orEmpty()
-                ).also {
-                    activeSessionId = it
-                    tabId?.let { id -> conversationTabId = id }
-                }
-            repo.addMessage(sessionId, "user", display)
-
             val apiKey = apiKeyFor(provider).orEmpty()
-            val executor = AgentToolExecutor(
-                vm = vm,
-                tabId = tabId,
-                onStatus = { setStatus(it) },
-                confirmGate = { name, label -> gate(name, label) },
-                // Wallet approvals must not ride the bypassable generic gate.
-                walletConfirm = { label -> requestWalletApproval(label) },
-                destructiveGate = { name, label -> destructiveVerdict(name, label) }
-            )
             // Only the native Ollama protocol consumes the tuning; the other
             // gateways ignore it (default null keeps their wire format intact).
             val retry = settings.retryPolicy()
@@ -744,6 +832,80 @@ class BrowserAgentController(
                     )
                 }
             )
+            // AUTO is settled HERE, before the session row exists: a
+            // conversation recorded against a model that never answered would
+            // claim a run that did not happen, and the user's own message would
+            // be left in it with no reply under it.
+            val model = requestedModel ?: resolveAutoModel(provider, gateway)
+            if (model == null) {
+                note("None of ${provider.name}'s models answered. Pick one by hand.", error = true)
+                return
+            }
+            // WHERE the turn runs is settled here too, and for the same reason
+            // as the model: a conversation that recorded a request no surface
+            // could carry out would claim a run that did not happen.
+            val visibleExecutor = AgentToolExecutor(
+                vm = vm,
+                tabId = tabId,
+                onStatus = { setStatus(it) },
+                confirmGate = { name, label -> gate(name, label) },
+                // Wallet approvals must not ride the bypassable generic gate.
+                walletConfirm = { label -> requestWalletApproval(label) },
+                destructiveGate = { name, label -> destructiveVerdict(name, label) }
+            )
+            // HEADLESS: the turn drives a hidden page of this profile's own
+            // instead of the tab on screen. The reference is kept so the
+            // context snapshot below reads the page the turn actually worked
+            // on, and so the page is torn down when the turn ends.
+            val headless = if (settings.chatHeadless) {
+                val page = createHeadlessPage()
+                if (page == null) {
+                    note(
+                        "Could not start a hidden page for this turn. Switch this chat " +
+                            "to the browser tab and try again.",
+                        error = true
+                    )
+                    return
+                }
+                ownedPage = page
+                HeadlessToolExecutor(
+                    session = page,
+                    searchEngineId = vm.profileSettings().searchEngineId,
+                    permissions = HEADLESS_CHAT_PERMISSIONS,
+                    confirmActions = settings.confirmActions,
+                    // A headless CHAT still has the person who sent it, so an
+                    // action that has to be asked about is asked about rather
+                    // than refused the way a scheduled run refuses it.
+                    askInteractive = { name, label -> gate(name, label) }
+                )
+            } else {
+                null
+            }
+            val executor: ToolExecutor = headless?.let {
+                HeadlessChatToolGate(
+                    page = it,
+                    appTools = { name, args -> visibleExecutor.executeAppTool(name, args) }
+                )
+            } ?: visibleExecutor
+            // "Delete all agent chats" can run in the settings ACTIVITY while
+            // a session is active here — verify it still exists, else start a
+            // fresh one instead of writing to a dead row (FK safety).
+            val sessionId = activeSessionId
+                ?.takeIf { runCatching { repo.session(it) != null }.getOrDefault(false) }
+                ?: repo.createSession(
+                    profileId = profileId.value,
+                    title = text.take(64),
+                    providerId = provider.id,
+                    model = model,
+                    // The new chat belongs to this tab, so coming back to the
+                    // tab brings the conversation back with it.
+                    tabId = tabId.orEmpty()
+                ).also {
+                    activeSessionId = it
+                    tabId?.let { id -> conversationTabId = id }
+                }
+            repo.addMessage(sessionId, "user", display)
+
             val engine = SearchEngines.byId(vm.profileSettings().searchEngineId).label
             val prompt = settings.systemPromptOverride?.takeIf { it.isNotBlank() }
                 ?: AgentPrompts.render(System.currentTimeMillis(), ZoneId.systemDefault(), engine)
@@ -763,7 +925,11 @@ class BrowserAgentController(
                 priorTurns = repo.messages(sessionId)
                     .filter { it.role == "user" || it.role == "assistant" }
                     .map { ChatMessage(role = it.role, content = it.content) },
-                pageSnapshot = if (includePage) executor.snapshotContext() else null,
+                pageSnapshot = when {
+                    !includePage -> null
+                    headless != null -> headless.snapshotContext()
+                    else -> visibleExecutor.snapshotContext()
+                },
                 settings = settings,
                 attachments = attachments,
                 request = text
@@ -817,6 +983,7 @@ class BrowserAgentController(
                     }
                     is AgentEvent.AgentError -> {
                         streamingIndex = finalizeAssistant(streamingIndex)
+                        turnFailed = true
                         entries = entries + AgentEntry.Notice(
                             text = "Agent error: ${event.message}",
                             error = true,
@@ -831,6 +998,7 @@ class BrowserAgentController(
                 }
             }
             repo.touchSession(sessionId)
+            if (!turnFailed) retryable = null
             // The turn finished, so the panel belongs to the user again: if
             // they moved to another tab while it ran, that tab's conversation
             // takes the screen now.
@@ -844,12 +1012,14 @@ class BrowserAgentController(
             // Only when the user moved, too. A turn that opened its own tab
             // leaves that tab on screen (Tahap 1), and re-binding to it would
             // swap this chat's answer for that tab's empty conversation at
-            // the worst possible moment; `executor.currentTabId` is where the
+            // the worst possible moment; the executor's tab is where the
             // turn's work ended, so an active tab that is neither it nor this
-            // chat's own tab is the user's doing.
+            // chat's own tab is the user's doing. A headless turn never moves
+            // its own tab — the tab tools are refused — so the executor's tab
+            // is still the one this chat started on.
             val nowActive = vm.activeTabId
             if (nowActive != null && nowActive != conversationTabId &&
-                nowActive != executor.currentTabId
+                nowActive != visibleExecutor.currentTabId
             ) {
                 showTabConversation(nowActive)
             }
@@ -865,6 +1035,10 @@ class BrowserAgentController(
             running = false
             setStatus(null)
             approval = null
+            // The hidden page belongs to the turn, so it goes with the turn —
+            // it is never in the tab list, and a session left alive keeps a
+            // renderer and its cookies' page state around for nothing.
+            ownedPage?.let { runCatching { it.close() } }
             AgentForeground.stopCurrentTurn = null
             AgentForeground.finish()
             // The pin belongs to the turn, so it lifts with the turn —
@@ -873,6 +1047,33 @@ class BrowserAgentController(
             vm.pinTabForAgent(null)
         }
     }
+
+    /**
+     * A hidden page for a headless turn: this profile's own engine, started at
+     * the tab the user was on so the first read — and the "include the current
+     * page" context — begin where they were.
+     *
+     * IT IS NEVER ATTACHED to a view, so nothing here can appear on the user's
+     * screen or disturb the tab they are looking at, and because the process is
+     * already bound to this profile it uses that profile's own engine context —
+     * a signed-in page stays signed-in.
+     *
+     * HONEST LIMIT: a detached session still loads and runs JavaScript, but no
+     * frame is ever drawn from it, so a page that only fills itself in from
+     * `requestAnimationFrame` or an IntersectionObserver may stay empty.
+     */
+    private fun createHeadlessPage(): EngineSession? = runCatching {
+        val session = ProfileEngine.createSession(
+            context = appContext,
+            profile = vm.profile,
+            sessionId = "agent-chat-${System.currentTimeMillis()}",
+            isPrivate = false
+        )
+        vm.pageState.url
+            ?.takeIf { it.isNotBlank() && !it.startsWith("about:") }
+            ?.let { session.loadUri(it) }
+        session
+    }.getOrNull()
 
     // ------------------------------------------------------------- entry helpers
 
@@ -1022,7 +1223,6 @@ class BrowserAgentController(
             ApprovalAnswer.Allow, ApprovalAnswer.AlwaysAllow -> ActionVerdict.Allow
             ApprovalAnswer.Deny -> ActionVerdict.Deny("the user denied this action, which cannot be undone")
         }
-
     /**
      * The gate every state-changing tool call passes through.
      *
@@ -1205,5 +1405,17 @@ class BrowserAgentController(
          * long — the action then falls back to the Confirm actions rule.
          */
         private const val DECISION_TIMEOUT_MS = 30_000L
+
+        /**
+         * What a headless chat may reach on its hidden page.
+         *
+         * A chat is attended, so it gets the page tools the visible chat has,
+         * posting included; the person who sent the turn is there to be asked.
+         * The wallet and the app tools are not decided here: the app's own
+         * tools run through the visible executor's gates, and
+         * [HeadlessChatToolGate] refuses the wallet and tab groups with the
+         * reason that fits a hidden page.
+         */
+        private val HEADLESS_CHAT_PERMISSIONS = AiTaskPermissions(allowPost = true)
     }
 }

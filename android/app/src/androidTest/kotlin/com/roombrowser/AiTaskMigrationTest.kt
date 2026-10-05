@@ -15,18 +15,18 @@ import org.junit.Test
 import org.junit.runner.RunWith
 
 /**
- * The v10 → v11 migration, run against a database that really is v10.
+ * The v10 → v12 migration chain, run against a database that really is v10.
  *
- * Every other test starts from a fresh install, which creates v11 directly and
- * never executes MIGRATION_10_11. Room validates the migrated schema when it
- * opens the database and throws if it does not match the entities — so a wrong
- * migration is not a missing table, it is the app failing to start for every
- * existing user. This is the only automated guard for that.
+ * Every other test starts from a fresh install, which creates the current
+ * version directly and never executes these migrations. Room validates the
+ * migrated schema when it opens the database and throws if it does not match the
+ * entities — so a wrong migration is not a missing column, it is the app failing
+ * to start for every existing user. This is the only automated guard for that.
  *
  * Building a v10 database: rather than hand-write the schema of every table at
- * v10, let Room create a real v11 database and undo exactly the v10→v11 delta —
- * the `ai_tasks` table and its index. Nothing else changed, so what remains is
- * genuinely the v10 schema.
+ * v10, let Room create a real database at the current version and undo exactly
+ * the v10→v12 delta — the `ai_tasks` table and its index. Nothing else changed,
+ * so what remains is genuinely the v10 schema.
  */
 @RunWith(AndroidJUnit4::class)
 class AiTaskMigrationTest {
@@ -59,11 +59,11 @@ class AiTaskMigrationTest {
         // 2. Strip it back to v10.
         revertToV10()
 
-        // 3. Open through Room again: runs MIGRATION_10_11, then Room's own
-        //    validation against the entities — the step that throws, and takes
-        //    the app down with it, when a migration is wrong.
+        // 3. Open through Room again: runs MIGRATION_10_11 and MIGRATION_11_12,
+        //    then Room's own validation against the entities — the step that
+        //    throws, and takes the app down with it, when a migration is wrong.
         val upgraded = Room.databaseBuilder(context, AppDatabase::class.java, dbName)
-            .addMigrations(AppDatabase.MIGRATION_10_11)
+            .addMigrations(AppDatabase.MIGRATION_10_11, AppDatabase.MIGRATION_11_12)
             .build()
         try {
             val dao = upgraded.aiTaskDao()
@@ -84,6 +84,9 @@ class AiTaskMigrationTest {
             assertThat(saved).isNotNull()
             assertThat(saved!!.name).isEqualTo("morning")
             assertThat(saved.profileId).isEqualTo(profileId)
+            // v12's column really exists on the migrated table, and reads as
+            // "no choice made" — the value every pre-existing row carries.
+            assertThat(saved.runConfigJson).isEmpty()
 
             // The profile-deletion cascade index exists and works.
             dao.deleteAllForProfile(profileId)
@@ -96,8 +99,8 @@ class AiTaskMigrationTest {
     /**
      * Rewrites the freshly created database into the v10 shape, in place: v10
      * had no `ai_tasks` table at all. Dropping it (and its index with it) and
-     * the `room_master_table` row — which holds the v11 schema hash and has no
-     * business in a database that claims to be v10 — leaves exactly v10.
+     * the `room_master_table` row — which holds the current schema hash and has
+     * no business in a database that claims to be v10 — leaves exactly v10.
      */
     private fun revertToV10() {
         val db = SQLiteDatabase.openDatabase(

@@ -209,6 +209,10 @@ fun BrowserScreen(
         )
     }
 
+    fun launchAiTasks() {
+        com.roombrowser.agent.ui.AiTasksActivity.launch(activity)
+    }
+
     fun launchAgentSessions() {
         agentSessionsLauncher.launch(
             Intent(activity, com.roombrowser.agent.ui.AgentSessionsActivity::class.java).apply {
@@ -359,6 +363,7 @@ fun BrowserScreen(
             onOpenProfileSettings = { route = BrowserRoute.ProfileSettings; showPageActions = false },
             onOpenAbout = { route = BrowserRoute.About; showPageActions = false },
             onOpenAgent = { agentPanelExpanded = true; showPageActions = false },
+            onOpenAiTasks = { launchAiTasks(); showPageActions = false },
             onOpenAgentSettings = { launchAgentSettings(); showPageActions = false },
             onOpenAgentSessions = { launchAgentSessions(); showPageActions = false },
             onOpenBookmarks = { route = BrowserRoute.Bookmarks; showPageActions = false },

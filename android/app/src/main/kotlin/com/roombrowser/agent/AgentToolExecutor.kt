@@ -145,6 +145,17 @@ class AgentToolExecutor(
             }
         }
 
+    /**
+     * The app's own tools alone, or null when [name] is not one of them.
+     *
+     * Exposed for a HEADLESS turn, which drives a hidden page instead of the
+     * tab on screen and so cannot go through [execute] — but whose app tools
+     * are the same ones, on the same gates, because they act on the browser
+     * rather than on any page.
+     */
+    suspend fun executeAppTool(name: String, argsJson: String): ToolResult? =
+        appTools.execute(name, argsJson)
+
     /** Snapshot text used for the "include current page" context feature. */
     suspend fun snapshotContext(): String? = withContext(Dispatchers.Main) {
         formatSnapshot()?.let { "Current page:\n$it" }

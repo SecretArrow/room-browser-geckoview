@@ -64,6 +64,18 @@ data class AgentSettings(
     val showAgentButton: Boolean = false,
     val defaultProviderId: Long? = null,
     val defaultModel: String? = null,
+    /**
+     * The chat asks the provider which of its models actually answers, instead
+     * of sending [defaultModel]. [defaultModel] is kept as the last explicit
+     * pick, so turning AUTO off restores it rather than losing it.
+     */
+    val defaultModelAuto: Boolean = false,
+    /**
+     * The chat runs on a hidden page instead of the tab the user is looking
+     * at. Off by default: the visible tab is what makes "click that button"
+     * mean anything to the person giving the order.
+     */
+    val chatHeadless: Boolean = false,
     val temperature: Double = 0.2,
     val maxSteps: Int = 25,
     val confirmActions: Boolean = false,

@@ -3,6 +3,7 @@ package com.roombrowser.data.repo
 import com.roombrowser.data.db.AiTaskDao
 import com.roombrowser.data.db.AiTaskEntity
 import com.roombrowser.domain.task.AiTaskPermissions
+import com.roombrowser.domain.task.AiTaskRunConfig
 import com.roombrowser.domain.task.AiTaskRunStatus
 import com.roombrowser.domain.task.TaskSchedule
 import kotlinx.coroutines.flow.Flow
@@ -41,12 +42,23 @@ object AiTaskCodec {
     fun decodePermissions(raw: String): AiTaskPermissions =
         runCatching { json.decodeFromString(AiTaskPermissions.serializer(), raw) }
             .getOrDefault(AiTaskPermissions.DEFAULT)
+
+    fun encodeRunConfig(config: AiTaskRunConfig): String =
+        json.encodeToString(AiTaskRunConfig.serializer(), config)
+
+    /** An unreadable or absent value is AUTO on the agent's defaults — the
+     *  behaviour every task had before the choice existed. */
+    fun decodeRunConfig(raw: String): AiTaskRunConfig =
+        runCatching { json.decodeFromString(AiTaskRunConfig.serializer(), raw) }
+            .getOrDefault(AiTaskRunConfig.DEFAULT)
 }
 
 /** Typed views of an [AiTaskEntity]'s JSON columns. */
 val AiTaskEntity.schedule: TaskSchedule get() = AiTaskCodec.decodeSchedule(scheduleJson)
 
 val AiTaskEntity.permissions: AiTaskPermissions get() = AiTaskCodec.decodePermissions(permissionsJson)
+
+val AiTaskEntity.runConfig: AiTaskRunConfig get() = AiTaskCodec.decodeRunConfig(runConfigJson)
 
 /**
  * Scheduled AI tasks. Rows are app-global; the profile a task runs against is
@@ -61,7 +73,9 @@ class AiTaskRepository(private val dao: AiTaskDao) {
     suspend fun get(id: Long): AiTaskEntity? = dao.get(id)
 
     /** Insert-or-replace. A null [id] creates; otherwise the existing row's
-     *  createdAt and last-run bookkeeping are preserved. */
+     *  createdAt and last-run bookkeeping are preserved. [runConfig] defaults
+     *  to AUTO on the agent's own defaults, so a caller that does not care
+     *  about the choice writes exactly what an upgraded legacy row reads. */
     suspend fun save(
         id: Long?,
         name: String,
@@ -69,7 +83,8 @@ class AiTaskRepository(private val dao: AiTaskDao) {
         profileId: String,
         schedule: TaskSchedule,
         permissions: AiTaskPermissions,
-        enabled: Boolean
+        enabled: Boolean,
+        runConfig: AiTaskRunConfig = AiTaskRunConfig.DEFAULT
     ): Long {
         val existing = id?.let { dao.get(it) }
         return dao.upsert(
@@ -80,6 +95,7 @@ class AiTaskRepository(private val dao: AiTaskDao) {
                 profileId = profileId,
                 scheduleJson = AiTaskCodec.encodeSchedule(schedule),
                 permissionsJson = AiTaskCodec.encodePermissions(permissions),
+                runConfigJson = AiTaskCodec.encodeRunConfig(runConfig),
                 enabled = enabled,
                 lastRunAtMs = existing?.lastRunAtMs,
                 lastRunStatus = existing?.lastRunStatus ?: "",

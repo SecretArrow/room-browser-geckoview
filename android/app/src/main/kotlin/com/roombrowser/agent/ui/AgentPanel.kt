@@ -58,6 +58,7 @@ import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardReturn
 import androidx.compose.material.icons.filled.Public
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.SmartToy
@@ -404,6 +405,7 @@ private fun AgentPanelHeader(
     onOpenSettings: () -> Unit
 ) {
     var showModelPicker by remember { mutableStateOf(false) }
+    var showSurfacePicker by remember { mutableStateOf(false) }
 
     Row(
         Modifier
@@ -423,6 +425,7 @@ private fun AgentPanelHeader(
             val provider = agent.activeProvider
             val modelLine = when {
                 provider == null -> "No provider configured"
+                agent.chatModelAuto -> "${provider.name} · Auto"
                 else -> "${provider.name} · ${agent.activeModel ?: provider.defaultModel}"
             }
             Text(
@@ -437,6 +440,21 @@ private fun AgentPanelHeader(
                     .clickable(enabled = provider != null) { showModelPicker = true }
                     .semantics { contentDescription = "agent_model" }
                     .padding(vertical = 8.dp)
+            )
+            // Where a turn runs, on the same tappable line pattern as the
+            // model above. It has to be visible BEFORE a turn is sent: the two
+            // surfaces disagree about what "click that button" means, and only
+            // one of them can be watched.
+            Text(
+                if (agent.chatHeadless) "Headless · hidden page" else "Headed · this tab",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier
+                    .clickable { showSurfacePicker = true }
+                    .semantics { contentDescription = "agent_surface" }
+                    .padding(vertical = 6.dp)
             )
             // While a turn runs the panel stays with it, even if the user
             // walks off to another tab — otherwise the running work would
@@ -470,6 +488,9 @@ private fun AgentPanelHeader(
 
     if (showModelPicker) {
         ModelPickerSheet(agent = agent, onDismiss = { showModelPicker = false })
+    }
+    if (showSurfacePicker) {
+        ChatSurfaceSheet(agent = agent, onDismiss = { showSurfacePicker = false })
     }
 }
 
@@ -1050,6 +1071,34 @@ private fun AgentComposer(agent: BrowserAgentController, modifier: Modifier = Mo
 
             Spacer(Modifier.height(6.dp))
 
+            // A turn that errored or was stopped can be sent again exactly as
+            // it was asked. Retyping it is the only alternative, and the
+            // failure — a provider hiccup, a rate limit — is usually not the
+            // request's fault.
+            if (!agent.running && agent.retryable != null) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text(
+                        "That turn did not finish.",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.error,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f)
+                    )
+                    TextButton(
+                        onClick = { agent.retry() },
+                        modifier = Modifier.semantics { contentDescription = "agent_retry" }
+                    ) {
+                        Icon(Icons.Filled.Refresh, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(Modifier.width(6.dp))
+                        Text("Retry")
+                    }
+                }
+            }
+
             // Row 2 — full-width input row.
             Row(verticalAlignment = Alignment.Bottom) {
                 OutlinedTextField(
@@ -1331,6 +1380,19 @@ fun ModelPickerSheet(agent: BrowserAgentController, onDismiss: () -> Unit) {
                 )
             }
 
+            if (selected != null) {
+                Spacer(Modifier.height(12.dp))
+                FilterChip(
+                    selected = agent.chatModelAuto && agent.activeProvider?.id == selected!!.id,
+                    onClick = {
+                        agent.setAutoModel(selected!!)
+                        onDismiss()
+                    },
+                    label = { Text("Auto — try each model until one answers") },
+                    modifier = Modifier.semantics { contentDescription = "agent_model_auto" }
+                )
+            }
+
             Spacer(Modifier.height(12.dp))
             when {
                 selected == null -> Unit
@@ -1392,6 +1454,65 @@ fun ModelPickerSheet(agent: BrowserAgentController, onDismiss: () -> Unit) {
                     }
                 }
             }
+            Spacer(Modifier.height(24.dp))
+        }
+    }
+}
+
+// ------------------------------------------------------------------- surface picker
+
+/**
+ * What a chat turn runs on. Two options, not the AI Task editor's three: a
+ * chat has no "leave the tab open when it ends" — it runs on a tab the user
+ * already had, or on a page of its own that goes away with the turn.
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun ChatSurfaceSheet(agent: BrowserAgentController, onDismiss: () -> Unit) {
+    ModalBottomSheet(onDismissRequest = onDismiss, shape = RoomBottomSheetShape) {
+        Column(Modifier.padding(horizontal = 16.dp)) {
+            Text("Where the chat runs", style = MaterialTheme.typography.titleLarge)
+            Spacer(Modifier.height(4.dp))
+            Text(
+                "Applies to every turn from now on, in this profile.",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Spacer(Modifier.height(12.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                FilterChip(
+                    selected = !agent.chatHeadless,
+                    onClick = {
+                        agent.setChatHeadless(false)
+                        onDismiss()
+                    },
+                    label = { Text("Headed browser") },
+                    modifier = Modifier.semantics { contentDescription = "agent_surface_headed" }
+                )
+                FilterChip(
+                    selected = agent.chatHeadless,
+                    onClick = {
+                        agent.setChatHeadless(true)
+                        onDismiss()
+                    },
+                    label = { Text("Headless") },
+                    modifier = Modifier.semantics { contentDescription = "agent_surface_headless" }
+                )
+            }
+            Spacer(Modifier.height(8.dp))
+            Text(
+                if (agent.chatHeadless) {
+                    "Runs on a hidden page in this profile — sites you are signed into stay " +
+                        "signed in — starting at the address you are on, and nothing appears on " +
+                        "screen while it works. It cannot open or switch tabs, and a wallet " +
+                        "request cannot be answered from a page you cannot see."
+                } else {
+                    "Runs on the tab you are looking at, so every click and every line typed " +
+                        "happens where you can watch it, and the agent can open tabs of its own."
+                },
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
             Spacer(Modifier.height(24.dp))
         }
     }

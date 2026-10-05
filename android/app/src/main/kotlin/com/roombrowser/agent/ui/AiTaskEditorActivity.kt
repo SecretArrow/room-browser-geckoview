@@ -22,14 +22,17 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.systemBars
 import androidx.compose.foundation.layout.union
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.Button
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
@@ -46,6 +49,7 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -65,10 +69,14 @@ import com.roombrowser.RoomBrowserApp
 import com.roombrowser.agent.AiTaskController
 import com.roombrowser.data.db.AiTaskEntity
 import com.roombrowser.data.repo.permissions
+import com.roombrowser.data.repo.runConfig
 import com.roombrowser.data.repo.schedule
+import com.roombrowser.domain.task.AiTaskExecutionMode
 import com.roombrowser.domain.task.AiTaskPermissions
+import com.roombrowser.domain.task.AiTaskRunConfig
 import com.roombrowser.domain.task.ScheduleKind
 import com.roombrowser.domain.task.TaskSchedule
+import com.roombrowser.domain.task.needsVisibleBrowser
 import com.roombrowser.ui.common.RoomBrowserTheme
 import java.time.DayOfWeek
 import java.time.ZoneId
@@ -174,6 +182,19 @@ private fun TaskEditorRoot(
         mutableStateOf(existingPermissions?.allowPost ?: false)
     }
     var enabled by rememberSaveable(editing) { mutableStateOf(editing?.enabled ?: true) }
+    // Blank means Auto for both: the provider the agent is configured with, and
+    // a model on it that answers.
+    var providerIdText by rememberSaveable(editing) {
+        mutableStateOf(editing?.runConfig?.providerId?.toString() ?: "")
+    }
+    var modelText by rememberSaveable(editing) { mutableStateOf(editing?.runConfig?.model ?: "") }
+    var models by remember { mutableStateOf<List<String>>(emptyList()) }
+    var modelsLoading by remember { mutableStateOf(false) }
+    var modelsError by remember { mutableStateOf<String?>(null) }
+    var modelsRefresh by remember { mutableIntStateOf(0) }
+    var modeName by rememberSaveable(editing) {
+        mutableStateOf((editing?.runConfig?.executionMode ?: AiTaskExecutionMode.HEADLESS).name)
+    }
     var saveError by remember { mutableStateOf<String?>(null) }
 
     // A new task needs a profile; default to the first one as soon as the
@@ -184,7 +205,34 @@ private fun TaskEditorRoot(
         }
     }
 
+    val selectedProvider = controller.providers.firstOrNull { it.id.toString() == providerIdText }
+    val knownModels = listOfNotNull(selectedProvider?.defaultModel)
+        .plus(models)
+        .plus(listOfNotNull(modelText.takeIf { it.isNotBlank() }))
+        .map { it.trim() }
+        .filter { it.isNotEmpty() }
+        .distinct()
+
+    // The provider's own list, read when the choice changes (and on demand),
+    // never on every keystroke.
+    LaunchedEffect(selectedProvider?.id, modelsRefresh) {
+        val provider = selectedProvider
+        if (provider == null) {
+            models = emptyList()
+            modelsError = null
+            return@LaunchedEffect
+        }
+        modelsLoading = true
+        modelsError = null
+        controller.fetchModels(provider)
+            .onSuccess { models = it }
+            .onFailure { modelsError = it.message ?: "listing failed" }
+        modelsLoading = false
+    }
+
     val kind = ScheduleKind.entries.firstOrNull { it.name == kindName } ?: ScheduleKind.DAILY
+    val mode = AiTaskExecutionMode.entries.firstOrNull { it.name == modeName }
+        ?: AiTaskExecutionMode.HEADLESS
     val schedule = buildSchedule(
         kind = kind,
         intervalText = intervalText,
@@ -248,6 +296,11 @@ private fun TaskEditorRoot(
                                 allowInteract = allowInteract,
                                 allowPost = allowPost
                             )
+                            val draftRunConfig = AiTaskRunConfig(
+                                providerId = providerIdText.toLongOrNull(),
+                                model = modelText.trim().takeIf { it.isNotBlank() },
+                                executionMode = mode
+                            )
                             val appScope = (context.applicationContext as RoomBrowserApp).graph.appScope
                             appScope.launch {
                                 runCatching {
@@ -258,6 +311,7 @@ private fun TaskEditorRoot(
                                         profileId = draftProfileId,
                                         schedule = draftSchedule,
                                         permissions = draftPermissions,
+                                        runConfig = draftRunConfig,
                                         enabled = draftEnabled
                                     )
                                 }.onSuccess {
@@ -338,6 +392,142 @@ private fun TaskEditorRoot(
                         }
                     )
                 }
+            }
+
+            Spacer(Modifier.height(14.dp))
+            Text("AI provider & model", style = MaterialTheme.typography.labelLarge)
+            Text(
+                "Auto uses whichever configured provider answers, and finds a model there that really does.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Spacer(Modifier.height(4.dp))
+            if (controller.providers.isEmpty()) {
+                Text(
+                    "No AI provider is set up yet — add one in AI Agent Settings. Until then this task " +
+                        "stays queued rather than failing.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error
+                )
+            }
+            FlowRow(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
+                FilterChip(
+                    selected = providerIdText.isBlank(),
+                    onClick = { providerIdText = "" },
+                    label = { Text("Auto") },
+                    modifier = Modifier.semantics { contentDescription = "ai_task_provider_auto" }
+                )
+                controller.providers.forEach { provider ->
+                    FilterChip(
+                        selected = providerIdText == provider.id.toString(),
+                        onClick = {
+                            providerIdText = provider.id.toString()
+                            // Keep a model that belongs to no other provider's
+                            // list out of this one: the id would be sent to a
+                            // provider that has never heard of it.
+                            if (modelText.isNotBlank() && modelText !in models) modelText = ""
+                        },
+                        label = { Text(provider.name, maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                        modifier = Modifier.semantics {
+                            contentDescription = "ai_task_provider_${provider.id}"
+                        }
+                    )
+                }
+            }
+
+            if (selectedProvider != null) {
+                Spacer(Modifier.height(8.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("Models on ${selectedProvider.name}", style = MaterialTheme.typography.labelLarge)
+                    Spacer(Modifier.width(8.dp))
+                    if (modelsLoading) {
+                        CircularProgressIndicator(strokeWidth = 2.dp, modifier = Modifier.size(16.dp))
+                    } else {
+                        IconButton(
+                            onClick = { modelsRefresh++ },
+                            modifier = Modifier.semantics {
+                                contentDescription = "ai_task_fetch_models"
+                            }
+                        ) {
+                            Icon(Icons.Filled.Refresh, contentDescription = "Find models")
+                        }
+                    }
+                }
+                FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    FilterChip(
+                        selected = modelText.isBlank(),
+                        onClick = { modelText = "" },
+                        label = { Text("Auto") },
+                        modifier = Modifier.semantics { contentDescription = "ai_task_model_auto" }
+                    )
+                    knownModels.forEach { candidate ->
+                        FilterChip(
+                            selected = modelText == candidate,
+                            onClick = { modelText = candidate },
+                            label = { Text(candidate, maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                            modifier = Modifier.semantics {
+                                contentDescription = "ai_task_model_$candidate"
+                            }
+                        )
+                    }
+                }
+                modelsError?.let {
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        "Could not list models: $it — type the id below.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.error
+                    )
+                }
+                Spacer(Modifier.height(6.dp))
+                OutlinedTextField(
+                    value = modelText,
+                    onValueChange = { modelText = it.trim() },
+                    label = { Text("Model") },
+                    placeholder = { Text("Leave blank for Auto") },
+                    singleLine = true,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .semantics { contentDescription = "ai_task_model_field" }
+                )
+            }
+
+            Spacer(Modifier.height(14.dp))
+            Text("Runs in", style = MaterialTheme.typography.labelLarge)
+            Text(
+                aiTaskModeHint(mode),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Spacer(Modifier.height(4.dp))
+            FlowRow(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
+                AiTaskExecutionMode.entries.forEach { entry ->
+                    FilterChip(
+                        selected = mode == entry,
+                        onClick = { modeName = entry.name },
+                        label = { Text(aiTaskModeLabel(entry)) },
+                        modifier = Modifier.semantics {
+                            contentDescription = "ai_task_mode_${entry.name.lowercase()}"
+                        }
+                    )
+                }
+            }
+            if (mode.needsVisibleBrowser) {
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    "Needs Room Browser open on this profile; until then the run waits.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error
+                )
             }
 
             Spacer(Modifier.height(14.dp))
@@ -556,6 +746,23 @@ private fun PermissionRow(
             )
         }
     }
+}
+
+private fun aiTaskModeLabel(mode: AiTaskExecutionMode): String = when (mode) {
+    AiTaskExecutionMode.HEADLESS -> "Headless"
+    AiTaskExecutionMode.HEADED -> "Headed browser"
+    AiTaskExecutionMode.STANDARD -> "Standard browser"
+}
+
+private fun aiTaskModeHint(mode: AiTaskExecutionMode): String = when (mode) {
+    AiTaskExecutionMode.HEADLESS ->
+        "Runs in a hidden page, so nothing appears on screen while it works."
+    AiTaskExecutionMode.HEADED ->
+        "Runs in a tab you can watch, which pages that only fill themselves in once they are " +
+            "drawn need. The tab is closed when the run ends."
+    AiTaskExecutionMode.STANDARD ->
+        "Runs in a tab you can watch and leaves it open when the run ends, so you can carry on " +
+            "from where it stopped."
 }
 
 /** The typed fields as a [TaskSchedule], or null while any field the chosen

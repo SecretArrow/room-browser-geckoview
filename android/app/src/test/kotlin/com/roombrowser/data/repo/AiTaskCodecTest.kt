@@ -1,7 +1,9 @@
 package com.roombrowser.data.repo
 
 import com.google.common.truth.Truth.assertThat
+import com.roombrowser.domain.task.AiTaskExecutionMode
 import com.roombrowser.domain.task.AiTaskPermissions
+import com.roombrowser.domain.task.AiTaskRunConfig
 import com.roombrowser.domain.task.ScheduleKind
 import com.roombrowser.domain.task.TaskSchedule
 import java.time.DayOfWeek
@@ -77,5 +79,42 @@ class AiTaskCodecTest {
     fun defaults_are_encoded_so_a_missing_field_never_means_an_unknown_value() {
         val encoded = AiTaskCodec.encodeSchedule(TaskSchedule(kind = ScheduleKind.DAILY))
         assertThat(encoded).contains("intervalMinutes")
+    }
+
+    @Test
+    fun a_run_config_survives_a_round_trip() {
+        val config = AiTaskRunConfig(
+            providerId = 7L,
+            model = "gpt-4o-mini",
+            executionMode = AiTaskExecutionMode.STANDARD
+        )
+        assertThat(AiTaskCodec.decodeRunConfig(AiTaskCodec.encodeRunConfig(config)))
+            .isEqualTo(config)
+    }
+
+    @Test
+    fun auto_is_the_absence_of_a_choice_and_survives_a_round_trip() {
+        val config = AiTaskRunConfig(providerId = null, model = null)
+        val decoded = AiTaskCodec.decodeRunConfig(AiTaskCodec.encodeRunConfig(config))
+        assertThat(decoded.providerId).isNull()
+        assertThat(decoded.model).isNull()
+        assertThat(decoded.executionMode).isEqualTo(AiTaskExecutionMode.HEADLESS)
+    }
+
+    @Test
+    fun a_row_written_before_the_choice_existed_decodes_as_auto_and_headless() {
+        // The column's default is the empty string, which is what every
+        // pre-existing row carries — and what it must keep meaning.
+        assertThat(AiTaskCodec.decodeRunConfig("")).isEqualTo(AiTaskRunConfig.DEFAULT)
+        assertThat(AiTaskCodec.decodeRunConfig("not json")).isEqualTo(AiTaskRunConfig.DEFAULT)
+        assertThat(AiTaskRunConfig.DEFAULT.providerId).isNull()
+        assertThat(AiTaskRunConfig.DEFAULT.model).isNull()
+        assertThat(AiTaskRunConfig.DEFAULT.executionMode).isEqualTo(AiTaskExecutionMode.HEADLESS)
+    }
+
+    @Test
+    fun an_unknown_execution_mode_falls_back_to_the_whole_default_rather_than_half_a_config() {
+        val forwardWritten = """{"providerId":3,"model":"m","executionMode":"HOLOGRAM"}"""
+        assertThat(AiTaskCodec.decodeRunConfig(forwardWritten)).isEqualTo(AiTaskRunConfig.DEFAULT)
     }
 }

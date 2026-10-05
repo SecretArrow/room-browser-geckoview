@@ -49,6 +49,7 @@ import androidx.compose.material.icons.filled.PictureAsPdf
 import androidx.compose.material.icons.filled.QrCodeScanner
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.SafetyCheck
+import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.SmartToy
@@ -270,6 +271,7 @@ fun PageActionsSheet(
     onOpenProfileSettings: () -> Unit,
     onOpenAbout: () -> Unit,
     onOpenAgent: () -> Unit,
+    onOpenAiTasks: () -> Unit,
     onOpenAgentSettings: () -> Unit,
     onOpenAgentSessions: () -> Unit,
     onOpenBookmarks: () -> Unit,
@@ -342,6 +344,7 @@ fun PageActionsSheet(
 
             SheetSectionLabel("AI Agent")
             SheetAction(Icons.Filled.AutoAwesome, "AI Agents") { onOpenAgent() }
+            SheetAction(Icons.Filled.Schedule, "AI Tasks") { onOpenAiTasks() }
             // The parenthetical "(providers & models)" is gone on purpose:
             // this row sits directly under "AI Agents" in the same section,
             // so the suffix was repeating the section, widening the row and
