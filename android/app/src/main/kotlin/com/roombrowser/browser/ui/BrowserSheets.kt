@@ -45,6 +45,7 @@ import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.MenuBook
 import androidx.compose.material.icons.filled.MoreHoriz
 import androidx.compose.material.icons.filled.Palette
+import androidx.compose.material.icons.filled.Password
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.PictureAsPdf
 import androidx.compose.material.icons.filled.QrCodeScanner
@@ -279,6 +280,7 @@ fun PageActionsSheet(
     onOpenDownloads: () -> Unit,
     onOpenHistory: () -> Unit,
     onOpenNotes: () -> Unit,
+    onOpenTwoFactor: () -> Unit,
     onShowQuickSwitcher: () -> Unit,
     onShowShields: () -> Unit = {}
 ) {
@@ -295,6 +297,7 @@ fun PageActionsSheet(
             SheetAction(Icons.Filled.Add, "New tab") { viewModel.loadUrl("about:home", newTab = true); onDismiss() }
             SheetAction(Icons.Filled.Lock, "New private tab") { viewModel.startPrivateTab(); onDismiss() }
             SheetAction(Icons.Filled.Description, "Notes") { onOpenNotes() }
+            SheetAction(Icons.Filled.Password, "2FA Management") { onOpenTwoFactor() }
             SheetAction(Icons.Filled.SafetyCheck, "Shields") { onDismiss(); onShowShields() }
             SheetAction(Icons.Filled.FindInPage, "Find in page") { onShowFindBar() }
             SheetAction(Icons.Filled.Language, "Translate") { onTranslate() }

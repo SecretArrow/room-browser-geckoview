@@ -411,6 +411,16 @@ fun MainScreen(
             1 -> "1 saved password will be destroyed with it and cannot be recovered."
             else -> "$count saved passwords will be destroyed with it and cannot be recovered."
         }
+        // 2FA seeds have no counterpart anywhere else once they are gone: the
+        // account they authenticate can only be recovered through the service's
+        // own backup codes, which this app does not hold.
+        val twoFactor = when (prompt.totpCount) {
+            0 -> null
+            1 -> "1 authenticator account (2FA) will be destroyed with it, and its " +
+                "setup key cannot be recovered."
+            else -> "${prompt.totpCount} authenticator accounts (2FA) will be destroyed " +
+                "with it, and their setup keys cannot be recovered."
+        }
         AlertDialog(
             onDismissRequest = { viewModel.dismissDeletePrompt() },
             title = { Text("Delete Profile") },
@@ -420,9 +430,9 @@ fun MainScreen(
                         "This permanently deletes \"${target.name}\" and ALL of its " +
                             "isolated data (cookies, storage, history, downloads)."
                     )
-                    if (passwords != null) {
+                    listOfNotNull(passwords, twoFactor).forEach { line ->
                         Spacer(Modifier.height(12.dp))
-                        Text(passwords)
+                        Text(line)
                     }
                 }
             },

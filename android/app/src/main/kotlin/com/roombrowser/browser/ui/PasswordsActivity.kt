@@ -1,12 +1,8 @@
 package com.roombrowser.browser.ui
 
-import android.content.ClipData
-import android.content.ClipDescription
-import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
 import android.os.Bundle
-import android.os.PersistableBundle
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.background
@@ -101,6 +97,7 @@ import com.roombrowser.ui.common.RoomBrowserTheme
 import com.roombrowser.ui.common.RoomCard
 import com.roombrowser.ui.common.RoomCardShape
 import com.roombrowser.ui.common.RoomSheetHeader
+import com.roombrowser.ui.common.copySensitive
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlin.math.roundToInt
@@ -920,22 +917,6 @@ private fun CredentialEditorSheet(
             Spacer(Modifier.height(24.dp))
         }
     }
-}
-
-/**
- * Places [value] on the clipboard as a clip flagged sensitive (no Android
- * 13+ clipboard preview). The toast/snackbar that follows must announce only
- * WHAT was copied — never the value.
- */
-private fun copySensitive(context: Context, label: String, value: String) {
-    val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-    val clip = ClipData.newPlainText(label, value)
-    // EXTRA_IS_SENSITIVE is an inlined String constant — on API < 33 the
-    // (to the platform unknown) bundle key is simply ignored.
-    clip.description.extras = PersistableBundle().apply {
-        putBoolean(ClipDescription.EXTRA_IS_SENSITIVE, true)
-    }
-    clipboard.setPrimaryClip(clip)
 }
 
 /** Generator length bounds (characters) offered by the editor slider. */

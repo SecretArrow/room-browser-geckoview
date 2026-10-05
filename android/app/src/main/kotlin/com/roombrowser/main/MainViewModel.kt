@@ -82,7 +82,7 @@ data class VaultGateRequest(val id: Int)
  * @param credentialCount saved logins the profile holds, or null when the vault
  *   is locked and the count could not be read — a different sentence to the user.
  */
-data class DeletePrompt(val profile: Profile, val credentialCount: Int?)
+data class DeletePrompt(val profile: Profile, val credentialCount: Int?, val totpCount: Int)
 
 /**
  * Main-process ViewModel: profile CRUD, first-run state, external-link
@@ -1236,7 +1236,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             val count = runCatching {
                 if (!vaultUnlocked()) null else graph.credentialRepo.exportAll(profile.id).size
             }.getOrNull()
-            deletePrompt = DeletePrompt(profile, count)
+            // A count, not a secret, so this needs no unlock: the warning must
+            // not go quiet just because the screen happens to be locked.
+            val totp = runCatching { graph.totpRepo.countForProfile(profile.id) }.getOrDefault(0)
+            deletePrompt = DeletePrompt(profile, count, totp)
         }
     }
 

@@ -828,4 +828,8 @@ interface TotpDao {
     /** Full scan of one profile's rows — feeds export. */
     @Query("SELECT * FROM totp_entries WHERE profile_id = :profileId")
     suspend fun allForProfile(profileId: String): List<TotpEntity>
+
+    /** How many accounts the profile holds — for the delete-profile warning. */
+    @Query("SELECT COUNT(*) FROM totp_entries WHERE profile_id = :profileId")
+    suspend fun countForProfile(profileId: String): Int
 }

@@ -245,6 +245,18 @@
             android:windowSoftInputMode="adjustResize" />
 
         <!--
+          2FA Management — the profile's authenticator accounts, its OWN
+          activity in the DEFAULT process like the notes screen (no WebView,
+          no engine state). Sets FLAG_SECURE on its own window in code, not
+          here, so the flag stays scoped to this screen.
+        -->
+        <activity
+            android:name=".browser.ui.TwoFactorActivity"
+            android:exported="false"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboard|keyboardHidden|density|uiMode"
+            android:windowSoftInputMode="adjustResize" />
+
+        <!--
           Multi-chain wallet — dashboard, onboarding, send/receive and dApp
           confirmations for the bound profile. ':browser' process like the
           password manager: WalletEngine is per-process AppGraph state, so

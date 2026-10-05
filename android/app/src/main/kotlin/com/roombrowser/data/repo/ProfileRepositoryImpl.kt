@@ -13,6 +13,7 @@ import com.roombrowser.domain.model.ProfileId
 import com.roombrowser.domain.model.ProfileSettings
 import com.roombrowser.domain.profile.CopyOptions
 import com.roombrowser.domain.profile.ProfileStore
+import com.roombrowser.security.TotpKeyCrypto
 import com.roombrowser.security.VaultCrypto
 import com.roombrowser.security.WalletKeyCrypto
 import kotlinx.coroutines.flow.Flow
@@ -47,6 +48,7 @@ class ProfileRepositoryImpl(db: AppDatabase) : ProfileStore {
     private val walletActivityDao = db.walletActivityDao()
     private val aiTaskDao = db.aiTaskDao()
     private val noteDao = db.noteDao()
+    private val totpDao = db.totpDao()
 
     private val json = Json { ignoreUnknownKeys = true; encodeDefaults = true }
 
@@ -104,6 +106,10 @@ class ProfileRepositoryImpl(db: AppDatabase) : ProfileStore {
             // Notes are profile content like bookmarks — no keystore key
             // involved, so they simply go with the profile.
             noteDao.deleteAllForProfile(id.value)
+            // 2FA accounts: rows first, then their OWN Keystore key — the same
+            // fail-closed order as the credential and wallet cascades above.
+            totpDao.deleteAllForProfile(id.value)
+            TotpKeyCrypto.deleteKey(id)
             WalletKeyCrypto.deleteKey(id)
         }
     }

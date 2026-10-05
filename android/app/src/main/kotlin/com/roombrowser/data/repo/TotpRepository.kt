@@ -233,6 +233,14 @@ class TotpRepository(
     }
 
     /**
+     * How many accounts the profile holds. Not gated on the lock: a count is
+     * not a secret, and the delete-profile warning has to be able to say "and
+     * N authenticator accounts" while the screen is still locked.
+     */
+    suspend fun countForProfile(profileId: ProfileId): Int =
+        withContext(Dispatchers.IO) { dao.countForProfile(profileId.value) }
+
+    /**
      * The current code for one of the profile's accounts, WITHOUT requiring an
      * unlock.
      *

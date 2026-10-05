@@ -99,6 +99,21 @@ class AppGraph(context: Context) {
     }
 
     /**
+     * Two-factor authenticator: per-profile TOTP accounts, sealed with their
+     * OWN Keystore key (alias roomtotp-<safeSuffix>) rather than the vault's,
+     * so a defect in credential code cannot read OTP seeds. Like the vault it
+     * starts LOCKED in each process and the UI owns the gate — with one
+     * deliberate exception, TotpRepository.codeForAgent(), which the in-app
+     * agent may call while locked (owner decision; see its KDoc).
+     */
+    val totpRepo: com.roombrowser.data.repo.TotpRepository by lazy {
+        com.roombrowser.data.repo.TotpRepository(
+            database.totpDao(),
+            com.roombrowser.security.TotpKeyCrypto
+        )
+    }
+
+    /**
      * Multi-chain wallet: per-profile wallet data. The DAOs are plain Room;
      * the cryptor is the AndroidKeyStore-backed WalletKeyCrypto — a SEPARATE
      * key from the password vault's (alias roomwallet-<safeSuffix>), so the

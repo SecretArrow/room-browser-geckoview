@@ -217,6 +217,10 @@ fun BrowserScreen(
         NotesActivity.launch(activity, viewModel.profileId.value, viewModel.profile.name)
     }
 
+    fun launchTwoFactor() {
+        TwoFactorActivity.launch(activity, viewModel.profileId.value, viewModel.profile.name)
+    }
+
     fun launchAgentSessions() {
         agentSessionsLauncher.launch(
             Intent(activity, com.roombrowser.agent.ui.AgentSessionsActivity::class.java).apply {
@@ -374,6 +378,7 @@ fun BrowserScreen(
             onOpenDownloads = { route = BrowserRoute.Downloads; showPageActions = false },
             onOpenHistory = { route = BrowserRoute.History; showPageActions = false },
             onOpenNotes = { launchNotes(); showPageActions = false },
+            onOpenTwoFactor = { launchTwoFactor(); showPageActions = false },
             onShowQuickSwitcher = { showQuickSwitcher = true; showPageActions = false },
             onShowShields = { showShields = true; showPageActions = false }
         )
