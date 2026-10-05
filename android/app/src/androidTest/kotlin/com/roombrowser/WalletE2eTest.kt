@@ -317,13 +317,17 @@ class WalletE2eTest {
 
     /**
      * The marker poll's window. The mock page retries a 4900 DISCONNECTED up to
-     * 12 times at 1s, so its own worst case is about 13s; a 15s window lost that
-     * race on three runs whose dumps, taken milliseconds later, held the right
-     * answer.
+     * 12 times at 1s, so its own worst case is about 13s.
      */
     private val dappResultTimeoutMs = 45_000L
 
-    /** Polls the WebView's DOM-rendered result marker (page a11y text). */
+    /**
+     * The marker poll. Widened from 15s to 45s once already, and the same failure
+     * came back at both widths with the same shape: the dump taken milliseconds
+     * after the poll gave up held the marker. So the window is not what the marker
+     * tracks -- which is why the last chance below asks the tree a different way
+     * rather than waiting longer.
+     */
     private fun pageResultText(prefix: String, timeoutMs: Long): String? {
         fun probe(): List<String> =
             device.findObjects(By.textContains(prefix)).mapNotNull { it.text }
@@ -333,6 +337,14 @@ class WalletE2eTest {
         while (result.isEmpty() && System.currentTimeMillis() < deadline) {
             try { Thread.sleep(250) } catch (_: InterruptedException) { }
             result = probe()
+        }
+        if (result.isEmpty()) {
+            // List every text node and filter here, which is the query the
+            // failure dumps reach the marker with, after letting the tree settle.
+            try { Thread.sleep(2_000) } catch (_: InterruptedException) { }
+            result = device.findObjects(By.textContains(""))
+                .mapNotNull { it.text }
+                .filter { it.contains(prefix) }
         }
         val found = result.firstOrNull()
         // The failure artifacts could not separate "the app answered late" from
