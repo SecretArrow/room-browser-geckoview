@@ -1483,7 +1483,7 @@ private fun ChatSurfaceSheet(agent: BrowserAgentController, onDismiss: () -> Uni
                 FilterChip(
                     selected = !agent.chatHeadless,
                     onClick = {
-                        agent.setChatHeadless(false)
+                        agent.setChatSurface(false)
                         onDismiss()
                     },
                     label = { Text("Headed browser") },
@@ -1492,7 +1492,7 @@ private fun ChatSurfaceSheet(agent: BrowserAgentController, onDismiss: () -> Uni
                 FilterChip(
                     selected = agent.chatHeadless,
                     onClick = {
-                        agent.setChatHeadless(true)
+                        agent.setChatSurface(true)
                         onDismiss()
                     },
                     label = { Text("Headless") },

@@ -542,7 +542,7 @@ class BrowserAgentController(
      * hidden page of this profile's own. Persisted, because it is a standing
      * choice about how this profile's agent works, not a per-turn switch.
      */
-    fun setChatHeadless(headless: Boolean) {
+    fun setChatSurface(headless: Boolean) {
         scope.launch {
             settings = appState.updateAgentSettings { it.copy(chatHeadless = headless) }
             chatHeadless = headless
