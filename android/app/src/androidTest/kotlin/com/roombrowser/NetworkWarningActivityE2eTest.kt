@@ -323,7 +323,14 @@ class NetworkWarningActivityE2eTest {
         assertTrue("The warning must come up (third cycle)", hasText(warningTitle, 20_000))
         assertTrue("'Switch Profile' must be clickable", clickText("Switch Profile", 5_000))
         // The sheet's copy line sits at its top — check it BEFORE scrolling.
-        assertTrue("The quick switcher sheet must be open", hasTextContains("Switching closes", 8_000))
+        // Polled rather than sampled once: this handoff is an engine release, an
+        // activity launch and a sheet animation on top of two cold starts, so a
+        // single 8s sample reports "the sheet is not open" when the honest
+        // question is "has it opened yet". The tree dump is for the other case.
+        assertTrue(
+            "The quick switcher sheet must be open\n${uiTree()}",
+            waitUntil(30_000) { hasTextContains("Switching closes", 400) }
+        )
         assertTrue(
             "Switch Profile must release the engine and re-open the quick switcher\n${uiTree()}",
             hasTextWithScroll("Create New Profile")
