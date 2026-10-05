@@ -103,6 +103,9 @@ class AiTaskRepository(private val dao: AiTaskDao) {
     fun observeDeferred(): Flow<List<AiTaskEntity>> =
         dao.observeByStatus(AiTaskRunStatus.DEFERRED.name)
 
+    /** The same rows, read once — what the sweep looks at before it waits. */
+    suspend fun deferredNow(): List<AiTaskEntity> = dao.byStatus(AiTaskRunStatus.DEFERRED.name)
+
     suspend fun delete(id: Long) = dao.delete(id)
 
     /** Profile-deletion cascade. */
