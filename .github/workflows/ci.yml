@@ -619,18 +619,14 @@ jobs:
             # ("Unable to connect to adb daemon on port: 5037" is a known
             # specimen here). The artifacts are best-effort; the failure is not.
             cd android && ./gradlew connectedDebugAndroidTest --console=plain -Pandroid.testInstrumentationRunnerArguments.class=com.roombrowser.A00WarmupTest,com.roombrowser.WalletE2eTest || ( : > "$GITHUB_WORKSPACE/e2e-first-invocation-failed"; adb exec-out logcat -d -b crash > "$GITHUB_WORKSPACE/e2e-logcat-crash.txt"; adb exec-out logcat -d > "$GITHUB_WORKSPACE/e2e-logcat-full.txt"; adb shell uiautomator dump /sdcard/e2e-ui.xml >/dev/null 2>&1; adb pull /sdcard/e2e-ui.xml "$GITHUB_WORKSPACE/" >/dev/null 2>&1; adb pull /sdcard/e2e-shots "$GITHUB_WORKSPACE/" >/dev/null 2>&1; true)
+            # The second invocation rewrites androidTest-results, and the old
+            # dump ran after teardown -- so the probe lines are kept here.
+            adb exec-out logcat -d -s 'WalletE2eTest:*' > "$GITHUB_WORKSPACE/e2e-probe.txt" || true
             cd android && ./gradlew connectedDebugAndroidTest --console=plain -Pandroid.testInstrumentationRunnerArguments.notClass=com.roombrowser.A00WarmupTest,com.roombrowser.WalletE2eTest || (adb exec-out logcat -d -b crash > "$GITHUB_WORKSPACE/e2e-logcat-crash.txt"; adb exec-out logcat -d > "$GITHUB_WORKSPACE/e2e-logcat-full.txt"; adb shell uiautomator dump /sdcard/e2e-ui.xml >/dev/null 2>&1; adb pull /sdcard/e2e-ui.xml "$GITHUB_WORKSPACE/" >/dev/null 2>&1; adb pull /sdcard/e2e-shots "$GITHUB_WORKSPACE/" >/dev/null 2>&1; exit 1)
 
       - name: Fail when the first invocation failed
         if: always()
         run: test ! -f "$GITHUB_WORKSPACE/e2e-first-invocation-failed"
-
-      # The probes the suites log go to logcat, and logcat was only ever pulled
-      # on failure -- so the one run that could have measured a latency (a green
-      # one) was the one run that kept no record of it. Tagged, so it stays small.
-      - name: Dump the suites' probe log
-        if: always()
-        run: adb exec-out logcat -d -s 'WalletE2eTest:*' > "$GITHUB_WORKSPACE/e2e-probe.txt" || true
 
       - name: Upload instrumented test reports
         if: always()
