@@ -8,8 +8,8 @@ import java.util.concurrent.atomic.AtomicReference
  * A page a scheduled run drives that the RUN does not own: a real tab of the
  * browser, opened on screen so the page is really drawn.
  *
- * The difference from a headless page is honest and narrow. An unattached
- * WebView loads and runs JavaScript but no frame is ever drawn from it, so a
+ * The difference from a headless page is honest and narrow. A hidden page
+ * still loads and runs JavaScript but no frame is ever drawn from it, so a
  * page that fills itself in from animation frames, lazy images or an
  * IntersectionObserver can stay empty. A visible tab does not have that limit.
  */
