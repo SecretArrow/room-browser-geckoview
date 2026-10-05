@@ -536,3 +536,30 @@ data class NoteEntity(
     @ColumnInfo(name = "created_at") val createdAt: Long,
     @ColumnInfo(name = "updated_at") val updatedAt: Long
 )
+
+/**
+ * One authenticator account.
+ *
+ * [secretEnc] is CIPHERTEXT only, sealed by `TotpKeyCrypto` — a plaintext seed
+ * never reaches disk, exactly as `CredentialEntity.passwordEnc` is treated.
+ * [issuer] and [account] stay plaintext on purpose: that is what lets the list
+ * be searched and grouped without decrypting, the same trade the password vault
+ * already makes. Searching never looks at the secret.
+ */
+@Entity(
+    tableName = "totp_entries",
+    indices = [Index("profile_id"), Index("profile_id", "last_used_at")]
+)
+data class TotpEntity(
+    @PrimaryKey @ColumnInfo(name = "id") val id: String,
+    @ColumnInfo(name = "profile_id") val profileId: String,
+    @ColumnInfo(name = "issuer") val issuer: String,
+    @ColumnInfo(name = "account") val account: String,
+    @ColumnInfo(name = "secret_enc") val secretEnc: String,
+    @ColumnInfo(name = "algorithm") val algorithm: String,
+    @ColumnInfo(name = "digits") val digits: Int,
+    @ColumnInfo(name = "period") val period: Int,
+    @ColumnInfo(name = "created_at") val createdAt: Long,
+    /** Null = never copied or filled; drives the "recently used" sort. */
+    @ColumnInfo(name = "last_used_at") val lastUsedAt: Long?
+)

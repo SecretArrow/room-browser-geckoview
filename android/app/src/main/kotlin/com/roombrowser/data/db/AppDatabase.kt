@@ -42,9 +42,10 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         WalletActivityEntity::class,
         WalletActiveNetworkEntity::class,
         AiTaskEntity::class,
-        NoteEntity::class
+        NoteEntity::class,
+        TotpEntity::class
     ],
-    version = 13,
+    version = 14,
     exportSchema = true
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -67,6 +68,7 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun walletActivityDao(): WalletActivityDao
     abstract fun aiTaskDao(): AiTaskDao
     abstract fun noteDao(): NoteDao
+    abstract fun totpDao(): TotpDao
 
     companion object {
         const val NAME = "room-browser.db"
@@ -477,6 +479,49 @@ abstract class AppDatabase : RoomDatabase() {
         }
 
         /**
+         * v13 → v14: adds the per-profile authenticator table. Purely additive
+         * CREATE TABLE + INDEX statements — no existing table is touched, so
+         * the migration is lossless. The column set and both indices mirror
+         * TotpEntity exactly (snake_case names, NOT NULL on non-null Kotlin
+         * types, a NULLABLE `last_used_at`), which is what Room's schema
+         * validation compares against after a migration.
+         *
+         * `last_used_at` is in this CREATE TABLE rather than a later ALTER: the
+         * table is new here, so adding it now costs nothing and adding it later
+         * would cost another migration.
+         *
+         * `internal` for the same reason as [MIGRATION_10_11]: only
+         * TotpMigrationTest executes it, since a fresh install creates v14
+         * directly.
+         */
+        internal val MIGRATION_13_14 = object : Migration(13, 14) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `totp_entries` (" +
+                        "`id` TEXT NOT NULL, " +
+                        "`profile_id` TEXT NOT NULL, " +
+                        "`issuer` TEXT NOT NULL, " +
+                        "`account` TEXT NOT NULL, " +
+                        "`secret_enc` TEXT NOT NULL, " +
+                        "`algorithm` TEXT NOT NULL, " +
+                        "`digits` INTEGER NOT NULL, " +
+                        "`period` INTEGER NOT NULL, " +
+                        "`created_at` INTEGER NOT NULL, " +
+                        "`last_used_at` INTEGER, " +
+                        "PRIMARY KEY(`id`))"
+                )
+                db.execSQL(
+                    "CREATE INDEX IF NOT EXISTS `index_totp_entries_profile_id` " +
+                        "ON `totp_entries` (`profile_id`)"
+                )
+                db.execSQL(
+                    "CREATE INDEX IF NOT EXISTS `index_totp_entries_profile_id_last_used_at` " +
+                        "ON `totp_entries` (`profile_id`, `last_used_at`)"
+                )
+            }
+        }
+
+        /**
          * Every migration, oldest first — the ONE list. [build] applies it and
          * the migration tests apply it too, so a version bump cannot leave a
          * test registering a subset that stops short of the current version.
@@ -485,7 +530,7 @@ abstract class AppDatabase : RoomDatabase() {
             MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4,
             MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8,
             MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11, MIGRATION_11_12,
-            MIGRATION_12_13
+            MIGRATION_12_13, MIGRATION_13_14
         )
 
         @Volatile

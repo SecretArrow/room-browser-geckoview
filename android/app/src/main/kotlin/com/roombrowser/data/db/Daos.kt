@@ -792,3 +792,40 @@ interface NoteDao {
     @Query("SELECT * FROM notes WHERE profile_id = :profileId")
     suspend fun allForProfile(profileId: String): List<NoteEntity>
 }
+
+@Dao
+interface TotpDao {
+    @Upsert
+    suspend fun upsert(entity: TotpEntity)
+
+    /**
+     * Recently used first, then issuer A-Z. SQLite sorts NULL below every value,
+     * so DESC leaves the never-used rows at the bottom.
+     */
+    @Query(
+        "SELECT * FROM totp_entries WHERE profile_id = :profileId " +
+            "ORDER BY last_used_at DESC, issuer ASC"
+    )
+    fun observe(profileId: String): Flow<List<TotpEntity>>
+
+    @Query("SELECT * FROM totp_entries WHERE id = :id")
+    suspend fun byId(id: String): TotpEntity?
+
+    @Query("DELETE FROM totp_entries WHERE id = :id")
+    suspend fun delete(id: String)
+
+    /**
+     * Bumped when a code is copied or filled — NOT on every tick, which would
+     * write to the database every second per visible row.
+     */
+    @Query("UPDATE totp_entries SET last_used_at = :at WHERE id = :id")
+    suspend fun markUsed(id: String, at: Long)
+
+    /** Profile-deletion / reset cascade. */
+    @Query("DELETE FROM totp_entries WHERE profile_id = :profileId")
+    suspend fun deleteAllForProfile(profileId: String)
+
+    /** Full scan of one profile's rows — feeds export. */
+    @Query("SELECT * FROM totp_entries WHERE profile_id = :profileId")
+    suspend fun allForProfile(profileId: String): List<TotpEntity>
+}
