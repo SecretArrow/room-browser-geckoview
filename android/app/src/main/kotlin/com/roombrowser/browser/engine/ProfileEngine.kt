@@ -241,6 +241,18 @@ object ProfileEngine {
     }
 
     /**
+     * Delete the profile's engine directories from disk.
+     *
+     * Filesystem-only, so unlike [clearEngineStorage] it needs no binding and
+     * runs from the process that deletes the profile. It must NOT be called
+     * while another process is still bound to [profileId]: a live engine
+     * writes its directories straight back.
+     */
+    fun wipeProfileStorage(context: Context, profileId: ProfileId) {
+        host.wipeProfileData(context, profileId)
+    }
+
+    /**
      * Hand the sub-resource filter to the engine that decides sub-resources in
      * its own process, and tell it where to report what it blocked.
      *

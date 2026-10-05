@@ -254,7 +254,7 @@ internal class WebViewEngineHost : EngineHost {
 
     /**
      * Remove the profile's WebView data directories from disk. Port of
-     * `ProfileEngine.wipeWebViewDirs` (ProfileEngine.kt:461-470).
+     * `ProfileEngine.wipeProfileStorage` in the WebView edition.
      *
      * Belt and braces on top of [clearBrowsingData]: the platform's own
      * deletion is asynchronous and has been observed to leave the per-suffix

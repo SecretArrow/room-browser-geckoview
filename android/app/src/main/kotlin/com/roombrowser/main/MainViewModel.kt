@@ -8,6 +8,7 @@ import androidx.compose.runtime.setValue
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.roombrowser.RoomBrowserApp
+import com.roombrowser.browser.engine.ProfileEngine
 import com.roombrowser.data.repo.AppStateRepository
 import com.roombrowser.domain.credentials.PasswordCsv
 import com.roombrowser.domain.credentials.PasswordImportMerge
@@ -359,13 +360,37 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         successMessage: String = "Profile deleted with all its data"
     ) {
         viewModelScope.launch {
+            if (refuseDeleteOfActiveProfile(id)) return@launch
+            // Engine directories first: once the profile row is gone nothing
+            // is left that could find them again.
+            val wiped = withContext(Dispatchers.IO) {
+                runCatching {
+                    ProfileEngine.wipeProfileStorage(getApplication<Application>(), id)
+                }.isSuccess
+            }
             runCatching { profileManager.delete(id) }
                 .onSuccess {
-                    message = successMessage
+                    message = if (wiped) {
+                        successMessage
+                    } else {
+                        "Profile deleted, but its engine data could not be removed"
+                    }
                     if (passwordImportOfferId == id.value) consumePasswordImportOffer()
                 }
                 .onFailure { message = it.message ?: "Could not delete profile" }
         }
+    }
+
+    /**
+     * True when [id] is the profile the browser process is bound to, in which
+     * case it must not be deleted: its engine is live, so wiping its
+     * directories would not erase them, and the running browser would be left
+     * holding a profile that no longer exists.
+     */
+    private suspend fun refuseDeleteOfActiveProfile(id: ProfileId): Boolean {
+        if (appState.activeProfileIdSnapshot() != id.value) return false
+        message = "Switch to another profile before deleting this one"
+        return true
     }
 
     /**
@@ -1200,6 +1225,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
      */
     fun requestDeleteProfile(profile: Profile) {
         viewModelScope.launch {
+            if (refuseDeleteOfActiveProfile(profile.id)) return@launch
             val count = runCatching {
                 if (!vaultUnlocked()) null else graph.credentialRepo.exportAll(profile.id).size
             }.getOrNull()
