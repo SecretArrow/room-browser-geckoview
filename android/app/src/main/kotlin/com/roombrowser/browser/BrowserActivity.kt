@@ -391,23 +391,25 @@ class BrowserActivity : FragmentActivity() {
      * tear down a live instance). `Intent.filterEquals` ignores flags, so only
      * the request code separates them -- see RestartAlarm.kt.
      *
-     * Cancelling a token that was never armed is a no-op, so this is safe to
-     * call unconditionally on every bind.
+     * A token that was never armed has no PendingIntent to read, so this is
+     * safe to call unconditionally on every bind.
      */
     private fun cancelPendingRestartAlarm() {
         val alarm = getSystemService(ALARM_SERVICE) as android.app.AlarmManager
         for (requestCode in RESTART_REQUEST_CODES) {
             runCatching {
-                // The flags here are irrelevant -- filterEquals does not read
-                // them -- so one shape of intent cancels both tokens.
-                val intent = Intent(this, BrowserActivity::class.java).apply {
-                    flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK
-                }
+                // NO_CREATE, never UPDATE_CURRENT. The two tokens are told
+                // apart by their request code alone, so UPDATE_CURRENT here
+                // rewrites the ARMED token to this throwaway intent -- dropping
+                // its profile extra and handing it CLEAR_TASK, the one flag the
+                // backstop was deliberately built without. NO_CREATE reads the
+                // armed token back untouched instead.
                 val pending = android.app.PendingIntent.getActivity(
-                    this, requestCode, intent,
-                    android.app.PendingIntent.FLAG_UPDATE_CURRENT or
+                    this, requestCode,
+                    Intent(this, BrowserActivity::class.java),
+                    android.app.PendingIntent.FLAG_NO_CREATE or
                         android.app.PendingIntent.FLAG_IMMUTABLE
-                )
+                ) ?: return@runCatching
                 alarm.cancel(pending)
             }
         }
