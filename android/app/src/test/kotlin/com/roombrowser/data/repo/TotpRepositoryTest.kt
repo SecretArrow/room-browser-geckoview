@@ -5,6 +5,7 @@ import com.roombrowser.data.db.TotpDao
 import com.roombrowser.data.db.TotpEntity
 import com.roombrowser.domain.model.ProfileId
 import com.roombrowser.domain.totp.TotpAlgorithm
+import com.roombrowser.domain.totp.TotpBackup
 import com.roombrowser.domain.totp.TotpEntry
 import com.roombrowser.security.VaultCryptor
 import io.mockk.coEvery
@@ -259,20 +260,26 @@ class TotpRepositoryTest {
     @Test
     fun `import re-keys every secret and reissues every id`() = runTest {
         repo.unlock()
-        val source = add(profileId = profileA)
+        val original = add(profileId = profileA)
+        // The file's shape, not a row: an import only ever consumes TotpBackup.Entry.
+        val source = TotpBackup.Entry(
+            issuer = "Acme",
+            account = "owner@acme.test",
+            secret = secret
+        )
         repo.lock()
 
         repo.unlock()
-        repo.importAll(profileB, listOf(source))
+        repo.importAll(profileB, listOf(source), at = 5_000L)
 
         val imported = fakeDao.rows.values.single { it.profileId == profileB.value }
-        assertThat(imported.id).isNotEqualTo(source.id)
+        assertThat(imported.id).isNotEqualTo(original.id)
         assertThat(imported.secretEnc).isEqualTo("enc:${profileB.safeSuffix}:$secret")
-        assertThat(imported.createdAt).isEqualTo(source.createdAt)
+        assertThat(imported.createdAt).isEqualTo(5_000L)
         // last_used_at is deliberately not carried across an import.
         assertThat(imported.lastUsedAt).isNull()
         // The original row is untouched.
-        assertThat(fakeDao.rows.getValue(source.id).secretEnc)
+        assertThat(fakeDao.rows.getValue(original.id).secretEnc)
             .isEqualTo("enc:${profileA.safeSuffix}:$secret")
     }
 

@@ -5,6 +5,7 @@ import com.roombrowser.domain.credentials.PasswordVaultCrypto
 import com.roombrowser.domain.credentials.SavedCredential
 import com.roombrowser.domain.model.Profile
 import com.roombrowser.domain.model.ProfileId
+import com.roombrowser.domain.totp.TotpBackup
 import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.json.Json
 import org.junit.Test
@@ -17,7 +18,10 @@ class ProfileBackupTest {
         createdAt = 1720000000000
     )
 
-    private fun payload(vault: ProfileBackup.VaultBackup? = null) =
+    private fun payload(
+        vault: ProfileBackup.VaultBackup? = null,
+        totp: ProfileBackup.VaultBackup? = null
+    ) =
         ProfileBackup.BackupPayload(
             profile = profile(),
             bookmarks = listOf(ProfileBackup.BookmarkExport("https://example.com", "Example")),
@@ -30,7 +34,8 @@ class ProfileBackupTest {
                     host = "example.com", jsEnabled = false, desktopMode = true
                 )
             ),
-            vault = vault
+            vault = vault,
+            totp = totp
         )
 
     /** A real sealed vault + the exact credential JSON that went into it. */
@@ -45,13 +50,13 @@ class ProfileBackupTest {
     }
 
     @Test
-    fun `roundtrip v2 preserves profile, site data and the sealed vault`() {
+    fun `roundtrip preserves profile, site data and the sealed vault`() {
         val (vault, _) = sealedVault()
         val raw = ProfileBackup.serialize(payload(vault = vault))
 
         val restored = ProfileBackup.parse(raw) as ProfileBackupResult.Parsed
 
-        assertThat(restored.payload.formatVersion).isEqualTo(2)
+        assertThat(restored.payload.formatVersion).isEqualTo(ProfileBackup.FORMAT_VERSION)
         assertThat(restored.payload.profile.id.value)
             .isEqualTo("11111111-2222-3333-4444-555555555555")
         assertThat(restored.payload.profile.name).isEqualTo("Research")
@@ -64,6 +69,39 @@ class ProfileBackupTest {
         assertThat(restored.payload.siteSettings.single().desktopMode).isTrue()
         assertThat(restored.payload.siteSettings.single().autoplayBlocked).isNull()
         assertThat(restored.payload.vault).isEqualTo(vault)
+    }
+
+    @Test
+    fun `v3 round trip keeps vault and totp as independent ciphertexts`() {
+        val passphrase = "correct horse battery".toCharArray()
+        val (vault, plaintext) = sealedVault()
+        val totp = TotpBackup.sealContents(
+            TotpBackup.Contents(
+                listOf(
+                    TotpBackup.Entry("Acme", "alice@acme.test", "JBSWY3DPEHPK3PXP"),
+                    TotpBackup.Entry("GitHub", "octocat", "GEZDGNBVGY3TQOJQ")
+                )
+            ),
+            TotpBackup.Header(profileLabel = "Research", exportedAt = 1_759_400_000_000L),
+            passphrase
+        )
+
+        val restored = ProfileBackup.parse(
+            ProfileBackup.serialize(payload(vault = vault, totp = totp))
+        ) as ProfileBackupResult.Parsed
+
+        assertThat(restored.payload.formatVersion).isEqualTo(ProfileBackup.FORMAT_VERSION)
+        assertThat(restored.payload.vault).isEqualTo(vault)
+        assertThat(restored.payload.totp).isEqualTo(totp)
+        // One passphrase, two independent blobs: neither ciphertext is the
+        // other, and each opens on its own without touching the other.
+        assertThat(restored.payload.totp?.ciphertextB64).isNotEqualTo(vault.ciphertextB64)
+        val openedTotp = TotpBackup.openContents(restored.payload.totp!!, passphrase)
+        val openedVault = PasswordVaultCrypto.decrypt(
+            restored.payload.vault!!.toCipherData(), passphrase
+        )
+        assertThat(openedTotp.entries).hasSize(2)
+        assertThat(openedVault).isEqualTo(plaintext)
     }
 
     @Test
@@ -94,7 +132,7 @@ class ProfileBackupTest {
     }
 
     @Test
-    fun `notes round-trip through a v2 export`() {
+    fun `notes round-trip through a profile export`() {
         val withNotes = ProfileBackup.BackupPayload(
             profile = profile(),
             notes = listOf(
@@ -106,9 +144,9 @@ class ProfileBackupTest {
         val restored = ProfileBackup.parse(ProfileBackup.serialize(withNotes))
             as ProfileBackupResult.Parsed
 
-        // Still v2: notes are an additive field with a default, so the format
-        // version does not move for them (see the versioning contract).
-        assertThat(restored.payload.formatVersion).isEqualTo(2)
+        // Notes are an additive field with a default, so adding them did not
+        // move the format version (see the versioning contract).
+        assertThat(restored.payload.formatVersion).isEqualTo(ProfileBackup.FORMAT_VERSION)
         assertThat(restored.payload.notes).hasSize(2)
         assertThat(restored.payload.notes.first().title).isEqualTo("groceries")
         assertThat(restored.payload.notes.first().body).isEqualTo("milk\neggs")

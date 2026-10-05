@@ -58,6 +58,31 @@ class TotpBackupTest {
     }
 
     @Test
+    fun `sealContents round trips the accounts for a profile export`() {
+        val block = TotpBackup.sealContents(
+            contents(entry(), entry(issuer = "GitHub", account = "octocat")),
+            header,
+            passphrase
+        )
+
+        val restored = TotpBackup.openContents(block, passphrase)
+
+        assertThat(restored.entries.map { it.issuer }).containsExactly("Acme", "GitHub").inOrder()
+        assertThat(restored.entries).hasSize(2)
+    }
+
+    @Test
+    fun `sealContents block rejects the wrong passphrase`() {
+        val block = TotpBackup.sealContents(contents(entry()), header, passphrase)
+
+        val thrown = assertThrows(VaultAuthException::class.java) {
+            TotpBackup.openContents(block, "not the passphrase".toCharArray())
+        }
+
+        assertThat(thrown).hasMessageThat().contains("passphrase")
+    }
+
+    @Test
     fun `a wrong passphrase fails as an auth error`() {
         val file = TotpBackup.seal(contents(entry()), header, passphrase)
 

@@ -27,6 +27,8 @@ import com.roombrowser.domain.model.ProfileSettings
 import com.roombrowser.domain.profile.CopyOptions
 import com.roombrowser.domain.profile.ProfileManager
 import com.roombrowser.domain.theme.BuiltInThemes
+import com.roombrowser.domain.totp.TotpBackup
+import com.roombrowser.domain.totp.TotpBackupFormatException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
@@ -58,8 +60,17 @@ data class PassphrasePrompt(
     val forExport: Boolean,
     val profileName: String,
     val credentialCount: Int,
+    /** Authenticator accounts riding in the same file; the dialog has to say
+     *  that the one passphrase also unlocks those, or a 2FA-only profile is
+     *  asked for a passphrase with nothing on screen explaining why. */
+    val totpCount: Int = 0,
     val error: String? = null,
     val passwordsFile: Boolean = false,
+    /** Overrides the dialog title when the caller's phrasing is not the
+     *  profile export/import one (null = today's wording). */
+    val titleOverride: String? = null,
+    /** Overrides the dialog body for the same reason (null = today's). */
+    val bodyOverride: String? = null,
     val id: Int
 )
 
@@ -196,6 +207,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
      * moment the sealed vault blob exists.
      */
     private var exportCredentials: List<SavedCredential> = emptyList()
+
+    /**
+     * Plaintext authenticator entries of the in-flight export, read from the
+     * 2FA store and dropped as soon as the sealed `totp` blob exists — same
+     * rule as [exportCredentials], and for the same reason: a seed in memory
+     * past the seal is a seed that can outlive the export.
+     */
+    private var exportTotp: List<TotpBackup.Entry> = emptyList()
 
     /** A parsed import payload waiting for its file passphrase / gate. */
     private var importPayload: ProfileBackup.BackupPayload? = null
@@ -463,49 +482,74 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     /** Export step 2 — the gate passed (or the session was already unlocked):
-     *  unlock the repo and read the profile's credentials. */
+     *  unlock the repo and read the profile's credentials and authenticator
+     *  accounts. */
     private fun readVaultForExport() {
         val draft = exportDraft ?: return
         viewModelScope.launch {
-            runCatching {
+            val outcome = runCatching {
                 // The gate just ran (MainScreen); record it for the session.
                 graph.credentialRepo.unlock()
-                graph.credentialRepo.exportAll(draft.profile.id)
-            }.onSuccess { creds ->
-                if (creds.isEmpty()) {
+                val creds = graph.credentialRepo.exportAll(draft.profile.id)
+                // The authenticator store has its own lock, and the gate that
+                // just ran is the same BiometricGate the 2FA screen opens — the
+                // user-presence proof is already made. A passwords-only file
+                // carries no seeds, so it must not read this store at all.
+                val totp = if (draft.passwordsOnly) {
+                    emptyList()
+                } else {
+                    graph.totpRepo.unlock()
+                    graph.totpRepo.exportAll(draft.profile.id).map { entry ->
+                        TotpBackup.Entry(
+                            issuer = entry.issuer,
+                            account = entry.account,
+                            secret = entry.secret,
+                            algorithm = entry.algorithm,
+                            digits = entry.digits,
+                            period = entry.period
+                        )
+                    }
+                }
+                creds to totp
+            }
+            outcome.onSuccess { (creds, totp) ->
+                if (creds.isEmpty() && totp.isEmpty()) {
                     // A passwords-only export has nothing to fall back on. The
-                    // whole-profile path below writes a file with no vault,
-                    // which is right for a backup and wrong here: the user
-                    // asked for their passwords, and handing them a settings
-                    // backup named "passwords" is the silent partial transfer
-                    // this feature exists to avoid.
+                    // whole-profile path below writes a file with no sealed
+                    // block, which is right for a backup and wrong here: the
+                    // user asked for their passwords, and handing them a
+                    // settings backup named "passwords" is the silent partial
+                    // transfer this feature exists to avoid.
                     if (draft.passwordsOnly) {
                         abortExport("this profile has no saved passwords yet")
                         return@onSuccess
                     }
-                    // No saved logins → nothing to seal; the file has no vault.
-                    buildExport(creds, vault = null)
-                } else {
-                    exportCredentials = creds
-                    passphrasePrompt = PassphrasePrompt(
-                        forExport = true,
-                        profileName = draft.profile.name,
-                        credentialCount = creds.size,
-                        id = ++promptSeq
-                    )
+                    buildExport(creds, vault = null, totp = null)
+                    return@onSuccess
                 }
+                exportCredentials = creds
+                exportTotp = totp
+                passphrasePrompt = PassphrasePrompt(
+                    forExport = true,
+                    profileName = draft.profile.name,
+                    credentialCount = creds.size,
+                    totpCount = totp.size,
+                    id = ++promptSeq
+                )
             }.onFailure {
-                abortExport(it.message ?: "could not read the password vault")
+                abortExport(it.message ?: "could not read the profile's saved data")
             }
         }
     }
 
-    /** Export step 3 (only with ≥1 credential) — the passphrase was set:
-     *  seal the credential array (plaintext only inside the cipher) and
-     *  continue. The passphrase CharArray is wiped immediately after use. */
+    /** Export step 3 (only with ≥1 credential or ≥1 authenticator account) —
+     *  the passphrase was set: seal each block (plaintext only inside the
+     *  ciphers) and continue. The passphrase CharArray is wiped immediately
+     *  after use. */
     fun confirmExportPassphrase(passphrase: String) {
         val creds = exportCredentials
-        if (creds.isEmpty()) {
+        val totpEntries = exportTotp
+        if (creds.isEmpty() && totpEntries.isEmpty()) {
             passphrasePrompt = null
             return
         }
@@ -516,15 +560,35 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
         viewModelScope.launch {
             val outcome = runCatching {
-                val plaintext = credentialsJson.encodeToString(
-                    ListSerializer(SavedCredential.serializer()), creds
-                )
                 val chars = passphrase.toCharArray()
                 // PBKDF2 (210k iterations) is real CPU work — off the main
                 // thread; wipe happens on the same worker, right after use.
                 withContext(Dispatchers.Default) {
                     try {
-                        ProfileBackup.VaultBackup.from(PasswordVaultCrypto.encrypt(plaintext, chars))
+                        // Two independent ciphers under ONE passphrase: the
+                        // login array and the authenticator accounts. A profile
+                        // that holds only one of the two writes only that block.
+                        val vault = if (creds.isEmpty()) {
+                            null
+                        } else {
+                            val plaintext = credentialsJson.encodeToString(
+                                ListSerializer(SavedCredential.serializer()), creds
+                            )
+                            ProfileBackup.VaultBackup.from(PasswordVaultCrypto.encrypt(plaintext, chars))
+                        }
+                        val totp = if (totpEntries.isEmpty()) {
+                            null
+                        } else {
+                            TotpBackup.sealContents(
+                                contents = TotpBackup.Contents(totpEntries),
+                                header = TotpBackup.Header(
+                                    profileLabel = draft?.profile?.name.orEmpty(),
+                                    exportedAt = System.currentTimeMillis()
+                                ),
+                                passphrase = chars
+                            )
+                        }
+                        vault to totp
                     } finally {
                         PasswordVaultCrypto.wipe(chars)
                     }
@@ -532,16 +596,21 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             }
             passphrasePrompt = null
             outcome
-                .onSuccess { buildExport(creds, it) }
+                .onSuccess { (vault, totp) -> buildExport(creds, vault, totp) }
                 .onFailure {
-                    abortExport(it.message ?: "could not seal the password vault")
+                    abortExport(it.message ?: "could not seal the profile's saved data")
                 }
         }
     }
 
-    /** Export step 4 — assemble the v2 payload (populated bookmarks /
-     *  permissions / settings) and stage it for delivery. */
-    private suspend fun buildExport(creds: List<SavedCredential>, vault: ProfileBackup.VaultBackup?) {
+    /** Export step 4 — assemble the v3 payload (populated bookmarks /
+     *  permissions / settings / notes, plus whichever sealed blocks exist) and
+     *  stage it for delivery. */
+    private suspend fun buildExport(
+        creds: List<SavedCredential>,
+        vault: ProfileBackup.VaultBackup?,
+        totp: ProfileBackup.VaultBackup?
+    ) {
         val draft = exportDraft ?: return
         runCatching {
             val id = draft.profile.id
@@ -572,11 +641,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     notes = graph.browserRepo.notes(id).map {
                         ProfileBackup.NoteExport(it.title, it.body)
                     },
-                    vault = vault
+                    vault = vault,
+                    totp = totp
                 )
             )
         }.onSuccess { json ->
             exportCredentials = emptyList() // plaintext list dropped for good
+            exportTotp = emptyList()        // and the seeds with it
             exportDraft = null
             pendingExport = PendingExport(
                 fileName = exportFileName(draft.profile.name),
@@ -715,6 +786,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private fun dropExportState() {
         exportDraft = null
         exportCredentials = emptyList()
+        exportTotp = emptyList()
         passphrasePrompt = null
         pendingExport = null
         // A cancel or a failure is exactly the case where the pending delete
@@ -724,17 +796,22 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         pendingExportNote = null
     }
 
-    // ---------- Backup v2: import ----------
+    // ---------- Backup v3: import ----------
 
-    /** SAF import — read the picked file (any JSON picker result), then the
-     *  same validate-first path as pasted text. */
+    /**
+     * SAF import — read the picked file (any JSON picker result), then the
+     * same validate-first path as pasted text.
+     *
+     * The read goes through [readCapped] like every other picked file: the
+     * picker accepts anything on the device, and reading a multi-gigabyte one
+     * into a String is a crash rather than the "not a Room Browser export"
+     * message that belongs here.
+     */
     fun readImportFile(uri: Uri) {
         viewModelScope.launch {
             runCatching {
                 withContext(Dispatchers.IO) {
-                    getApplication<Application>().contentResolver.openInputStream(uri)
-                        ?.bufferedReader()?.use { it.readText() }
-                        ?: error("the selected file could not be read")
+                    readCapped(uri, MAX_IMPORT_BYTES, "a profile backup")
                 }
             }.onSuccess { importProfile(it) }
                 .onFailure {
@@ -748,6 +825,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
      * dialog BEFORE a single row is written.
      */
     fun importProfile(text: String) {
+        if (text.length > MAX_IMPORT_BYTES) {
+            // The paste path has no picker in front of it, so the cap has to be
+            // here too — a paste of a huge file is the same crash the capped
+            // picker read exists to avoid.
+            importError = "That text is too large to be a Room Browser export. Nothing was imported."
+            return
+        }
         when (val parsed = ProfileBackup.parse(text)) {
             is ProfileBackupResult.Malformed ->
                 importError = "Not a valid Room Browser export (${parsed.detail}). Nothing was imported."
@@ -757,11 +841,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         "(v${parsed.maxSupported}). Update the app and try again. Nothing was imported."
             is ProfileBackupResult.Parsed -> {
                 importPayload = parsed.payload
-                if (parsed.payload.vault == null) {
-                    // No sealed vault → nothing touches the device vault; the
-                    // restore needs no gate and no passphrase.
+                if (parsed.payload.vault == null && parsed.payload.totp == null) {
+                    // Neither sealed block → nothing touches the device keys;
+                    // the restore needs no gate and no passphrase.
                     finalizeImport(emptyList())
                 } else {
+                    // No counts here: the file does not say how many entries
+                    // either block carries, and a number is only honest once
+                    // the passphrase has opened it.
                     passphrasePrompt = PassphrasePrompt(
                         forExport = false,
                         profileName = parsed.payload.profile.name,
@@ -774,9 +861,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     /**
-     * Import step 2 (v2 with vault) — the file's passphrase: decrypt the
-     * vault or stay in the dialog for a retry. Wrong passphrase NEVER writes
-     * anything; a corrupt vault aborts the whole import.
+     * Import step 2 (v3 with a sealed block) — the file's passphrase: decrypt
+     * the vault and the authenticator block, or stay in the dialog for a retry.
+     * Wrong passphrase NEVER writes anything; a corrupt blob aborts the whole
+     * import.
      */
     fun confirmImportPassphrase(passphrase: String) {
         // A sealed passwords file reaches this dialog by the same route as a
@@ -787,16 +875,27 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             confirmPasswordImportPassphrase(passphrase)
             return
         }
-        val vault = importPayload?.vault ?: run {
+        val payload = importPayload
+        val vault = payload?.vault
+        val totpVault = payload?.totp
+        if (vault == null && totpVault == null) {
             passphrasePrompt = null
             return
         }
         viewModelScope.launch {
             val chars = passphrase.toCharArray()
+            // Both blocks are sealed under this one passphrase, so one decrypt
+            // round proves it for both. The wrong-passphrase retry is the same
+            // dialog either way: a VaultAuthException from the FIRST block that
+            // exists is the answer, and the second is only tried once the first
+            // has already said the passphrase is right.
             val decrypted = try {
                 withContext(Dispatchers.Default) {
                     try {
-                        PasswordVaultCrypto.decrypt(vault.toCipherData(), chars)
+                        val creds = vault?.let { PasswordVaultCrypto.decrypt(it.toCipherData(), chars) }
+                        val totp = totpVault?.let { TotpBackup.openContents(it, chars).entries }
+                            ?: emptyList()
+                        creds to totp
                     } finally {
                         PasswordVaultCrypto.wipe(chars)
                     }
@@ -815,25 +914,36 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             } catch (e: VaultFormatException) {
                 passphrasePrompt = null
                 importPayload = null
-                importError = "The export's password vault is corrupt. Nothing was imported."
+                importError = "A sealed block in that export is corrupt. Nothing was imported."
                 return@launch
-            }
-            val creds = try {
-                credentialsJson.decodeFromString(
-                    ListSerializer(SavedCredential.serializer()), decrypted
-                )
-            } catch (e: SerializationException) {
+            } catch (e: TotpBackupFormatException) {
                 passphrasePrompt = null
                 importPayload = null
-                importError = "The export's password vault is unreadable. Nothing was imported."
+                importError = "The export's authenticator accounts are damaged. Nothing was imported."
                 return@launch
             }
-            passphrasePrompt = null
-            if (creds.isNotEmpty() && !vaultUnlocked()) {
-                // Writing into the device vault is gated like reading it.
-                requestVaultGate { finalizeImport(creds) }
+            val (credBlob, totpEntries) = decrypted
+            val creds = if (credBlob == null) {
+                emptyList()
             } else {
-                finalizeImport(creds)
+                try {
+                    credentialsJson.decodeFromString(
+                        ListSerializer(SavedCredential.serializer()), credBlob
+                    )
+                } catch (e: SerializationException) {
+                    passphrasePrompt = null
+                    importPayload = null
+                    importError = "The export's password vault is unreadable. Nothing was imported."
+                    return@launch
+                }
+            }
+            passphrasePrompt = null
+            if ((creds.isNotEmpty() || totpEntries.isNotEmpty()) && !vaultUnlocked()) {
+                // Writing into the device vault is gated like reading it. ONE
+                // gate covers both stores — the 2FA screen opens the same one.
+                requestVaultGate { finalizeImport(creds, totpEntries) }
+            } else {
+                finalizeImport(creds, totpEntries)
             }
         }
     }
@@ -841,8 +951,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     /**
      * Import final step — ONE Room transaction (see
      * ProfileRepositoryImpl.importBackup): profile row + bookmarks + site
-     * permissions + site settings + credentials re-encrypted under the new
-     * profile's device key. Any failure rolls the whole import back.
+     * permissions + site settings + credentials and authenticator accounts,
+     * each re-encrypted under the new profile's own device keys. Any failure
+     * rolls the whole import back.
      *
      * Duplicate safety: the import NEVER reuses the file's UUID, so an
      * existing profile can never be overwritten — if the file's UUID or its
@@ -850,7 +961,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
      * "<name> (imported)" (with numeric disambiguation), mirroring
      * ProfileManager.duplicate's convention.
      */
-    private fun finalizeImport(creds: List<SavedCredential>) {
+    private fun finalizeImport(
+        creds: List<SavedCredential>,
+        totpEntries: List<TotpBackup.Entry> = emptyList()
+    ) {
         val payload = importPayload ?: return
         viewModelScope.launch {
             runCatching {
@@ -877,17 +991,29 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     bookmarks = payload.bookmarks,
                     sitePermissions = payload.sitePermissions,
                     siteSettings = payload.siteSettings,
-                    notes = payload.notes
-                ) {
-                    // Runs INSIDE the transaction: importAll re-encrypts every
-                    // password under THIS device's key for the new profile id
-                    // (fresh UUIDs, canonical domains). Skipped entirely when
-                    // there is nothing to write, so a vault-less import needs
-                    // no unlock.
-                    if (creds.isNotEmpty()) {
-                        graph.credentialRepo.importAll(fresh.id, creds)
+                    notes = payload.notes,
+                    writeCredentials = {
+                        // Runs INSIDE the transaction: importAll re-encrypts every
+                        // password under THIS device's key for the new profile id
+                        // (fresh UUIDs, canonical domains). Skipped entirely when
+                        // there is nothing to write, so a vault-less import needs
+                        // no unlock.
+                        if (creds.isNotEmpty()) {
+                            graph.credentialRepo.unlock()
+                            graph.credentialRepo.importAll(fresh.id, creds)
+                        }
+                    },
+                    writeTotp = {
+                        // Same rule, different store and key: the seeds the file
+                        // carried are re-encrypted under the new profile's 2FA
+                        // key, so an imported profile's codes are readable by
+                        // this device alone.
+                        if (totpEntries.isNotEmpty()) {
+                            graph.totpRepo.unlock()
+                            graph.totpRepo.importAll(fresh.id, totpEntries)
+                        }
                     }
-                }
+                )
                 summary
             }.onSuccess { summary ->
                 importPayload = null
@@ -898,6 +1024,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     }
                     if (creds.isNotEmpty()) {
                         append(if (creds.size == 1) ", 1 password" else ", ${creds.size} passwords")
+                    }
+                    if (totpEntries.isNotEmpty()) {
+                        append(
+                            if (totpEntries.size == 1) ", 1 authenticator account"
+                            else ", ${totpEntries.size} authenticator accounts"
+                        )
                     }
                 }
                 message = "Imported \"${summary.profile.name}\" ($details)"
@@ -1356,3 +1488,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
  * any real file and far below the point where reading it costs anything.
  */
 private const val MAX_PASSWORD_FILE_BYTES = 8 * 1024 * 1024
+
+/**
+ * The largest profile export this app will read into memory.
+ *
+ * A whole-profile backup is bigger than a password file by nature: it carries
+ * bookmarks, history-derived settings, notes and now the authenticator
+ * accounts, all as JSON before the sealed blocks. Sixteen megabytes leaves an
+ * order of magnitude of headroom over any real profile while keeping a
+ * mis-picked file (a video, a disk image) from being slurped into a heap that
+ * cannot hold it. The paste path is capped with the same number — it has no
+ * picker in front of it at all.
+ */
+private const val MAX_IMPORT_BYTES = 16 * 1024 * 1024

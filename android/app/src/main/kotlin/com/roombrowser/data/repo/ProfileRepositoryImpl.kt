@@ -182,6 +182,9 @@ class ProfileRepositoryImpl(db: AppDatabase) : ProfileStore {
      * TransactionElement (which survives context switches) and dispatches each
      * DAO call back onto the transaction thread, so those writes join this
      * transaction and roll back with it.
+     *
+     * [writeTotp] is the 2FA twin of [writeCredentials] and runs under exactly
+     * the same rule.
      */
     suspend fun importBackup(
         profile: Profile,
@@ -189,7 +192,8 @@ class ProfileRepositoryImpl(db: AppDatabase) : ProfileStore {
         sitePermissions: List<ProfileBackup.SitePermissionExport>,
         siteSettings: List<ProfileBackup.SiteSettingExport>,
         notes: List<ProfileBackup.NoteExport> = emptyList(),
-        writeCredentials: suspend () -> Unit = {}
+        writeCredentials: suspend () -> Unit = {},
+        writeTotp: suspend () -> Unit = {}
     ): ImportSummary = database.withTransaction {
         val pid = profile.id.value
         dao.upsert(profile.toEntity())
@@ -248,6 +252,10 @@ class ProfileRepositoryImpl(db: AppDatabase) : ProfileStore {
             )
         }
         writeCredentials()
+        // Same transaction, same rule: the authenticator rows belong to the
+        // profile row above or to nothing. TotpRepository.importAll re-encrypts
+        // every seed under the new profile's own key with fresh UUIDs.
+        writeTotp()
         ImportSummary(profile, bookmarks.size, notes.size)
     }
 

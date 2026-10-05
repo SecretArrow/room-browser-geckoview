@@ -31,7 +31,6 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
@@ -76,8 +75,6 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.input.KeyboardType
-import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.roombrowser.domain.model.Profile
@@ -85,12 +82,12 @@ import com.roombrowser.domain.profile.CopyOptions
 import com.roombrowser.main.MainActivity
 import com.roombrowser.main.MainViewModel
 import com.roombrowser.main.MessageAction
-import com.roombrowser.main.PassphrasePrompt
 import com.roombrowser.main.PendingExport
 import com.roombrowser.ui.common.EmptyState
 import com.roombrowser.ui.common.ProfileAvatar
 import com.roombrowser.ui.common.RoomBottomSheetShape
 import com.roombrowser.ui.common.RoomSheetHeader
+import com.roombrowser.ui.common.VaultPassphraseDialog
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -421,6 +418,10 @@ fun MainScreen(
             else -> "${prompt.totpCount} authenticator accounts (2FA) will be destroyed " +
                 "with it, and their setup keys cannot be recovered."
         }
+        // "Worth exporting" is NOT the same as "has passwords": a profile whose
+        // only secrets are authenticator accounts still loses them for good, so
+        // the Export-first route has to be offered for it too.
+        val exportable = prompt.credentialCount != 0 || prompt.totpCount > 0
         AlertDialog(
             onDismissRequest = { viewModel.dismissDeletePrompt() },
             title = { Text("Delete Profile") },
@@ -438,14 +439,13 @@ fun MainScreen(
             },
             confirmButton = {
                 TextButton(onClick = { viewModel.confirmDeleteWithoutExport() }) {
-                    // Only meaningful when there was something to export.
-                    Text(if (prompt.credentialCount == 0) "Delete" else "Delete without exporting")
+                    Text(if (exportable) "Delete without exporting" else "Delete")
                 }
             },
             dismissButton = {
                 Row {
                     TextButton(onClick = { viewModel.dismissDeletePrompt() }) { Text("Cancel") }
-                    if (prompt.credentialCount != 0) {
+                    if (exportable) {
                         Spacer(Modifier.width(4.dp))
                         Button(onClick = { viewModel.confirmDeleteWithExport() }) {
                             Text("Export first")
@@ -1162,10 +1162,6 @@ fun ConfirmDialog(
     )
 }
 
-/** Minimum length of a NEW export passphrase (the file's own passphrase is
- *  only checked by decryption — an importer never re-enforces this). */
-private const val MIN_EXPORT_PASSPHRASE = 8
-
 /** Human-readable size for the delivery dialog. */
 private fun formatSize(bytes: Int): String =
     if (bytes < 2048) "$bytes B"
@@ -1242,111 +1238,6 @@ private fun ExportDeliveryDialog(
                 TextButton(onClick = onCancel) { Text("Cancel") }
             }
         }
-    )
-}
-
-/**
- * The passphrase step shared by export (set a NEW passphrase, two fields,
- * min length, must match) and import (enter the FILE's passphrase, one
- * field, inline retry on wrong passphrase). Password fields, imePadding so
- * the keyboard never covers them.
- */
-@Composable
-private fun VaultPassphraseDialog(
-    prompt: PassphrasePrompt,
-    onConfirm: (passphrase: String) -> Unit,
-    onDismiss: () -> Unit
-) {
-    // Keyed by the prompt's id so EVERY new prompt — including every retry —
-    // starts with empty fields. Keying on the prompt VALUE was not enough:
-    // from the second wrong passphrase on, the retry prompt is a byte-
-    // identical copy of the previous one, the key never changed and the
-    // rejected secret stayed in the field.
-    var passphrase by remember(prompt.id) { mutableStateOf("") }
-    var confirmation by remember(prompt.id) { mutableStateOf("") }
-    val mismatch = prompt.forExport && confirmation.isNotEmpty() && confirmation != passphrase
-    val valid = if (prompt.forExport) {
-        passphrase.length >= MIN_EXPORT_PASSPHRASE && passphrase == confirmation
-    } else {
-        passphrase.isNotEmpty()
-    }
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = {
-            Text(if (prompt.forExport) "Export passphrase" else "Enter file passphrase")
-        },
-        text = {
-            // Scrollable: with the keyboard up, two password fields and their
-            // error lines, a landscape dialog cannot show this body at once —
-            // unscrollable, the "Repeat passphrase" field was unreachable.
-            Column(
-                Modifier
-                    .imePadding()
-                    .verticalScroll(rememberScrollState())
-            ) {
-                Text(
-                    if (prompt.forExport) {
-                        "${prompt.credentialCount} saved " +
-                            (if (prompt.credentialCount == 1) "password" else "passwords") +
-                            " of \"${prompt.profileName}\" will be sealed under this passphrase. " +
-                            "You will need it on the receiving device — it cannot be recovered."
-                    } else {
-                        // A passwords file carries no profile name, so naming
-                        // one here would be inventing an origin.
-                        if (prompt.passwordsFile) {
-                            "This is a sealed Room Browser password file. Enter the " +
-                                "passphrase it was exported with."
-                        } else {
-                            "The export of \"${prompt.profileName}\" carries an encrypted password " +
-                                "vault. Enter the passphrase it was exported with."
-                        }
-                    }
-                )
-                Spacer(Modifier.height(12.dp))
-                OutlinedTextField(
-                    value = passphrase,
-                    onValueChange = { passphrase = it },
-                    label = {
-                        Text(
-                            if (prompt.forExport) "Passphrase (min $MIN_EXPORT_PASSPHRASE chars)"
-                            else "Passphrase"
-                        )
-                    },
-                    singleLine = true,
-                    visualTransformation = PasswordVisualTransformation(),
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
-                    isError = prompt.error != null,
-                    supportingText = prompt.error?.let { error ->
-                        { Text(error, color = MaterialTheme.colorScheme.error) }
-                    },
-                    modifier = Modifier.fillMaxWidth()
-                )
-                if (prompt.forExport) {
-                    Spacer(Modifier.height(12.dp))
-                    OutlinedTextField(
-                        value = confirmation,
-                        onValueChange = { confirmation = it },
-                        label = { Text("Repeat passphrase") },
-                        singleLine = true,
-                        visualTransformation = PasswordVisualTransformation(),
-                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
-                        isError = mismatch,
-                        supportingText = if (mismatch) {
-                            { Text("Passphrases do not match", color = MaterialTheme.colorScheme.error) }
-                        } else {
-                            null
-                        },
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                }
-            }
-        },
-        confirmButton = {
-            Button(onClick = { onConfirm(passphrase) }, enabled = valid) {
-                Text(if (prompt.forExport) "Seal & export" else "Unlock & import")
-            }
-        },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } }
     )
 }
 

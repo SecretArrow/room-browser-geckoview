@@ -123,14 +123,51 @@ object TotpBackup {
      * Seals [contents] under [passphrase]; throws when nothing is carryable so a
      * file that restores nothing is never written.
      */
-    fun seal(contents: Contents, header: Header, passphrase: CharArray): String {
+    fun seal(contents: Contents, header: Header, passphrase: CharArray): String =
+        json.encodeToString(
+            TotpFile.serializer(),
+            TotpFile(kind = KIND, vault = sealContents(contents, header, passphrase))
+        )
+
+    /**
+     * The inner sealed block of a PROFILE export: a profile export embeds it
+     * under the profile export's own passphrase, with no [TotpFile] envelope
+     * because that export's JSON is the envelope. The bytes are the SAME ones
+     * [seal]/[open] use, so the two import paths cannot drift.
+     *
+     * Throws when nothing is carryable, like [seal].
+     */
+    fun sealContents(contents: Contents, header: Header, passphrase: CharArray): ProfileBackup.VaultBackup {
         require(passphrase.isNotEmpty()) { "A two-factor export needs a passphrase" }
         require(!contents.isEmpty) { "This profile has no authenticator accounts to export" }
-        val sealed = PasswordVaultCrypto.encrypt(document(contents, header), passphrase)
-        return json.encodeToString(
-            TotpFile.serializer(),
-            TotpFile(kind = KIND, vault = ProfileBackup.VaultBackup.from(sealed))
+        return ProfileBackup.VaultBackup.from(
+            PasswordVaultCrypto.encrypt(document(contents, header), passphrase)
         )
+    }
+
+    /**
+     * Decrypts a block written by [sealContents] — the seam a profile import
+     * uses, reading the same bytes [open] does.
+     *
+     * @throws TotpBackupFormatException when the decrypted document has no
+     *   intact account-data block.
+     * @throws com.roombrowser.domain.credentials.VaultAuthException when the
+     *   passphrase is wrong or the ciphertext was tampered with.
+     */
+    fun openContents(vault: ProfileBackup.VaultBackup, passphrase: CharArray): Contents {
+        val document = PasswordVaultCrypto.decrypt(vault.toCipherData(), passphrase)
+        val begin = document.indexOf(DATA_BEGIN)
+        val end = if (begin < 0) -1 else document.indexOf(DATA_END, startIndex = begin)
+        if (begin < 0 || end < 0) {
+            throw TotpBackupFormatException("the decrypted file has no account data")
+        }
+        val body = document.substring(begin + DATA_BEGIN.length, end).trim()
+        val payload = try {
+            json.decodeFromString(Payload.serializer(), body)
+        } catch (e: SerializationException) {
+            throw TotpBackupFormatException("the account data is damaged", e)
+        }
+        return Contents(payload.entries)
     }
 
     /**
@@ -144,19 +181,7 @@ object TotpBackup {
         val file = parseEnvelope(text) ?: throw TotpBackupFormatException(
             if (text.isBlank()) "the file is empty" else "not a Room Browser two-factor file"
         )
-        val document = PasswordVaultCrypto.decrypt(file.vault.toCipherData(), passphrase)
-        val begin = document.indexOf(DATA_BEGIN)
-        val end = if (begin < 0) -1 else document.indexOf(DATA_END, startIndex = begin)
-        if (begin < 0 || end < 0) {
-            throw TotpBackupFormatException("the decrypted file has no account data")
-        }
-        val body = document.substring(begin + DATA_BEGIN.length, end).trim()
-        val payload = try {
-            json.decodeFromString(Payload.serializer(), body)
-        } catch (e: SerializationException) {
-            throw TotpBackupFormatException("the account data is damaged", e)
-        }
-        return Contents(payload.entries)
+        return openContents(file.vault, passphrase)
     }
 
     /**

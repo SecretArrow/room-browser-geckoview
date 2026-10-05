@@ -3,6 +3,7 @@ package com.roombrowser.browser.ui
 import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
+import android.net.Uri
 import android.os.Bundle
 import android.view.WindowManager
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -42,6 +43,7 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.QrCodeScanner
@@ -93,13 +95,19 @@ import androidx.lifecycle.flowWithLifecycle
 import androidx.lifecycle.repeatOnLifecycle
 import com.roombrowser.RoomBrowserApp
 import com.roombrowser.data.repo.TotpRepository
+import com.roombrowser.domain.credentials.PasswordVaultCrypto
+import com.roombrowser.domain.credentials.VaultAuthException
+import com.roombrowser.domain.credentials.VaultFormatException
 import com.roombrowser.domain.model.ProfileId
 import com.roombrowser.domain.theme.BuiltInThemes
 import com.roombrowser.domain.totp.Base32
 import com.roombrowser.domain.totp.OtpAuthUri
 import com.roombrowser.domain.totp.TotpAlgorithm
+import com.roombrowser.domain.totp.TotpBackup
+import com.roombrowser.domain.totp.TotpBackupFormatException
 import com.roombrowser.domain.totp.TotpEntry
 import com.roombrowser.domain.totp.TotpGenerator
+import com.roombrowser.main.PassphrasePrompt
 import com.roombrowser.qr.QrScannerActivity
 import com.roombrowser.security.BiometricGate
 import com.roombrowser.ui.common.EmptyState
@@ -109,9 +117,12 @@ import com.roombrowser.ui.common.RoomBrowserTheme
 import com.roombrowser.ui.common.RoomCard
 import com.roombrowser.ui.common.RoomCardShape
 import com.roombrowser.ui.common.RoomSheetHeader
+import com.roombrowser.ui.common.VaultPassphraseDialog
 import com.roombrowser.ui.common.copySensitive
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 /**
  * 2FA Management — the profile's authenticator accounts, with the code, a
@@ -164,6 +175,25 @@ class TwoFactorActivity : FragmentActivity() {
                             { graph.totpRepo.unlock() },
                             { }
                         )
+                    },
+                    onEnsureUnlocked = { onReady, onFailure ->
+                        // UI gate only: it guards the screen, not the ciphertext.
+                        when {
+                            graph.totpRepo.isUnlocked.value -> onReady()
+                            biometricsAvailable -> BiometricGate.unlock(
+                                this,
+                                "2FA codes",
+                                {
+                                    graph.totpRepo.unlock()
+                                    onReady()
+                                },
+                                onFailure
+                            )
+                            else -> {
+                                graph.totpRepo.unlock()
+                                onReady()
+                            }
+                        }
                     }
                 )
             }
@@ -195,7 +225,8 @@ private fun TwoFactorRoot(
     repo: TotpRepository,
     biometricsAvailable: Boolean,
     onClose: () -> Unit,
-    onUnlockRequest: () -> Unit
+    onUnlockRequest: () -> Unit,
+    onEnsureUnlocked: (onReady: () -> Unit, onFailure: () -> Unit) -> Unit
 ) {
     val extras = LocalRoomExtras.current
     val context = LocalContext.current
@@ -257,6 +288,223 @@ private fun TwoFactorRoot(
         }
     }
 
+    val profileLabel = profileName.ifBlank { "profile" }
+    var promptSeq by remember { mutableStateOf(0) }
+    var exportMenuOpen by remember { mutableStateOf(false) }
+    var exportEntries by remember { mutableStateOf<List<TotpEntry>>(emptyList()) }
+    var exportText by remember { mutableStateOf<String?>(null) }
+    var exportSaveName by remember { mutableStateOf("") }
+    var exportPrompt by remember { mutableStateOf<PassphrasePrompt?>(null) }
+    var importText by remember { mutableStateOf<String?>(null) }
+    var importPrompt by remember { mutableStateOf<PassphrasePrompt?>(null) }
+
+    fun showMessage(text: String) {
+        scope.launch { snackbarHostState.showSnackbar(text) }
+    }
+
+    val createDocLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument("text/plain")
+    ) { uri ->
+        val text = exportText
+        val name = exportSaveName
+        exportText = null
+        if (uri == null || text == null) {
+            showMessage("Export canceled")
+        } else {
+            scope.launch {
+                runCatching {
+                    withContext(Dispatchers.IO) {
+                        val out = context.contentResolver.openOutputStream(uri)
+                            ?: error("the selected location is not writable")
+                        out.use { it.write(text.toByteArray(Charsets.UTF_8)) }
+                    }
+                }.onSuccess { showMessage("Exported \"$name\"") }
+                    .onFailure {
+                        showMessage("Export failed — ${it.message ?: "could not write the file"}")
+                    }
+            }
+        }
+    }
+
+    val pickTotpFileLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        scope.launch {
+            runCatching {
+                withContext(Dispatchers.IO) {
+                    readCappedText(context, uri, MAX_TOTP_FILE_BYTES, "a two-factor file")
+                }
+            }.onSuccess { text ->
+                val envelopeCheck = runCatching { TotpBackup.isSealedFile(text) }
+                if (envelopeCheck.getOrDefault(false)) {
+                    importText = text
+                    importPrompt = PassphrasePrompt(
+                        forExport = false,
+                        profileName = "",
+                        credentialCount = 0,
+                        titleOverride = "Import 2FA accounts",
+                        bodyOverride = "This is a sealed Room Browser two-factor file. " +
+                            "Enter the passphrase it was exported with.",
+                        id = ++promptSeq
+                    )
+                } else {
+                    showMessage(
+                        envelopeCheck.exceptionOrNull()?.message
+                            ?: "That file is not a Room Browser two-factor export"
+                    )
+                }
+            }.onFailure {
+                showMessage("Import failed — ${it.message ?: "the file could not be read"}")
+            }
+        }
+    }
+
+    fun startExport() {
+        onEnsureUnlocked(
+            {
+                scope.launch {
+                    runCatching { repo.exportAll(profileId) }
+                        .onSuccess { all ->
+                            if (all.isEmpty()) {
+                                // Sealing nothing would write a decoy file.
+                                showMessage("This profile has no 2FA accounts to export")
+                            } else {
+                                exportEntries = all
+                                exportPrompt = PassphrasePrompt(
+                                    forExport = true,
+                                    profileName = profileLabel,
+                                    credentialCount = 0,
+                                    totpCount = all.size,
+                                    titleOverride = "Export 2FA passphrase",
+                                    id = ++promptSeq
+                                )
+                            }
+                        }
+                        .onFailure {
+                            showMessage(
+                                "Could not read the accounts — ${it.message ?: "2FA is locked"}"
+                            )
+                        }
+                }
+            },
+            { showMessage("Unlock 2FA to export") }
+        )
+    }
+
+    fun confirmExportPassphrase(passphrase: String) {
+        val entries = exportEntries
+        if (entries.isEmpty()) {
+            exportPrompt = null
+            return
+        }
+        scope.launch {
+            val chars = passphrase.toCharArray()
+            val sealResult = runCatching {
+                withContext(Dispatchers.Default) {
+                    try {
+                        TotpBackup.seal(
+                            contents = TotpBackup.Contents(
+                                entries.map { entry ->
+                                    TotpBackup.Entry(
+                                        issuer = entry.issuer,
+                                        account = entry.account,
+                                        secret = entry.secret,
+                                        algorithm = entry.algorithm,
+                                        digits = entry.digits,
+                                        period = entry.period
+                                    )
+                                }
+                            ),
+                            header = TotpBackup.Header(
+                                profileLabel = profileLabel,
+                                exportedAt = System.currentTimeMillis()
+                            ),
+                            passphrase = chars
+                        )
+                    } finally {
+                        PasswordVaultCrypto.wipe(chars)
+                    }
+                }
+            }
+            exportEntries = emptyList()
+            exportPrompt = null
+            sealResult.onSuccess { text ->
+                exportText = text
+                exportSaveName = TotpBackup.fileName(profileLabel, System.currentTimeMillis())
+                createDocLauncher.launch(exportSaveName)
+            }.onFailure {
+                showMessage("Export failed — ${it.message ?: "could not seal the file"}")
+            }
+        }
+    }
+
+    fun confirmImportPassphrase(passphrase: String) {
+        val text = importText ?: return
+        val prompt = importPrompt ?: return
+        scope.launch {
+            val chars = passphrase.toCharArray()
+            val opened = runCatching {
+                withContext(Dispatchers.Default) {
+                    try {
+                        TotpBackup.open(text, chars)
+                    } finally {
+                        PasswordVaultCrypto.wipe(chars)
+                    }
+                }
+            }
+            opened.onSuccess { contents ->
+                val newEntries = contents.entries
+                if (newEntries.isEmpty()) {
+                    importPrompt = null
+                    importText = null
+                    showMessage("That file carried no accounts. Nothing was imported.")
+                    return@onSuccess
+                }
+                onEnsureUnlocked(
+                    {
+                        scope.launch {
+                            runCatching { repo.importAll(profileId, newEntries) }
+                                .onSuccess {
+                                    importPrompt = null
+                                    importText = null
+                                    editorOpen = false
+                                    editing = null
+                                    showMessage(
+                                        if (newEntries.size == 1) "1 account imported"
+                                        else "${newEntries.size} accounts imported"
+                                    )
+                                }
+                                .onFailure {
+                                    showMessage(
+                                        "Import failed — ${it.message ?: "nothing was imported"}"
+                                    )
+                                }
+                        }
+                    },
+                    { showMessage("Unlock 2FA to import") }
+                )
+            }.onFailure { error ->
+                when (error) {
+                    is VaultAuthException -> importPrompt = prompt.copy(
+                        error = "Wrong passphrase — try again",
+                        id = ++promptSeq
+                    )
+                    is TotpBackupFormatException, is VaultFormatException -> {
+                        importPrompt = null
+                        importText = null
+                        showMessage("That two-factor file is damaged. Nothing was imported.")
+                    }
+                    else -> {
+                        importPrompt = null
+                        importText = null
+                        showMessage("Import failed — ${error.message ?: "nothing was imported"}")
+                    }
+                }
+            }
+        }
+    }
+
     val needle = query.trim().lowercase()
     val visible = entries
         .filter {
@@ -313,6 +561,26 @@ private fun TwoFactorRoot(
                         modifier = Modifier.semantics { contentDescription = "Add 2FA" }
                     ) {
                         Icon(Icons.Filled.Add, contentDescription = null)
+                    }
+                    Box {
+                        IconButton(
+                            onClick = { exportMenuOpen = true },
+                            modifier = Modifier.semantics { contentDescription = "2FA options" }
+                        ) {
+                            Icon(Icons.Filled.MoreVert, contentDescription = null)
+                        }
+                        DropdownMenu(
+                            expanded = exportMenuOpen,
+                            onDismissRequest = { exportMenuOpen = false }
+                        ) {
+                            DropdownMenuItem(
+                                text = { Text("Export 2FA") },
+                                onClick = {
+                                    exportMenuOpen = false
+                                    startExport()
+                                }
+                            )
+                        }
                     }
                 }
             )
@@ -402,6 +670,9 @@ private fun TwoFactorRoot(
             profileId = profileId,
             initial = editing,
             repo = repo,
+            onImportFromFile = {
+                pickTotpFileLauncher.launch(arrayOf("text/plain", "application/json", "*/*"))
+            },
             onDismiss = {
                 editorOpen = false
                 editing = null
@@ -412,6 +683,28 @@ private fun TwoFactorRoot(
                 scope.launch { snackbarHostState.showSnackbar(message) }
             },
             onError = { message -> scope.launch { snackbarHostState.showSnackbar(message) } }
+        )
+    }
+
+    exportPrompt?.let { prompt ->
+        VaultPassphraseDialog(
+            prompt = prompt,
+            onConfirm = { confirmExportPassphrase(it) },
+            onDismiss = {
+                exportPrompt = null
+                exportEntries = emptyList()
+            }
+        )
+    }
+
+    importPrompt?.let { prompt ->
+        VaultPassphraseDialog(
+            prompt = prompt,
+            onConfirm = { confirmImportPassphrase(it) },
+            onDismiss = {
+                importPrompt = null
+                importText = null
+            }
         )
     }
 
@@ -737,8 +1030,9 @@ private fun DetailLine(label: String, value: String) {
 }
 
 /**
- * Add/edit sheet. Three ways in, all of which end at the same validated form:
- * scan the QR, paste an `otpauth://` link, or type the setup key.
+ * Add/edit sheet. Four ways in, all of which end at the same validated form:
+ * scan the QR, paste an `otpauth://` link, type the setup key, or import a
+ * sealed 2FA file.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -746,6 +1040,7 @@ private fun TwoFactorEditorSheet(
     profileId: ProfileId,
     initial: TotpEntry?,
     repo: TotpRepository,
+    onImportFromFile: () -> Unit,
     onDismiss: () -> Unit,
     onSaved: (String) -> Unit,
     onError: (String) -> Unit
@@ -829,6 +1124,17 @@ private fun TwoFactorEditorSheet(
                             .weight(1f)
                             .heightIn(min = 48.dp)
                     ) { Text("Paste link") }
+                }
+                Spacer(Modifier.height(10.dp))
+                OutlinedButton(
+                    onClick = onImportFromFile,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(min = 48.dp)
+                ) {
+                    Icon(Icons.Filled.FolderOpen, contentDescription = null)
+                    Spacer(Modifier.width(6.dp))
+                    Text("Import from file")
                 }
                 Spacer(Modifier.height(12.dp))
             }
@@ -950,5 +1256,27 @@ private fun TwoFactorEditorSheet(
             }
             Spacer(Modifier.height(24.dp))
         }
+    }
+}
+
+/** The largest 2FA file this screen reads into memory: a picker can hand us
+ *  any file on the device, and a whole one on the heap is a crash. */
+private const val MAX_TOTP_FILE_BYTES = 4 * 1024 * 1024
+
+private fun readCappedText(context: Context, uri: Uri, limit: Int, what: String): String {
+    val input = context.contentResolver.openInputStream(uri)
+        ?: error("the selected file could not be opened")
+    return input.use { stream ->
+        val out = java.io.ByteArrayOutputStream()
+        val buffer = ByteArray(64 * 1024)
+        var total = 0
+        while (true) {
+            val read = stream.read(buffer)
+            if (read < 0) break
+            total += read
+            if (total > limit) error("that file is too large to be $what")
+            out.write(buffer, 0, read)
+        }
+        out.toString("UTF-8")
     }
 }

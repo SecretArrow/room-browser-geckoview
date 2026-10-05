@@ -9,7 +9,8 @@ import com.roombrowser.domain.task.AiTaskPermissions
 import com.roombrowser.domain.task.profileUnattendedRefusal
 import com.roombrowser.domain.task.unattendedRefusal
 import kotlinx.serialization.json.JsonObject
-import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.contentOrNull
 
 /**
  * The grants a task was saved with, applied in front of the executor a visible
@@ -80,7 +81,7 @@ class ScheduledRunToolGate(
         fun actionOf(argsJson: String): String? = runCatching {
             (AgentJson.parseToJsonElement(argsJson) as? JsonObject)
                 ?.get("action")
-                ?.jsonPrimitive
+                ?.let { it as? JsonPrimitive }
                 ?.contentOrNull
         }.getOrNull()
     }

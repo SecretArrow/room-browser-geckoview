@@ -4,6 +4,7 @@ import com.roombrowser.data.db.TotpDao
 import com.roombrowser.data.db.TotpEntity
 import com.roombrowser.domain.model.ProfileId
 import com.roombrowser.domain.totp.TotpAlgorithm
+import com.roombrowser.domain.totp.TotpBackup
 import com.roombrowser.domain.totp.TotpEntry
 import com.roombrowser.domain.totp.TotpGenerator
 import com.roombrowser.security.VaultCryptor
@@ -126,7 +127,7 @@ class TotpRepository(
             dao.upsert(entity)
             // The plaintext is already in hand; do not round-trip it through
             // the Keystore just to hand it back.
-            entity.toDomain()
+            entity.toDomain(profileId.safeSuffix)
         }
     }
 
@@ -201,15 +202,20 @@ class TotpRepository(
     }
 
     /**
-     * Bulk insert: every seed is RE-ENCRYPTED under THIS profile's key (the
-     * source rows were encrypted under a different one) and every row gets a
-     * fresh UUID, so an import can never collide with or overwrite an existing
-     * row. Timestamps are preserved for import fidelity, and `last_used_at` is
-     * deliberately not carried across.
+     * Bulk insert from a decoded backup file: every seed is RE-ENCRYPTED under
+     * THIS profile's key (the source entries came from another profile or
+     * another phone) and every row gets a fresh UUID, so an import can never
+     * collide with or overwrite an existing row. The format carries no
+     * timestamps, so [at] stamps them all and `last_used_at` is deliberately
+     * left null rather than inherited.
      *
      * @throws VaultLockedException when 2FA is locked.
      */
-    suspend fun importAll(profileId: ProfileId, entries: List<TotpEntry>) {
+    suspend fun importAll(
+        profileId: ProfileId,
+        entries: List<TotpBackup.Entry>,
+        at: Long = System.currentTimeMillis()
+    ) {
         requireUnlocked()
         if (entries.isEmpty()) return
         withContext(Dispatchers.IO) {
@@ -224,7 +230,7 @@ class TotpRepository(
                         algorithm = entry.algorithm.name,
                         digits = entry.digits,
                         period = entry.period,
-                        createdAt = entry.createdAt,
+                        createdAt = at,
                         lastUsedAt = null
                     )
                 )

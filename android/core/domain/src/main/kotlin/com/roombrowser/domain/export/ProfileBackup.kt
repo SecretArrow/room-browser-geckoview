@@ -25,20 +25,21 @@ sealed interface ProfileBackupResult {
 }
 
 /**
- * Profile backup / restore — export format v2 (spec section 29).
+ * Profile backup / restore — export format v3 (spec section 29).
  *
- * ## Schema (formatVersion 2)
+ * ## Schema (formatVersion 3)
  *
  * ```
  * {
- *   "formatVersion": 2,
+ *   "formatVersion": 3,
  *   "profile":      { ...full Profile, incl. settings + themeJson... },
  *   "bookmarks":    [ { url, title, folder?, position } ],
  *   "sitePermissions": [ { host, permission, decision } ],
  *   "siteSettings": [ { host, shieldsDisabled?, jsEnabled?, cookiesBlocked?,
  *                        desktopMode?, autoplayBlocked?, popupBlocked? } ],
  *   "notes":        [ { title, body } ],
- *   "vault": { scheme, saltB64, iterations, ivB64, ciphertextB64 } | null
+ *   "vault": { scheme, saltB64, iterations, ivB64, ciphertextB64 } | null,
+ *   "totp":  { scheme, saltB64, iterations, ivB64, ciphertextB64 } | null
  * }
  * ```
  *
@@ -57,6 +58,12 @@ sealed interface ProfileBackupResult {
  *    logins sealed under the user's export passphrase — the importer MUST
  *    decrypt it with [PasswordVaultCrypto] before anything is written;
  *    `vault == null` means the profile had no saved logins.
+ *  - **v3**: the file may additionally carry `totp` — the profile's
+ *    authenticator accounts, sealed under the same export passphrase as
+ *    `vault` but as an independent ciphertext. v1 and v2 files still import
+ *    (`totp` is null for them); the bump exists so an OLDER build refuses a
+ *    v3 file rather than importing it minus the authenticator secrets —
+ *    silently dropping authenticator seeds is the unacceptable outcome.
  *  - **Future versions** (`formatVersion > [FORMAT_VERSION]`) are rejected
  *    with [ProfileBackupResult.InvalidVersion] — never a partial parse, and
  *    the version's fields are not guessed at.
@@ -71,7 +78,7 @@ sealed interface ProfileBackupResult {
  */
 object ProfileBackup {
 
-    const val FORMAT_VERSION = 2
+    const val FORMAT_VERSION = 3
 
     @Serializable
     data class BookmarkExport(val url: String, val title: String, val folder: String? = null, val position: Int = 0)
@@ -152,7 +159,15 @@ object ProfileBackup {
         val notes: List<NoteExport> = emptyList(),
         /** null = this profile has no saved logins (v1 files, or a v2 export
          *  of a profile whose vault was empty). */
-        val vault: VaultBackup? = null
+        val vault: VaultBackup? = null,
+        /** The profile's authenticator accounts, sealed with the SAME export
+         *  passphrase the `vault` block uses but as an INDEPENDENT ciphertext
+         *  (one prompt, two blobs). null = the profile had no authenticator
+         *  accounts, which is also what every v1/v2 file carries. Content is
+         *  sealed and opened by
+         *  [com.roombrowser.domain.totp.TotpBackup.sealContents] /
+         *  [com.roombrowser.domain.totp.TotpBackup.openContents]. */
+        val totp: VaultBackup? = null
     ) {
         init {
             require(profile.id.value.isNotBlank())
