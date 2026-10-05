@@ -101,6 +101,7 @@ import com.roombrowser.domain.model.ProfileId
 import com.roombrowser.domain.security.PinLockCrypto
 import com.roombrowser.domain.security.WalletLockStatus
 import com.roombrowser.domain.theme.BuiltInThemes
+import com.roombrowser.domain.wallet.model.AmountFormat
 import com.roombrowser.domain.wallet.model.BalanceResult
 import com.roombrowser.domain.wallet.model.ChainType
 import com.roombrowser.domain.wallet.model.NetworkConfig
@@ -1315,7 +1316,7 @@ private fun AccountBalance(balance: BalanceResult?, checking: Boolean) {
     val extras = LocalRoomExtras.current
     when {
         balance is BalanceResult.Ok -> Text(
-            "${balance.amount} ${balance.symbol}",
+            "${AmountFormat.display(balance.amount)} ${balance.symbol}",
             style = MaterialTheme.typography.bodyMedium,
             color = extras.textPrimary
         )

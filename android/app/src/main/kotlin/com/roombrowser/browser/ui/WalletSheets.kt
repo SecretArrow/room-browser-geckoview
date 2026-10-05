@@ -74,6 +74,7 @@ import com.roombrowser.browser.wallet.DappPermissionRecord
 import com.roombrowser.browser.wallet.DappRequest
 import com.roombrowser.browser.wallet.NetworkRecord
 import com.roombrowser.browser.wallet.WalletEngineApi
+import com.roombrowser.domain.wallet.model.AmountFormat
 import com.roombrowser.domain.wallet.model.BroadcastResult
 import com.roombrowser.domain.wallet.model.ChainType
 import com.roombrowser.domain.wallet.model.FeeEstimate
@@ -88,7 +89,6 @@ import com.roombrowser.ui.common.SettingActionRow
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import org.json.JSONObject
-import java.math.BigInteger
 
 /**
  * Wallet sheets: the dApp confirmation sheets (also hosted by BrowserScreen —
@@ -392,7 +392,8 @@ private fun isDecimalAmount(value: String): Boolean = decimalAmount.matches(valu
 
 /**
  * Humanizes a chain-native token amount: hex ("0xde0b6b…") or decimal
- * base-units are divided by 10^[decimals]; anything unparseable is returned
+ * base-units are divided by 10^[decimals] and passed through the shared
+ * [AmountFormat] (≤7 decimals, truncated); anything unparseable is returned
  * as-is (the raw value is always safe to show).
  */
 internal fun formatTxValue(raw: String, decimals: Int): String {
@@ -402,15 +403,7 @@ internal fun formatTxValue(raw: String, decimals: Int): String {
             clean.drop(2).toBigIntegerOrNull(16)
         else -> clean.toBigIntegerOrNull()
     } ?: return clean
-    return formatBaseUnits(asBigInteger, decimals)
-}
-
-private fun formatBaseUnits(units: BigInteger, decimals: Int): String {
-    val safeDecimals = decimals.coerceIn(0, 36)
-    val base = BigInteger.TEN.pow(safeDecimals)
-    val whole = units.divide(base)
-    val fraction = units.mod(base).toString().padStart(safeDecimals, '0').trimEnd('0')
-    return if (fraction.isEmpty()) whole.toString() else "$whole.$fraction"
+    return AmountFormat.fromBaseUnits(asBigInteger, decimals)
 }
 
 // ---------------------------------------------------------------------------

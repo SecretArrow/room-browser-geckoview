@@ -13,6 +13,7 @@ import com.roombrowser.domain.wallet.crypto.Hashes
 import com.roombrowser.domain.wallet.crypto.Hex
 import com.roombrowser.domain.wallet.crypto.Mnemonics
 import com.roombrowser.domain.wallet.crypto.Slip10Ed25519Key
+import com.roombrowser.domain.wallet.model.AmountFormat
 import com.roombrowser.domain.wallet.model.BalanceResult
 import com.roombrowser.domain.wallet.model.BroadcastResult
 import com.roombrowser.domain.wallet.model.ChainType
@@ -955,7 +956,7 @@ open class WalletEngine(
                     account = account,
                     network = network,
                     toAddress = to,
-                    displayAmount = "$amount ${network.nativeSymbol}",
+                    displayAmount = "${AmountFormat.display(amount)} ${network.nativeSymbol}",
                     hash = result.hash,
                     explorer = explorerUrl(account.chainType, network, result.hash)
                 )
@@ -1872,9 +1873,9 @@ open class WalletEngine(
         null
     }
 
-    /** 10^17 → "0.1" (plain string, no scientific notation). */
+    /** 10^17 → "0.1" (plain string, no scientific notation), display-truncated. */
     internal fun formatBaseUnits(value: BigInteger, decimals: Int): String =
-        BigDecimal(value).movePointLeft(decimals).stripTrailingZeros().toPlainString()
+        AmountFormat.fromBaseUnits(value, decimals)
 
     private fun toLongAmount(value: BigInteger, chainType: ChainType): Long {
         if (value.bitLength() > 62) {
