@@ -3,6 +3,7 @@ package com.roombrowser.data.repo
 import androidx.room.withTransaction
 import com.roombrowser.data.db.AppDatabase
 import com.roombrowser.data.db.BookmarkEntity
+import com.roombrowser.data.db.NoteEntity
 import com.roombrowser.data.db.ProfileEntity
 import com.roombrowser.data.db.SitePermissionEntity
 import com.roombrowser.data.db.SiteSettingEntity
@@ -45,6 +46,7 @@ class ProfileRepositoryImpl(db: AppDatabase) : ProfileStore {
     private val dappPermissionDao = db.dappPermissionDao()
     private val walletActivityDao = db.walletActivityDao()
     private val aiTaskDao = db.aiTaskDao()
+    private val noteDao = db.noteDao()
 
     private val json = Json { ignoreUnknownKeys = true; encodeDefaults = true }
 
@@ -99,6 +101,9 @@ class ProfileRepositoryImpl(db: AppDatabase) : ProfileStore {
             // Scheduled tasks belong to the profile they run against; a task
             // pointing at a deleted profile could never run anyway.
             aiTaskDao.deleteAllForProfile(id.value)
+            // Notes are profile content like bookmarks — no keystore key
+            // involved, so they simply go with the profile.
+            noteDao.deleteAllForProfile(id.value)
             WalletKeyCrypto.deleteKey(id)
         }
     }
@@ -137,6 +142,7 @@ class ProfileRepositoryImpl(db: AppDatabase) : ProfileStore {
         siteSettingsDao.deleteAllSiteSettingsFor(id.value)
         statsDao.deleteAllFor(id.value)
         ipDao.deleteAllFor(id.value)
+        noteDao.deleteAllForProfile(id.value)
     }
 
     suspend fun touch(id: ProfileId, ts: Long) = dao.touch(id.value, ts)
@@ -148,7 +154,7 @@ class ProfileRepositoryImpl(db: AppDatabase) : ProfileStore {
     /** What a completed import restored — for the confirmation message. The
      *  credential count is the caller's to add: only it knows how many rows
      *  its writeCredentials step carried. */
-    data class ImportSummary(val profile: Profile, val bookmarks: Int)
+    data class ImportSummary(val profile: Profile, val bookmarks: Int, val notes: Int)
 
     /**
      * ONE Room transaction for a whole backup import: profile row + bookmarks
@@ -176,6 +182,7 @@ class ProfileRepositoryImpl(db: AppDatabase) : ProfileStore {
         bookmarks: List<ProfileBackup.BookmarkExport>,
         sitePermissions: List<ProfileBackup.SitePermissionExport>,
         siteSettings: List<ProfileBackup.SiteSettingExport>,
+        notes: List<ProfileBackup.NoteExport> = emptyList(),
         writeCredentials: suspend () -> Unit = {}
     ): ImportSummary = database.withTransaction {
         val pid = profile.id.value
@@ -193,6 +200,20 @@ class ProfileRepositoryImpl(db: AppDatabase) : ProfileStore {
                     folder = b.folder,
                     position = b.position,
                     createdAt = now
+                )
+            )
+        }
+        // Same shape as bookmarks: fresh UUIDs and local timestamps, because
+        // the format carries neither.
+        notes.forEach { n ->
+            noteDao.upsert(
+                NoteEntity(
+                    id = java.util.UUID.randomUUID().toString(),
+                    profileId = pid,
+                    title = n.title,
+                    body = n.body,
+                    createdAt = now,
+                    updatedAt = now
                 )
             )
         }
@@ -221,7 +242,7 @@ class ProfileRepositoryImpl(db: AppDatabase) : ProfileStore {
             )
         }
         writeCredentials()
-        ImportSummary(profile, bookmarks.size)
+        ImportSummary(profile, bookmarks.size, notes.size)
     }
 
     private fun ProfileEntity.toDomain(): Profile = Profile(

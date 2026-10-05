@@ -37,6 +37,7 @@ sealed interface ProfileBackupResult {
  *   "sitePermissions": [ { host, permission, decision } ],
  *   "siteSettings": [ { host, shieldsDisabled?, jsEnabled?, cookiesBlocked?,
  *                        desktopMode?, autoplayBlocked?, popupBlocked? } ],
+ *   "notes":        [ { title, body } ],
  *   "vault": { scheme, saltB64, iterations, ivB64, ciphertextB64 } | null
  * }
  * ```
@@ -97,6 +98,13 @@ object ProfileBackup {
     )
 
     /**
+     * Mirrors NoteEntity (profileId omitted — remapped on import). Timestamps
+     * are not carried: an imported note gets fresh ones, like a bookmark.
+     */
+    @Serializable
+    data class NoteExport(val title: String, val body: String)
+
+    /**
      * The profile's saved logins, sealed under the user's export passphrase
      * by [PasswordVaultCrypto] (scheme "pbkdf2-sha256-aes256-gcm"). Field
      * set = the cipher's JSON shape; the plaintext credential array exists
@@ -138,6 +146,10 @@ object ProfileBackup {
         val bookmarks: List<BookmarkExport> = emptyList(),
         val sitePermissions: List<SitePermissionExport> = emptyList(),
         val siteSettings: List<SiteSettingExport> = emptyList(),
+        /** Per-profile notes. Absent in backups written before notes existed,
+         *  which is why the field defaults to empty rather than needing a
+         *  format bump (see the versioning contract above). */
+        val notes: List<NoteExport> = emptyList(),
         /** null = this profile has no saved logins (v1 files, or a v2 export
          *  of a profile whose vault was empty). */
         val vault: VaultBackup? = null

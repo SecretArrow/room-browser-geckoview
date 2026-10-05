@@ -213,6 +213,10 @@ fun BrowserScreen(
         com.roombrowser.agent.ui.AiTasksActivity.launch(activity)
     }
 
+    fun launchNotes() {
+        NotesActivity.launch(activity, viewModel.profileId.value, viewModel.profile.name)
+    }
+
     fun launchAgentSessions() {
         agentSessionsLauncher.launch(
             Intent(activity, com.roombrowser.agent.ui.AgentSessionsActivity::class.java).apply {
@@ -369,6 +373,7 @@ fun BrowserScreen(
             onOpenBookmarks = { route = BrowserRoute.Bookmarks; showPageActions = false },
             onOpenDownloads = { route = BrowserRoute.Downloads; showPageActions = false },
             onOpenHistory = { route = BrowserRoute.History; showPageActions = false },
+            onOpenNotes = { launchNotes(); showPageActions = false },
             onShowQuickSwitcher = { showQuickSwitcher = true; showPageActions = false },
             onShowShields = { showShields = true; showPageActions = false }
         )

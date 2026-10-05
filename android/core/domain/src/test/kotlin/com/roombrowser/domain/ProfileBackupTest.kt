@@ -89,7 +89,52 @@ class ProfileBackupTest {
         assertThat(restored.payload.vault).isNull()
         assertThat(restored.payload.sitePermissions).isEmpty()
         assertThat(restored.payload.siteSettings).isEmpty()
+        assertThat(restored.payload.notes).isEmpty()
         assertThat(restored.payload.bookmarks.single().url).isEqualTo("https://example.com")
+    }
+
+    @Test
+    fun `notes round-trip through a v2 export`() {
+        val withNotes = ProfileBackup.BackupPayload(
+            profile = profile(),
+            notes = listOf(
+                ProfileBackup.NoteExport(title = "groceries", body = "milk\neggs"),
+                ProfileBackup.NoteExport(title = "", body = "untitled scrap")
+            )
+        )
+
+        val restored = ProfileBackup.parse(ProfileBackup.serialize(withNotes))
+            as ProfileBackupResult.Parsed
+
+        // Still v2: notes are an additive field with a default, so the format
+        // version does not move for them (see the versioning contract).
+        assertThat(restored.payload.formatVersion).isEqualTo(2)
+        assertThat(restored.payload.notes).hasSize(2)
+        assertThat(restored.payload.notes.first().title).isEqualTo("groceries")
+        assertThat(restored.payload.notes.first().body).isEqualTo("milk\neggs")
+        assertThat(restored.payload.notes[1].body).isEqualTo("untitled scrap")
+    }
+
+    @Test
+    fun `v2 backup written before notes existed still imports`() {
+        // Exactly what a pre-notes exporter wrote: a v2 object with no `notes`
+        // key at all. The field must default to empty, not reject the file.
+        val beforeNotes = """
+            {
+              "formatVersion": 2,
+              "profile": {
+                "id": { "value": "11111111-2222-3333-4444-555555555555" },
+                "name": "Research",
+                "createdAt": 1720000000000
+              },
+              "bookmarks": [ { "url": "https://example.com", "title": "Example" } ]
+            }
+        """.trimIndent()
+
+        val restored = ProfileBackup.parse(beforeNotes) as ProfileBackupResult.Parsed
+
+        assertThat(restored.payload.notes).isEmpty()
+        assertThat(restored.payload.bookmarks.single().title).isEqualTo("Example")
     }
 
     @Test

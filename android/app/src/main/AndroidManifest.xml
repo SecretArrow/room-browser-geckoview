@@ -232,6 +232,19 @@
             android:windowSoftInputMode="adjustResize" />
 
         <!--
+          Per-profile notes — its OWN activity in the DEFAULT process (no
+          WebView). Unlike the password manager it holds no per-process engine
+          or vault state, so it need not share ':browser' (which restarts on a
+          profile switch); the Room database is the same rows either way, kept
+          in sync by multi-instance invalidation.
+        -->
+        <activity
+            android:name=".browser.ui.NotesActivity"
+            android:exported="false"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboard|keyboardHidden|density|uiMode"
+            android:windowSoftInputMode="adjustResize" />
+
+        <!--
           Multi-chain wallet — dashboard, onboarding, send/receive and dApp
           confirmations for the bound profile. ':browser' process like the
           password manager: WalletEngine is per-process AppGraph state, so

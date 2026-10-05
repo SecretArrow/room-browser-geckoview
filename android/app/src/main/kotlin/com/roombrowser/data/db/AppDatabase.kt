@@ -41,9 +41,10 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         DappPermissionEntity::class,
         WalletActivityEntity::class,
         WalletActiveNetworkEntity::class,
-        AiTaskEntity::class
+        AiTaskEntity::class,
+        NoteEntity::class
     ],
-    version = 12,
+    version = 13,
     exportSchema = true
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -65,6 +66,7 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun dappPermissionDao(): DappPermissionDao
     abstract fun walletActivityDao(): WalletActivityDao
     abstract fun aiTaskDao(): AiTaskDao
+    abstract fun noteDao(): NoteDao
 
     companion object {
         const val NAME = "room-browser.db"
@@ -440,6 +442,41 @@ abstract class AppDatabase : RoomDatabase() {
         }
 
         /**
+         * v12 → v13: adds the per-profile notes table. Purely additive
+         * CREATE TABLE + INDEX statements — no existing table is touched, so
+         * the migration is lossless. The column set and both indices mirror
+         * NoteEntity exactly (snake_case names, NOT NULL on non-null Kotlin
+         * types), which is what Room's schema validation compares against
+         * after a migration.
+         *
+         * `internal` for the same reason as [MIGRATION_10_11]: only
+         * NoteMigrationTest executes it, since a fresh install creates v13
+         * directly.
+         */
+        internal val MIGRATION_12_13 = object : Migration(12, 13) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `notes` (" +
+                        "`id` TEXT NOT NULL, " +
+                        "`profile_id` TEXT NOT NULL, " +
+                        "`title` TEXT NOT NULL, " +
+                        "`body` TEXT NOT NULL, " +
+                        "`created_at` INTEGER NOT NULL, " +
+                        "`updated_at` INTEGER NOT NULL, " +
+                        "PRIMARY KEY(`id`))"
+                )
+                db.execSQL(
+                    "CREATE INDEX IF NOT EXISTS `index_notes_profile_id` " +
+                        "ON `notes` (`profile_id`)"
+                )
+                db.execSQL(
+                    "CREATE INDEX IF NOT EXISTS `index_notes_profile_id_updated_at` " +
+                        "ON `notes` (`profile_id`, `updated_at`)"
+                )
+            }
+        }
+
+        /**
          * Every migration, oldest first — the ONE list. [build] applies it and
          * the migration tests apply it too, so a version bump cannot leave a
          * test registering a subset that stops short of the current version.
@@ -447,7 +484,8 @@ abstract class AppDatabase : RoomDatabase() {
         internal val ALL_MIGRATIONS = arrayOf(
             MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4,
             MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8,
-            MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11, MIGRATION_11_12
+            MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11, MIGRATION_11_12,
+            MIGRATION_12_13
         )
 
         @Volatile

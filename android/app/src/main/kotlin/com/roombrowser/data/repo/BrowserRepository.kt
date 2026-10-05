@@ -7,6 +7,7 @@ import com.roombrowser.data.db.CategoryCount
 import com.roombrowser.data.db.DownloadEntity
 import com.roombrowser.data.db.HistoryEntity
 import com.roombrowser.data.db.IpHistoryEntity
+import com.roombrowser.data.db.NoteEntity
 import com.roombrowser.data.db.SitePermissionEntity
 import com.roombrowser.data.db.SiteSettingEntity
 import com.roombrowser.data.db.TabEntity
@@ -35,6 +36,7 @@ class BrowserRepository(private val db: AppDatabase) {
     private val site = db.siteSettingsDao()
     private val ip = db.ipHistoryDao()
     private val stats = db.statsDao()
+    private val notes = db.noteDao()
 
     // ---------- Tabs ----------
     fun observeTabs(profileId: ProfileId): Flow<List<TabEntity>> = tabs.observeOpen(profileId.value)
@@ -96,6 +98,34 @@ class BrowserRepository(private val db: AppDatabase) {
     suspend fun updateBookmark(id: Long, title: String, folder: String?) = bookmarks.updateMeta(id, title, folder)
     suspend fun deleteBookmark(id: Long) = bookmarks.delete(id)
     suspend fun deleteAllBookmarks(profileId: ProfileId) = bookmarks.deleteAllFor(profileId.value)
+
+    // ---------- Notes ----------
+    fun observeNotes(profileId: ProfileId): Flow<List<NoteEntity>> = notes.observe(profileId.value)
+    suspend fun notes(profileId: ProfileId): List<NoteEntity> = notes.allForProfile(profileId.value)
+
+    /**
+     * Create (id == null) or update (id != null) one note. The id and
+     * timestamps are minted here; updated_at is always stamped, created_at
+     * only on create.
+     */
+    suspend fun saveNote(profileId: ProfileId, title: String, body: String, id: String? = null): String {
+        val now = System.currentTimeMillis()
+        val existing = id?.let { notes.byId(it) }
+        val noteId = existing?.id ?: id ?: UUID.randomUUID().toString()
+        notes.upsert(
+            NoteEntity(
+                id = noteId,
+                profileId = profileId.value,
+                title = title,
+                body = body,
+                createdAt = existing?.createdAt ?: now,
+                updatedAt = now
+            )
+        )
+        return noteId
+    }
+
+    suspend fun deleteNote(id: String) = notes.delete(id)
 
     // ---------- History ----------
     fun observeRecentHistory(profileId: ProfileId, limit: Int = 20): Flow<List<HistoryEntity>> =

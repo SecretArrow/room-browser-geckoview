@@ -569,6 +569,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                             popupBlocked = it.popupBlocked
                         )
                     },
+                    notes = graph.browserRepo.notes(id).map {
+                        ProfileBackup.NoteExport(it.title, it.body)
+                    },
                     vault = vault
                 )
             )
@@ -873,7 +876,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     profile = fresh,
                     bookmarks = payload.bookmarks,
                     sitePermissions = payload.sitePermissions,
-                    siteSettings = payload.siteSettings
+                    siteSettings = payload.siteSettings,
+                    notes = payload.notes
                 ) {
                     // Runs INSIDE the transaction: importAll re-encrypts every
                     // password under THIS device's key for the new profile id
@@ -884,16 +888,19 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         graph.credentialRepo.importAll(fresh.id, creds)
                     }
                 }
-                Triple(summary.profile.name, summary.bookmarks, creds.size)
-            }.onSuccess { (name, bookmarkCount, credentialCount) ->
+                summary
+            }.onSuccess { summary ->
                 importPayload = null
                 val details = buildString {
-                    append(if (bookmarkCount == 1) "1 bookmark" else "$bookmarkCount bookmarks")
-                    if (credentialCount > 0) {
-                        append(if (credentialCount == 1) ", 1 password" else ", $credentialCount passwords")
+                    append(if (summary.bookmarks == 1) "1 bookmark" else "${summary.bookmarks} bookmarks")
+                    if (summary.notes > 0) {
+                        append(if (summary.notes == 1) ", 1 note" else ", ${summary.notes} notes")
+                    }
+                    if (creds.isNotEmpty()) {
+                        append(if (creds.size == 1) ", 1 password" else ", ${creds.size} passwords")
                     }
                 }
-                message = "Imported \"$name\" ($details)"
+                message = "Imported \"${summary.profile.name}\" ($details)"
             }.onFailure {
                 // Room rolled the transaction back — nothing half-imported.
                 importPayload = null

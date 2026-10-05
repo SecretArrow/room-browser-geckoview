@@ -10,6 +10,7 @@ import com.roombrowser.data.db.ProfileEntity
 import com.roombrowser.data.db.TabEntity
 import com.roombrowser.data.db.BookmarkEntity
 import com.roombrowser.data.db.HistoryEntity
+import com.roombrowser.data.repo.BrowserRepository
 import com.roombrowser.data.repo.CredentialRepository
 import com.roombrowser.data.repo.ProfileRepositoryImpl
 import com.roombrowser.data.repo.WalletRepository
@@ -102,6 +103,23 @@ class DatabaseIsolationTest {
         assertThat(db.tabDao().openTabs(profileA)).isEmpty()
         assertThat(db.tabDao().openTabs(profileB)).hasSize(1)
         assertThat(db.bookmarkDao().all(profileB)).hasSize(1)
+    }
+
+    @Test
+    fun notes_are_scoped_and_cascade_with_their_profile() = runBlocking<Unit> {
+        val a = ProfileId(profileA)
+        val b = ProfileId(profileB)
+        val repo = BrowserRepository(db)
+        repo.saveNote(a, "A note", "a body")
+        repo.saveNote(b, "B note", "b body")
+        assertThat(repo.notes(a).map { it.title }).containsExactly("A note")
+        assertThat(repo.notes(b).map { it.title }).containsExactly("B note")
+
+        // The REAL profile-deletion cascade, same call the profile UI makes.
+        ProfileRepositoryImpl(db).remove(a, cascadeData = true)
+
+        assertThat(repo.notes(a)).isEmpty()
+        assertThat(repo.notes(b).map { it.title }).containsExactly("B note")
     }
 
     @Test

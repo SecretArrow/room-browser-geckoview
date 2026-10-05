@@ -514,3 +514,25 @@ data class AiTaskEntity(
     @ColumnInfo(name = "last_result_summary") val lastResultSummary: String? = null,
     @ColumnInfo(name = "created_at") val createdAt: Long
 )
+
+// =========================================================================
+// PER-PROFILE NOTES — schema v13
+// =========================================================================
+
+/**
+ * One note of a profile's notes list: a title and a free-text body. Scoped to
+ * its profile like every other per-profile table; there is no cross-profile
+ * read anywhere. The id is a UUID minted on create (and freshly on import).
+ */
+@Entity(
+    tableName = "notes",
+    indices = [Index("profile_id"), Index("profile_id", "updated_at")]
+)
+data class NoteEntity(
+    @PrimaryKey @ColumnInfo(name = "id") val id: String,
+    @ColumnInfo(name = "profile_id") val profileId: String,
+    @ColumnInfo(name = "title") val title: String,
+    @ColumnInfo(name = "body") val body: String,
+    @ColumnInfo(name = "created_at") val createdAt: Long,
+    @ColumnInfo(name = "updated_at") val updatedAt: Long
+)

@@ -33,6 +33,7 @@ import androidx.compose.material.icons.filled.AccountBalanceWallet
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.DesktopWindows
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.FindInPage
@@ -277,6 +278,7 @@ fun PageActionsSheet(
     onOpenBookmarks: () -> Unit,
     onOpenDownloads: () -> Unit,
     onOpenHistory: () -> Unit,
+    onOpenNotes: () -> Unit,
     onShowQuickSwitcher: () -> Unit,
     onShowShields: () -> Unit = {}
 ) {
@@ -292,6 +294,7 @@ fun PageActionsSheet(
             SheetAction(Icons.AutoMirrored.Filled.ArrowForward, "Forward") { viewModel.goForward(); onDismiss() }
             SheetAction(Icons.Filled.Add, "New tab") { viewModel.loadUrl("about:home", newTab = true); onDismiss() }
             SheetAction(Icons.Filled.Lock, "New private tab") { viewModel.startPrivateTab(); onDismiss() }
+            SheetAction(Icons.Filled.Description, "Notes") { onOpenNotes() }
             SheetAction(Icons.Filled.SafetyCheck, "Shields") { onDismiss(); onShowShields() }
             SheetAction(Icons.Filled.FindInPage, "Find in page") { onShowFindBar() }
             SheetAction(Icons.Filled.Language, "Translate") { onTranslate() }

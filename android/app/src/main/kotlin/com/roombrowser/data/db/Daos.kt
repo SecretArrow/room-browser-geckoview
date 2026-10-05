@@ -764,3 +764,31 @@ interface AiTaskDao {
     @Query("DELETE FROM ai_tasks WHERE profile_id = :profileId")
     suspend fun deleteAllForProfile(profileId: String)
 }
+
+// =========================================================================
+// PER-PROFILE NOTES
+// =========================================================================
+
+@Dao
+interface NoteDao {
+    @Upsert
+    suspend fun upsert(entity: NoteEntity)
+
+    /** Most-recently-edited first — the list order the UI shows. */
+    @Query("SELECT * FROM notes WHERE profile_id = :profileId ORDER BY updated_at DESC")
+    fun observe(profileId: String): Flow<List<NoteEntity>>
+
+    @Query("SELECT * FROM notes WHERE id = :id")
+    suspend fun byId(id: String): NoteEntity?
+
+    @Query("DELETE FROM notes WHERE id = :id")
+    suspend fun delete(id: String)
+
+    /** Profile-deletion / reset cascade. */
+    @Query("DELETE FROM notes WHERE profile_id = :profileId")
+    suspend fun deleteAllForProfile(profileId: String)
+
+    /** Full scan of one profile's rows — feeds export. */
+    @Query("SELECT * FROM notes WHERE profile_id = :profileId")
+    suspend fun allForProfile(profileId: String): List<NoteEntity>
+}
