@@ -4,6 +4,7 @@ import com.google.common.truth.Truth.assertThat
 import com.roombrowser.data.db.TotpDao
 import com.roombrowser.data.db.TotpEntity
 import com.roombrowser.domain.model.ProfileId
+import com.roombrowser.domain.totp.Base32
 import com.roombrowser.domain.totp.TotpAlgorithm
 import com.roombrowser.domain.totp.TotpBackup
 import com.roombrowser.domain.totp.TotpEntry
@@ -33,6 +34,13 @@ class TotpRepositoryTest {
 
     /** RFC 6238 Appendix B key: the ASCII bytes of "12345678901234567890". */
     private val secret = "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ"
+
+    /**
+     * The Appendix B key for SHA-256, 32 bytes rather than SHA-1's 20 — the RFC
+     * gives each algorithm its own key length, so the 20-byte one above cannot
+     * produce the SHA-256 vector.
+     */
+    private val sha256Secret = Base32.encode("12345678901234567890123456789012".toByteArray())
 
     /**
      * Deterministic cryptor double: "enc:<key>:<plaintext>". Decrypt only opens
@@ -367,7 +375,7 @@ class TotpRepositoryTest {
     fun `codeForAgent honours the stored algorithm digits and period`() = runTest {
         repo.unlock()
         val eight = repo.save(
-            profileA, "Acme", "a", secret, algorithm = TotpAlgorithm.SHA256,
+            profileA, "Acme", "a", sha256Secret, algorithm = TotpAlgorithm.SHA256,
             digits = 8, period = 30
         )
         repo.lock()
