@@ -30,8 +30,10 @@ import java.util.UUID
  * OTP seeds.
  *
  * The lock here is the one the 2FA screen's gate opens — biometric or device
- * credential first, the profile PIN if the device has none. Its limit is the
- * one every UI gate in this app already has: NO key uses
+ * credential, and on a device with neither the screen opens behind a banner
+ * saying the codes are unprotected rather than refusing to open (no profile
+ * PIN exists in this build). Its limit is the one every UI gate in this app
+ * already has: NO key uses
  * `setUserAuthenticationRequired`, so code running as the app uid can still
  * reach the Keystore key. The gate protects the screen, not the ciphertext —
  * which is exactly why [codeForAgent] can exist below.
