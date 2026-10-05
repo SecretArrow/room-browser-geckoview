@@ -49,6 +49,9 @@ object AppStateKeys {
 
     /** Profile id still owed the post-create "import your passwords?" offer. */
     const val PASSWORD_IMPORT_OFFER = "password_import_offer"
+
+    /** Per-profile wallet-lock record prefix: `wallet_lock:<profileId>`. */
+    const val WALLET_LOCK_PREFIX = "wallet_lock:"
 }
 
 /** AI agent behavior settings (app-global, stored as JSON in app_state). */
@@ -459,6 +462,31 @@ class AppStateRepository(private val dao: AppStateDao) {
         kotlinx.coroutines.withContext(kotlinx.coroutines.NonCancellable) {
             dao.put(AppStateEntity(AppStateKeys.LOCAL_AI_SETTINGS, json.encodeToString(LocalAiTuning.serializer(), tuning)))
         }
+    }
+
+    // ---------- Wallet lock ----------
+
+    /**
+     * This profile's wallet-lock record, or null when no PIN was ever set.
+     * A row that cannot be decoded is treated as absent (the device credential
+     * still opens the wallet), never as a lockout.
+     */
+    suspend fun walletLockRecord(profileId: String): WalletLockRecord? =
+        dao.get(AppStateKeys.WALLET_LOCK_PREFIX + profileId)?.let {
+            runCatching { json.decodeFromString(WalletLockRecord.serializer(), it) }.getOrNull()
+        }
+
+    suspend fun saveWalletLockRecord(profileId: String, record: WalletLockRecord) {
+        dao.put(
+            AppStateEntity(
+                AppStateKeys.WALLET_LOCK_PREFIX + profileId,
+                json.encodeToString(WalletLockRecord.serializer(), record)
+            )
+        )
+    }
+
+    suspend fun clearWalletLockRecord(profileId: String) {
+        dao.remove(AppStateKeys.WALLET_LOCK_PREFIX + profileId)
     }
 
     private fun serializeSet(values: Set<String>): String =

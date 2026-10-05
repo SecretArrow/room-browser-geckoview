@@ -98,11 +98,15 @@ import com.roombrowser.browser.wallet.WalletAccountRecord
 import com.roombrowser.browser.wallet.WalletEngineApi
 import com.roombrowser.browser.wallet.WalletLockState
 import com.roombrowser.domain.model.ProfileId
+import com.roombrowser.domain.security.PinLockCrypto
+import com.roombrowser.domain.security.WalletLockStatus
 import com.roombrowser.domain.theme.BuiltInThemes
 import com.roombrowser.domain.wallet.model.BalanceResult
 import com.roombrowser.domain.wallet.model.ChainType
 import com.roombrowser.domain.wallet.model.NetworkConfig
 import com.roombrowser.security.BiometricGate
+import com.roombrowser.security.PinUnlockResult
+import com.roombrowser.security.WalletLockManager
 import com.roombrowser.ui.common.EmptyState
 import com.roombrowser.ui.common.LocalRoomExtras
 import com.roombrowser.ui.common.RoomBrowserTheme
@@ -175,6 +179,8 @@ class WalletActivity : FragmentActivity() {
             RoomBrowserTheme(spec = spec) {
                 WalletRoot(
                     engine = engine,
+                    walletLock = graph.walletLock,
+                    profileId = profileId,
                     profileName = profileName,
                     biometricsAvailable = biometricsAvailable,
                     onClose = { finish() },
@@ -216,6 +222,8 @@ class WalletActivity : FragmentActivity() {
 @Composable
 private fun WalletRoot(
     engine: WalletEngineApi,
+    walletLock: WalletLockManager,
+    profileId: ProfileId,
     profileName: String,
     biometricsAvailable: Boolean,
     onClose: () -> Unit,
@@ -227,6 +235,30 @@ private fun WalletRoot(
     val pending by engine.pendingRequests.collectAsState()
     val snackbarHostState = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
+
+    // Wallet PIN state. null pinEnabled means "policy not loaded yet" — the
+    // entry gate below waits for it so a PIN wallet is not ambushed by the
+    // device prompt, and a no-PIN wallet keeps its existing behaviour.
+    var pinEnabled by remember { mutableStateOf<Boolean?>(null) }
+    var pinStatus by remember { mutableStateOf<WalletLockStatus>(WalletLockStatus.Ready) }
+    var pinError by remember { mutableStateOf<String?>(null) }
+    LaunchedEffect(profileId) {
+        // A read failure defaults to "no PIN" (the device path), never to a
+        // pane the user cannot get past.
+        pinEnabled = runCatching { walletLock.policy(profileId.value) }
+            .getOrNull()?.pinEnabled ?: false
+        pinStatus = runCatching { walletLock.status(profileId.value) }
+            .getOrDefault(WalletLockStatus.Ready)
+    }
+
+    // Any successful unlock (PIN or device credential) clears the retry
+    // counter, so an owner who recovers via the device credential is not left
+    // rate-limited on their next PIN attempt.
+    LaunchedEffect(lockState) {
+        if (lockState == WalletLockState.UNLOCKED) {
+            runCatching { walletLock.clearFailures(profileId.value) }
+        }
+    }
 
     // ONBOARDING PIN: engine.createWallet/importWallet persist the wallet
     // row the MOMENT they run, which flips lockState NO_WALLET → LOCKED via
@@ -257,15 +289,77 @@ private fun WalletRoot(
         }
     }
 
-    // Gate on entry (LOCKED only) — exactly once per composition; every
-    // later prompt is a user-driven retry from the locked pane's Unlock
-    // button. Onboarding (NO_WALLET) is exempt: nothing to unlock yet.
-    LaunchedEffect(Unit) {
-        if (engine.lockState.value == WalletLockState.LOCKED) onUnlockRequest()
+    // Gate on entry (LOCKED only). A wallet with a PIN shows its own PIN form
+    // instead of the device prompt; a wallet without one keeps the previous
+    // auto-prompt. Keyed on pinEnabled so it fires once the policy is known.
+    LaunchedEffect(pinEnabled) {
+        if (pinEnabled == false && engine.lockState.value == WalletLockState.LOCKED) {
+            onUnlockRequest()
+        }
     }
 
     fun onMessage(message: String) {
         scope.launch { snackbarHostState.showSnackbar(message) }
+    }
+
+    // A wrong PIN never leaves the pane; it only advances the retry counter
+    // (persisted in app_state, so killing the app does not reset it).
+    fun submitPin(pin: String) {
+        val chars = pin.toCharArray()
+        scope.launch {
+            val result = runCatching { walletLock.verifyPin(profileId.value, chars) }
+            PinLockCrypto.wipe(chars)
+            when (val outcome = result.getOrNull()) {
+                PinUnlockResult.Unlocked -> {
+                    pinError = null
+                    engine.unlock()
+                }
+                is PinUnlockResult.Wrong -> {
+                    pinStatus = outcome.status
+                    pinError = if (outcome.attemptsUntilBackoff > 0) {
+                        "Wrong PIN. ${outcome.attemptsUntilBackoff} attempts left before a delay."
+                    } else {
+                        "Wrong PIN."
+                    }
+                }
+                is PinUnlockResult.Backoff -> {
+                    pinStatus = outcome.status
+                    pinError = "Too many attempts — wait for the delay to end."
+                }
+                PinUnlockResult.NoPin -> {
+                    pinEnabled = false
+                    pinError = null
+                }
+                null -> pinError = "Could not check the PIN. Try again."
+            }
+        }
+    }
+
+    fun setWalletPin(pin: CharArray) {
+        scope.launch {
+            val failure = runCatching { walletLock.setPin(profileId.value, pin) }.exceptionOrNull()
+            PinLockCrypto.wipe(pin)
+            if (failure != null) {
+                onMessage("Could not save the wallet PIN")
+                return@launch
+            }
+            pinEnabled = true
+            pinStatus = WalletLockStatus.Ready
+            pinError = null
+        }
+    }
+
+    fun removeWalletPin() {
+        scope.launch {
+            val failure = runCatching { walletLock.removePin(profileId.value) }.exceptionOrNull()
+            if (failure != null) {
+                onMessage("Could not remove the wallet PIN")
+                return@launch
+            }
+            pinEnabled = false
+            pinStatus = WalletLockStatus.Ready
+            pinError = null
+        }
     }
 
     // ONE balance-refresh path for the whole screen: the top bar's action and
@@ -382,6 +476,10 @@ private fun WalletRoot(
                 )
                 lockState == WalletLockState.LOCKED -> LockedWalletPane(
                     biometricsAvailable = biometricsAvailable,
+                    pinEnabled = pinEnabled == true,
+                    pinStatus = pinStatus,
+                    pinError = pinError,
+                    onPinSubmit = { pin -> submitPin(pin) },
                     onUnlock = onUnlockRequest
                 )
                 else -> WalletDashboard(
@@ -391,6 +489,9 @@ private fun WalletRoot(
                     pendingCount = pending.size,
                     refreshing = refreshing,
                     lastRefreshedAt = lastRefreshedAt,
+                    pinEnabled = pinEnabled == true,
+                    onSetPin = { pin -> setWalletPin(pin) },
+                    onRemovePin = { removeWalletPin() },
                     onMessage = { onMessage(it) },
                     onRefresh = { refreshBalances() },
                     onSent = { hash, explorerUrl -> onSent(hash, explorerUrl) },
@@ -422,6 +523,10 @@ private fun WalletRoot(
 @Composable
 private fun LockedWalletPane(
     biometricsAvailable: Boolean,
+    pinEnabled: Boolean,
+    pinStatus: WalletLockStatus,
+    pinError: String?,
+    onPinSubmit: (String) -> Unit,
     onUnlock: () -> Unit
 ) {
     val extras = LocalRoomExtras.current
@@ -454,22 +559,35 @@ private fun LockedWalletPane(
         )
         Spacer(Modifier.height(6.dp))
         Text(
-            if (biometricsAvailable) {
-                "Unlock with your fingerprint, face or device PIN to view and " +
-                    "use this profile's wallet."
-            } else {
-                "This device has no screen lock. Set a PIN, pattern or password " +
-                    "in system settings to use the wallet."
+            when {
+                pinEnabled -> "This wallet has its own PIN, and your device unlock still works."
+                biometricsAvailable -> {
+                    "Unlock with your fingerprint, face or device PIN to view and " +
+                        "use this profile's wallet."
+                }
+                else -> {
+                    "This device has no screen lock. Set a PIN, pattern or password " +
+                        "in system settings to use the wallet."
+                }
             },
             style = MaterialTheme.typography.bodyMedium,
             color = extras.textSecondary,
             textAlign = TextAlign.Center
         )
         Spacer(Modifier.height(20.dp))
-        Button(
-            onClick = onUnlock,
-            modifier = Modifier.heightIn(min = 48.dp)
-        ) { Text("Unlock") }
+        if (pinEnabled) {
+            WalletPinUnlockSection(
+                status = pinStatus,
+                error = pinError,
+                onPinSubmit = onPinSubmit,
+                onUseDevice = onUnlock
+            )
+        } else {
+            Button(
+                onClick = onUnlock,
+                modifier = Modifier.heightIn(min = 48.dp)
+            ) { Text("Unlock") }
+        }
     }
 }
 
@@ -495,6 +613,9 @@ private fun WalletDashboard(
     pendingCount: Int,
     refreshing: Boolean,
     lastRefreshedAt: Long?,
+    pinEnabled: Boolean,
+    onSetPin: (CharArray) -> Unit,
+    onRemovePin: () -> Unit,
     onMessage: (String) -> Unit,
     onRefresh: () -> Unit,
     onSent: (hash: String, explorerUrl: String?) -> Unit,
@@ -518,6 +639,7 @@ private fun WalletDashboard(
     var backupOpen by remember { mutableStateOf(false) }
     var revealPhraseOpen by remember { mutableStateOf(false) }
     var connectedSitesOpen by remember { mutableStateOf(false) }
+    var lockSettingsOpen by remember { mutableStateOf(false) }
     var activeAccountByChain by remember { mutableStateOf<Map<ChainType, String>>(emptyMap()) }
     // The address the user just copied, so the card that was tapped can
     // confirm the copy AT the tap: a snackbar alone lands at the far bottom
@@ -703,6 +825,18 @@ private fun WalletDashboard(
             // offered no way to put anything in.
             SectionHeader("Manage")
             SettingsGroup {
+                // The wallet PIN is optional and per-profile; the device
+                // credential always stays available underneath it.
+                SettingActionRow(
+                    title = "Wallet lock",
+                    subtitle = if (pinEnabled) {
+                        "Wallet PIN on — device unlock also works"
+                    } else {
+                        "Set a PIN for this profile's wallet"
+                    },
+                    leadingIcon = Icons.Filled.Lock,
+                    onClick = { lockSettingsOpen = true }
+                )
                 SettingActionRow(
                     title = "Add account",
                     subtitle = "Derive a new account or import a private key",
@@ -776,6 +910,14 @@ private fun WalletDashboard(
 
     // ---------- Sheets (render points; opens happen in callbacks) ----------
 
+    if (lockSettingsOpen) {
+        WalletLockSettingsSheet(
+            pinEnabled = pinEnabled,
+            onSetPin = onSetPin,
+            onRemovePin = onRemovePin,
+            onDismiss = { lockSettingsOpen = false }
+        )
+    }
     if (addAccountOpen) {
         AddAccountSheet(
             engine = engine,

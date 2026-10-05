@@ -131,6 +131,17 @@ class AppGraph(context: Context) {
         com.roombrowser.browser.wallet.WalletEngine(walletRepo)
     }
 
+    /**
+     * The wallet lock's PIN store. The record lives in the app_state KV table
+     * (cross-process, survives process death), so the retry counter cannot be
+     * reset by killing the app.
+     */
+    val walletLock: com.roombrowser.security.WalletLockManager by lazy {
+        com.roombrowser.security.WalletLockManager(
+            com.roombrowser.data.repo.AppStateWalletLockStore(appState)
+        )
+    }
+
     val filterEngine: FilterEngine by lazy { FilterListLoader.load(appContext) }
 
     val ipConflictDetector: IpConflictDetector by lazy { IpConflictDetector() }
