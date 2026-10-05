@@ -80,13 +80,14 @@ class AgentSessionMigrationTest {
         //    own validation of the result against the entities — the step that
         //    throws, and takes the app down with it, when a migration is wrong.
         //
-        //    Every migration SINCE v10 is registered too, because the database
-        //    above is created at the CURRENT version: an unregistered step on
-        //    the way back up is not a failed assertion here, it is Room
-        //    refusing to open at all. The v10 one is a no-op on this database
-        //    (its table is already there and the statement is IF NOT EXISTS).
+        //    The database above is created at the CURRENT version, so every
+        //    step on the way back up has to be registered, and the app's own
+        //    list is what supplies them. A hand-picked subset went stale the
+        //    moment v12 was added: opening then failed with "a migration from
+        //    9 to 12 was required but not found", so the test proved nothing
+        //    about the migration it exists for.
         val upgraded = Room.databaseBuilder(context, AppDatabase::class.java, dbName)
-            .addMigrations(AppDatabase.MIGRATION_9_10, AppDatabase.MIGRATION_10_11)
+            .addMigrations(*AppDatabase.ALL_MIGRATIONS)
             .build()
         try {
             // 3. The chat written at v9 is still there, and reads as bound to

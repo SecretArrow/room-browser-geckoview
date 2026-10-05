@@ -59,11 +59,13 @@ class AiTaskMigrationTest {
         // 2. Strip it back to v10.
         revertToV10()
 
-        // 3. Open through Room again: runs MIGRATION_10_11 and MIGRATION_11_12,
-        //    then Room's own validation against the entities — the step that
-        //    throws, and takes the app down with it, when a migration is wrong.
+        // 3. Open through Room again: runs every step from v10 up to the
+        //    current version, then Room's own validation against the entities
+        //    — the step that throws, and takes the app down with it, when a
+        //    migration is wrong. The app's own list, so a later version bump
+        //    cannot leave this test opening a database it cannot reach.
         val upgraded = Room.databaseBuilder(context, AppDatabase::class.java, dbName)
-            .addMigrations(AppDatabase.MIGRATION_10_11, AppDatabase.MIGRATION_11_12)
+            .addMigrations(*AppDatabase.ALL_MIGRATIONS)
             .build()
         try {
             val dao = upgraded.aiTaskDao()

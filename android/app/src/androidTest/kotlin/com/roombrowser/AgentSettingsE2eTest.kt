@@ -306,22 +306,87 @@ class AgentSettingsE2eTest {
 
     /**
      * VERIFIED send: taps the send button with FRESH bounds each attempt and
-     * only returns once the user bubble's copy affordance exists. The send
-     * button moves when the IME dismisses (composer resize) — a tap on
+     * only returns once the user bubble's copy affordance is in the tree. The
+     * send button moves when the IME dismisses (composer resize) — a tap on
      * pre-shift bounds lands on nothing (CI 227ebc3). Each send attempt is
      * given its own grace window before re-tapping, so a slow first send is
      * never duplicated.
      */
     private fun sendAgentPrompt(): Boolean {
+        var tapped = false
         for (attempt in 1..5) {
-            if (device.findObjects(By.descContains("agent_copy_user")).isNotEmpty()) return true
+            // Only worth searching once something has been tapped: before the
+            // first attempt there is nothing to find, and a later attempt must
+            // confirm the earlier one did not already send before re-tapping.
+            if (tapped && revealDesc("agent_copy_user", 600)) return true
             val send = device.wait(Until.findObject(By.desc("agent_send")), 2_000) ?: continue
             clickSmart(send)
-            if (device.wait(Until.hasObject(By.descContains("agent_copy_user")), 4_000)) {
+            tapped = true
+            if (revealDesc("agent_copy_user", 4_000)) return true
+        }
+        return revealDesc("agent_copy_user", 0)
+    }
+
+    /**
+     * Waits for a node, then keeps looking for it with the transcript scrolled
+     * each way.
+     *
+     * The transcript is pinned to its NEWEST entry, so the just-sent bubble —
+     * the first entry — is normally scrolled above the fold by the time the
+     * reply lands. A LazyColumn does not compose what is outside its viewport,
+     * so the node leaves the accessibility tree altogether, and on the CI
+     * display the whole panel is ~640px with only ~85px given to the list —
+     * less than one bubble, which makes this the ordinary state rather than an
+     * edge case. Searching BOTH directions is what keeps the checks below
+     * independent of where the list happens to sit, because satisfying one of
+     * them is free to leave the list scrolled away from the next.
+     */
+    private fun revealNode(selector: BySelector, windowMs: Long): Boolean {
+        val found = if (windowMs <= 0) {
+            device.hasObject(selector)
+        } else {
+            device.wait(Until.hasObject(selector), windowMs)
+        }
+        if (found) return true
+        repeat(3) {
+            if (scrollTranscript(older = true) && device.wait(Until.hasObject(selector), 1_200)) {
+                return true
+            }
+            if (scrollTranscript(older = false) && device.wait(Until.hasObject(selector), 1_200)) {
                 return true
             }
         }
-        return device.findObjects(By.descContains("agent_copy_user")).isNotEmpty()
+        return device.hasObject(selector)
+    }
+
+    private fun revealDesc(desc: String, windowMs: Long): Boolean =
+        revealNode(By.desc(desc), windowMs)
+
+    /**
+     * Drags the chat's transcript one gesture toward earlier or later entries.
+     *
+     * The band is bracketed by the two panel parts around the list — the model
+     * line above it and the composer below — rather than the screen centre: the
+     * panel is resized while the IME is up, and a screen-centre drag lands in
+     * the composer (or the header) and scrolls nothing. Direction is the
+     * content's, as in [nudgeChatDown]: dragging DOWN pulls earlier entries
+     * into view, dragging UP reveals later ones.
+     */
+    private fun scrollTranscript(older: Boolean): Boolean {
+        val above = device.findObjects(By.desc("agent_model")).firstOrNull() ?: return false
+        val below = device.findObjects(By.desc("agent_composer_field")).firstOrNull() ?: return false
+        val top = above.visibleBounds.bottom + 4
+        val bottom = below.visibleBounds.top - 4
+        if (bottom - top < 24) return false
+        val cx = device.displayWidth / 2
+        if (older) {
+            device.swipe(cx, top, cx, bottom, 250)
+        } else {
+            device.swipe(cx, bottom, cx, top, 250)
+        }
+        device.waitForIdle(500)
+        try { Thread.sleep(200) } catch (_: InterruptedException) { }
+        return true
     }
 
     private fun fetchOutcome(): FetchOutcome {
@@ -539,8 +604,29 @@ class AgentSettingsE2eTest {
      *  drags between find attempts (no fling overshoot). */
     private fun clickTextWithScroll(text: String, attempts: Int = 24): Boolean {
         for (i in 1..attempts) {
-            if (clickText(text, 1_500)) return true
+            val node = device.wait(Until.findObject(By.text(text)), 1_500)
+            if (node != null && rectSettled(node) && clickSmart(node)) return true
             dragUpQuarter()
+        }
+        return false
+    }
+
+    /**
+     * True once two consecutive reads of [node]'s rect agree, i.e. the
+     * viewport has stopped moving. A found node is not necessarily a still
+     * one — a row can still be settling after the drag, or a dialog can
+     * shift the layout under it — and this helper returns a bare `true` with
+     * no verification, so a tap on stale bounds is swallowed silently.
+     * Bounded: gives up after [tries] reads so a node that is genuinely
+     * animating cannot hang the test.
+     */
+    private fun rectSettled(node: UiObject2, tries: Int = 6): Boolean {
+        var previous = runCatching { node.visibleBounds }.getOrNull() ?: return false
+        repeat(tries) {
+            try { Thread.sleep(200) } catch (_: InterruptedException) { }
+            val current = runCatching { node.visibleBounds }.getOrNull() ?: return false
+            if (current == previous) return true
+            previous = current
         }
         return false
     }
@@ -908,34 +994,38 @@ class AgentSettingsE2eTest {
         // bubble (agent_copy_user) actually appears.
         device.waitForIdle(1_000)
         try { Thread.sleep(400) } catch (_: InterruptedException) { }
+        // The dump is taken AFTER the attempts, not before them: built into the
+        // message of a call whose condition is computed second, it would show
+        // the state the failure is about to change.
+        val sent = sendAgentPrompt()
         assertTrue(
             "the composed prompt must be sent (user bubble appears); UI:\n" + uiTree(),
-            sendAgentPrompt()
+            sent
         )
+        // Every condition below is computed BEFORE the dump that describes its
+        // failure — the dump is the state to diagnose, so it has to be the one
+        // the assertion actually gave up on, not the one before the search.
+        // Each check reveals its own target (see [revealNode]) rather than
+        // assuming where the list sits: by now the reply has usually landed and
+        // pushed the just-sent bubble out of the tree.
+        val bubbleSeen = revealDesc("agent_copy_user", 6_000) ||
+            revealNode(By.textContains("e2e_copy_prompt"), 2_000)
         assertTrue(
             "user bubble with the sent text must appear (or its structural copy affordance); UI:\n" + uiTree(),
-            // Exact-match first; textContains catches any bubble-side
-            // rendering nuance; the copy affordance is the bubble's
-            // structural proof (the copy→paste→re-run steps below verify the
-            // CONTENT end-to-end with the clipboard round-trip).
-            hasText("e2e_copy_prompt", 6_000) ||
-                device.wait(
-                    Until.hasObject(By.textContains("e2e_copy")),
-                    2_000
-                ) ||
-                hasDesc("agent_copy_user", 2_000)
+            bubbleSeen
         )
         assertTrue(
             "copy icon under the user bubble must appear",
-            hasDesc("agent_copy_user", 5_000)
+            revealDesc("agent_copy_user", 5_000)
         )
+        val replySeen = revealNode(By.text("mock-reply-ok"), 20_000)
         assertTrue(
-            "mock SSE reply must stream back as an assistant bubble",
-            hasText("mock-reply-ok", 20_000)
+            "mock SSE reply must stream back as an assistant bubble; UI:\n" + uiTree(),
+            replySeen
         )
         assertTrue(
             "copy icon under the assistant reply must appear",
-            hasDesc("agent_copy_assistant", 5_000)
+            revealDesc("agent_copy_assistant", 5_000)
         )
         assertTrue(
             "copying the previously sent text must show the Copied feedback; " +
