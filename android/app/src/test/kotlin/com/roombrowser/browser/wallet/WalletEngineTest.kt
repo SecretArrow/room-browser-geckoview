@@ -378,6 +378,43 @@ class WalletEngineTest {
         assertThat(engine.accounts.value).hasSize(1)
     }
 
+    @Test
+    fun `deleting the wallet clears its rows and returns the surface to NO_WALLET`() =
+        runTest(testDispatcher) {
+            seedWallet(profile, ABANDON, listOf(ChainType.EVM, ChainType.SOLANA))
+            seedWallet(otherProfile, ABANDON, listOf(ChainType.EVM))
+            engine.bind(profile)
+            advanceUntilIdle()
+            engine.unlock()
+            assertThat(engine.wallet.value).isNotNull()
+
+            engine.deleteWallet()
+            advanceUntilIdle()
+
+            assertThat(engine.wallet.value).isNull()
+            assertThat(engine.accounts.value).isEmpty()
+            assertThat(engine.balances.value).isEmpty()
+            assertThat(engine.lockState.value).isEqualTo(WalletLockState.NO_WALLET)
+            assertThat(fake.wallet(profile)).isNull()
+            assertThat(fake.accountsOf(profile)).isEmpty()
+            // Profile-scoped: the sibling profile's wallet is not collateral.
+            assertThat(fake.wallet(otherProfile)).isNotNull()
+            assertThat(fake.accountsOf(otherProfile)).hasSize(1)
+        }
+
+    @Test
+    fun `delete is refused while the session is locked`() = runTest(testDispatcher) {
+        seedWallet(profile, ABANDON, listOf(ChainType.EVM))
+        engine.bind(profile)
+        advanceUntilIdle()
+
+        // Irreversible and key-destroying, so the UI's confirmation must not
+        // be the only thing between a locked session and a wiped wallet.
+        assertThrowsSuspend<WalletLockedException> { engine.deleteWallet() }
+        assertThat(fake.wallet(profile)).isNotNull()
+        assertThat(fake.accountsOf(profile)).hasSize(1)
+    }
+
     // ------------------------------------------------------------------
     // Wallet lifecycle + derivation vectors
     // ------------------------------------------------------------------
@@ -1610,6 +1647,7 @@ private open class FakeWalletRepository : WalletRepositoryApi {
         wallets.remove(profileId.value)
         mnemonics.remove(profileId.value)
         accountLists.remove(profileId.value)
+        walletFlow(profileId).value = null
         accountFlows[profileId.value]?.value = emptyList()
     }
 

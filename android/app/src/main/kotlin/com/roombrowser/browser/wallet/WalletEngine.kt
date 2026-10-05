@@ -320,6 +320,23 @@ open class WalletEngine(
     }
 
     /**
+     * Deletes the bound profile's wallet and every row that belongs to it. The
+     * unlock requirement is the session gate, not the user's confirmation: the
+     * confirmation is the UI's delete flow, and this runs after it.
+     */
+    override suspend fun deleteWallet() {
+        val profileId = requireBound()
+        requireUnlocked()
+        repo.deleteWallet(profileId)
+        // Eager, so the surface leaves the dashboard on this frame rather than
+        // on the next Room invalidation; the observer agrees a moment later.
+        walletState.value = null
+        accountsState.value = emptyList()
+        balancesState.value = emptyMap()
+        refreshLockState()
+    }
+
+    /**
      * See [WalletEngineApi.publicKeyOf] for which chains this answers for and
      * why the others are left out.
      *

@@ -1,5 +1,6 @@
 package com.roombrowser.browser.ui
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
@@ -21,6 +22,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AccountBalanceWallet
 import androidx.compose.material.icons.filled.FileDownload
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
@@ -28,6 +30,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -45,6 +48,9 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.roombrowser.browser.wallet.WalletEngineApi
 import com.roombrowser.domain.wallet.model.ChainType
+import com.roombrowser.domain.walletbackup.WalletBackupStatus
+import com.roombrowser.domain.walletbackup.WalletOnboardingFlow
+import com.roombrowser.domain.walletbackup.WalletOnboardingStep
 import com.roombrowser.ui.common.LocalRoomExtras
 import com.roombrowser.ui.common.RoomCardShape
 
@@ -54,32 +60,35 @@ import kotlinx.coroutines.launch
  * Wallet onboarding, shown while the engine's lock state is NO_WALLET.
  *
  * CREATE: choice → intro (name + chain chips + the recovery-phrase warning)
- * → [WalletRevealScreen] (masked 12-word grid until "Reveal") →
- * [WalletConfirmQuiz] (tap the 3 asked words from a shuffled grid; a wrong
- * pick is an inline error, never a crash) → the dashboard appears.
+ * → [WalletRevealScreen] (masked word grid until "Reveal"; hide/show, "I wrote
+ * it down", the encrypted-keys export and "Go to Home") → [WalletConfirmQuiz]
+ * (tap the 3 asked words from a shuffled grid; a wrong pick is an inline
+ * error, never a crash) → the dashboard appears.
  *
  * IMPORT: choice → [WalletImportForm] (12/24-word field with whitespace
  * auto-normalization, optional name, chain chips) → dashboard.
  *
+ * NAVIGATION: a single step, never a stack, with every Back transition in
+ * [WalletOnboardingFlow]. "I wrote it down" moves FORWARD to the quiz and does
+ * not pop the reveal page, so a Back press from the quiz lands on the same
+ * phrase and the same export options; a Back press out of the reveal itself
+ * leaves the flow behind the same one-time confirmation as "Go to Home".
+ *
  * SECURITY: the freshly created recovery phrase lives ONLY in this
  * composable tree's plain `remember` state — never in rememberSaveable
  * (never in saved instance state), never logged, never copied to the
- * clipboard, and it is nulled on quiz completion; leaving onboarding
- * discards it entirely (remember scoping). There is no copy affordance for
- * the whole seed anywhere; word cells render a FIXED mask that never hints
- * at a word's length.
+ * clipboard, and it is nulled by [complete] the one way out of the flow;
+ * anything else discards it with the composition (remember scoping). There is
+ * no copy affordance for the whole seed anywhere; word cells render a FIXED
+ * mask that never hints at a word's length.
  */
-
-/** The onboarding flow's internal steps (the engine's lock state drives entry/exit). */
-private enum class WalletOnboardingStep {
-    CHOICE, CREATE_INTRO, REVEAL, CONFIRM_QUIZ, IMPORT_FORM, RESTORE_BACKUP
-}
-
-/** Entry point — rendered by WalletRoot while no wallet exists for the profile. */
 @Composable
 internal fun WalletOnboarding(
     engine: WalletEngineApi,
     profileName: String,
+    backupStatus: WalletBackupStatus,
+    onBackupWrittenDown: () -> Unit,
+    onBackupExported: () -> Unit,
     onMessage: (String) -> Unit,
     onFlowStarted: () -> Unit = {},
     onWalletReady: () -> Unit
@@ -91,6 +100,27 @@ internal fun WalletOnboarding(
     // engine.wallet: that flow trails the create by one Room invalidation, so
     // a backup named from it could briefly call the wallet "Wallet".
     var createdLabel by remember { mutableStateOf("") }
+    // The one-time "leaving without backing up" confirmation. A single boolean
+    // is what makes it exactly ONE: a second press cannot stack a dialog.
+    var leaveConfirmOpen by remember { mutableStateOf(false) }
+
+    /** The one way the phrase leaves composition state for good. */
+    fun complete() {
+        mnemonic = null
+        onWalletReady()
+    }
+
+    /** "Go to Home" and a Back press out of REVEAL share this one guard. */
+    fun requestLeave() {
+        if (backupStatus.isBackedUp) complete() else leaveConfirmOpen = true
+    }
+
+    // The system back button follows the same flow as the on-screen one; at
+    // CHOICE there is nothing behind, so the press closes the surface.
+    BackHandler(enabled = step != WalletOnboardingStep.CHOICE) {
+        val target = WalletOnboardingFlow.backFrom(step)
+        if (target != null) step = target else requestLeave()
+    }
 
     when (step) {
         WalletOnboardingStep.CHOICE -> WalletOnboardingChoice(
@@ -126,7 +156,12 @@ internal fun WalletOnboarding(
                     walletLabel = createdLabel,
                     profileName = profileName,
                     onMessage = onMessage,
-                    onConfirmed = { step = WalletOnboardingStep.CONFIRM_QUIZ }
+                    onWrittenDown = {
+                        onBackupWrittenDown()
+                        step = WalletOnboardingStep.CONFIRM_QUIZ
+                    },
+                    onExported = onBackupExported,
+                    onGoHome = { requestLeave() }
                 )
             } else {
                 WalletOnboardingChoice(
@@ -141,10 +176,8 @@ internal fun WalletOnboarding(
             if (words != null) {
                 WalletConfirmQuiz(
                     mnemonic = words,
-                    onDone = {
-                        mnemonic = null
-                        onWalletReady()
-                    }
+                    onDone = { complete() },
+                    onBack = { step = WalletOnboardingStep.REVEAL }
                 )
             } else {
                 WalletOnboardingChoice(
@@ -156,7 +189,7 @@ internal fun WalletOnboarding(
         }
         WalletOnboardingStep.IMPORT_FORM -> WalletImportForm(
             engine = engine,
-            onImported = onWalletReady,
+            onImported = { complete() },
             onBack = { step = WalletOnboardingStep.CHOICE }
         )
         // A backup file carries more than a phrase can: the phrase restores
@@ -165,8 +198,36 @@ internal fun WalletOnboarding(
         // kept a backup should not have to retype anything.
         WalletOnboardingStep.RESTORE_BACKUP -> WalletBackupImportFlow(
             engine = engine,
-            onRestored = onWalletReady,
+            onRestored = { complete() },
             onCancel = { step = WalletOnboardingStep.CHOICE }
+        )
+    }
+
+    if (leaveConfirmOpen) {
+        AlertDialog(
+            onDismissRequest = { leaveConfirmOpen = false },
+            title = { Text("Leave without backing up?") },
+            text = {
+                Text(
+                    "Your recovery phrase has not been backed up yet. The wallet " +
+                        "is already created and stays usable, and you can read the " +
+                        "phrase again from the wallet's \"Show recovery phrase\" - " +
+                        "but a phrase that only ever lived on this phone is one " +
+                        "lost phone away from gone."
+                )
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        leaveConfirmOpen = false
+                        complete()
+                    },
+                    modifier = Modifier.heightIn(min = 48.dp)
+                ) { Text("Go to Home") }
+            },
+            dismissButton = {
+                TextButton(onClick = { leaveConfirmOpen = false }) { Text("Cancel") }
+            }
         )
     }
 }
@@ -356,10 +417,14 @@ private fun WalletCreateIntro(
  * No copy affordance exists on this screen. The mnemonic is present only
  * as this composition's transient state.
  *
- * This is also where the phrase can be written out to an encrypted backup
- * file. The backup reads the phrase straight from this composition rather
- * than from the vault, which is what lets it work while the session is
- * still locked (creating a wallet deliberately does not unlock it).
+ * The four actions the user has here: hide/show the phrase, "I wrote it
+ * down" (which states a manual backup and moves on to the quiz that proves
+ * it), export to an encrypted file, and "Go to Home" — the last one always
+ * available, because a user must never be forced to back up first.
+ *
+ * The export reads the phrase straight from this composition rather than
+ * from the vault, which is what lets it work while the session is still
+ * locked (creating a wallet deliberately does not unlock it).
  *
  * The phrase IS readable later, from the wallet's own "Show recovery
  * phrase" row, behind the unlocked session. That row is not a reason to
@@ -374,7 +439,9 @@ private fun WalletRevealScreen(
     walletLabel: String,
     profileName: String,
     onMessage: (String) -> Unit,
-    onConfirmed: () -> Unit
+    onWrittenDown: () -> Unit,
+    onExported: () -> Unit,
+    onGoHome: () -> Unit
 ) {
     val extras = LocalRoomExtras.current
     val words = remember(mnemonic) { mnemonic.trim().split(Regex("\\s+")).filter { it.isNotEmpty() } }
@@ -438,7 +505,7 @@ private fun WalletRevealScreen(
                     .heightIn(min = 48.dp)
             ) { Text(if (revealed) "Hide phrase" else "Reveal") }
             Button(
-                onClick = onConfirmed,
+                onClick = onWrittenDown,
                 enabled = revealed,
                 modifier = Modifier
                     .weight(1f)
@@ -461,6 +528,16 @@ private fun WalletRevealScreen(
             Spacer(Modifier.width(8.dp))
             Text("Export keys to an encrypted file")
         }
+        Spacer(Modifier.height(10.dp))
+        // Never gated: skipping the backup is the user's call, and the worst
+        // this costs them is the one confirmation behind it. The wallet is
+        // already created and stays usable either way.
+        OutlinedButton(
+            onClick = onGoHome,
+            modifier = Modifier
+                .fillMaxWidth()
+                .heightIn(min = 48.dp)
+        ) { Text("Go to Home") }
         Spacer(Modifier.height(24.dp))
     }
 
@@ -471,6 +548,7 @@ private fun WalletRevealScreen(
         profileLabel = profileName,
         mnemonicInHand = mnemonic,
         onMessage = onMessage,
+        onExported = onExported,
         onDone = { backupOpen = false }
     )
 }
@@ -480,9 +558,13 @@ private fun WalletRevealScreen(
  * one at a time) from a SHUFFLED full-word grid to prove the phrase was
  * written down. A wrong tap is an inline error and nothing else; three
  * correct taps unlock "Done".
+ *
+ * "Back" is what keeps "I wrote it down" from being a one-way door: it
+ * returns to the same reveal page with the same phrase and the same export
+ * options, so writing the phrase down cannot strand the user away from them.
  */
 @Composable
-private fun WalletConfirmQuiz(mnemonic: String, onDone: () -> Unit) {
+private fun WalletConfirmQuiz(mnemonic: String, onDone: () -> Unit, onBack: () -> Unit) {
     val extras = LocalRoomExtras.current
     val words = remember(mnemonic) { mnemonic.trim().split(Regex("\\s+")).filter { it.isNotEmpty() } }
     val quizIndices = remember(mnemonic) { words.indices.shuffled().take(3) }
@@ -572,6 +654,13 @@ private fun WalletConfirmQuiz(mnemonic: String, onDone: () -> Unit) {
                 Spacer(Modifier.height(6.dp))
             }
         }
+        Spacer(Modifier.height(20.dp))
+        OutlinedButton(
+            onClick = onBack,
+            modifier = Modifier
+                .fillMaxWidth()
+                .heightIn(min = 48.dp)
+        ) { Text("Back") }
         Spacer(Modifier.height(24.dp))
     }
 }

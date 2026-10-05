@@ -402,6 +402,26 @@ interface WalletEngineApi {
     /** Imports an existing mnemonic (BIP39-validated). Fails if a wallet exists. */
     suspend fun importWallet(mnemonic: String, label: String, enabledChains: List<ChainType>)
 
+    /**
+     * Deletes the bound profile's wallet and every row it owns — its accounts,
+     * its network list and active choices, its dApp permissions and its
+     * recorded activity. Only this profile is touched; other profiles' wallets
+     * are separate rows and are left alone.
+     *
+     * ONE WALLET PER PROFILE, so this is the whole wallet: afterwards the bound
+     * profile is back to NO_WALLET and the surface's correct state is the
+     * empty-wallet onboarding, not a wallet list with a hole in it.
+     *
+     * Requires an unlocked session. It is an irreversible, key-destroying
+     * action and the UI's own delete flow is where the user's confirmation
+     * lives — this method is the half that runs after that confirmation.
+     *
+     * The profile's wallet KEY is deliberately not destroyed here: the
+     * profile-deletion cascade owns that, and a key with no rows behind it
+     * seals nothing.
+     */
+    suspend fun deleteWallet()
+
     /** Requires an unlocked session. */
     suspend fun revealMnemonic(): String?
 

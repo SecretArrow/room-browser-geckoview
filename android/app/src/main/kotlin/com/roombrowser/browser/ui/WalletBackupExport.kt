@@ -43,6 +43,11 @@ private const val MIN_BACKUP_PASSPHRASE = 8
  * Rendered only while [open]; every exit path (written, cancelled, nothing to
  * back up, failure) calls [onDone], so the caller owns a single boolean.
  *
+ * [onExported] fires on the ONE path where the file was actually written, and
+ * nowhere else — a cancelled picker, a seal failure and a write failure all
+ * leave it silent. It is what lets a caller treat "backed up" as something
+ * this app witnessed rather than something the user asserted.
+ *
  * [mnemonicInHand] is the freshly generated phrase during onboarding, where
  * the session is deliberately still locked. Everywhere else it is null and
  * the phrase is read from the vault, which requires an unlocked session.
@@ -60,6 +65,7 @@ internal fun WalletBackupFlow(
     profileLabel: String,
     mnemonicInHand: String?,
     onMessage: (String) -> Unit,
+    onExported: () -> Unit = {},
     onDone: () -> Unit
 ) {
     if (!open) return
@@ -118,6 +124,9 @@ internal fun WalletBackupFlow(
                     onFailure = { "Export failed: ${it.message ?: it.javaClass.simpleName}" }
                 )
             )
+            // Only a written file counts as a backup; every failure above is
+            // already reported through the message and leaves this silent.
+            if (outcome.isSuccess) onExported()
             onDone()
         }
     }

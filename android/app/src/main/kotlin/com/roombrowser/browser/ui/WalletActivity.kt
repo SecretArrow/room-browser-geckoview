@@ -46,6 +46,7 @@ import androidx.compose.material.icons.filled.Cloud
 import androidx.compose.material.icons.filled.CloudDone
 import androidx.compose.material.icons.filled.CloudOff
 import androidx.compose.material.icons.filled.ContentCopy
+import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.FileDownload
 import androidx.compose.material.icons.filled.Key
@@ -54,6 +55,7 @@ import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Public
 import androidx.compose.material.icons.filled.Receipt
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -105,6 +107,9 @@ import com.roombrowser.domain.wallet.model.AmountFormat
 import com.roombrowser.domain.wallet.model.BalanceResult
 import com.roombrowser.domain.wallet.model.ChainType
 import com.roombrowser.domain.wallet.model.NetworkConfig
+import com.roombrowser.domain.walletbackup.WalletBackupStatus
+import com.roombrowser.domain.walletbackup.WalletDeleteState
+import com.roombrowser.domain.walletbackup.WalletDeleteStage
 import com.roombrowser.security.BiometricGate
 import com.roombrowser.security.PinUnlockResult
 import com.roombrowser.security.WalletLockManager
@@ -290,9 +295,18 @@ private fun WalletRoot(
         }
     }
 
+    // Backup status is a FACT OF THIS SESSION, deliberately not persisted: it
+    // is what lets "I wrote it down" and a completed export warn less loudly
+    // while it is still fresh, and what makes "not backed up" the fail-safe
+    // answer after a process restart or days later. Persisting it would need a
+    // schema change, and a stale "backed up" flag is the dangerous direction.
+    var backupStatus by remember { mutableStateOf(WalletBackupStatus.NOT_BACKED_UP) }
+
     // Gate on entry (LOCKED only). A wallet with a PIN shows its own PIN form
     // instead of the device prompt; a wallet without one keeps the previous
-    // auto-prompt. Keyed on pinEnabled so it fires once the policy is known.
+    // auto-prompt. Keyed on pinEnabled so it fires once the policy is known —
+    // every later prompt is a user-driven retry from the locked pane, and
+    // onboarding (NO_WALLET) is exempt because nothing exists to unlock yet.
     LaunchedEffect(pinEnabled) {
         if (pinEnabled == false && engine.lockState.value == WalletLockState.LOCKED) {
             onUnlockRequest()
@@ -468,6 +482,9 @@ private fun WalletRoot(
                 onboardingPinned || lockState == WalletLockState.NO_WALLET -> WalletOnboarding(
                     engine = engine,
                     profileName = profileName,
+                    backupStatus = backupStatus,
+                    onBackupWrittenDown = { backupStatus = WalletBackupStatus.WRITTEN_DOWN },
+                    onBackupExported = { backupStatus = WalletBackupStatus.EXPORTED },
                     onMessage = { onMessage(it) },
                     onFlowStarted = { onboardingFlowStartedHere = true },
                     onWalletReady = {
@@ -493,10 +510,13 @@ private fun WalletRoot(
                     pinEnabled = pinEnabled == true,
                     onSetPin = { pin -> setWalletPin(pin) },
                     onRemovePin = { removeWalletPin() },
+                    backupStatus = backupStatus,
                     onMessage = { onMessage(it) },
                     onRefresh = { refreshBalances() },
                     onSent = { hash, explorerUrl -> onSent(hash, explorerUrl) },
-                    onOpenExplorer = { url -> openLink(url) }
+                    onOpenExplorer = { url -> openLink(url) },
+                    onBackupExported = { backupStatus = WalletBackupStatus.EXPORTED },
+                    onWalletDeleted = { backupStatus = WalletBackupStatus.NOT_BACKED_UP }
                 )
             }
         }
@@ -617,10 +637,13 @@ private fun WalletDashboard(
     pinEnabled: Boolean,
     onSetPin: (CharArray) -> Unit,
     onRemovePin: () -> Unit,
+    backupStatus: WalletBackupStatus,
     onMessage: (String) -> Unit,
     onRefresh: () -> Unit,
     onSent: (hash: String, explorerUrl: String?) -> Unit,
-    onOpenExplorer: (url: String) -> Unit
+    onOpenExplorer: (url: String) -> Unit,
+    onBackupExported: () -> Unit,
+    onWalletDeleted: () -> Unit
 ) {
     val context = LocalContext.current
     val accounts by engine.accounts.collectAsState()
@@ -641,6 +664,35 @@ private fun WalletDashboard(
     var revealPhraseOpen by remember { mutableStateOf(false) }
     var connectedSitesOpen by remember { mutableStateOf(false) }
     var lockSettingsOpen by remember { mutableStateOf(false) }
+    // The delete flow's own state: which page (none / backup warning /
+    // confirmation) is up, and whether the delete call is in flight. The
+    // stages live in :core:domain so the gate — "Delete anyway" still has to
+    // pass the confirmation — is unit-tested, not just drawn.
+    var deleteState by remember { mutableStateOf(WalletDeleteState.idle(backedUp = false)) }
+    var deleting by remember { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
+
+    /**
+     * The one place a delete actually happens, and it is reachable only from
+     * the confirmation page — [WalletDeleteState.deleteConfirmed] is false on
+     * the warning page, so "Delete anyway" cannot skip the confirmation.
+     */
+    fun performDelete() {
+        if (!deleteState.deleteConfirmed || deleting) return
+        deleting = true
+        scope.launch {
+            val failure = runCatching { engine.deleteWallet() }.exceptionOrNull()
+            deleting = false
+            deleteState = deleteState.cancelled()
+            if (failure == null) {
+                onWalletDeleted()
+            } else {
+                onMessage(
+                    "Could not delete wallet: ${failure.message ?: failure.javaClass.simpleName}"
+                )
+            }
+        }
+    }
     var activeAccountByChain by remember { mutableStateOf<Map<ChainType, String>>(emptyMap()) }
     // The address the user just copied, so the card that was tapped can
     // confirm the copy AT the tap: a snackbar alone lands at the far bottom
@@ -875,6 +927,18 @@ private fun WalletDashboard(
                     leadingIcon = Icons.Filled.Public,
                     onClick = { connectedSitesOpen = true }
                 )
+                // Destructive and last, so it is never the row a thumb lands
+                // on while reaching for anything above it. It opens a warning,
+                // not a delete — the phrase "back up first" has to be able to
+                // win from the very first tap.
+                SettingActionRow(
+                    title = "Delete wallet",
+                    subtitle = "Remove this wallet and its keys from this device",
+                    leadingIcon = Icons.Filled.Delete,
+                    onClick = {
+                        deleteState = WalletDeleteState.idle(backupStatus.isBackedUp).requested()
+                    }
+                )
             }
             // Every chain this wallet actually holds an account on, plus any
             // chain with a selected network — never a filtered view, because
@@ -1002,6 +1066,24 @@ private fun WalletDashboard(
         )
     }
 
+    if (deleteState.stage == WalletDeleteStage.BACKUP_WARNING) {
+        BackupWarningDialog(
+            onCancel = { deleteState = deleteState.cancelled() },
+            onBackUpFirst = {
+                deleteState = deleteState.cancelled()
+                backupOpen = true
+            },
+            onDeleteAnyway = { deleteState = deleteState.acceptedRisk() }
+        )
+    }
+    if (deleteState.stage == WalletDeleteStage.CONFIRMATION) {
+        DeleteWalletConfirmDialog(
+            deleting = deleting,
+            onCancel = { deleteState = deleteState.cancelled() },
+            onConfirm = { performDelete() }
+        )
+    }
+
     // Null mnemonic: the phrase comes from the vault, so this path needs the
     // unlocked session the dashboard is only rendered behind.
     WalletBackupFlow(
@@ -1011,7 +1093,72 @@ private fun WalletDashboard(
         profileLabel = profileName,
         mnemonicInHand = null,
         onMessage = onMessage,
+        onExported = onBackupExported,
         onDone = { backupOpen = false }
+    )
+}
+
+/**
+ * The first page of a delete for a wallet with no backup this session
+ * witnessed. It does not delete and it does not offer a shortcut past the
+ * confirmation: it exists to make "back up first" the easy answer, and to say
+ * plainly that the keys cannot be recovered afterwards.
+ */
+@Composable
+private fun BackupWarningDialog(
+    onCancel: () -> Unit,
+    onBackUpFirst: () -> Unit,
+    onDeleteAnyway: () -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onCancel,
+        title = { Text("Back up before deleting") },
+        text = {
+            Text(
+                "This wallet has not been backed up on this device. Deleting it " +
+                    "removes its keys permanently — without a recovery phrase or " +
+                    "exported key file, the funds in it cannot be recovered, by " +
+                    "anyone. Back it up first, then delete it."
+            )
+        },
+        confirmButton = {
+            Button(onClick = onBackUpFirst, modifier = Modifier.heightIn(min = 48.dp)) {
+                Text("Back up first")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDeleteAnyway) { Text("Delete anyway") }
+        }
+    )
+}
+
+/** The final confirmation, identical whether or not a backup exists. */
+@Composable
+private fun DeleteWalletConfirmDialog(
+    deleting: Boolean,
+    onCancel: () -> Unit,
+    onConfirm: () -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = { if (!deleting) onCancel() },
+        title = { Text("Delete Wallet?") },
+        text = {
+            Text(
+                "This will remove this wallet from this device. Make sure you " +
+                    "have securely backed up your recovery phrase or private key " +
+                    "before continuing."
+            )
+        },
+        confirmButton = {
+            Button(
+                onClick = onConfirm,
+                enabled = !deleting,
+                modifier = Modifier.heightIn(min = 48.dp)
+            ) { Text("Delete Wallet") }
+        },
+        dismissButton = {
+            TextButton(onClick = onCancel, enabled = !deleting) { Text("Cancel") }
+        }
     )
 }
 
