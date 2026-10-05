@@ -383,6 +383,29 @@ private fun AgentSettingsRoot(
                 checked = controller.settings.confirmActions,
                 onCheckedChange = { checked -> controller.updateSettings { s -> s.copy(confirmActions = checked) } }
             )
+            // The two 2FA/Notes switches sit together below the confirm switch
+            // because they are the same kind of thing — what the agent may
+            // reach of the profile's own data — and because both default OFF,
+            // so nothing changes for an existing chat or task until the user
+            // reads the cost here and opts in.
+            SettingSwitchRow(
+                title = "Let the agent read the code itself",
+                subtitle = "The authenticator codes are sent to your AI provider and saved in the " +
+                    "chat's history. Off, the agent can still copy or type a code without seeing it",
+                checked = controller.settings.otpDigitsToAgent,
+                onCheckedChange = { checked ->
+                    controller.updateSettings { s -> s.copy(otpDigitsToAgent = checked) }
+                }
+            )
+            SettingSwitchRow(
+                title = "Allow scheduled AI tasks to use 2FA and Notes",
+                subtitle = "A task that runs with nobody watching may use the authenticator codes " +
+                    "and the notes. A page that talks it into it could then pull a live code",
+                checked = controller.settings.taskProfileTools,
+                onCheckedChange = { checked ->
+                    controller.updateSettings { s -> s.copy(taskProfileTools = checked) }
+                }
+            )
             SettingSwitchRow(
                 title = "Local decision gate",
                 subtitle = "Let a local Ollama decision model judge each action first, so routine " +

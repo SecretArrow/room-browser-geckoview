@@ -28,6 +28,12 @@ data class AiTaskPageRequest(
     val profileId: String,
     val permissions: AiTaskPermissions,
     val confirmActions: Boolean,
+    /**
+     * Whether this run may use the profile's notes and authenticator codes —
+     * the user's "Allow scheduled AI tasks to use 2FA and Notes" setting,
+     * carried here so the gate that refuses them by default learns about it.
+     */
+    val allowProfileTools: Boolean = false,
     /** STANDARD leaves the tab open when the run ends, so the person can carry
      *  on from where it stopped; HEADED closes it. */
     val keepTab: Boolean

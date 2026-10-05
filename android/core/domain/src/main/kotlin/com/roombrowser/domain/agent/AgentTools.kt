@@ -58,6 +58,10 @@ object AgentTools {
     const val APP_SITE_PERMISSION = "app_site_permission"
     const val APP_PAGE = "app_page"
 
+    // ---- the profile's own secrets and notes ----
+    const val APP_2FA = "app_2fa"
+    const val APP_NOTES = "app_notes"
+
     private const val OBJ = """{"type":"object"}"""
 
     private val SCHEMA_NAVIGATE = """{"type":"object","properties":{"url":{"type":"string","description":"Full URL, e.g. https://example.com/path"}},"required":["url"]}"""
@@ -89,6 +93,8 @@ object AgentTools {
     private val SCHEMA_APP_SHIELDS = """{"type":"object","properties":{"action":{"type":"string","enum":${enumOf(AgentAppActions.SHIELD_ACTIONS)},"description":"read reports the current site; toggle turns tracking protection off/on for it; clear_site_data removes the stored site data"},"enabled":{"type":"boolean","description":"For action=toggle: true to keep protection on, false to switch it off for this site"}},"required":["action"]}"""
     private val SCHEMA_APP_SITE_PERMISSION = """{"type":"object","properties":{"action":{"type":"string","enum":${enumOf(AgentAppActions.PERMISSION_ACTIONS)}},"permission":{"type":"string","enum":${enumOf(AgentAppActions.PERMISSIONS)}},"decision":{"type":"string","enum":${enumOf(AgentAppActions.PERMISSION_DECISIONS)},"description":"For action=set"}},"required":["action"]}"""
     private val SCHEMA_APP_PAGE = """{"type":"object","properties":{"action":{"type":"string","enum":${enumOf(AgentAppActions.PAGE_ACTIONS)},"description":"find/find_next/find_previous/clear_find work on text; reader_on/reader_off, desktop_on/desktop_off and bookmark_add/bookmark_remove act on the open page"},"query":{"type":"string","description":"For the find actions: the text to find. find_next and find_previous need it repeated — the browser keeps no last query of its own"}},"required":["action"]}"""
+    private val SCHEMA_APP_2FA = """{"type":"object","properties":{"action":{"type":"string","enum":${enumOf(AgentAppActions.TOTP_ACTIONS)},"description":"list names the profile's authenticator accounts; code gives the current code for one; copy puts it on the clipboard; fill types it into a field on the page"},"id":{"type":"string","description":"Account id from action=list"},"ref":{"type":"integer","description":"For action=fill: the input to type the code into, from read_page. Omitted, it goes to whatever is focused"}},"required":["action"]}"""
+    private val SCHEMA_APP_NOTES = """{"type":"object","properties":{"action":{"type":"string","enum":${enumOf(AgentAppActions.NOTE_ACTIONS)}},"id":{"type":"string","description":"Note id from action=list, for get/update/delete"},"title":{"type":"string","description":"Note title, for add/update"},"body":{"type":"string","description":"Note text, for add/update"}},"required":["action"]}"""
 
     /**
      * Tool names whose execution may require user confirmation.
@@ -109,7 +115,8 @@ object AgentTools {
         AUTO_LIKE, AUTO_REPOST, AUTO_REPLY, AUTO_POST,
         WALLET_APPROVE, WALLET_SWITCH_NETWORK,
         APP_OPEN, APP_TABS, APP_DATA, APP_SETTINGS, APP_SHIELDS,
-        APP_SITE_PERMISSION, APP_PAGE
+        APP_SITE_PERMISSION, APP_PAGE,
+        APP_2FA, APP_NOTES
     )
 
     /**
@@ -175,7 +182,17 @@ object AgentTools {
         def(APP_SETTINGS, "Read or change this profile's browsing settings by name (JavaScript, ad and tracker blocking, HTTPS upgrade, search engine, and the other names in the schema). Everything the tool can write is listed in its 'key' values.", SCHEMA_APP_SETTINGS),
         def(APP_SHIELDS, "Report tracking protection for the site in this chat's tab and turn it off or on for that site, or clear the browser's stored site data.", SCHEMA_APP_SHIELDS),
         def(APP_SITE_PERMISSION, "List or change the permissions saved for the site in this chat's tab: camera, microphone, location, notifications and the rest.", SCHEMA_APP_SITE_PERMISSION),
-        def(APP_PAGE, "Act on the open page from the browser side: find text in it, step through the matches, toggle reader mode or desktop mode, or bookmark it.", SCHEMA_APP_PAGE)
+        def(APP_PAGE, "Act on the open page from the browser side: find text in it, step through the matches, toggle reader mode or desktop mode, or bookmark it.", SCHEMA_APP_PAGE),
+        def(
+            APP_2FA,
+            "The profile's authenticator (TOTP) accounts. action=list names them — issuer, account and id, never the setup key. action=code gives the code that is valid right now for one of them, action=copy puts it on the clipboard and action=fill types it into the login form. Codes are generated on the device; there is no way to read a setup key out of this tool, and the person cannot be asked to hand one over. Ask for a code only when a form on the page actually needs one.",
+            SCHEMA_APP_2FA
+        ),
+        def(
+            APP_NOTES,
+            "The notes saved in this profile. action=list shows them with their ids, action=get reads one in full, and add/update/delete change them. Notes belong to the profile, not to the page.",
+            SCHEMA_APP_NOTES
+        )
     )
 
     private fun def(name: String, description: String, schema: String): ToolDef =
@@ -240,6 +257,8 @@ object AgentTools {
             APP_SHIELDS -> "Shields: ${str("action") ?: "read"}"
             APP_SITE_PERMISSION -> "Site permission: ${str("action") ?: "list"}"
             APP_PAGE -> "Page: ${str("action") ?: "?"}"
+            APP_2FA -> "2FA: ${str("action") ?: "list"}"
+            APP_NOTES -> "Notes: ${str("action") ?: "list"}"
             else -> name
         }
     } catch (_: Exception) {

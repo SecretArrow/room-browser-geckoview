@@ -107,22 +107,36 @@ class BrowserRepository(private val db: AppDatabase) {
      * Create (id == null) or update (id != null) one note. The id and
      * timestamps are minted here; updated_at is always stamped, created_at
      * only on create.
+     *
+     * An [id] that belongs to ANOTHER profile is treated as "no such note" and
+     * a fresh row is created instead. The id can arrive from the AI agent,
+     * which is handed arbitrary strings, and adopting one would let a turn
+     * silently overwrite a note in a profile it is not running as.
      */
     suspend fun saveNote(profileId: ProfileId, title: String, body: String, id: String? = null): String {
         val now = System.currentTimeMillis()
-        val existing = id?.let { notes.byId(it) }
-        val noteId = existing?.id ?: id ?: UUID.randomUUID().toString()
+        val owned = id?.let { notes.byId(it) }?.takeIf { it.profileId == profileId.value }
+        val noteId = owned?.id ?: UUID.randomUUID().toString()
         notes.upsert(
             NoteEntity(
                 id = noteId,
                 profileId = profileId.value,
                 title = title,
                 body = body,
-                createdAt = existing?.createdAt ?: now,
+                createdAt = owned?.createdAt ?: now,
                 updatedAt = now
             )
         )
         return noteId
+    }
+
+    /** One note of this profile; null when the id is unknown or another profile's. */
+    suspend fun note(profileId: ProfileId, id: String): NoteEntity? =
+        notes.byId(id)?.takeIf { it.profileId == profileId.value }
+
+    /** Deletes one note of this profile. Another profile's id is a silent no-op. */
+    suspend fun deleteNoteFor(profileId: ProfileId, id: String) {
+        note(profileId, id)?.let { notes.delete(it.id) }
     }
 
     suspend fun deleteNote(id: String) = notes.delete(id)

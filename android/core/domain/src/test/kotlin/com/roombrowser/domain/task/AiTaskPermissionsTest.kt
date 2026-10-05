@@ -1,6 +1,7 @@
 package com.roombrowser.domain.task
 
 import com.google.common.truth.Truth.assertThat
+import com.roombrowser.domain.agent.AgentAppActions
 import com.roombrowser.domain.agent.AgentTools
 import org.junit.Test
 
@@ -98,7 +99,8 @@ class AiTaskPermissionsTest {
         val catalogue = AgentTools.toolDefs().map { it.function.name }
         listOf(
             ToolGroup.READ_PAGE, ToolGroup.NAVIGATE, ToolGroup.INTERACT,
-            ToolGroup.POST, ToolGroup.WALLET, ToolGroup.APP
+            ToolGroup.POST, ToolGroup.WALLET, ToolGroup.APP,
+            ToolGroup.TOTP, ToolGroup.NOTES
         ).forEach { group ->
             assertThat(catalogue.filter { all.groupOf(it) == group }).isNotEmpty()
         }
@@ -134,7 +136,7 @@ class AiTaskPermissionsTest {
             allowPost = true
         )
         val appTools = AgentTools.toolDefs().map { it.function.name }
-            .filter { it.startsWith("app_") }
+            .filter { it.startsWith("app_") && it !in AgentAppActions.PROFILE_TOOLS }
         assertThat(appTools).isNotEmpty()
         appTools.forEach { tool ->
             assertThat(all.groupOf(tool)).isEqualTo(ToolGroup.APP)
@@ -145,6 +147,34 @@ class AiTaskPermissionsTest {
             val refusal = everything.refusal(tool)
             assertThat(refusal).isNotNull()
             assertThat(refusal).contains(tool)
+            assertThat(refusal).doesNotContain("unknown tool")
+        }
+    }
+
+    /**
+     * The 2FA and Notes tools are the one pair a SETTING can hand over, so the
+     * property this test pins is the direction of the default: a task grants
+     * itself nothing, however it is configured, and the refusal points at the
+     * setting instead of reading like a dead end.
+     */
+    @Test
+    fun the_profile_tools_are_denied_by_a_task_and_their_refusal_names_the_setting() {
+        val everything = AiTaskPermissions(
+            allowReadPage = true,
+            allowNavigate = true,
+            allowInteract = true,
+            allowPost = true
+        )
+        assertThat(AgentAppActions.PROFILE_TOOLS)
+            .containsExactly(AgentTools.APP_2FA, AgentTools.APP_NOTES)
+        AgentAppActions.PROFILE_TOOLS.forEach { tool ->
+            assertThat(all.groupOf(tool)).isIn(ToolGroup.TOTP, ToolGroup.NOTES)
+            assertThat(all.allows(tool)).isFalse()
+            assertThat(everything.allows(tool)).isFalse()
+            val refusal = everything.refusal(tool)
+            assertThat(refusal).isNotNull()
+            assertThat(refusal).contains(tool)
+            assertThat(refusal).contains("Allow scheduled AI tasks to use 2FA and Notes")
             assertThat(refusal).doesNotContain("unknown tool")
         }
     }

@@ -1,6 +1,7 @@
 package com.roombrowser.agent
 
 import com.google.common.truth.Truth.assertThat
+import com.roombrowser.domain.agent.AgentAppActions
 import com.roombrowser.domain.agent.AgentTools
 import com.roombrowser.domain.agent.ToolExecutor
 import com.roombrowser.domain.agent.ToolResult
@@ -28,8 +29,9 @@ class ScheduledRunToolGateTest {
     private fun gate(
         delegate: ToolExecutor,
         permissions: AiTaskPermissions = AiTaskPermissions(),
-        confirmActions: Boolean = true
-    ) = ScheduledRunToolGate(delegate, permissions, confirmActions)
+        confirmActions: Boolean = true,
+        allowProfileTools: Boolean = false
+    ) = ScheduledRunToolGate(delegate, permissions, confirmActions, allowProfileTools)
 
     @Test
     fun an_app_control_tool_never_reaches_the_delegate() = runBlocking<Unit> {
@@ -96,5 +98,63 @@ class ScheduledRunToolGateTest {
         assertThat(result.ok).isTrue()
         assertThat(result.output).isEqualTo("ran ${AgentTools.NAVIGATE}")
         assertThat(delegate.calls).containsExactly(AgentTools.NAVIGATE)
+    }
+
+    // ------------------------------------------------ the profile tools
+
+    @Test
+    fun the_profile_tools_are_refused_until_the_setting_says_otherwise() = runBlocking<Unit> {
+        val delegate = Recording()
+        AgentAppActions.PROFILE_TOOLS.forEach { tool ->
+            val result = gate(delegate).execute(tool, """{"action":"list"}""")
+            assertThat(result.ok).isFalse()
+            // The refusal has to name the setting, or the model reads it as a
+            // dead end and retries the same call until the step budget is gone.
+            assertThat(result.output).contains("Allow scheduled AI tasks to use 2FA and Notes")
+        }
+        assertThat(delegate.calls).isEmpty()
+    }
+
+    @Test
+    fun the_setting_lets_the_read_only_profile_actions_through() = runBlocking<Unit> {
+        val delegate = Recording()
+        val gated = gate(delegate, confirmActions = false, allowProfileTools = true)
+        assertThat(gated.execute(AgentTools.APP_2FA, """{"action":"list"}""").ok).isTrue()
+        assertThat(gated.execute(AgentTools.APP_NOTES, """{"action":"list"}""").ok).isTrue()
+        assertThat(delegate.calls)
+            .containsExactly(AgentTools.APP_2FA, AgentTools.APP_NOTES)
+    }
+
+    @Test
+    fun the_setting_never_hands_over_a_delete() = runBlocking<Unit> {
+        val delegate = Recording()
+        val result = gate(delegate, confirmActions = false, allowProfileTools = true)
+            .execute(AgentTools.APP_NOTES, """{"action":"delete","id":"n1"}""")
+        assertThat(result.ok).isFalse()
+        assertThat(delegate.calls).isEmpty()
+    }
+
+    @Test
+    fun an_unreadable_action_is_not_treated_as_a_read() = runBlocking<Unit> {
+        val delegate = Recording()
+        val result = gate(delegate, confirmActions = false, allowProfileTools = true)
+            .execute(AgentTools.APP_NOTES, "")
+        assertThat(result.ok).isFalse()
+        assertThat(delegate.calls).isEmpty()
+    }
+
+    @Test
+    fun writing_a_note_still_needs_the_confirm_switch_off() = runBlocking<Unit> {
+        val delegate = Recording()
+        // app_2fa is a read whatever the switch says; a note that is written is not.
+        assertThat(
+            gate(delegate, confirmActions = true, allowProfileTools = true)
+                .execute(AgentTools.APP_2FA, """{"action":"code","id":"a1"}""").ok
+        ).isTrue()
+        assertThat(
+            gate(delegate, confirmActions = true, allowProfileTools = true)
+                .execute(AgentTools.APP_NOTES, """{"action":"add","title":"t"}""").ok
+        ).isFalse()
+        assertThat(delegate.calls).containsExactly(AgentTools.APP_2FA)
     }
 }

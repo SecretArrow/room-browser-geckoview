@@ -13,6 +13,7 @@ import com.roombrowser.domain.agent.ToolResult
 import com.roombrowser.domain.agent.formatDurationMs
 import com.roombrowser.domain.engine.UrlIntelligence
 import com.roombrowser.domain.task.AiTaskPermissions
+import com.roombrowser.domain.task.profileUnattendedRefusal
 import com.roombrowser.domain.task.unattendedRefusal
 import com.roombrowser.domain.task.walletUnattendedRefusal
 import com.roombrowser.engine.EngineSession
@@ -31,6 +32,7 @@ import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.intOrNull
+import kotlinx.serialization.json.jsonPrimitive
 
 /**
  * Executes the agent's browser tools on ONE headless [EngineSession].
@@ -66,11 +68,29 @@ class HeadlessToolExecutor(
      * the default, and every scheduled run — keeps the refusal, because an
      * approval that cannot be given must not be invented.
      */
-    private val askInteractive: (suspend (name: String, label: String) -> ActionVerdict)? = null
+    private val askInteractive: (suspend (name: String, label: String) -> ActionVerdict)? = null,
+    /** This profile's own notes and authenticator accounts; see [AgentProfileData]. */
+    private val profileData: AgentProfileData? = null,
+    /**
+     * Whether a SCHEDULED run may use the profile's notes and authenticator
+     * codes. Off unless the user turned the behaviour on, so a page that talks
+     * a task into it still cannot pull a live code by default.
+     */
+    private val allowProfileTools: Boolean = false,
+    /** Whether the digits of a generated code may be returned to the model. */
+    private val otpDigitsAllowed: suspend () -> Boolean = { false }
 ) : ToolExecutor {
 
     private val lastStartedAt = AtomicLong(0L)
     private val lastFinishedAt = AtomicLong(0L)
+
+    private val profileTools: AgentProfileTools? = profileData?.let {
+        AgentProfileTools(
+            data = it,
+            otpDigitsAllowed = otpDigitsAllowed,
+            fillField = { ref, text -> fillInput(ref, text) }
+        )
+    }
 
     init {
         session.setListener(
@@ -109,6 +129,9 @@ class HeadlessToolExecutor(
                     AgentTools.SELECT_OPTION -> selectOption(int(args, "ref"), str(args, "value"))
                     AgentTools.PRESS_KEYS -> pressKeys(str(args, "keys"), intOrNull(args, "ref"))
                     AgentTools.WAIT_FOR -> waitFor(str(args, "text"), intOrNull(args, "timeout_ms"))
+                    AgentTools.APP_2FA, AgentTools.APP_NOTES -> profileTools
+                        ?.execute(name, argsJson)
+                        ?: ToolResult(false, "tool '$name' is not available in this run")
                     else -> ToolResult(false, "unknown tool: $name")
                 }
             } catch (ce: CancellationException) {
@@ -129,7 +152,16 @@ class HeadlessToolExecutor(
      */
     private suspend fun refusal(name: String, argsJson: String): ToolResult? {
         if (name in AgentTools.WALLET_TOOLS) return ToolResult(false, walletUnattendedRefusal(name))
-        permissions.refusal(name)?.let { return ToolResult(false, it) }
+        if (name in AgentAppActions.PROFILE_TOOLS) {
+            // One setting can hand these over, so the permission map's refusal
+            // for them is answered here instead — see [profileUnattendedRefusal].
+            if (!allowProfileTools) return ToolResult(false, profileUnattendedRefusal(name))
+            if (!AgentAppActions.unattendedAllowsProfileAction(name, actionOf(argsJson))) {
+                return ToolResult(false, unattendedRefusal(name))
+            }
+        } else {
+            permissions.refusal(name)?.let { return ToolResult(false, it) }
+        }
         if (name in TAB_TOOLS) {
             return ToolResult(
                 false,
@@ -137,7 +169,14 @@ class HeadlessToolExecutor(
                     "available here — navigate to what you need and read_page it."
             )
         }
-        if (confirmActions && name in AgentTools.INTERACTIVE_TOOLS) {
+        // Reading a generated code asks nobody; writing a note does. The app
+        // tools are judged by what they change rather than by being app tools.
+        val needsTheUser = if (name in AgentAppActions.PROFILE_TOOLS) {
+            AgentAppActions.isWrite(name, actionOf(argsJson))
+        } else {
+            name in AgentTools.INTERACTIVE_TOOLS
+        }
+        if (confirmActions && needsTheUser) {
             val ask = askInteractive ?: return ToolResult(false, unattendedRefusal(name))
             return when (val verdict = ask(name, AgentTools.describeTool(name, argsJson))) {
                 is ActionVerdict.Allow -> null
@@ -442,6 +481,14 @@ class HeadlessToolExecutor(
         private const val POLL_MS = 150L
         private const val DEFAULT_WAIT_FOR_MS = 10_000
         private const val MAX_JS_RESULT_CHARS = 4000
+
+        /** The action a call names, or null when the arguments cannot be read. */
+        internal fun actionOf(argsJson: String): String? = runCatching {
+            (AgentJson.parseToJsonElement(argsJson) as? JsonObject)
+                ?.get("action")
+                ?.jsonPrimitive
+                ?.contentOrNull
+        }.getOrNull()
 
         /**
          * The tools a headless run performs, declared rather than inferred so

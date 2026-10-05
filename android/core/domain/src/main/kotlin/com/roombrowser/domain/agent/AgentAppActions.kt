@@ -19,8 +19,18 @@ object AgentAppActions {
     val TOOLS = setOf(
         AgentTools.APP_OPEN, AgentTools.APP_TABS, AgentTools.APP_DATA,
         AgentTools.APP_SETTINGS, AgentTools.APP_SHIELDS,
-        AgentTools.APP_SITE_PERMISSION, AgentTools.APP_PAGE
+        AgentTools.APP_SITE_PERMISSION, AgentTools.APP_PAGE,
+        AgentTools.APP_2FA, AgentTools.APP_NOTES
     )
+
+    /**
+     * The two tools that reach the profile's own stored content rather than the
+     * browser's state. They are refused to a scheduled run like every other app
+     * tool, but ONE setting can hand them over — which is what makes "log in
+     * with the code and write down what happened" work with nobody watching.
+     * Kept here so both unattended gates and the setting agree on the list.
+     */
+    val PROFILE_TOOLS = setOf(AgentTools.APP_2FA, AgentTools.APP_NOTES)
 
     /** Per-profile browsing settings, the only scope the agent may write. */
     const val SCOPE_PROFILE = "profile"
@@ -77,6 +87,37 @@ object AgentAppActions {
         "reader_on", "reader_off", "desktop_on", "desktop_off",
         "bookmark_add", "bookmark_remove"
     )
+
+    /**
+     * The authenticator actions. Deliberately no "reveal": the setup key is not
+     * reachable from any tool, so a code is the most the agent can ever hold.
+     */
+    val TOTP_ACTIONS = setOf("list", "code", "copy", "fill")
+
+    val NOTE_ACTIONS = setOf("list", "get", "add", "update", "delete")
+
+    /**
+     * What a scheduled run may do with [PROFILE_TOOLS] once the user has turned
+     * the behaviour on. `delete` is deliberately absent: a deleted note is gone
+     * — nothing keeps a copy, and the profile export is the only backup there
+     * is — so it stays an action that asks a person every time, and nobody is
+     * watching an unattended run.
+     *
+     * The reading is an ALLOWLIST on purpose. The action arrives as JSON from
+     * the model, so "not the destructive one" has to be spelled as "one of
+     * these", or an action that failed to parse would be treated as safe.
+     */
+    val UNATTENDED_PROFILE_ACTIONS: Map<String, Set<String>> = mapOf(
+        AgentTools.APP_2FA to TOTP_ACTIONS,
+        AgentTools.APP_NOTES to setOf("list", "get", "add", "update")
+    )
+
+    /**
+     * Whether one [PROFILE_TOOLS] action may run with nobody watching. An
+     * unreadable or unlisted action is refused.
+     */
+    fun unattendedAllowsProfileAction(toolName: String, action: String?): Boolean =
+        action != null && action in UNATTENDED_PROFILE_ACTIONS[toolName].orEmpty()
 
     enum class SettingKind { BOOL, TEXT }
 
@@ -225,6 +266,9 @@ object AgentAppActions {
             else -> false
         }
         AgentTools.APP_SHIELDS -> action == "clear_site_data"
+        // A deleted note is gone — nothing keeps a copy of it, and the profile
+        // export is the only backup there is. Updating one is ordinary.
+        AgentTools.APP_NOTES -> action == "delete"
         else -> false
     }
 
@@ -244,6 +288,13 @@ object AgentAppActions {
         AgentTools.APP_SHIELDS -> action != "read"
         AgentTools.APP_SITE_PERMISSION -> action == "set"
         AgentTools.APP_PAGE -> action in setOf("desktop_on", "desktop_off", "bookmark_add", "bookmark_remove")
+        AgentTools.APP_NOTES -> action in setOf("add", "update")
+        // Every 2FA action is a read: a code is generated from the stored seed,
+        // the clipboard copy writes nothing the user keeps, and the fill types
+        // into a page. The owner decided the agent may always hold a code, so
+        // this tool must not raise the Confirm actions prompt — the setting that
+        // decides whether the DIGITS reach the model is a different one.
+        AgentTools.APP_2FA -> false
         else -> false
     }
 }

@@ -48,8 +48,22 @@ class AgentAppTools(
     private val boundTabId: () -> String?,
     private val onStatus: (String) -> Unit = {},
     private val confirmGate: suspend (name: String, label: String) -> ActionVerdict,
-    private val destructiveGate: suspend (name: String, label: String) -> ActionVerdict
+    private val destructiveGate: suspend (name: String, label: String) -> ActionVerdict,
+    /**
+     * The profile's own notes and authenticator accounts. Null means this turn
+     * cannot reach them, and `app_2fa`/`app_notes` then refuse rather than
+     * reaching a store that is not wired.
+     */
+    private val profileData: AgentProfileData? = null,
+    /** Whether the digits of a generated code may be returned to the model. */
+    private val otpDigitsAllowed: suspend () -> Boolean = { false },
+    /** Types text into a page field, for `app_2fa action=fill`. */
+    private val fillField: (suspend (ref: Int, text: String) -> ToolResult)? = null
 ) {
+
+    private val profileTools: AgentProfileTools? = profileData?.let {
+        AgentProfileTools(data = it, otpDigitsAllowed = otpDigitsAllowed, fillField = fillField)
+    }
 
     /** Null when [name] is not an app tool — the caller's other tools run. */
     suspend fun execute(name: String, argsJson: String): ToolResult? {
@@ -58,7 +72,7 @@ class AgentAppTools(
         return try {
             val action = strArg(args, "action")
             guard(name, action, AgentTools.describeTool(name, argsJson))?.let { return it }
-            dispatch(name, args)
+            dispatch(name, args, argsJson)
         } catch (ce: CancellationException) {
             throw ce
         } catch (t: Throwable) {
@@ -87,15 +101,22 @@ class AgentAppTools(
         }
     }
 
-    private suspend fun dispatch(name: String, args: JsonObject): ToolResult = when (name) {
+    private suspend fun dispatch(name: String, args: JsonObject, argsJson: String): ToolResult = when (name) {
         AgentTools.APP_OPEN -> appOpen(strArg(args, "screen"))
         AgentTools.APP_TABS -> appTabs(strArg(args, "action") ?: "list", args)
         AgentTools.APP_DATA -> appData(strArg(args, "kind"), strArg(args, "action") ?: "list", args)
         AgentTools.APP_SETTINGS -> appSettings(strArg(args, "action"), args)
         AgentTools.APP_SHIELDS -> appShields(strArg(args, "action"), args)
         AgentTools.APP_SITE_PERMISSION -> appSitePermission(strArg(args, "action"), args)
+        AgentTools.APP_2FA, AgentTools.APP_NOTES -> profileTools
+            ?.execute(name, argsJson)
+            ?: ToolResult(false, profileToolsUnavailable(name))
         else -> appPage(strArg(args, "action"), args)
     }
+
+    private fun profileToolsUnavailable(name: String): String =
+        "tool '$name' reaches this profile's own notes and authenticator accounts, and this turn " +
+            "has no connection to them. Run it in the browser's own agent chat."
 
     // ------------------------------------------------------------- screens
 

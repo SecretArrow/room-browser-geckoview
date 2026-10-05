@@ -123,7 +123,18 @@ class BrowserActivity : FragmentActivity() {
         // The surface a task saved as Headed or Standard runs on. Registered
         // here because it needs a live tab strip, and dropped in onDestroy so a
         // run can never open a tab on a dead ViewModel.
-        val pageHost = BrowserTaskPageHost(viewModel)
+        val pageHost = BrowserTaskPageHost(
+            vm = viewModel,
+            profileData = com.roombrowser.agent.GraphAgentProfileData(
+                graph = (application as com.roombrowser.RoomBrowserApp).graph,
+                profileId = viewModel.profileId,
+                context = application
+            ),
+            otpDigitsAllowed = {
+                (application as com.roombrowser.RoomBrowserApp).graph.appState
+                    .agentSettingsSnapshot().otpDigitsToAgent
+            }
+        )
         taskPageHost = pageHost
         AiTaskPageHosts.register(pageHost)
 

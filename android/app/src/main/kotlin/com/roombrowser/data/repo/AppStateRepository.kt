@@ -82,6 +82,27 @@ data class AgentSettings(
     val temperature: Double = 0.2,
     val maxSteps: Int = 25,
     val confirmActions: Boolean = false,
+    /**
+     * Let the agent read the DIGITS of a code generated from a stored
+     * authenticator seed. Off by default, and the switch matters because a
+     * digit the agent reads stops being private to this device: it is sent to
+     * the configured provider (a remote one unless the on-device model or a
+     * local Ollama endpoint is in use), written in plaintext into the
+     * profile's `agent_messages` table as part of the tool result, and
+     * included in any chat export.
+     *
+     * Off does not disable the tool: `copy` and `fill` still place the current
+     * code where it is needed without the model ever holding it.
+     */
+    val otpDigitsToAgent: Boolean = false,
+    /**
+     * Let a SCHEDULED AI task use the profile's notes and authenticator codes.
+     * Off by default, and the cost is the one a scheduled run always carries:
+     * nobody is watching the outcome. With it on, a page that talks the task
+     * into it can pull a live code and read the notes. Deleting a note is
+     * never allowed to a run, whatever this says.
+     */
+    val taskProfileTools: Boolean = false,
     val includePageContext: Boolean = true,
     /**
      * The user's standing context for the AI Agent — the text that is put in

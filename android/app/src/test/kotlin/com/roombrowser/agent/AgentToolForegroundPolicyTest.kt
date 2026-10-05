@@ -53,6 +53,14 @@ class AgentToolForegroundPolicyTest {
         AgentTools.APP_TABS,
         AgentTools.APP_DATA,
         AgentTools.APP_SETTINGS,
+        // The profile's own notes and authenticator codes are read from the
+        // Keystore and the database, never from a page, so they keep working
+        // while the user is on another tab. `app_2fa action=fill` is the one
+        // exception and is refused by the headless chat's own gate rather than
+        // here: the refusal is about WHICH page it would type into, not about
+        // whether this chat's engine is on screen.
+        AgentTools.APP_2FA,
+        AgentTools.APP_NOTES,
         // Wallet tools talk to the wallet engine, never to a page, so they
         // start no navigation and are safe on a background tab.
         AgentTools.WALLET_STATE,

@@ -37,6 +37,18 @@ class HeadlessChatToolGate(
                     "browser tab and ask again."
             )
         }
+        if (name == AgentTools.APP_2FA && HeadlessToolExecutor.actionOf(argsJson) == "fill") {
+            // Checked BEFORE the app tools below, because those run against the
+            // browser the user is looking at — right for a listing or a
+            // clipboard copy, but typing is a change to THAT page, and this
+            // turn cannot see it to say whether it worked.
+            return ToolResult(
+                false,
+                "app_2fa action=fill types the code into the page the browser has open, which " +
+                    "this hidden turn cannot see. Use action=copy and ask the user to paste it, " +
+                    "or switch this chat to the browser tab and ask again."
+            )
+        }
         appTools?.invoke(name, argsJson)?.let { return it }
         if (name in AgentTools.WALLET_TOOLS) {
             return ToolResult(

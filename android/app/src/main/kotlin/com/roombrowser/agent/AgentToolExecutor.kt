@@ -72,11 +72,24 @@ class AgentToolExecutor(
      * callback from [confirmGate]: this one always reaches a person, whatever
      * the app's Confirm actions switch and whatever YOLO mode says.
      */
-    private val destructiveGate: suspend (name: String, label: String) -> ActionVerdict
+    private val destructiveGate: suspend (name: String, label: String) -> ActionVerdict,
+    /** This profile's own notes and authenticator accounts; see [AgentProfileData]. */
+    private val profileData: AgentProfileData? = null,
+    /** Whether the digits of a generated code may be returned to the model. */
+    private val otpDigitsAllowed: suspend () -> Boolean = { false }
 ) : ToolExecutor {
 
     private val appTools by lazy {
-        AgentAppTools(vm, { tabId }, onStatus, confirmGate, destructiveGate)
+        AgentAppTools(
+            vm = vm,
+            boundTabId = { tabId },
+            onStatus = onStatus,
+            confirmGate = confirmGate,
+            destructiveGate = destructiveGate,
+            profileData = profileData,
+            otpDigitsAllowed = otpDigitsAllowed,
+            fillField = { ref, text -> rawFillField(ref, text) }
+        )
     }
 
     /**
@@ -224,6 +237,16 @@ class AgentToolExecutor(
             return ToolResult(false, "missing 'ref' or 'text' argument")
         }
         refuse(AgentTools.FILL_INPUT, "type into [$ref]")?.let { return it }
+        return rawFillField(ref, text)
+    }
+
+    /**
+     * The fill itself, with no gate in front of it. Separate from [fillInput]
+     * because `app_2fa action=fill` types a code the owner decided the agent
+     * may always place — an action that is a read, so it must not raise the
+     * "clicking and typing" prompt.
+     */
+    private suspend fun rawFillField(ref: Int, text: String): ToolResult {
         val session = boundSession() ?: return ToolResult(false, "no page is loaded in this chat's tab")
         val jsonText = AgentJson.encodeToString(String.serializer(), text)
         val jsResult = evaluateJs(session, PageInjector.fillJs(ref, jsonText))

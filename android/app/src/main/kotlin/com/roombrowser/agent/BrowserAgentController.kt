@@ -851,7 +851,11 @@ class BrowserAgentController(
                 confirmGate = { name, label -> gate(name, label) },
                 // Wallet approvals must not ride the bypassable generic gate.
                 walletConfirm = { label -> requestWalletApproval(label) },
-                destructiveGate = { name, label -> destructiveVerdict(name, label) }
+                destructiveGate = { name, label -> destructiveVerdict(name, label) },
+                profileData = GraphAgentProfileData(graph, profileId, appContext),
+                // Read live rather than from the turn's snapshot: the user can
+                // flip it while the turn is running.
+                otpDigitsAllowed = { appState.agentSettingsSnapshot().otpDigitsToAgent }
             )
             // HEADLESS: the turn drives a hidden page of this profile's own
             // instead of the tab on screen. The reference is kept so the

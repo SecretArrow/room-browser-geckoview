@@ -1,5 +1,6 @@
 package com.roombrowser.browser
 
+import com.roombrowser.agent.AgentProfileData
 import com.roombrowser.agent.AgentToolExecutor
 import com.roombrowser.agent.AiTaskPage
 import com.roombrowser.agent.AiTaskPageHost
@@ -22,7 +23,16 @@ import com.roombrowser.domain.task.unattendedRefusal
  * from it. [ScheduledRunToolGate] is what keeps that from widening the task's
  * grants.
  */
-class BrowserTaskPageHost(private val vm: BrowserViewModel) : AiTaskPageHost {
+class BrowserTaskPageHost(
+    private val vm: BrowserViewModel,
+    /**
+     * The profile's own notes and authenticator accounts, so this run's
+     * executor can offer `app_2fa`/`app_notes` when the task is allowed them.
+     */
+    private val profileData: AgentProfileData,
+    /** Whether the digits of a generated code may be returned to the model. */
+    private val otpDigitsAllowed: suspend () -> Boolean = { false }
+) : AiTaskPageHost {
 
     override suspend fun openPage(request: AiTaskPageRequest): AiTaskPage? {
         // The run already checked that this process is bound to the task's
@@ -50,10 +60,13 @@ class BrowserTaskPageHost(private val vm: BrowserViewModel) : AiTaskPageHost {
                     // that will not come.
                     confirmGate = { name, _ -> ActionVerdict.Deny(unattendedRefusal(name)) },
                     walletConfirm = { false },
-                    destructiveGate = { name, _ -> ActionVerdict.Deny(unattendedRefusal(name)) }
+                    destructiveGate = { name, _ -> ActionVerdict.Deny(unattendedRefusal(name)) },
+                    profileData = profileData,
+                    otpDigitsAllowed = otpDigitsAllowed
                 ),
                 permissions = request.permissions,
-                confirmActions = request.confirmActions
+                confirmActions = request.confirmActions,
+                allowProfileTools = request.allowProfileTools
             )
 
             override fun close() {

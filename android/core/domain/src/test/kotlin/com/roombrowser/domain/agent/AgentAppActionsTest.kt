@@ -126,13 +126,59 @@ class AgentAppActionsTest {
     }
 
     @Test
-    fun the_app_tools_are_the_seven_the_schema_declares() {
+    fun the_app_tools_are_the_nine_the_schema_declares() {
         assertThat(AgentAppActions.TOOLS).containsExactly(
             AgentTools.APP_OPEN, AgentTools.APP_TABS, AgentTools.APP_DATA,
             AgentTools.APP_SETTINGS, AgentTools.APP_SHIELDS,
-            AgentTools.APP_SITE_PERMISSION, AgentTools.APP_PAGE
+            AgentTools.APP_SITE_PERMISSION, AgentTools.APP_PAGE,
+            AgentTools.APP_2FA, AgentTools.APP_NOTES
         )
-        assertThat(AgentAppActions.TOOLS).hasSize(7)
+        assertThat(AgentAppActions.TOOLS).hasSize(9)
+        // The profile pair is a SUBSET of the app tools, not a fourth family:
+        // everything that classifies an app tool has to see them too.
+        assertThat(AgentAppActions.TOOLS).containsAtLeastElementsIn(AgentAppActions.PROFILE_TOOLS)
+    }
+
+    @Test
+    fun an_unattended_run_never_deletes_a_note() {
+        assertThat(AgentAppActions.UNATTENDED_PROFILE_ACTIONS.keys)
+            .containsExactlyElementsIn(AgentAppActions.PROFILE_TOOLS)
+        assertThat(AgentAppActions.unattendedAllowsProfileAction(AgentTools.APP_NOTES, "delete")).isFalse()
+        assertThat(AgentAppActions.unattendedAllowsProfileAction(AgentTools.APP_NOTES, "list")).isTrue()
+        assertThat(AgentAppActions.unattendedAllowsProfileAction(AgentTools.APP_NOTES, "get")).isTrue()
+        assertThat(AgentAppActions.unattendedAllowsProfileAction(AgentTools.APP_NOTES, "add")).isTrue()
+        assertThat(AgentAppActions.unattendedAllowsProfileAction(AgentTools.APP_NOTES, "update")).isTrue()
+        // Every 2FA action is a read, so all four are allowed once the setting is.
+        AgentAppActions.TOTP_ACTIONS.forEach { action ->
+            assertThat(AgentAppActions.unattendedAllowsProfileAction(AgentTools.APP_2FA, action)).isTrue()
+        }
+        // Fail closed on anything unreadable or invented.
+        assertThat(AgentAppActions.unattendedAllowsProfileAction(AgentTools.APP_NOTES, null)).isFalse()
+        assertThat(AgentAppActions.unattendedAllowsProfileAction(AgentTools.APP_NOTES, "erase")).isFalse()
+        assertThat(AgentAppActions.unattendedAllowsProfileAction(AgentTools.APP_2FA, null)).isFalse()
+        assertThat(AgentAppActions.unattendedAllowsProfileAction("app_shields_typo", "list")).isFalse()
+    }
+
+    @Test
+    fun the_profile_tools_carry_their_own_write_and_destroy_rules() {
+        // A note that is overwritten or deleted is not a read, and a delete is
+        // not restorable — the two facts the confirm and destructive gates are
+        // built on.
+        assertThat(AgentAppActions.isWrite(AgentTools.APP_NOTES, "list")).isFalse()
+        assertThat(AgentAppActions.isWrite(AgentTools.APP_NOTES, "get")).isFalse()
+        assertThat(AgentAppActions.isWrite(AgentTools.APP_NOTES, "add")).isTrue()
+        assertThat(AgentAppActions.isWrite(AgentTools.APP_NOTES, "update")).isTrue()
+        assertThat(AgentAppActions.isDestructive(AgentTools.APP_NOTES, "delete")).isTrue()
+        assertThat(AgentAppActions.isDestructive(AgentTools.APP_NOTES, "update")).isFalse()
+        // Reading a generated code changes nothing the user keeps, so it must
+        // not raise the Confirm actions prompt — the setting that decides
+        // whether the DIGITS reach the model is a different one.
+        AgentAppActions.TOTP_ACTIONS.forEach { action ->
+            assertThat(AgentAppActions.isWrite(AgentTools.APP_2FA, action)).isFalse()
+            assertThat(AgentAppActions.isDestructive(AgentTools.APP_2FA, action)).isFalse()
+        }
+        // Nothing may be deleteable without an action that names it.
+        assertThat(AgentAppActions.isDestructive(AgentTools.APP_NOTES, null)).isFalse()
     }
 
     @Test

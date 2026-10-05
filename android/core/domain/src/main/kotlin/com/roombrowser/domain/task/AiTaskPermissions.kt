@@ -21,6 +21,13 @@ import kotlinx.serialization.Serializable
  * browser itself — its settings, its saved per-site permissions, what it has
  * kept — and some of it cannot be undone (see [ToolGroup.APP]).
  *
+ * The authenticator codes and the notes are the last two, and they differ from
+ * every group above in one way: [allows] refuses them here, because a task must
+ * never grant itself a live code, but the RUNNER may override that refusal when
+ * the user has switched the behaviour on in settings. That setting being OFF is
+ * the whole of the protection, so the groups stay denied in this class and the
+ * gate consults the setting — this decision stays pure and testable.
+ *
  * An unknown tool name is denied, not allowed — a tool added to the catalogue
  * later must be granted explicitly rather than inheriting a blanket yes.
  */
@@ -45,6 +52,8 @@ data class AiTaskPermissions(
         AgentTools.APP_OPEN, AgentTools.APP_TABS, AgentTools.APP_DATA,
         AgentTools.APP_SETTINGS, AgentTools.APP_SHIELDS,
         AgentTools.APP_SITE_PERMISSION, AgentTools.APP_PAGE -> ToolGroup.APP
+        AgentTools.APP_2FA -> ToolGroup.TOTP
+        AgentTools.APP_NOTES -> ToolGroup.NOTES
         else -> null
     }
 
@@ -57,6 +66,8 @@ data class AiTaskPermissions(
         // Nobody is watching a scheduled run, and these change the browser
         // itself — including irreversibly. A chat turn is the only route.
         ToolGroup.APP -> false
+        // The one group a SETTING can hand over: see [ToolGroup.TOTP].
+        ToolGroup.TOTP, ToolGroup.NOTES -> false
         null -> false
     }
 
@@ -79,7 +90,13 @@ enum class ToolGroup(val label: String) {
     WALLET("wallet requests"),
 
     /** Never granted to a task; see [appUnattendedRefusal]. */
-    APP("the app's own screens, settings and data")
+    APP("the app's own screens, settings and data"),
+
+    /** Never granted by a task itself; one setting can hand it over. */
+    TOTP("the authenticator codes"),
+
+    /** Never granted by a task itself; one setting can hand it over. */
+    NOTES("the profile's notes")
 }
 
 /**
@@ -92,8 +109,20 @@ internal fun refusalMessage(toolName: String, group: ToolGroup?): String = when 
     null -> "unknown tool: $toolName"
     ToolGroup.WALLET -> walletUnattendedRefusal(toolName)
     ToolGroup.APP -> appUnattendedRefusal(toolName)
+    ToolGroup.TOTP, ToolGroup.NOTES -> profileUnattendedRefusal(toolName)
     else -> "tool '$toolName' is switched off for this task: ${group.label} is not permitted"
 }
+
+/**
+ * The refusal for the profile's own content — the authenticator codes and the
+ * notes. Unlike the wallet and the browser's screens, a setting CAN hand these
+ * over, so the refusal names it: a refusal that reads like a dead end sends the
+ * model looking for another route to the same thing.
+ */
+fun profileUnattendedRefusal(toolName: String): String =
+    "tool '$toolName' works only in a chat by default. To let a scheduled run use the " +
+        "authenticator codes and the notes, turn on \"Allow scheduled AI tasks to use 2FA and " +
+        "Notes\" in AI Agent settings — and read what that setting costs before you do."
 
 /**
  * The refusal for app control in a scheduled run: these actions change the
