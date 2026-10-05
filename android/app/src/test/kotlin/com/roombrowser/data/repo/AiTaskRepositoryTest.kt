@@ -56,6 +56,15 @@ class AiTaskRepositoryTest {
         override suspend fun deleteAllForProfile(profileId: String) {
             rows.entries.removeAll { it.value.profileId == profileId }
         }
+
+        override fun observeByStatus(status: String): Flow<List<AiTaskEntity>> = flowOf(waiting(status))
+
+        override suspend fun byStatus(status: String): List<AiTaskEntity> = waiting(status)
+
+        /** The DAO's query verbatim: enabled rows at [status], oldest occurrence first. */
+        private fun waiting(status: String) = rows.values
+            .filter { it.enabled && it.lastRunStatus == status }
+            .sortedBy { it.lastRunAtMs ?: 0L }
     }
 
     private fun schedule(kind: ScheduleKind = ScheduleKind.DAILY) =
@@ -171,5 +180,24 @@ class AiTaskRepositoryTest {
         val id = repo.save(null, "a", "p", "p1", schedule(), AiTaskPermissions.DEFAULT, true)
         repo.delete(id)
         assertThat(repo.all()).isEmpty()
+    }
+
+    @Test
+    fun deferred_now_lists_only_the_enabled_occurrences_that_are_waiting() = runBlocking<Unit> {
+        val repo = AiTaskRepository(FakeDao())
+        val waiting = repo.save(
+            null, "waiting", "p", "p1", schedule(), AiTaskPermissions.DEFAULT, true
+        )
+        val done = repo.save(null, "done", "p", "p1", schedule(), AiTaskPermissions.DEFAULT, true)
+        val paused = repo.save(
+            null, "paused", "p", "p1", schedule(), AiTaskPermissions.DEFAULT, false
+        )
+        repo.recordRun(waiting, 1L, "DEFERRED", "the browser was closed")
+        repo.recordRun(done, 2L, "COMPLETED", "ok")
+        repo.recordRun(paused, 3L, "DEFERRED", "the browser was closed")
+
+        // A paused task is switched off, not owed a run, so the sweep must skip it.
+        assertThat(repo.deferredNow().map { it.id }).containsExactly(waiting)
+        assertThat(repo.deferredNow()).hasSize(1)
     }
 }
