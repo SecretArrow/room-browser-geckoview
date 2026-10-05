@@ -42,7 +42,7 @@ class WalletLockManagerTest {
         cryptoDispatcher = UnconfinedTestDispatcher(testScheduler)
     )
 
-    private fun wrong(m: WalletLockManager) = m.verifyPin(profile, "000000".toCharArray())
+    private suspend fun wrong(m: WalletLockManager) = m.verifyPin(profile, "000000".toCharArray())
 
     @Test
     fun `a correct pin unlocks`() = runTest {
