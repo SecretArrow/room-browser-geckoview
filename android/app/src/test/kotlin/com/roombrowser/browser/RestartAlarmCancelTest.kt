@@ -31,8 +31,13 @@ class RestartAlarmCancelTest {
         assertThat(start).isAtLeast(0)
 
         val rest = source.substring(start)
-        val body = NEXT_MEMBER.find(rest)?.range?.first?.let(rest::substring) ?: rest
+        // UP TO the next member, not FROM it. `range.first` is the match's start
+        // index, so `rest::substring` would take the tail of the file and the
+        // scan would be about whatever code happens to follow.
+        val end = NEXT_MEMBER.find(rest)?.range?.first ?: rest.length
+        val body = rest.substring(0, end)
 
+        assertThat(body).contains("RESTART_REQUEST_CODES")
         assertThat(body).contains("FLAG_NO_CREATE")
         assertThat(body).doesNotContain("FLAG_UPDATE_CURRENT")
     }
