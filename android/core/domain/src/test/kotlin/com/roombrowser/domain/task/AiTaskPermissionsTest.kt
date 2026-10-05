@@ -168,7 +168,7 @@ class AiTaskPermissionsTest {
         assertThat(AgentAppActions.PROFILE_TOOLS)
             .containsExactly(AgentTools.APP_2FA, AgentTools.APP_NOTES)
         AgentAppActions.PROFILE_TOOLS.forEach { tool ->
-            assertThat(all.groupOf(tool)).isIn(ToolGroup.TOTP, ToolGroup.NOTES)
+            assertThat(all.groupOf(tool)).isAnyOf(ToolGroup.TOTP, ToolGroup.NOTES)
             assertThat(all.allows(tool)).isFalse()
             assertThat(everything.allows(tool)).isFalse()
             val refusal = everything.refusal(tool)
