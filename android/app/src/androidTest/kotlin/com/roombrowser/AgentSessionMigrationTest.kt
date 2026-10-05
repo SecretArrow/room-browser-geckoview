@@ -30,10 +30,12 @@ import org.junit.runner.RunWith
  * twenty-odd tables at v9 — which would be a second, silently rotting copy of
  * the entities — it lets Room create a real database and then undoes exactly
  * the v9→v10 delta: the `tab_id` column and its index. Nothing else changed
- * in v10, so what is left is genuinely the v9 schema, and any LATER change to
- * the current schema makes the revert below incomplete and this test wrong —
- * which is why the revert is written out in full, with the v9 shape named
- * explicitly, instead of being derived from the entity it is testing.
+ * in v10, so what is left is genuinely the v9 schema for the one table this
+ * test is about, and any LATER change to that table makes the revert below
+ * incomplete and this test wrong — which is why the revert is written out in
+ * full, with the v9 shape named explicitly, instead of being derived from the
+ * entity it is testing. Tables added by later versions are left alone: they
+ * stay at the current shape, which is what the migration list below expects.
  */
 @RunWith(AndroidJUnit4::class)
 class AgentSessionMigrationTest {
@@ -77,8 +79,14 @@ class AgentSessionMigrationTest {
         // 2. Open through Room again. This runs MIGRATION_9_10 and then Room's
         //    own validation of the result against the entities — the step that
         //    throws, and takes the app down with it, when a migration is wrong.
+        //
+        //    Every migration SINCE v10 is registered too, because the database
+        //    above is created at the CURRENT version: an unregistered step on
+        //    the way back up is not a failed assertion here, it is Room
+        //    refusing to open at all. The v10 one is a no-op on this database
+        //    (its table is already there and the statement is IF NOT EXISTS).
         val upgraded = Room.databaseBuilder(context, AppDatabase::class.java, dbName)
-            .addMigrations(AppDatabase.MIGRATION_9_10)
+            .addMigrations(AppDatabase.MIGRATION_9_10, AppDatabase.MIGRATION_10_11)
             .build()
         try {
             // 3. The chat written at v9 is still there, and reads as bound to

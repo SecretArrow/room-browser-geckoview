@@ -49,8 +49,11 @@ class AiTaskMigrationTest {
 
     @Test
     fun upgrading_from_v10_adds_an_usable_ai_tasks_table() = runBlocking<Unit> {
-        // 1. A real database, created at the current version.
+        // 1. A real database, created at the current version. The query is what
+        //    puts it on disk: build() alone opens nothing, and step 2 needs a
+        //    file to rewrite.
         val created = Room.databaseBuilder(context, AppDatabase::class.java, dbName).build()
+        assertThat(created.aiTaskDao().all()).isEmpty()
         created.close()
 
         // 2. Strip it back to v10.
