@@ -318,7 +318,11 @@ class AgentSettingsE2eTest {
         // not be allowed to read a later "it is gone" as a successful send.
         // Inside the loop it would instead misread an accepted send as a
         // failure — and, on a slow clear, re-tap and send twice.
-        if (!device.hasObject(composerHoldsPrompt)) return false
+        if (!device.hasObject(promptInTree)) return false
+        // Fail closed. sendLanded() reads this paragraph's disappearance, and
+        // Until.gone is instantly true for a node that was never there, so an
+        // absent paragraph would turn every attempt into a false success.
+        if (!device.hasObject(transcriptEmptyState)) return false
         repeat(5) {
             val send = device.wait(Until.findObject(By.desc("agent_send")), 2_000)
                 ?: return sendLanded()
@@ -328,25 +332,44 @@ class AgentSettingsE2eTest {
         return sendLanded()
     }
 
-    private val composerHoldsPrompt: BySelector =
-        By.desc("agent_composer_field").textContains("e2e_copy_prompt")
+    private val promptInTree: BySelector = By.textContains("e2e_copy_prompt")
 
     /**
-     * True once the app has taken the prompt out of the composer.
+     * The empty transcript, whose replacement is the observable of an accepted
+     * send.
      *
-     * The composer is the only reachable evidence of an accepted send. The user
-     * bubble's copy affordance would be more direct, but the transcript is a
-     * LazyColumn shorter than one bubble on the CI display and the mock reply
-     * lands at once, so the just-sent bubble leaves the composed window — and
-     * with it the accessibility tree — and scrolling does not bring it back
-     * (run 37360922928 searched both ways for 38s without finding it). The
-     * composer survives that geometry: it held the prompt, and only an accepted
-     * send empties it, the exact inverse of the CI 227ebc3 defect where a tap
-     * on stale bounds left the text in place. Waiting for it to go, rather than
-     * sampling once, is what keeps a slow clear from being misread as a missed
-     * tap and re-sent.
+     * Compose renders a text field's VALUE on a different a11y node from the
+     * one carrying its semantics desc, so the probe this replaced —
+     * `By.desc("agent_composer_field").textContains("e2e_copy_prompt")` —
+     * could never match one node. Run 37368491191 proves it: the logcat shows
+     * DESC matching, then `input text e2e_copy_prompt`, then a bare TEXT match
+     * succeeding, then the combined selector finding nothing — so the helper
+     * returned false before it ever tapped, three runs running.
+     *
+     * "browse autonomously" keeps this distinct from the composer placeholder,
+     * which shares only the "Ask the agent" prefix.
      */
-    private fun sendLanded(): Boolean = device.wait(Until.gone(composerHoldsPrompt), 4_000)
+    private val transcriptEmptyState: BySelector =
+        By.textContains("Ask the agent to browse autonomously")
+
+    /**
+     * True once the app has accepted the prompt.
+     *
+     * The transcript ceasing to be empty is a STRONGER claim than the composer
+     * emptying: the composer is cleared unconditionally on click, so an empty
+     * field proves only that the button was touched, while an entry exists
+     * only once BrowserAgentController.runTurn took the prompt. The user
+     * bubble's own copy affordance would be more direct but is unusable here —
+     * the transcript is a LazyColumn shorter than one bubble on the CI display
+     * and the mock reply lands at once, so the just-sent bubble leaves the
+     * composed window and scrolling does not bring it back (run 37360922928
+     * searched both ways for 38s without finding it; AgentPanel.kt:546 is what
+     * the empty branch renders instead).
+     *
+     * Waiting rather than sampling once is what keeps a slow first send from
+     * being misread as a missed tap and re-sent.
+     */
+    private fun sendLanded(): Boolean = device.wait(Until.gone(transcriptEmptyState), 4_000)
 
     /**
      * Waits for a node, then keeps looking for it with the transcript scrolled
