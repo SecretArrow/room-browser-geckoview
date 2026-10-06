@@ -300,8 +300,13 @@ private fun WalletOnboardingChoice(
     }
 }
 
-/** The chains a wallet enables before the user touches the chip row. */
-private val DefaultWalletChains = setOf(ChainType.EVM, ChainType.SOLANA, ChainType.OCTRA)
+/**
+ * The chains a new wallet derives before the user touches the chip row.
+ *
+ * Shared by the create form, the import form and the backup restore — one
+ * value so the three cannot drift apart.
+ */
+internal val DefaultWalletChains = setOf(ChainType.EVM, ChainType.SOLANA, ChainType.OCTRA)
 
 /** Reusable chain-chip row; create and import share [DefaultWalletChains]. */
 @Composable

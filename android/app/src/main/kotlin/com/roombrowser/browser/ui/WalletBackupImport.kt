@@ -94,7 +94,7 @@ internal fun WalletBackupImportFlow(
     var fileText by remember { mutableStateOf<String?>(null) }
     var fileName by remember { mutableStateOf("") }
     var restored by remember { mutableStateOf<WalletBackup.Restored?>(null) }
-    var chains by remember { mutableStateOf(setOf(ChainType.EVM, ChainType.SOLANA)) }
+    var chains by remember { mutableStateOf(DefaultWalletChains) }
     var failure by remember { mutableStateOf<String?>(null) }
     var working by remember { mutableStateOf(false) }
     var report by remember { mutableStateOf<RestoreReport?>(null) }
