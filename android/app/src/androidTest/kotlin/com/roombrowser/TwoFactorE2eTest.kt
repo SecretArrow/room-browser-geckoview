@@ -501,7 +501,7 @@ class TwoFactorE2eTest {
                 clickText("Add 2FA", 5_000)
             )
             assertTrue(
-                "The add sheet must open\n${uiTree()}",
+                "The add form must open\n${uiTree()}",
                 hasText("Add 2FA account", 8_000)
             )
             assertTrue(
@@ -512,8 +512,11 @@ class TwoFactorE2eTest {
                 "The Setup key field must take the Base32 secret\n${uiTree()}\nFIELDS: ${editTextDump()}\nTRACE:$typeTrace",
                 typeIntoField("Setup key (Base32)", setupKey, index = 2)
             )
+            // Typing leaves the IME up over the bottom of the form, and the
+            // Add button sits under it: a click there lands on the keyboard.
+            hideImeIfNeeded()
             assertTrue(
-                "The Add button must save and close the sheet\n${uiTree()}\nFIELDS: ${editTextDump()}",
+                "The Add button must save and close the form\n${uiTree()}\nFIELDS: ${editTextDump()}",
                 clickTextScrollableVerified("Add") { waitGone("Add 2FA account", 1_500) }
             )
             assertTrue(
