@@ -1073,6 +1073,9 @@ class WalletEngineTest {
         engine.submitDappRequest(
             DappRequest.SwitchChain("w1", "app.uniswap.org", ChainType.EVM, "EVM:137")
         ) { outcomes += it }
+        // A switch that CAN happen still asks: the prompt is the point, and
+        // only the two settled-without-a-sheet cases above skip it.
+        assertThat(engine.pendingRequests.value.map { it.id }).containsExactly("w1")
         engine.decideDappRequest(DappDecision("w1", approved = true))
         advanceUntilIdle()
 
@@ -1081,6 +1084,64 @@ class WalletEngineTest {
         assertThat(outcomes[0].resultJson).isNull()
         assertThat(engine.activeNetworks.value[ChainType.EVM]).isNotNull()
         assertThat(engine.activeNetworks.value.getValue(ChainType.EVM).id).isEqualTo("EVM:137")
+    }
+
+    @Test
+    fun `SwitchChain to an unserved network settles 4902 without a sheet`() = runTest(testDispatcher) {
+        // A prompt for a chain the wallet cannot switch to has one possible
+        // result, and its Reject would settle 4001 instead.
+        seedWallet(profile, ABANDON, listOf(ChainType.EVM))
+        engine.bind(profile)
+        advanceUntilIdle()
+
+        val outcomes = mutableListOf<DappOutcome>()
+        engine.submitDappRequest(
+            DappRequest.SwitchChain("w1", "app.uniswap.org", ChainType.EVM, "EVM:999999")
+        ) { outcomes += it }
+        advanceUntilIdle()
+
+        assertThat(engine.pendingRequests.value).isEmpty()
+        assertThat(outcomes).hasSize(1)
+        assertThat(outcomes[0].requireError().code).isEqualTo(WalletBridgeError.UNRECOGNIZED_CHAIN)
+    }
+
+    @Test
+    fun `SwitchChain to a disabled network settles 4902 without a sheet`() = runTest(testDispatcher) {
+        // Bundled testnets are seeded DISABLED — exactly the state a dApp on
+        // Sepolia switches into, where 4902 sends it to addEthereumChain.
+        seedWallet(profile, ABANDON, listOf(ChainType.EVM))
+        engine.bind(profile)
+        advanceUntilIdle()
+
+        val outcomes = mutableListOf<DappOutcome>()
+        engine.submitDappRequest(
+            DappRequest.SwitchChain("w1", "app.uniswap.org", ChainType.EVM, "EVM:137")
+        ) { outcomes += it }
+        advanceUntilIdle()
+
+        assertThat(engine.pendingRequests.value).isEmpty()
+        assertThat(outcomes).hasSize(1)
+        assertThat(outcomes[0].requireError().code).isEqualTo(WalletBridgeError.UNRECOGNIZED_CHAIN)
+    }
+
+    @Test
+    fun `SwitchChain to the active network settles null without a sheet`() = runTest(testDispatcher) {
+        // Switching to the chain you are already on changes nothing, and the
+        // Reject that sheet offered failed a connect that had succeeded.
+        seedWallet(profile, ABANDON, listOf(ChainType.EVM))
+        engine.bind(profile)
+        advanceUntilIdle()
+
+        val outcomes = mutableListOf<DappOutcome>()
+        engine.submitDappRequest(
+            DappRequest.SwitchChain("w1", "app.uniswap.org", ChainType.EVM, "EVM:1")
+        ) { outcomes += it }
+        advanceUntilIdle()
+
+        assertThat(engine.pendingRequests.value).isEmpty()
+        assertThat(outcomes).hasSize(1)
+        assertThat(outcomes[0].error).isNull()
+        assertThat(engine.activeNetworks.value.getValue(ChainType.EVM).id).isEqualTo("EVM:1")
     }
 
     @Test

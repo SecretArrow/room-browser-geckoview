@@ -1160,12 +1160,76 @@ open class WalletEngine(
      * are unique per caller; re-submitting an id that is already pending
      * replaces its callback and its queue entry — never a second prompt and
      * never a stale coalesced mapping.
+     *
+     * A [DappRequest.SwitchChain] is the one request that can be settled here
+     * without ever reaching the queue — see [settleSwitchWithoutPrompt].
      */
     override fun submitDappRequest(request: DappRequest, onSettled: (DappOutcome) -> Unit) {
         if (profileState.value == null) {
             holdUntilBound(request, onSettled)
             return
         }
+        if (request is DappRequest.SwitchChain && settleSwitchWithoutPrompt(request, onSettled)) {
+            return
+        }
+        enqueueDappRequest(request, onSettled)
+    }
+
+    /**
+     * EIP-3326's two prompt-free outcomes: a switch to the chain already
+     * active changes nothing, and one to a chain this wallet does not serve
+     * can only settle 4902. A prompt for either is a sheet whose every button
+     * is wrong — dismissing it settles 4001, which ends the dApp's connect.
+     * Returns true when the request is settled and must not be queued.
+     */
+    private fun settleSwitchWithoutPrompt(
+        request: DappRequest.SwitchChain,
+        onSettled: (DappOutcome) -> Unit
+    ): Boolean {
+        val profileId = profileState.value ?: return false
+        // Already on it: the state this engine publishes, no round trip.
+        if (activeNetworksState.value[request.chainType]?.id == request.targetNetworkId) {
+            onSettled(DappOutcome(request.id, null, null))
+            return true
+        }
+        val known = networksState.value.firstOrNull { it.config.id == request.targetNetworkId }
+        if (known != null) {
+            // A row this list carries is the current answer — it is fed by the
+            // row's own flow. Switchable ones prompt as before.
+            if (known.enabled && known.config.chainType == request.chainType) return false
+            onSettled(unrecognizedChainOutcome(request))
+            return true
+        }
+        // Not in the list at all, which includes "the list has not filled yet"
+        // right after a bind. Confirm against the repository rather than
+        // answering 4902 from a list that may only be early: pushing a working
+        // chain down the add-chain path is the worse mistake.
+        engineScope.launch {
+            val record = quiet {
+                repo.networks(profileId).firstOrNull { it.config.id == request.targetNetworkId }
+            }
+            val active = quiet { repo.activeNetwork(profileId, request.chainType) }
+            when {
+                record == null || !record.enabled || record.config.chainType != request.chainType ->
+                    onSettled(unrecognizedChainOutcome(request))
+                active?.id == request.targetNetworkId ->
+                    onSettled(DappOutcome(request.id, null, null))
+                else -> enqueueDappRequest(request, onSettled)
+            }
+        }
+        return true
+    }
+
+    private fun unrecognizedChainOutcome(request: DappRequest.SwitchChain) = DappOutcome(
+        request.id, null,
+        WalletBridgeError(
+            WalletBridgeError.UNRECOGNIZED_CHAIN,
+            "Unrecognized chain '" + request.targetNetworkId + "'"
+        )
+    )
+
+    /** The queueing half of [submitDappRequest]. */
+    private fun enqueueDappRequest(request: DappRequest, onSettled: (DappOutcome) -> Unit) {
         // A stale coalesced mapping for this id must never steal the new settle.
         coalescedInto.remove(request.id)
         val twin = pendingRequestsState.value.firstOrNull {
@@ -1489,14 +1553,10 @@ open class WalletEngine(
     ): DappOutcome {
         val record = repo.networks(profileId)
             .firstOrNull { it.config.id == request.targetNetworkId }
+        // Reachable when the row was disabled or dropped between the check
+        // [submitDappRequest] makes and the decision — the sheet is already up.
         if (record == null || !record.enabled || record.config.chainType != request.chainType) {
-            return DappOutcome(
-                request.id, null,
-                WalletBridgeError(
-                    WalletBridgeError.UNRECOGNIZED_CHAIN,
-                    "Unrecognized chain '${request.targetNetworkId}'"
-                )
-            )
+            return unrecognizedChainOutcome(request)
         }
         repo.setActiveNetwork(profileId, record.config.chainType, record.config.id)
         refreshActiveNetworksNow(profileId)
