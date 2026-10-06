@@ -266,9 +266,7 @@ class WalletBridge(
         // lists them. Only the first was ever tried, which made the others
         // decorative: a network whose primary RPC is rate-limited or blocked
         // failed every read even though a working endpoint was configured
-        // right behind it. ONLY a connectivity failure moves on to the next
-        // URL — an RPC that answered, however unhappily, is the chain's
-        // verdict and is passed through rather than masked by a retry.
+        // right behind it.
         val endpoints = network?.rpcUrls?.filter { it.isNotBlank() }.orEmpty()
         if (endpoints.isEmpty()) {
             respondError(call.id, WalletBridgeError(WalletBridgeError.CHAIN_DISCONNECTED, "No active EVM network"))
@@ -294,9 +292,14 @@ class WalletBridge(
     }
 
     /**
-     * Walks [endpoints] in order for one read. ONLY a transport failure moves
-     * on to the next url — an RPC that answered, however unhappily, is the
-     * chain's verdict and is passed through rather than masked by a retry.
+     * Walks [endpoints] in order for one read, moving on whenever the endpoint
+     * could not answer. The test for that is
+     * [WalletBridgeProtocol.shouldTryNextEndpoint] and not a local rule: an
+     * endpoint rejecting the certificate, or answering HTTP 429/525 instead of
+     * a JSON-RPC result, never got to speak JSON-RPC and is exactly what the
+     * second url in a network's list exists for. Judging it here by a narrower
+     * rule is what made a dApp read fail on the first url while a working one
+     * sat next to it.
      */
     private suspend fun relayAcross(
         endpoints: List<String>,
@@ -311,10 +314,10 @@ class WalletBridge(
                 // end the walk — swallowing it here would just move on to the
                 // next endpoint and spend a timeout that is already gone.
                 throw e
-            } catch (e: WalletException.NetworkUnavailable) {
-                // The only retryable case: nothing answered.
             } catch (e: WalletException) {
-                return RelayAnswer.Failed(WalletBridgeProtocol.relayError(e))
+                if (!WalletBridgeProtocol.shouldTryNextEndpoint(e)) {
+                    return RelayAnswer.Failed(WalletBridgeProtocol.relayError(e))
+                }
             } catch (e: Exception) {
                 // Transport-level failure outside the typed hierarchy —
                 // also nothing answered.

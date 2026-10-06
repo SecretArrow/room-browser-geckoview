@@ -5,6 +5,7 @@ import com.roombrowser.browser.wallet.WalletBridgeError
 import com.roombrowser.domain.wallet.model.ChainType
 import com.roombrowser.domain.wallet.model.NetworkConfig
 import com.roombrowser.domain.wallet.model.WalletException
+import com.roombrowser.domain.wallet.rpc.RpcEndpointChain
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
@@ -423,6 +424,18 @@ object WalletBridgeProtocol {
             WalletBridgeError(WalletBridgeError.INVALID_PARAMS, e.message?.takeIf { it.isNotBlank() } ?: "Invalid params")
         else -> WalletBridgeError(WalletBridgeError.INTERNAL, "RPC relay failed")
     }
+
+    /**
+     * Whether a failed read should move on to the network's next endpoint.
+     *
+     * The rule is [RpcEndpointChain.isEndpointFailure] and deliberately not a
+     * local one: the bridge used to continue only on [WalletException.NetworkUnavailable],
+     * so a primary answering HTTP 429 or 525 — or one whose certificate the
+     * device rejected — ended the walk while a working endpoint sat next to it
+     * in the same list. That is the failure every adapter already fails over
+     * on, and a dApp read that hits it reports as a failed wallet connection.
+     */
+    fun shouldTryNextEndpoint(e: WalletException): Boolean = RpcEndpointChain.isEndpointFailure(e)
 
     // ------------------------------------------------------------------
     // Message decoding (personal_sign / signMessage payloads)

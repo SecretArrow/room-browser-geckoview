@@ -652,8 +652,36 @@ class WalletBridgeProtocolTest {
     }
 
     @Test
-    fun `relay result resolves as a raw json value`() {
-        val result = Json.parseToJsonElement("\"0x1\"")
+    fun `a read moves on to the next endpoint on every failure the adapters fail over on`() {
+        // The relay used to continue only on NetworkUnavailable, so a primary
+        // answering HTTP 429 or 525 — which shipped networks do answer — ended
+        // the walk with a working endpoint sitting next to it in the list.
+        listOf(
+            WalletException.NetworkUnavailable(),
+            WalletException.TlsFailure("certificate rejected"),
+            WalletException.RpcError(403, "forbidden"),
+            WalletException.RpcError(429, "over rate limit"),
+            WalletException.RpcError(525, "SSL handshake failed")
+        ).forEach {
+            assertThat(WalletBridgeProtocol.shouldTryNextEndpoint(it)).isTrue()
+        }
+    }
+
+    @Test
+    fun `an endpoint that answered is not asked twice`() {
+        // A negative code is the JSON-RPC reserved range: the endpoint spoke,
+        // and its answer is the chain's verdict rather than a dead host's.
+        listOf(
+            WalletException.RpcError(-32000, "execution reverted"),
+            WalletException.RpcError(-32603, "internal error"),
+            WalletException.InvalidParams("bad endpoint")
+        ).forEach {
+            assertThat(WalletBridgeProtocol.shouldTryNextEndpoint(it)).isFalse()
+        }
+    }
+
+    @Test
+    fun `relay result resolves as a raw json value`() {        val result = Json.parseToJsonElement("\"0x1\"")
         val script = WalletBridgeProtocol.encodeResponseScript("w1", result.toString(), 0, null)
         assertThat(script).isEqualTo(
             "window.__roomWalletResponse && window.__roomWalletResponse(" +
