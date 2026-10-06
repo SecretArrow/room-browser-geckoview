@@ -99,6 +99,7 @@ import com.roombrowser.domain.credentials.PasswordVaultCrypto
 import com.roombrowser.domain.credentials.VaultAuthException
 import com.roombrowser.domain.credentials.VaultFormatException
 import com.roombrowser.domain.model.ProfileId
+import com.roombrowser.domain.security.PinLockCrypto
 import com.roombrowser.domain.security.ProfileLockGate
 import com.roombrowser.domain.security.WalletLockStatus
 import com.roombrowser.domain.theme.BuiltInThemes
@@ -112,7 +113,6 @@ import com.roombrowser.domain.totp.TotpGenerator
 import com.roombrowser.main.PassphrasePrompt
 import com.roombrowser.qr.QrScannerActivity
 import com.roombrowser.security.BiometricGate
-import com.roombrowser.security.PinLockCrypto
 import com.roombrowser.security.PinUnlockResult
 import com.roombrowser.security.WalletLockManager
 import com.roombrowser.ui.common.EmptyState
