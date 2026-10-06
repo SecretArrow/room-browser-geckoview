@@ -99,6 +99,8 @@ import com.roombrowser.domain.credentials.PasswordVaultCrypto
 import com.roombrowser.domain.credentials.VaultAuthException
 import com.roombrowser.domain.credentials.VaultFormatException
 import com.roombrowser.domain.model.ProfileId
+import com.roombrowser.domain.security.ProfileLockGate
+import com.roombrowser.domain.security.WalletLockStatus
 import com.roombrowser.domain.theme.BuiltInThemes
 import com.roombrowser.domain.totp.Base32
 import com.roombrowser.domain.totp.OtpAuthUri
@@ -110,6 +112,9 @@ import com.roombrowser.domain.totp.TotpGenerator
 import com.roombrowser.main.PassphrasePrompt
 import com.roombrowser.qr.QrScannerActivity
 import com.roombrowser.security.BiometricGate
+import com.roombrowser.security.PinLockCrypto
+import com.roombrowser.security.PinUnlockResult
+import com.roombrowser.security.WalletLockManager
 import com.roombrowser.ui.common.EmptyState
 import com.roombrowser.ui.common.LocalRoomExtras
 import com.roombrowser.ui.common.RoomBottomSheetShape
@@ -166,6 +171,7 @@ class TwoFactorActivity : FragmentActivity() {
                     profileId = profileId,
                     profileName = profileName,
                     repo = graph.totpRepo,
+                    lockManager = graph.walletLock,
                     biometricsAvailable = biometricsAvailable,
                     onClose = { finish() },
                     onUnlockRequest = {
@@ -223,6 +229,7 @@ private fun TwoFactorRoot(
     profileId: ProfileId,
     profileName: String,
     repo: TotpRepository,
+    lockManager: WalletLockManager,
     biometricsAvailable: Boolean,
     onClose: () -> Unit,
     onUnlockRequest: () -> Unit,
@@ -235,12 +242,58 @@ private fun TwoFactorRoot(
     val snackbarHostState = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
 
-    // Owner decision 4: biometric/device credential first; with no screen lock
-    // on the device there is nothing to gate with here, so the screen opens and
-    // says so — a silent open would be the dangerous version of that.
-    LaunchedEffect(Unit) {
-        if (!repo.isUnlocked.value) {
-            if (biometricsAvailable) onUnlockRequest() else repo.unlock()
+    // Gate order: device credential first; with no screen lock the profile PIN
+    // if one is set, and only the warning banner when the store positively says
+    // there is no PIN. A null pinEnabled means the record could not be read —
+    // fail closed onto the PIN pane rather than unlocking.
+    var pinEnabled by remember { mutableStateOf<Boolean?>(null) }
+    var pinStatus by remember { mutableStateOf<WalletLockStatus>(WalletLockStatus.Ready) }
+    var pinError by remember { mutableStateOf<String?>(null) }
+    LaunchedEffect(biometricsAvailable, profileId) {
+        if (repo.isUnlocked.value) return@LaunchedEffect
+        if (biometricsAvailable) {
+            onUnlockRequest()
+            return@LaunchedEffect
+        }
+        pinEnabled = runCatching { lockManager.policy(profileId.value) }.getOrNull()?.pinEnabled
+        pinStatus = runCatching { lockManager.status(profileId.value) }
+            .getOrDefault(WalletLockStatus.Ready)
+        if (pinEnabled == false) repo.unlock()
+    }
+
+    // A wrong PIN never leaves the pane; it only advances the retry counter
+    // (persisted in app_state, so killing the app does not reset it).
+    fun submitPin(pin: String) {
+        val chars = pin.toCharArray()
+        scope.launch {
+            val result = runCatching { lockManager.verifyPin(profileId.value, chars) }
+            PinLockCrypto.wipe(chars)
+            when (val outcome = result.getOrNull()) {
+                PinUnlockResult.Unlocked -> {
+                    pinError = null
+                    runCatching { lockManager.clearFailures(profileId.value) }
+                    repo.unlock()
+                }
+                is PinUnlockResult.Wrong -> {
+                    pinStatus = outcome.status
+                    pinError = if (outcome.attemptsUntilBackoff > 0) {
+                        "Wrong PIN. ${outcome.attemptsUntilBackoff} attempts left before a delay."
+                    } else {
+                        "Wrong PIN."
+                    }
+                }
+                is PinUnlockResult.Backoff -> {
+                    pinStatus = outcome.status
+                    pinError = "Too many attempts — wait for the delay to end."
+                }
+                PinUnlockResult.NoPin -> {
+                    // The store positively reports no PIN now: fall to the banner.
+                    pinEnabled = false
+                    pinError = null
+                    repo.unlock()
+                }
+                null -> pinError = "Could not check the PIN. Try again."
+            }
         }
     }
 
@@ -596,12 +649,36 @@ private fun TwoFactorRoot(
                         .only(WindowInsetsSides.Horizontal + WindowInsetsSides.Bottom)
                 )
         ) {
-            if (!unlocked && biometricsAvailable) {
-                LockedTwoFactorPane(onUnlock = onUnlockRequest)
-                return@Column
-            }
-            if (!biometricsAvailable) {
-                NoScreenLockBanner()
+            when (ProfileLockGate.choose(biometricsAvailable, pinEnabled)) {
+                ProfileLockGate.DEVICE_CREDENTIAL -> if (!unlocked) {
+                    LockedTwoFactorPane(
+                        description = "Unlock with your fingerprint, face or device PIN to " +
+                            "view this profile's authenticator codes.",
+                        onUnlock = onUnlockRequest
+                    )
+                    return@Column
+                }
+
+                ProfileLockGate.PIN -> if (!unlocked) {
+                    LockedTwoFactorPane(
+                        description = "This profile has its own PIN.",
+                        onUnlock = {},
+                        pinSection = {
+                            WalletPinUnlockSection(
+                                status = pinStatus,
+                                error = pinError,
+                                onPinSubmit = { submitPin(it) },
+                                description = "Enter this profile's PIN to view its " +
+                                    "authenticator codes.",
+                                fieldLabel = "Profile PIN",
+                                submitLabel = "Unlock 2FA"
+                            )
+                        }
+                    )
+                    return@Column
+                }
+
+                ProfileLockGate.UNPROTECTED -> NoScreenLockBanner()
             }
             if (entries.isEmpty()) {
                 EmptyState(
@@ -784,7 +861,11 @@ private fun NoScreenLockBanner() {
 }
 
 @Composable
-private fun LockedTwoFactorPane(onUnlock: () -> Unit) {
+private fun LockedTwoFactorPane(
+    description: String,
+    onUnlock: () -> Unit,
+    pinSection: (@Composable () -> Unit)? = null
+) {
     val extras = LocalRoomExtras.current
     Column(
         Modifier
@@ -815,14 +896,17 @@ private fun LockedTwoFactorPane(onUnlock: () -> Unit) {
         )
         Spacer(Modifier.height(6.dp))
         Text(
-            "Unlock with your fingerprint, face or device PIN to view this " +
-                "profile's authenticator codes.",
+            description,
             style = MaterialTheme.typography.bodyMedium,
             color = extras.textSecondary,
             textAlign = TextAlign.Center
         )
         Spacer(Modifier.height(20.dp))
-        Button(onClick = onUnlock, modifier = Modifier.heightIn(min = 48.dp)) { Text("Unlock") }
+        if (pinSection != null) {
+            pinSection()
+        } else {
+            Button(onClick = onUnlock, modifier = Modifier.heightIn(min = 48.dp)) { Text("Unlock") }
+        }
     }
 }
 

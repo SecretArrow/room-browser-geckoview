@@ -43,17 +43,22 @@ import com.roombrowser.ui.common.SettingActionRow
 import kotlinx.coroutines.delay
 
 /**
- * The PIN form on the locked pane. Rendered only when this profile has a wallet
- * PIN configured; the device credential stays available underneath as the
- * recovery path. The dots field is disabled inside the backoff window, and the
- * window is recomputed from its absolute end time so it survives recreation.
+ * The PIN form on the locked pane, for the profile lock shared by the wallet and
+ * the 2FA screen. Rendered only when this profile has a PIN configured.
+ * [onUseDevice] is the recovery path where a device credential exists; it is
+ * null on a device that has none, where the PIN is the only gate. The dots field
+ * is disabled inside the backoff window, and the window is recomputed from its
+ * absolute end time so it survives recreation.
  */
 @Composable
 fun WalletPinUnlockSection(
     status: WalletLockStatus,
     error: String?,
     onPinSubmit: (String) -> Unit,
-    onUseDevice: () -> Unit
+    description: String = "Enter this wallet's PIN to unlock it.",
+    fieldLabel: String = "Wallet PIN",
+    submitLabel: String = "Unlock with PIN",
+    onUseDevice: (() -> Unit)? = null
 ) {
     val extras = LocalRoomExtras.current
     val fieldShape = RoundedCornerShape((extras.radius * 0.6f).dp)
@@ -75,7 +80,7 @@ fun WalletPinUnlockSection(
 
     Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
         Text(
-            "Enter this wallet's PIN to unlock it.",
+            description,
             style = MaterialTheme.typography.bodyMedium,
             color = extras.textSecondary,
             textAlign = TextAlign.Center
@@ -86,7 +91,7 @@ fun WalletPinUnlockSection(
             onValueChange = { value ->
                 if (value.length <= 12 && value.all { it.isDigit() }) pin = value
             },
-            label = { Text("Wallet PIN") },
+            label = { Text(fieldLabel) },
             singleLine = true,
             enabled = ready,
             visualTransformation = PasswordVisualTransformation(),
@@ -94,7 +99,7 @@ fun WalletPinUnlockSection(
             shape = fieldShape,
             modifier = Modifier
                 .fillMaxWidth()
-                .semantics { contentDescription = "Wallet PIN field" }
+                .semantics { contentDescription = "$fieldLabel field" }
         )
         if (!ready) {
             Spacer(Modifier.height(8.dp))
@@ -123,8 +128,10 @@ fun WalletPinUnlockSection(
             modifier = Modifier
                 .fillMaxWidth()
                 .heightIn(min = 48.dp)
-        ) { Text("Unlock with PIN") }
-        TextButton(onClick = onUseDevice) { Text("Use device unlock instead") }
+        ) { Text(submitLabel) }
+        onUseDevice?.let { useDevice ->
+            TextButton(onClick = useDevice) { Text("Use device unlock instead") }
+        }
     }
 }
 
