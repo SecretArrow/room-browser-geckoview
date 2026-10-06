@@ -60,6 +60,10 @@ class BrowserActivity : FragmentActivity() {
 
     /** True while the full-screen NetworkWarningActivity is on top. */
     private var networkWarningRunning = false
+
+    /** True once the warning has taken window focus away from this activity. */
+    private var networkWarningFocusLost = false
+
     private lateinit var networkWarningLauncher: ActivityResultLauncher<Intent>
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -226,17 +230,26 @@ class BrowserActivity : FragmentActivity() {
      * [launchNetworkWarningIfNeeded] was rejected — and the only guard that
      * can stay stuck across the whole resume path is a stale
      * [networkWarningRunning] left behind by a result callback that never
-     * dispatched. Window focus is the provably-late signal: focus can only
-     * return to THIS activity after the warning's window is gone, so at that
-     * moment a running-flag that is still set is stale BY CONSTRUCTION
-     * (the warning cannot be on top and not own the focus). Reset it and
-     * give the gate one more launch attempt — the gate can no longer be
-     * bypassed by a lost result delivery.
+     * dispatched. Window focus is the late signal: focus can only RETURN to
+     * this activity after the warning's window is gone, so a running-flag
+     * that is still set at that point is stale. Reset it and give the gate
+     * one more launch attempt — the gate can no longer be bypassed by a lost
+     * result delivery.
+     *
+     * The "return" has to be enforced, not assumed: a freshly launched
+     * activity also gains focus for the first time right after onResume,
+     * before the warning it just launched has taken it. That gain has no
+     * preceding loss and is not a return — reading it as one started a
+     * SECOND warning instance (run 37466963560: two launches 47 ms apart,
+     * and the Continue tap reached neither).
      */
     override fun onWindowFocusChanged(hasFocus: Boolean) {
         super.onWindowFocusChanged(hasFocus)
-        if (!hasFocus) return
-        if (networkWarningRunning) {
+        if (!hasFocus) {
+            networkWarningFocusLost = true
+            return
+        }
+        if (networkWarningRunning && networkWarningFocusLost) {
             Log.w(TAG, "stale networkWarningRunning reset on focus gain (result callback lost?)")
             networkWarningRunning = false
         }
@@ -277,6 +290,7 @@ class BrowserActivity : FragmentActivity() {
         }
         Log.d(TAG, "gate: launching warning (ip=${payload.ip})")
         networkWarningRunning = true
+        networkWarningFocusLost = false
         val showName = viewModel.globalSettings.showPreviousProfileName
         val showLastSeen = viewModel.globalSettings.showLastSeenTime
         networkWarningLauncher.launch(
