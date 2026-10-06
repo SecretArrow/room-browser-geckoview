@@ -108,6 +108,7 @@ class WalletE2eTest {
     private lateinit var urlConnect: String
     private lateinit var urlSilent: String
     private lateinit var urlReject: String
+    private lateinit var urlSepolia: String
 
     // -- fixed vectors (see class KDoc for provenance) --------------------
     private companion object {
@@ -175,6 +176,8 @@ class WalletE2eTest {
                         dappPage("WS2-$tag", "silent-$tag", "SILENT:", 600)
                     path.startsWith("/reject-$tag") ->
                         dappPage("WR3-$tag", "reject-$tag", "NEVER:", 600)
+                    path.startsWith("/sepolia-$tag") ->
+                        sepoliaPage("SEP-$tag")
                     else -> MockResponse().setResponseCode(404)
                 }
             }
@@ -195,6 +198,7 @@ class WalletE2eTest {
         urlConnect = "http://127.0.0.1:$port/connect-$tag"
         urlSilent = "http://127.0.0.1:$port/silent-$tag"
         urlReject = "http://localhost:$port/reject-$tag"
+        urlSepolia = "http://127.0.0.1:$port/sepolia-$tag"
     }
 
     @After
@@ -269,6 +273,92 @@ class WalletE2eTest {
                     }
                     tryConnect();
                   }, $delayMs);
+                </script>
+                </body></html>
+                """.trimIndent()
+            )
+
+    /**
+     * The connect sequence a wagmi/viem dApp runs against Sepolia, with NO
+     * retry anywhere — which is the point of the page. viem's `switchChain`
+     * retries only if the add rejected, so an add that resolves while
+     * `eth_chainId` still answers the old chain pins the page on "Wrong
+     * network" permanently.
+     *
+     * The calls go out after 250 ms rather than at a settling delay, so they
+     * land near the engine's deferred bind: that is where a read used to be
+     * answered 4901, the failure wagmi reports as the CONNECT failing.
+     */
+    private fun sepoliaPage(pageId: String): MockResponse =
+        MockResponse()
+            .setHeader("Content-Type", "text/html; charset=utf-8")
+            .setBody(
+                """
+                <!DOCTYPE html><html><head>
+                <meta name="viewport" content="width=device-width, initial-scale=1">
+                <title>$pageId</title>
+                </head><body style="font-size:20px; margin:24px;">
+                <h1>$pageId</h1>
+                <div id="out">WAITING-$pageId</div>
+                <script>
+                  var seq = 0;
+                  function rpc(method, params, kind) {
+                    return new Promise(function (resolve, reject) {
+                      if (window.ethereum && typeof window.ethereum.request === 'function') {
+                        window.ethereum.request({ method: method, params: params }).then(resolve, reject);
+                        return;
+                      }
+                      window.__roomWalletResponse = function (rid, resultJson, errorCode, errorMessage) {
+                        if (errorCode === 0) {
+                          var value = null;
+                          try { value = JSON.parse(resultJson); } catch (e) { value = resultJson; }
+                          resolve(value);
+                        } else {
+                          var error = new Error(errorMessage || 'bridge error');
+                          error.code = errorCode;
+                          reject(error);
+                        }
+                      };
+                      window.RoomWallet.request(JSON.stringify({
+                        id: '$pageId-' + (++seq),
+                        kind: kind || 'request',
+                        chain: 'EVM',
+                        method: method,
+                        params: params || []
+                      }));
+                    });
+                  }
+                  function setText(t) { document.getElementById('out').innerText = t; }
+                  setTimeout(function () {
+                    (function () {
+                      var accounts, before, switchResult, after;
+                      rpc('eth_requestAccounts', []).then(function (a) {
+                        accounts = (a && a.join) ? a.join(',') : String(a);
+                        return rpc('eth_chainId', [], 'rpc');
+                      }).then(function (c) {
+                        before = String(c);
+                        return rpc('wallet_switchEthereumChain', [{ chainId: '0xaa36a7' }])
+                          .then(function () { switchResult = 'OK'; },
+                                function (e) { switchResult = String(e && e.code); });
+                      }).then(function () {
+                        if (switchResult !== '4902') return null;
+                        return rpc('wallet_addEthereumChain', [{
+                          chainId: '0xaa36a7',
+                          chainName: 'Ethereum Sepolia',
+                          nativeCurrency: { name: 'Sepolia Ether', symbol: 'ETH', decimals: 18 },
+                          rpcUrls: ['https://ethereum-sepolia-rpc.publicnode.com'],
+                          blockExplorerUrls: ['https://sepolia.etherscan.io']
+                        }]);
+                      }).then(function () {
+                        return rpc('eth_chainId', [], 'rpc');
+                      }).then(function (c) {
+                        after = String(c);
+                        setText('SEP:' + accounts + '|before=' + before + '|switch=' + switchResult + '|after=' + after);
+                      }).catch(function (e) {
+                        setText('ERR:' + ((e && e.code) ? e.code : 'none'));
+                      });
+                    })();
+                  }, 250);
                 </script>
                 </body></html>
                 """.trimIndent()
@@ -1489,6 +1579,72 @@ class WalletE2eTest {
             runBlocking { appGraph.walletRepo.allDappPermissions(profileId2) }.map { it.host }
         ).containsExactly("127.0.0.1")
         assertMnemonicCiphertext(profileId3, ABANDON)
+    }
+
+    /**
+     * Uniswap-on-Sepolia end to end, nothing retried: connect -> `eth_chainId`
+     * -> `wallet_switchEthereumChain` (4902, no sheet) -> `wallet_addEthereumChain`
+     * (the one prompt) -> `eth_chainId` again.
+     *
+     * The last read decides whether the dApp works: viem retries the switch
+     * only when the add REJECTED, so an add that resolves while the chain id
+     * still answers mainnet pins the page on "Wrong network" for good.
+     */
+    @Test
+    fun sepolia_dapp_connect_switches_to_the_added_chain() {
+        assertTrue("Engine must come up on a fresh profile", bootstrapFreshEngine())
+        val appGraph = (targetContext.applicationContext as com.roombrowser.RoomBrowserApp).graph
+        val profileId = ProfileId(
+            runBlocking {
+                appGraph.appState.activeProfileIdSnapshot()
+                    ?: error("engine must have persisted the active profile id")
+            }
+        )
+        // The page connects as it loads, so the wallet has to exist BEFORE the
+        // navigation, not after it.
+        runBlocking {
+            val repo = appGraph.walletRepo
+            repo.createWallet(profileId, "Sepolia Wallet", ABANDON)
+            repo.addDerivedAccount(profileId, ChainType.EVM, EVM0, EVM_PATH0, "EVM 1")
+        }
+
+        assertTrue(
+            "The Sepolia page must load",
+            loadInOmnibox(urlSepolia, "SEP:", acceptInstead = listOf("Connect site"))
+        )
+        assertTrue("The Connect sheet must appear", hasText("Connect site", 20_000))
+        assertTrue("Approve must be clickable", clickTextWithScroll("Approve", attempts = 6))
+        assertTrue("The Connect sheet must leave after Approve", waitGone("Connect site", 8_000))
+
+        // Sepolia is bundled but seeded DISABLED, so the switch can only settle
+        // 4902 — and it must do so with no sheet at all. A prompt there would
+        // offer the user a Reject that settles 4001, which wagmi reads as the
+        // user refusing to connect.
+        assertTrue(
+            "A switch to a chain the wallet does not serve must not prompt\n${uiTree()}",
+            staysAbsent("Switch network", 3_000)
+        )
+        // 4902 is what sends the page here, and this is the sequence's only prompt.
+        assertTrue(
+            "The Add network sheet must appear after the 4902\n${uiTree()}",
+            hasText("Add network", 20_000)
+        )
+        assertTrue(
+            "The sheet must say that approving switches the wallet",
+            hasTextContains("switches the wallet to it", 5_000)
+        )
+        assertTrue("Approve must be clickable", clickTextWithScroll("Approve", attempts = 6))
+        assertTrue("The Add network sheet must leave after Approve", waitGone("Add network", 8_000))
+
+        val result = pageResultText("SEP:", dappResultTimeoutMs)
+        assertTrue(
+            "The page must report the whole sequence (found ${result ?: "nothing"})\n${uiTree()}",
+            result != null
+        )
+        val marker = result!!.substringAfter("SEP:")
+        assertTrue("The chain must start on mainnet (got $marker)", marker.contains("before=0x1|"))
+        assertTrue("The switch must answer 4902 (got $marker)", marker.contains("switch=4902"))
+        assertTrue("The wallet must END on Sepolia (got $marker)", marker.endsWith("after=0xaa36a7"))
     }
 
     /**
