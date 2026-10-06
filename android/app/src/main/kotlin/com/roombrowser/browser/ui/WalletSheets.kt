@@ -744,7 +744,9 @@ fun SwitchChainSheet(
 
 /**
  * wallet_addEthereumChain: the network the site proposes, as validated by
- * the engine. Approve lets the engine persist it.
+ * the engine. Approve lets the engine persist it and switch to it — the
+ * sheet says so, because a site that has just read 4902 from a switch
+ * request relies on that switch and will not ask again.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -754,6 +756,9 @@ fun AddChainSheet(
     onDismiss: () -> Unit
 ) {
     val proposed = request.proposed
+    val activeNetworks by engine.activeNetworks.collectAsState()
+    val current = activeNetworks[request.chainType]
+    val willSwitch = current?.id != proposed.id
 
     fun settle(approved: Boolean) {
         engine.decideDappRequest(DappDecision(requestId = request.id, approved = approved))
@@ -774,6 +779,9 @@ fun AddChainSheet(
             HostBadge(request.host)
             Spacer(Modifier.height(8.dp))
             SheetDetailGroup {
+                if (willSwitch) {
+                    SheetDataRow("Current", current?.name ?: "None selected")
+                }
                 SheetDataRow("Name", proposed.name)
                 SheetDataRow("Chain ID", proposed.chainId)
                 SheetDataRow("Symbol", proposed.nativeSymbol)
@@ -782,6 +790,9 @@ fun AddChainSheet(
             }
             if (proposed.isTestnet) {
                 WalletInfoNote("This network is marked as a testnet.")
+            }
+            if (willSwitch) {
+                WalletInfoNote("Approving adds this network and switches the wallet to it.")
             }
             Spacer(Modifier.height(16.dp))
             ApproveRejectButtons(

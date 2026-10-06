@@ -1117,6 +1117,59 @@ class WalletEngineTest {
     }
 
     @Test
+    fun `AddChain selects the network it just added`() = runTest(testDispatcher) {
+        seedWallet(profile, ABANDON, listOf(ChainType.EVM))
+        engine.bind(profile)
+        advanceUntilIdle()
+        assertThat(engine.activeNetworks.value.getValue(ChainType.EVM).id).isEqualTo("EVM:1")
+
+        // Sepolia is bundled but seeded DISABLED (only a family's first network
+        // is enabled), so this is exactly the state a dApp reaches after
+        // wallet_switchEthereumChain answers 4902 — and the only path by which
+        // a bundled testnet can become active at all.
+        val sepolia = NetworkConfig.evm(
+            11155111, "Ethereum Sepolia",
+            listOf("https://ethereum-sepolia-rpc.publicnode.com"), "ETH",
+            "https://sepolia.etherscan.io", testnet = true
+        )
+        assertThat(fake.networks(profile).first { it.config.id == "EVM:11155111" }.enabled).isFalse()
+
+        val outcomes = mutableListOf<DappOutcome>()
+        engine.submitDappRequest(
+            DappRequest.AddChain("s1", "app.uniswap.org", ChainType.EVM, sepolia)
+        ) { outcomes += it }
+        engine.decideDappRequest(DappDecision("s1", approved = true))
+        advanceUntilIdle()
+
+        assertThat(outcomes[0].error).isNull()
+        assertThat(engine.activeNetworks.value.getValue(ChainType.EVM).id)
+            .isEqualTo("EVM:11155111")
+    }
+
+    @Test
+    fun `a rejected AddChain changes nothing`() = runTest(testDispatcher) {
+        seedWallet(profile, ABANDON, listOf(ChainType.EVM))
+        engine.bind(profile)
+        advanceUntilIdle()
+
+        val sepolia = NetworkConfig.evm(
+            11155111, "Ethereum Sepolia",
+            listOf("https://ethereum-sepolia-rpc.publicnode.com"), "ETH",
+            "https://sepolia.etherscan.io", testnet = true
+        )
+        val outcomes = mutableListOf<DappOutcome>()
+        engine.submitDappRequest(
+            DappRequest.AddChain("s2", "app.uniswap.org", ChainType.EVM, sepolia)
+        ) { outcomes += it }
+        engine.decideDappRequest(DappDecision("s2", approved = false))
+        advanceUntilIdle()
+
+        assertThat(outcomes[0].requireError().code).isEqualTo(WalletBridgeError.USER_REJECTED)
+        assertThat(engine.activeNetworks.value.getValue(ChainType.EVM).id).isEqualTo("EVM:1")
+        assertThat(fake.networks(profile).first { it.config.id == "EVM:11155111" }.enabled).isFalse()
+    }
+
+    @Test
     fun `a proposed chain may not smuggle a plaintext endpoint in beside a TLS one`() =
         runTest(testDispatcher) {
             seedWallet(profile, ABANDON, listOf(ChainType.EVM))

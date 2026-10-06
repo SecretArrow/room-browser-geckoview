@@ -1455,6 +1455,18 @@ open class WalletEngine(
             )
         }
         repo.upsertCustomNetwork(profileId, request.proposed)
+        // EIP-3085 leaves the switch to the wallet; every dApp toolkit assumes
+        // MetaMask's. It reads 4902 from wallet_switchEthereumChain, calls
+        // this, and never asks again — so resolving null while eth_chainId
+        // still answers the old chain pins the page on "Wrong network" for
+        // good, and leaves every bundled-but-disabled testnet unreachable.
+        repo.networks(profileId)
+            .firstOrNull { it.config.id == request.proposed.id }
+            ?.takeIf { it.enabled }
+            ?.let {
+                repo.setActiveNetwork(profileId, it.config.chainType, it.config.id)
+                refreshActiveNetworksNow(profileId)
+            }
         return DappOutcome(request.id, null, null)
     }
 
