@@ -150,8 +150,11 @@ class TwoFactorE2eTest {
     }
 
     private fun imeShown(): Boolean = try {
-        device.executeShellCommand("dumpsys input_method | grep mInputShown")
-            .contains("mInputShown=true")
+        // No shell pipe: `executeShellCommand` hands the whole string to the
+        // process, so a `| grep` never runs — it just becomes extra arguments.
+        device.executeShellCommand("dumpsys input_method")
+            .lineSequence()
+            .any { it.contains("mInputShown=true") }
     } catch (_: Exception) {
         false
     }
@@ -336,10 +339,29 @@ class TwoFactorE2eTest {
      * still has the other path, and a silent no-op from either is caught by the
      * gate rather than by a thrown exception.
      */
+    private val typeTrace = StringBuilder()
+
+    private fun trace(msg: String) {
+        typeTrace.append("\n  ").append(msg)
+    }
+
+    /** A node's text and vertical span, so a failure names what it actually hit. */
+    private fun traceNode(what: String, n: UiObject2?): String {
+        if (n == null) return "$what=<none>"
+        val b = runCatching { n.visibleBounds }.getOrNull()
+        val t = runCatching { n.text }.getOrNull()
+        return "$what='$t'@${b?.top}..${b?.bottom}"
+    }
+
     private fun typeIntoField(label: String, value: String, index: Int): Boolean {
         // The label is the primary handle; the index is the fallback for a
         // build whose decoration does not expose the label as its own node.
-        fun locateNow(): UiObject2? = fieldForLabel(label) ?: editTextAt(index)
+        fun locateNow(): UiObject2? {
+            fieldForLabel(label)?.let { trace("  viaLabel ${traceNode("", it)}"); return it }
+            val byIndex = editTextAt(index)
+            trace("  viaIndex ${traceNode("", byIndex)}")
+            return byIndex
+        }
         fun locateScrolling(): UiObject2? {
             var found = locateNow()
             var scrolled = 0
@@ -351,26 +373,34 @@ class TwoFactorE2eTest {
             return found
         }
         for (round in 1..3) {
-            hideImeIfNeeded()
+            trace("$label round $round")
+            // Only before the first click: later rounds press back with a
+            // Dialog open, and dismissal is not worth the risk for a cleanup.
+            if (round == 1) hideImeIfNeeded()
             val target = locateScrolling() ?: continue
             clickCenter(target)
             device.waitForIdle(600)
 
             val fresh = locateNow()
             if (fresh != null) {
-                runCatching { fresh.setText(value) }
+                val outcome = runCatching { fresh.setText(value) }
+                trace("  setText -> ${outcome.exceptionOrNull()?.let { "${it.javaClass.name}: ${it.message}" } ?: "no throw"}")
+                trace("  afterSetText ${editTextDump()}")
                 if (readBack(value)) return true
             }
 
-            // The focus handoff is asynchronous and a burst sent before the
+            // The click has focused the field; a burst sent before the
             // InputConnection attaches is dropped whole, so the shown IME is
-            // the precondition for THIS path, not a nicety.
-            if (waitImeShown(6_000)) {
-                device.clearFocusedField(60)
-                device.waitForIdle(400)
-                device.executeShellCommand("input text $value")
-                if (readBack(value)) return true
-            }
+            // waited for as a best effort. It is deliberately NOT a gate: a
+            // probe that answers wrong would otherwise disable the only path
+            // that writes, and the read-back below retries anyway.
+            val imeUp = waitImeShown(3_000)
+            trace("  imeShown=$imeUp")
+            device.clearFocusedField(60)
+            device.waitForIdle(400)
+            device.executeShellCommand("input text $value")
+            trace("  afterBurst ${editTextDump()}")
+            if (readBack(value)) return true
         }
         return false
     }
@@ -465,6 +495,7 @@ class TwoFactorE2eTest {
             assertTrue("The empty state must offer Add 2FA\n${uiTree()}", hasText("Add 2FA", 5_000))
 
             // Add sheet, manual setup-key path only (no camera, no clipboard).
+            typeTrace.clear()
             assertTrue(
                 "The Add 2FA button must be clickable\n${uiTree()}",
                 clickText("Add 2FA", 5_000)
@@ -474,11 +505,11 @@ class TwoFactorE2eTest {
                 hasText("Add 2FA account", 8_000)
             )
             assertTrue(
-                "The Account field must take the account name\n${uiTree()}\nFIELDS: ${editTextDump()}",
+                "The Account field must take the account name\n${uiTree()}\nFIELDS: ${editTextDump()}\nTRACE:$typeTrace",
                 typeIntoField("Account", accountName, index = 1)
             )
             assertTrue(
-                "The Setup key field must take the Base32 secret\n${uiTree()}\nFIELDS: ${editTextDump()}",
+                "The Setup key field must take the Base32 secret\n${uiTree()}\nFIELDS: ${editTextDump()}\nTRACE:$typeTrace",
                 typeIntoField("Setup key (Base32)", setupKey, index = 2)
             )
             assertTrue(

@@ -57,12 +57,12 @@ import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
@@ -89,6 +89,8 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import androidx.fragment.app.FragmentActivity
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.flowWithLifecycle
@@ -1163,182 +1165,189 @@ private fun TwoFactorEditorSheet(
     }
 
     val editShape = fieldShape
-    ModalBottomSheet(onDismissRequest = onDismiss, shape = RoomBottomSheetShape) {
-        Column(
-            Modifier
-                .padding(horizontal = 16.dp)
-                .verticalScroll(rememberScrollState())
-        ) {
-            RoomSheetHeader(if (initial == null) "Add 2FA account" else "Edit 2FA account")
-            if (initial == null) {
-                Row(
-                    Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(usePlatformDefaultWidth = false)
+    ) {
+        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.BottomCenter) {
+            Surface(shape = RoomBottomSheetShape, color = MaterialTheme.colorScheme.surface) {
+                Column(
+                    Modifier
+                        .padding(horizontal = 16.dp)
+                        .verticalScroll(rememberScrollState())
                 ) {
-                    OutlinedButton(
-                        onClick = {
-                            scanLauncher.launch(
-                                Intent(context, QrScannerActivity::class.java)
-                            )
-                        },
-                        modifier = Modifier
-                            .weight(1f)
-                            .heightIn(min = 48.dp)
-                    ) {
-                        Icon(Icons.Filled.QrCodeScanner, contentDescription = null)
-                        Spacer(Modifier.width(6.dp))
-                        Text("Scan QR")
-                    }
-                    OutlinedButton(
-                        onClick = {
-                            val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE)
-                                as ClipboardManager
-                            val pasted = clipboard.primaryClip
-                                ?.takeIf { it.itemCount > 0 }
-                                ?.getItemAt(0)
-                                ?.coerceToText(context)
-                                ?.toString()
-                            if (pasted.isNullOrBlank()) {
-                                onError("The clipboard is empty")
-                            } else {
-                                applyParsed(pasted)
+                    RoomSheetHeader(if (initial == null) "Add 2FA account" else "Edit 2FA account")
+                    if (initial == null) {
+                        Row(
+                            Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(10.dp)
+                        ) {
+                            OutlinedButton(
+                                onClick = {
+                                    scanLauncher.launch(
+                                        Intent(context, QrScannerActivity::class.java)
+                                    )
+                                },
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .heightIn(min = 48.dp)
+                            ) {
+                                Icon(Icons.Filled.QrCodeScanner, contentDescription = null)
+                                Spacer(Modifier.width(6.dp))
+                                Text("Scan QR")
                             }
-                        },
-                        modifier = Modifier
-                            .weight(1f)
-                            .heightIn(min = 48.dp)
-                    ) { Text("Paste link") }
-                }
-                Spacer(Modifier.height(10.dp))
-                OutlinedButton(
-                    onClick = onImportFromFile,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .heightIn(min = 48.dp)
-                ) {
-                    Icon(Icons.Filled.FolderOpen, contentDescription = null)
-                    Spacer(Modifier.width(6.dp))
-                    Text("Import from file")
-                }
-                Spacer(Modifier.height(12.dp))
-            }
-            OutlinedTextField(
-                value = issuer,
-                onValueChange = { issuer = it },
-                label = { Text("Service (optional)") },
-                singleLine = true,
-                shape = editShape,
-                modifier = Modifier.fillMaxWidth()
-            )
-            Spacer(Modifier.height(8.dp))
-            OutlinedTextField(
-                value = account,
-                onValueChange = { account = it },
-                label = { Text("Account") },
-                singleLine = true,
-                shape = editShape,
-                modifier = Modifier.fillMaxWidth()
-            )
-            Spacer(Modifier.height(8.dp))
-            OutlinedTextField(
-                value = secret,
-                onValueChange = { secret = it },
-                label = { Text("Setup key (Base32)") },
-                singleLine = true,
-                shape = editShape,
-                modifier = Modifier.fillMaxWidth()
-            )
-            Spacer(Modifier.height(8.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                TotpAlgorithm.entries.forEach { option ->
-                    FilterChip(
-                        selected = algorithm == option,
-                        onClick = { algorithm = option },
-                        label = { Text(option.name) }
+                            OutlinedButton(
+                                onClick = {
+                                    val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE)
+                                        as ClipboardManager
+                                    val pasted = clipboard.primaryClip
+                                        ?.takeIf { it.itemCount > 0 }
+                                        ?.getItemAt(0)
+                                        ?.coerceToText(context)
+                                        ?.toString()
+                                    if (pasted.isNullOrBlank()) {
+                                        onError("The clipboard is empty")
+                                    } else {
+                                        applyParsed(pasted)
+                                    }
+                                },
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .heightIn(min = 48.dp)
+                            ) { Text("Paste link") }
+                        }
+                        Spacer(Modifier.height(10.dp))
+                        OutlinedButton(
+                            onClick = onImportFromFile,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .heightIn(min = 48.dp)
+                        ) {
+                            Icon(Icons.Filled.FolderOpen, contentDescription = null)
+                            Spacer(Modifier.width(6.dp))
+                            Text("Import from file")
+                        }
+                        Spacer(Modifier.height(12.dp))
+                    }
+                    OutlinedTextField(
+                        value = issuer,
+                        onValueChange = { issuer = it },
+                        label = { Text("Service (optional)") },
+                        singleLine = true,
+                        shape = editShape,
+                        modifier = Modifier.fillMaxWidth()
                     )
-                }
-            }
-            Spacer(Modifier.height(8.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                OutlinedTextField(
-                    value = digits,
-                    onValueChange = { digits = it.filter(Char::isDigit).take(1) },
-                    label = { Text("Digits") },
-                    singleLine = true,
-                    shape = editShape,
-                    modifier = Modifier.weight(1f)
-                )
-                OutlinedTextField(
-                    value = period,
-                    onValueChange = { period = it.filter(Char::isDigit).take(3) },
-                    label = { Text("Period (s)") },
-                    singleLine = true,
-                    shape = editShape,
-                    modifier = Modifier.weight(1f)
-                )
-            }
-            Spacer(Modifier.height(16.dp))
-            Row(
-                Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(10.dp)
-            ) {
-                Button(
-                    onClick = {
-                        val key = secret.filterNot(Char::isWhitespace).uppercase()
-                        val digitCount = digits.toIntOrNull() ?: 0
-                        val step = period.toIntOrNull() ?: 0
-                        when {
-                            account.isBlank() ->
-                                onError("An account name is required")
-                            key.isEmpty() ->
-                                onError("A setup key is required")
-                            runCatching { Base32.decode(key) }.isFailure ->
-                                onError("That setup key is not valid Base32")
-                            digitCount != 6 && digitCount != 8 ->
-                                onError("Digits must be 6 or 8")
-                            step !in 1..300 ->
-                                onError("The period must be between 1 and 300 seconds")
-                            busy -> Unit
-                            else -> {
-                                busy = true
-                                scope.launch {
-                                    runCatching {
-                                        repo.save(
-                                            profileId = profileId,
-                                            issuer = issuer.trim(),
-                                            account = account.trim(),
-                                            secret = key,
-                                            algorithm = algorithm,
-                                            digits = digitCount,
-                                            period = step,
-                                            id = initial?.id
-                                        )
-                                    }.onSuccess {
-                                        onSaved(
-                                            if (initial == null) "Account added"
-                                            else "Account updated"
-                                        )
-                                    }.onFailure {
-                                        busy = false
-                                        onError("Could not save the account")
+                    Spacer(Modifier.height(8.dp))
+                    OutlinedTextField(
+                        value = account,
+                        onValueChange = { account = it },
+                        label = { Text("Account") },
+                        singleLine = true,
+                        shape = editShape,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    OutlinedTextField(
+                        value = secret,
+                        onValueChange = { secret = it },
+                        label = { Text("Setup key (Base32)") },
+                        singleLine = true,
+                        shape = editShape,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        TotpAlgorithm.entries.forEach { option ->
+                            FilterChip(
+                                selected = algorithm == option,
+                                onClick = { algorithm = option },
+                                label = { Text(option.name) }
+                            )
+                        }
+                    }
+                    Spacer(Modifier.height(8.dp))
+                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                        OutlinedTextField(
+                            value = digits,
+                            onValueChange = { digits = it.filter(Char::isDigit).take(1) },
+                            label = { Text("Digits") },
+                            singleLine = true,
+                            shape = editShape,
+                            modifier = Modifier.weight(1f)
+                        )
+                        OutlinedTextField(
+                            value = period,
+                            onValueChange = { period = it.filter(Char::isDigit).take(3) },
+                            label = { Text("Period (s)") },
+                            singleLine = true,
+                            shape = editShape,
+                            modifier = Modifier.weight(1f)
+                        )
+                    }
+                    Spacer(Modifier.height(16.dp))
+                    Row(
+                        Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        Button(
+                            onClick = {
+                                val key = secret.filterNot(Char::isWhitespace).uppercase()
+                                val digitCount = digits.toIntOrNull() ?: 0
+                                val step = period.toIntOrNull() ?: 0
+                                when {
+                                    account.isBlank() ->
+                                        onError("An account name is required")
+                                    key.isEmpty() ->
+                                        onError("A setup key is required")
+                                    runCatching { Base32.decode(key) }.isFailure ->
+                                        onError("That setup key is not valid Base32")
+                                    digitCount != 6 && digitCount != 8 ->
+                                        onError("Digits must be 6 or 8")
+                                    step !in 1..300 ->
+                                        onError("The period must be between 1 and 300 seconds")
+                                    busy -> Unit
+                                    else -> {
+                                        busy = true
+                                        scope.launch {
+                                            runCatching {
+                                                repo.save(
+                                                    profileId = profileId,
+                                                    issuer = issuer.trim(),
+                                                    account = account.trim(),
+                                                    secret = key,
+                                                    algorithm = algorithm,
+                                                    digits = digitCount,
+                                                    period = step,
+                                                    id = initial?.id
+                                                )
+                                            }.onSuccess {
+                                                onSaved(
+                                                    if (initial == null) "Account added"
+                                                    else "Account updated"
+                                                )
+                                            }.onFailure {
+                                                busy = false
+                                                onError("Could not save the account")
+                                            }
+                                        }
                                     }
                                 }
-                            }
-                        }
-                    },
-                    enabled = !busy,
-                    modifier = Modifier
-                        .weight(1f)
-                        .heightIn(min = 48.dp)
-                ) { Text(if (initial == null) "Add" else "Update") }
-                OutlinedButton(
-                    onClick = onDismiss,
-                    modifier = Modifier
-                        .weight(1f)
-                        .heightIn(min = 48.dp)
-                ) { Text("Cancel") }
+                            },
+                            enabled = !busy,
+                            modifier = Modifier
+                                .weight(1f)
+                                .heightIn(min = 48.dp)
+                        ) { Text(if (initial == null) "Add" else "Update") }
+                        OutlinedButton(
+                            onClick = onDismiss,
+                            modifier = Modifier
+                                .weight(1f)
+                                .heightIn(min = 48.dp)
+                        ) { Text("Cancel") }
+                    }
+                    Spacer(Modifier.height(24.dp))
+                }
             }
-            Spacer(Modifier.height(24.dp))
         }
     }
 }
