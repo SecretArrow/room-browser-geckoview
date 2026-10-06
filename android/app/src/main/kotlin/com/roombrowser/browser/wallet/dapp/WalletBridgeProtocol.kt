@@ -890,8 +890,10 @@ object WalletBridgeProtocol {
      *
      * [publicKey] is the account's public key as lowercase hex, and is
      * carried ONLY for the chains whose dApp conventions publish one —
-     * see [WalletEngineApi.publicKeyOf] for why that is Cosmos, Aptos and
-     * Bitcoin and not the others. It stays optional in the payload rather
+     * Cosmos, Aptos and Bitcoin. Octra's key is withheld: its provider API
+     * has no specification, so nothing establishes where a page would read
+     * it from, and [`WalletEngineApi.publicKeyOf`] answering for Octra is
+     * not a reason to publish it. It stays optional in the payload rather
      * than becoming a null field: a dApp that reads `account.publicKey`
      * gets a string when the key is available and `undefined` when it is
      * not, which is what it would see against a wallet that never had one,
