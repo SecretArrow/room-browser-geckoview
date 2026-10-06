@@ -429,8 +429,11 @@ interface WalletEngineApi {
      * The account's PUBLIC key as lowercase hex, for the chains whose dApp
      * conventions publish one: Cosmos (compressed secp256k1, the `pubKey`
      * Keplr's `getKey` returns and CosmJS's `getAccounts` needs to build a
-     * sign doc), Aptos (ed25519, `account().publicKey`), Bitcoin
-     * (compressed secp256k1, `connect().publicKey`) and Octra (ed25519).
+     * sign doc), Aptos (ed25519, `account().publicKey`) and Bitcoin
+     * (compressed secp256k1, `connect().publicKey`). Octra (ed25519) is
+     * answered here as a plain fact about the account, but nothing publishes
+     * it: the chain has no specified provider API, so the bridge withholds it
+     * from the connect payload.
      *
      * Returns null on the chains that never publish one, and null for any
      * account whose key material cannot be read — a locked wallet, or an
