@@ -31,9 +31,13 @@ import java.math.BigInteger
  *
  * Everything the dApp bridge needs for MetaMask-style interactions:
  * address derivation (BIP44 m/44'/60'/0'/0/i), personal_sign (EIP-191),
- * eth_signTypedData_v3/v4 (EIP-712), eth_signTransaction / eth_sendTransaction
+ * eth_signTypedData_v3/v4 (EIP-712), eth_sendTransaction
  * (legacy + EIP-1559 with EIP-155 replay protection), balances and
  * ERC-20/ERC-721 reads via eth_call.
+ *
+ * `eth_signTransaction` is not part of that surface: the bridge answers it
+ * unsupported on purpose, so a dApp never receives a signed transaction it
+ * could broadcast itself.
  */
 class EvmAdapter(private val rpc: JsonRpcClient = JsonRpcClient()) : DerivationPathIndex {
 
@@ -134,7 +138,7 @@ class EvmAdapter(private val rpc: JsonRpcClient = JsonRpcClient()) : DerivationP
     // Transactions
     // ------------------------------------------------------------------
 
-    /** Parameters the dApp sends with eth_signTransaction / eth_sendTransaction. */
+    /** Parameters the dApp sends with eth_sendTransaction. */
     data class TransactionParams(
         val from: String,
         val to: String?,
