@@ -147,9 +147,9 @@ class AppGraph(context: Context) {
     }
 
     /**
-     * The wallet lock's PIN store. The record lives in the app_state KV table
-     * (cross-process, survives process death), so the retry counter cannot be
-     * reset by killing the app.
+     * The profile lock's PIN store, shared by the wallet and the 2FA screen.
+     * The record lives in the app_state KV table (cross-process, survives
+     * process death), so the retry counter cannot be reset by killing the app.
      */
     val walletLock: com.roombrowser.security.WalletLockManager by lazy {
         com.roombrowser.security.WalletLockManager(

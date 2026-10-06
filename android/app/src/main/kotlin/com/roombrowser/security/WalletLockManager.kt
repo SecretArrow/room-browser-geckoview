@@ -30,10 +30,11 @@ sealed interface PinUnlockResult {
 }
 
 /**
- * The thin Android-side half of the wallet lock: it persists the record via
- * [WalletLockStore] and runs the PBKDF2 derivation off the main thread. Every
- * decision (the backoff curve, the verifier check) lives in the pure
- * `:core:domain` types, which are the unit-tested part.
+ * The thin Android-side half of the PROFILE lock (shared by the wallet and the
+ * 2FA screen): it persists the record via [WalletLockStore] and runs the PBKDF2
+ * derivation off the main thread. Every decision (the backoff curve, the
+ * verifier check) lives in the pure `:core:domain` types, which are the
+ * unit-tested part.
  *
  * NOT KEY WRAPPING: the AndroidKeyStore key that seals the mnemonic and the
  * imported private keys is not user-authentication-bound, so this lock gates
