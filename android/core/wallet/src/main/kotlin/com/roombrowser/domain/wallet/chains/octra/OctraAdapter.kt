@@ -92,11 +92,22 @@ class OctraAdapter(private val rpc: JsonRpcClient = JsonRpcClient()) : Derivatio
     // Reads
     // ------------------------------------------------------------------
 
-    /** The account's spendable balance in raw units (1 OCT = 1_000_000). */
+    /**
+     * The account's spendable balance in raw units (1 OCT = 1_000_000).
+     *
+     * An address the node has never seen is refused with `sender not found`
+     * (code 100), which for a balance is simply zero; surfacing it would put a
+     * failure on every freshly created account.
+     */
     suspend fun getBalance(network: NetworkConfig, address: String): Long? {
         val chain = endpointsOf(network)
         if (chain.urls.isEmpty()) return null
-        val result = chain.callObject("octra_balance", listOf(JsonPrimitive(address)))
+        val result = try {
+            chain.callObject("octra_balance", listOf(JsonPrimitive(address)))
+        } catch (e: WalletException.RpcError) {
+            if (e.code == SENDER_NOT_FOUND) return 0L
+            throw e
+        }
         return rawAmount(result["raw"])
     }
 
@@ -108,8 +119,7 @@ class OctraAdapter(private val rpc: JsonRpcClient = JsonRpcClient()) : Derivatio
      * Signs and submits a plain transfer.
      *
      * [amountRaw] is in raw units. The fee is whatever the node recommends,
-     * falling back to [DEFAULT_FEE_RAW] when it will not say — the value the
-     * reference implementation's own transaction vector uses.
+     * falling back to [DEFAULT_FEE_RAW] when it will not say.
      */
     suspend fun sendNative(
         network: NetworkConfig,
@@ -211,9 +221,12 @@ class OctraAdapter(private val rpc: JsonRpcClient = JsonRpcClient()) : Derivatio
 
     /**
      * The node's suggested fee, or [DEFAULT_FEE_RAW] when it does not answer
-     * with a plain integer. The reply shape is not documented, so this accepts
-     * a bare value or an object carrying it under any of the usual names and
-     * ignores anything that is not a non-negative integer.
+     * with a plain integer.
+     *
+     * The live node replies with a schedule —
+     * `{"minimum":"1000","base_fee":"1000","recommended":"1000","fast":"2000"}`
+     * — as decimal strings, so `recommended` is read first and the two floors
+     * after it. A bare value is still accepted in case the shape changes.
      */
     private suspend fun recommendedFee(chain: RpcEndpointChain): String {
         val suggested = try {
@@ -221,7 +234,7 @@ class OctraAdapter(private val rpc: JsonRpcClient = JsonRpcClient()) : Derivatio
             when (result) {
                 is JsonPrimitive -> result.contentOrNull
                 is JsonObject ->
-                    (result["fee"] ?: result["ou"] ?: result["recommended_fee"])
+                    (result["recommended"] ?: result["base_fee"] ?: result["minimum"])
                         ?.jsonPrimitive?.contentOrNull
                 else -> null
             }
@@ -256,8 +269,14 @@ class OctraAdapter(private val rpc: JsonRpcClient = JsonRpcClient()) : Derivatio
         const val BODY_LENGTH = 44
         const val ADDRESS_LENGTH = ADDRESS_PREFIX.length + BODY_LENGTH
 
-        /** Used when the node will not suggest one; the reference's own vector value. */
-        const val DEFAULT_FEE_RAW = "200000"
+        /**
+         * Used when the node will not suggest one: the floor the live devnet
+         * publishes as `minimum`/`base_fee` (1000 ou = 0.001 OCT).
+         */
+        const val DEFAULT_FEE_RAW = "1000"
+
+        /** `octra_balance` on an address the node has never seen. */
+        private const val SENDER_NOT_FOUND = 100
 
         private val RAW_AMOUNT = Regex("^\\d+$")
 

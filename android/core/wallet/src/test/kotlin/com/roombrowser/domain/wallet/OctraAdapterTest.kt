@@ -11,7 +11,6 @@ import com.roombrowser.domain.wallet.model.BroadcastResult
 import com.roombrowser.domain.wallet.model.ChainType
 import com.roombrowser.domain.wallet.model.NetworkConfig
 import com.roombrowser.domain.wallet.model.WalletException
-import com.roombrowser.domain.wallet.rpc.JsonRpcClient
 import java.util.Base64
 import kotlinx.coroutines.runBlocking
 import okhttp3.mockwebserver.MockResponse
@@ -180,6 +179,27 @@ class OctraAdapterTest {
     // RPC
     // ------------------------------------------------------------------
 
+    /**
+     * An address the node has never seen is a zero balance, not a failure —
+     * every freshly created account starts here. The code is the one the live
+     * devnet answers with.
+     */
+    @Test
+    fun `an unknown address reads as a zero balance`() {
+        val server = MockWebServer()
+        server.enqueue(
+            MockResponse().setBody(
+                """{"jsonrpc":"2.0","id":1,"error":{"code":100,"message":"sender not found"}}"""
+            )
+        )
+        server.start()
+        try {
+            assertThat(runBlocking { adapter.getBalance(network(server), OCTRA0) }).isEqualTo(0L)
+        } finally {
+            server.shutdown()
+        }
+    }
+
     @Test
     fun `getBalance reads the raw field of octra_balance`() {
         val server = MockWebServer()
@@ -208,7 +228,12 @@ class OctraAdapterTest {
                 """{"jsonrpc":"2.0","id":1,"result":{"raw":"5000000","nonce":7,"pending_nonce":9}}"""
             )
         )
-        server.enqueue(MockResponse().setBody("""{"jsonrpc":"2.0","id":2,"result":"250000"}"""))
+        server.enqueue(
+            MockResponse().setBody(
+                """{"jsonrpc":"2.0","id":2,"result":{"minimum":"1000","base_fee":"1000",""" +
+                    """"recommended":"250000","fast":"2000"}}"""
+            )
+        )
         server.enqueue(
             MockResponse().setBody("""{"jsonrpc":"2.0","id":3,"result":{"tx_hash":"0xabc"}}""")
         )
@@ -257,6 +282,46 @@ class OctraAdapterTest {
             assertThat(result).isInstanceOf(BroadcastResult.Error::class.java)
             // Refused before touching the network, so no request was made.
             assertThat(server.requestCount).isEqualTo(0)
+        } finally {
+            server.shutdown()
+        }
+    }
+
+    /**
+     * The live node answers `octra_recommendedFee` with this schedule, so this
+     * is the shape the reader has to find the fee in.
+     */
+    @Test
+    fun `the recommended fee is read out of the node's schedule`() {
+        val server = MockWebServer()
+        server.enqueue(
+            MockResponse().setBody(
+                """{"jsonrpc":"2.0","id":1,"result":{"minimum":"1000","base_fee":"1000",""" +
+                    """"recommended":"1750","fast":"2000","usage_pct":0}}"""
+            )
+        )
+        server.start()
+        try {
+            assertThat(runBlocking { adapter.recommendedFeeOf(network(server)) }).isEqualTo("1750")
+        } finally {
+            server.shutdown()
+        }
+    }
+
+    @Test
+    fun `a fee the node will not quote falls back to the published floor`() {
+        val server = MockWebServer()
+        // The live node's own answer when it is saturated.
+        server.enqueue(
+            MockResponse().setBody(
+                """{"jsonrpc":"2.0","id":1,"error":{"code":-32000,""" +
+                    """"message":"RPC capacity reached; retry shortly"}}"""
+            )
+        )
+        server.start()
+        try {
+            assertThat(runBlocking { adapter.recommendedFeeOf(network(server)) })
+                .isEqualTo(OctraAdapter.DEFAULT_FEE_RAW)
         } finally {
             server.shutdown()
         }
