@@ -317,38 +317,60 @@ class TwoFactorE2eTest {
     /**
      * Types [value] into the field under [label] and reads the value back.
      *
-     * CI 37399663628 settled the shape of this: the click focuses the field
-     * (LatinIME "Starting input. Cursor position = 0,0" follows it) and the IME
-     * is up, but `UiObject2.setText` returns WITHOUT throwing and leaves the
-     * field empty — so a fallback keyed on a thrown exception never runs. Both
-     * mechanisms are therefore attempted per round and each is gated on the
-     * read-back; the shell burst goes first because it addresses the focused
-     * view through the live InputConnection and cannot miss a re-created node.
+     * The add-account form renders inside a ModalBottomSheet, which has its own
+     * window that never takes input focus. The tap still focuses the field and
+     * LatinIME still attaches ("Starting input. Cursor position = 0,0"), so a
+     * person can type — the soft IME commits through the InputConnection — but
+     * injected hardware key events are dispatched to the ACTIVITY window and
+     * land nowhere, which is why the shell burst alone never wrote anything.
+     * That is also why this is engine-independent: the GeckoView edition fails
+     * on the same assertion, in the same way.
+     *
+     * So ACTION_SET_TEXT goes first: it travels the accessibility layer and
+     * needs neither input focus nor a live IME. It is issued against a handle
+     * re-resolved immediately before the write, because the tap opens the IME
+     * and the sheet re-lays out for it, which re-creates the semantics node.
+     *
+     * Both mechanisms are still attempted, in every round, each gated on the
+     * read-back — so a tree where either explanation turns out to be wrong
+     * still has the other path, and a silent no-op from either is caught by the
+     * gate rather than by a thrown exception.
      */
     private fun typeIntoField(label: String, value: String, index: Int): Boolean {
-        for (round in 1..3) {
-            hideImeIfNeeded()
-            // The label is the primary handle; the index is the fallback for a
-            // build whose decoration does not expose the label as its own node.
-            var found = fieldForLabel(label) ?: editTextAt(index)
+        // The label is the primary handle; the index is the fallback for a
+        // build whose decoration does not expose the label as its own node.
+        fun locateNow(): UiObject2? = fieldForLabel(label) ?: editTextAt(index)
+        fun locateScrolling(): UiObject2? {
+            var found = locateNow()
             var scrolled = 0
             while (found == null && scrolled < 6) {
                 dragUpQuarter()
-                found = fieldForLabel(label) ?: editTextAt(index)
+                found = locateNow()
                 scrolled++
             }
-            val target = found ?: continue
+            return found
+        }
+        for (round in 1..3) {
+            hideImeIfNeeded()
+            val target = locateScrolling() ?: continue
             clickCenter(target)
+            device.waitForIdle(600)
+
+            val fresh = locateNow()
+            if (fresh != null) {
+                runCatching { fresh.setText(value) }
+                if (readBack(value)) return true
+            }
+
             // The focus handoff is asynchronous and a burst sent before the
             // InputConnection attaches is dropped whole, so the shown IME is
-            // the precondition for typing, not a nicety.
-            if (!waitImeShown(6_000)) continue
-            device.clearFocusedField(60)
-            device.waitForIdle(400)
-            device.executeShellCommand("input text $value")
-            if (readBack(value)) return true
-            runCatching { target.setText(value) }
-            if (readBack(value)) return true
+            // the precondition for THIS path, not a nicety.
+            if (waitImeShown(6_000)) {
+                device.clearFocusedField(60)
+                device.waitForIdle(400)
+                device.executeShellCommand("input text $value")
+                if (readBack(value)) return true
+            }
         }
         return false
     }
