@@ -86,8 +86,16 @@ class WalletLockManager(
         }
     }
 
-    /** Stores a new PIN verifier and clears any retry counter. Caller wipes [pin]. */
+    /**
+     * Stores a new PIN verifier and clears any retry counter. Caller wipes [pin].
+     *
+     * The length rule is enforced here and not only in the sheet, so a future
+     * non-UI caller cannot store a PIN too short to be worth deriving.
+     */
     suspend fun setPin(profileId: String, pin: CharArray) {
+        require(PinLockCrypto.isAcceptablePin(pin)) {
+            "PIN must be at least ${PinLockCrypto.MIN_PIN_LENGTH} characters"
+        }
         val salt = PinLockCrypto.newSalt(random)
         val verifier = withContext(cryptoDispatcher) {
             PinLockCrypto.deriveVerifier(pin, salt, iterations)

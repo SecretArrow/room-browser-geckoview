@@ -109,6 +109,14 @@ class WalletLockManagerTest {
     }
 
     @Test
+    fun `a pin shorter than the minimum is refused and nothing is stored`() = runTest {
+        val m = manager()
+        val failure = runCatching { m.setPin(profile, "12345".toCharArray()) }.exceptionOrNull()
+        assertThat(failure).isInstanceOf(IllegalArgumentException::class.java)
+        assertThat(store.records).isEmpty()
+    }
+
+    @Test
     fun `removing the pin returns the profile to device unlock only`() = runTest {
         val m = manager()
         m.setPin(profile, "123456".toCharArray())
