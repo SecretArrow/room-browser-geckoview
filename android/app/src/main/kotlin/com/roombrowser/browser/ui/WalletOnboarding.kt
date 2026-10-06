@@ -300,7 +300,10 @@ private fun WalletOnboardingChoice(
     }
 }
 
-/** Reusable chain-chip row (create + import share the default EVM + Solana). */
+/** The chains a wallet enables before the user touches the chip row. */
+private val DefaultWalletChains = setOf(ChainType.EVM, ChainType.SOLANA, ChainType.OCTRA)
+
+/** Reusable chain-chip row; create and import share [DefaultWalletChains]. */
 @Composable
 private fun WalletChainChips(selected: Set<ChainType>, onToggle: (ChainType) -> Unit) {
     Row(
@@ -318,8 +321,8 @@ private fun WalletChainChips(selected: Set<ChainType>, onToggle: (ChainType) -> 
 }
 
 /**
- * Create intro: wallet name (default "Wallet"), chain chips (default EVM +
- * Solana) and the recovery-phrase warning. "Create Wallet" runs
+ * Create intro: wallet name (default "Wallet"), chain chips (default
+ * [DefaultWalletChains]) and the recovery-phrase warning. "Create Wallet" runs
  * [WalletEngineApi.createWallet] and hands the returned mnemonic to the
  * reveal screen.
  */
@@ -333,7 +336,7 @@ private fun WalletCreateIntro(
     val extras = LocalRoomExtras.current
     val scope = rememberCoroutineScope()
     var label by remember { mutableStateOf("Wallet") }
-    var chains by remember { mutableStateOf(setOf(ChainType.EVM, ChainType.SOLANA)) }
+    var chains by remember { mutableStateOf(DefaultWalletChains) }
     var creating by remember { mutableStateOf(false) }
 
     Column(
@@ -682,7 +685,7 @@ private fun WalletImportForm(
     val scope = rememberCoroutineScope()
     var phrase by remember { mutableStateOf("") }
     var label by remember { mutableStateOf("") }
-    var chains by remember { mutableStateOf(setOf(ChainType.EVM, ChainType.SOLANA)) }
+    var chains by remember { mutableStateOf(DefaultWalletChains) }
     var attempted by remember { mutableStateOf(false) }
     var failure by remember { mutableStateOf<String?>(null) }
     var importing by remember { mutableStateOf(false) }

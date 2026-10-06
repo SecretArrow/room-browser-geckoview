@@ -121,6 +121,8 @@ class WalletE2eTest {
         const val EVM_PATH0 = "m/44'/60'/0'/0/0"
         const val EVM_PATH1 = "m/44'/60'/0'/0/1"
         const val SOL_PATH0 = "m/44'/501'/0'/0'"
+        const val OCTRA0 = "octCRus1yKzZbQoABuUhWQzcps8KhdqqQWxPzGciLgY698h"
+        const val OCTRA_PATH0 = "octra/0"
         const val BURN_ADDRESS = "0x000000000000000000000000000000000000dEaD"
 
         /** id of the custom EVM network whose RPC refuses instantly. */
@@ -1138,7 +1140,8 @@ class WalletE2eTest {
 
         // Leave the wallet surface, then give the profile a wallet at the
         // repository level with the FIXED vector — exactly the state the
-        // create flow would produce for the default chains (EVM + Solana).
+        // create flow would produce for the default chains (EVM + Solana +
+        // Octra).
         device.pressBack()
         device.waitForIdle(1_000)
         runBlocking {
@@ -1146,6 +1149,7 @@ class WalletE2eTest {
             repo.createWallet(profileId1, "Wallet", ABANDON)
             repo.addDerivedAccount(profileId1, ChainType.EVM, EVM0, EVM_PATH0, "EVM 1")
             repo.addDerivedAccount(profileId1, ChainType.SOLANA, SOL0, SOL_PATH0, "Solana 1")
+            repo.addDerivedAccount(profileId1, ChainType.OCTRA, OCTRA0, OCTRA_PATH0, "Octra 1")
         }
 
         // Reopen: the wallet exists -> the LOCKED pane (WalletActivity's
@@ -1192,8 +1196,8 @@ class WalletE2eTest {
         val legAAccounts = runBlocking {
             appGraph.database.walletAccountDao().forProfile(profileId1.value)
         }
-        assertThat(legAAccounts.map { it.address }).containsExactly(EVM0, SOL0)
-        assertThat(legAAccounts.map { it.chainType }).containsExactly("EVM", "SOLANA")
+        assertThat(legAAccounts.map { it.address }).containsExactly(EVM0, SOL0, OCTRA0)
+        assertThat(legAAccounts.map { it.chainType }).containsExactly("EVM", "SOLANA", "OCTRA")
         legAAccounts.forEach { assertThat(it.privateKeyEnc).isNull() }
 
         // ================= Leg B: dApp connect through the REAL bridge ======
