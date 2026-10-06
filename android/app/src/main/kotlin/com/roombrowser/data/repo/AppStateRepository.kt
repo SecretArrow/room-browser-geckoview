@@ -50,11 +50,15 @@ object AppStateKeys {
     /** Profile id still owed the post-create "import your passwords?" offer. */
     const val PASSWORD_IMPORT_OFFER = "password_import_offer"
 
-    /**
-     * Per-profile lock record prefix: `profile_lock:<profileId>`. No migration:
-     * `wallet_lock:` was never in a released build.
-     */
+    /** Per-profile lock record prefix: `profile_lock:<profileId>`. */
     const val PROFILE_LOCK_PREFIX = "profile_lock:"
+
+    /**
+     * The pre-rename key, `wallet_lock:<profileId>`. A released webview build
+     * (v1.0.127, tag on 51bee47) still wrote it, so a PIN set there must be
+     * adopted rather than dropped — see [profileLockRecord].
+     */
+    const val LEGACY_PROFILE_LOCK_PREFIX = "wallet_lock:"
 }
 
 /** AI agent behavior settings (app-global, stored as JSON in app_state). */
@@ -495,10 +499,21 @@ class AppStateRepository(private val dao: AppStateDao) {
      * cannot be decoded is treated as absent (the device credential still opens
      * the wallet), never as a lockout.
      */
-    suspend fun profileLockRecord(profileId: String): WalletLockRecord? =
+    suspend fun profileLockRecord(profileId: String): WalletLockRecord? {
         dao.get(AppStateKeys.PROFILE_LOCK_PREFIX + profileId)?.let {
-            runCatching { json.decodeFromString(WalletLockRecord.serializer(), it) }.getOrNull()
+            return runCatching { json.decodeFromString(WalletLockRecord.serializer(), it) }.getOrNull()
         }
+        // One-time adoption of the pre-rename record; dropping it would reopen
+        // an upgraded wallet ungated. The old row is deleted so a later clear()
+        // cannot be undone by this fallback finding it again.
+        val legacy = dao.get(AppStateKeys.LEGACY_PROFILE_LOCK_PREFIX + profileId) ?: return null
+        val record = runCatching {
+            json.decodeFromString(WalletLockRecord.serializer(), legacy)
+        }.getOrNull() ?: return null
+        saveProfileLockRecord(profileId, record)
+        dao.remove(AppStateKeys.LEGACY_PROFILE_LOCK_PREFIX + profileId)
+        return record
+    }
 
     suspend fun saveProfileLockRecord(profileId: String, record: WalletLockRecord) {
         dao.put(
@@ -511,6 +526,7 @@ class AppStateRepository(private val dao: AppStateDao) {
 
     suspend fun clearProfileLockRecord(profileId: String) {
         dao.remove(AppStateKeys.PROFILE_LOCK_PREFIX + profileId)
+        dao.remove(AppStateKeys.LEGACY_PROFILE_LOCK_PREFIX + profileId)
     }
 
     private fun serializeSet(values: Set<String>): String =

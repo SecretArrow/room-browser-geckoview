@@ -181,4 +181,45 @@ class AppStateRepositoryTest {
         assertThat(settings.retryDelaySeconds).isEqualTo(RetryPolicy.DEFAULT_DELAY_SECONDS)
         assertThat(settings.retryPolicy().delay).isEqualTo(RetryPolicy.DEFAULT_DELAY_MS)
     }
+
+    /** A record as the pre-rename build wrote it, under `wallet_lock:<id>`. */
+    private val legacyPinJson = """
+        {"pinSaltB64":"c2FsdA==","pinIterations":120000,"pinVerifierB64":"dmVy","failedAttempts":0}
+    """.trimIndent()
+
+    @Test
+    fun `a PIN set under the pre-rename key is adopted, not dropped`() = runTest {
+        // A released webview build (v1.0.127) still wrote `wallet_lock:`. Reading
+        // only the new key would make that PIN vanish on upgrade and reopen the
+        // wallet ungated, so the first read adopts the old row.
+        dao.rows["wallet_lock:p1"] = legacyPinJson
+
+        val record = repo.profileLockRecord("p1")
+
+        assertThat(record?.pinConfigured).isTrue()
+        assertThat(dao.rows).containsKey("profile_lock:p1")
+        assertThat(dao.rows).doesNotContainKey("wallet_lock:p1")
+    }
+
+    @Test
+    fun `clearing the lock also removes the pre-rename row`() = runTest {
+        // Otherwise the adoption above finds the old row again and resurrects a
+        // PIN the user had just removed.
+        dao.rows["wallet_lock:p1"] = legacyPinJson
+
+        repo.clearProfileLockRecord("p1")
+
+        assertThat(repo.profileLockRecord("p1")).isNull()
+    }
+
+    @Test
+    fun `a record already under the new key wins over a stale pre-rename row`() = runTest {
+        dao.rows["wallet_lock:p1"] = legacyPinJson
+        repo.saveProfileLockRecord(
+            "p1",
+            WalletLockRecord(pinSaltB64 = "bg==", pinIterations = 9, pinVerifierB64 = "bg==")
+        )
+
+        assertThat(repo.profileLockRecord("p1")?.pinSaltB64).isEqualTo("bg==")
+    }
 }
