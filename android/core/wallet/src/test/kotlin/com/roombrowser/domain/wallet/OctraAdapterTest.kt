@@ -192,10 +192,9 @@ class OctraAdapterTest {
         try {
             val balance = runBlocking { adapter.getBalance(network(server), OCTRA0) }
             assertThat(balance).isEqualTo(5_000_000L)
-            val request = server.takeRequest()
-            assertThat(request.body.readUtf8())
-                .contains("\"method\":\"octra_balance\"")
-                .contains("\"$OCTRA0\"")
+            val body = server.takeRequest().body.readUtf8()
+            assertThat(body).contains("\"method\":\"octra_balance\"")
+            assertThat(body).contains("\"$OCTRA0\"")
         } finally {
             server.shutdown()
         }

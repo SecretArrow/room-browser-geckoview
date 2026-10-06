@@ -155,6 +155,8 @@ class WalletEngineTest {
 
         var evmFeeResult: BigInteger? = null
 
+        var octraFeeResult: String? = null
+
         override suspend fun signAndBroadcastNative(
             account: WalletAccountRecord,
             network: NetworkConfig,
@@ -196,6 +198,8 @@ class WalletEngineTest {
             to: String?,
             value: BigInteger
         ): BigInteger? = evmFeeResult
+
+        override suspend fun octraFeeEstimate(network: NetworkConfig): String? = octraFeeResult
     }
 
     /** assertThrows for suspend blocks, run inside the current test coroutine. */
@@ -1287,6 +1291,23 @@ class WalletEngineTest {
         engine.evmFeeResult = BigInteger("1000000000000")
         val fee = engine.estimateSendFee(ChainType.EVM, "EVM:1", account.id, EVM1, "0.1")
         assertThat(fee).isEqualTo(FeeEstimate("Estimated gas fee", "0.000001 ETH"))
+    }
+
+    @Test
+    fun `estimateSendFee quotes the Octra fee the send will actually attach`() = runTest(testDispatcher) {
+        seedWallet(profile, ABANDON, listOf(ChainType.OCTRA))
+        engine.bind(profile)
+        advanceUntilIdle()
+        engine.unlock()
+
+        val account = engine.accounts.value.first { it.chainType == ChainType.OCTRA }
+        // No quote from the node means no fee row — not a free send.
+        assertThat(engine.estimateSendFee(ChainType.OCTRA, "OCTRA:mainnet", account.id, OCTRA0, "1"))
+            .isNull()
+
+        engine.octraFeeResult = "200000"
+        val fee = engine.estimateSendFee(ChainType.OCTRA, "OCTRA:mainnet", account.id, OCTRA0, "1")
+        assertThat(fee).isEqualTo(FeeEstimate("Network fee", "0.2 OCT"))
     }
 
     @Test

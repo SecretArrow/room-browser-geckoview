@@ -922,6 +922,14 @@ open class WalletEngine(
                             )
                         }
                 }
+                ChainType.OCTRA -> {
+                    val feeRaw = octraFeeEstimate(network) ?: return null
+                    FeeEstimate(
+                        label = "Network fee",
+                        estimatedCost = formatBaseUnits(BigInteger(feeRaw), network.nativeDecimals) +
+                            " " + network.nativeSymbol
+                    )
+                }
                 else -> null
             }
         } catch (e: CancellationException) {
@@ -954,6 +962,14 @@ open class WalletEngine(
         }
         return gas.multiply(fees.first)
     }
+
+    /**
+     * Octra's flat fee in raw units — the same value [OctraAdapter.sendNative]
+     * will attach, so the sheet quotes the number it will actually pay.
+     * Internal open: JVM tests inject the result (the real path is one RPC call).
+     */
+    internal open suspend fun octraFeeEstimate(network: NetworkConfig): String? =
+        registry.octra.recommendedFeeOf(network)
 
     override suspend fun sendNative(
         accountId: String,

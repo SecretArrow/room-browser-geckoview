@@ -1766,6 +1766,13 @@ fun AddAccountSheet(
     onDismiss: () -> Unit
 ) {
     val scope = rememberCoroutineScope()
+    val accounts by engine.accounts.collectAsState()
+    // Octra's key is one HMAC over the phrase with no index to advance, so a
+    // wallet holds exactly one derived Octra account: offer the row only until
+    // that account exists, rather than a row that could only fail.
+    val chains = ChainType.entries.filter { chain ->
+        chain != ChainType.OCTRA || accounts.none { it.chainType == chain }
+    }
     ModalBottomSheet(onDismissRequest = onDismiss, shape = RoomBottomSheetShape) {
         Column(
             Modifier
@@ -1773,7 +1780,7 @@ fun AddAccountSheet(
                 .verticalScroll(rememberScrollState())
         ) {
             RoomSheetHeader("Add account")
-            derivedAccountChains.forEach { chain ->
+            chains.forEach { chain ->
                 SettingActionRow(
                     title = "Add ${chain.displayName} account",
                     subtitle = "Derived from this wallet's recovery phrase",
@@ -1812,13 +1819,6 @@ fun AddAccountSheet(
 /** Chain families that accept raw private-key imports (per the engine contract). */
 private val keyImportChains =
     listOf(ChainType.EVM, ChainType.SOLANA, ChainType.TRON, ChainType.OCTRA)
-
-/**
- * Chains that can hold more than one DERIVED account. Octra's key comes from
- * a single HMAC over the phrase with no index to advance, so it is excluded
- * rather than offered as a row that could only fail.
- */
-private val derivedAccountChains = ChainType.entries.filter { it != ChainType.OCTRA }
 
 /** Per-chain hint for the private-key field. */
 private fun privateKeyHint(chain: ChainType): String = when (chain) {

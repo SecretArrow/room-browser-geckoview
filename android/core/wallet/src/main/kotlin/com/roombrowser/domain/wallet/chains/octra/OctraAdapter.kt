@@ -15,7 +15,6 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
-import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
 import java.util.Base64
@@ -197,6 +196,17 @@ class OctraAdapter(private val rpc: JsonRpcClient = JsonRpcClient()) : Derivatio
         }
     } catch (e: WalletException) {
         BroadcastResult.Error(e.message ?: "Broadcast failed")
+    }
+
+    /**
+     * The fee [sendNative] will attach, for the send sheet to show. Every
+     * transfer pays it, so a caller that cannot state it must not pretend the
+     * send is free.
+     */
+    suspend fun recommendedFeeOf(network: NetworkConfig): String {
+        val chain = endpointsOf(network)
+        if (chain.urls.isEmpty()) return DEFAULT_FEE_RAW
+        return recommendedFee(chain)
     }
 
     /**
