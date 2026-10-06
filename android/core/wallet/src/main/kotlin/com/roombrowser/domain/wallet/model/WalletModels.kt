@@ -10,7 +10,8 @@ enum class ChainType(val displayName: String) {
     SUI("Sui"),
     COSMOS("Cosmos"),
     BITCOIN("Bitcoin"),
-    TRON("TRON");
+    TRON("TRON"),
+    OCTRA("Octra");
 
     companion object {
         fun fromName(name: String): ChainType? =

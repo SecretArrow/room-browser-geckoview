@@ -6,6 +6,7 @@ import com.roombrowser.browser.wallet.dapp.WalletBridgeProtocol
 import com.roombrowser.domain.wallet.chains.ChainRegistry
 import com.roombrowser.domain.wallet.chains.cosmos.CosmosAdapter
 import com.roombrowser.domain.wallet.chains.evm.EvmAdapter
+import com.roombrowser.domain.wallet.chains.octra.OctraAdapter
 import com.roombrowser.domain.wallet.crypto.Base58
 import com.roombrowser.domain.wallet.crypto.Bip32PrivateKey
 import com.roombrowser.domain.wallet.crypto.Ed25519
@@ -373,6 +374,8 @@ open class WalletEngine(
                 )
                 ChainType.APTOS ->
                     Hex.encode(Ed25519.publicKeyFromSeed(ed25519Seed(account)))
+                ChainType.OCTRA ->
+                    Hex.encode(Ed25519.publicKeyFromSeed(octraSeed(account)))
                 else -> null
             }
         }.getOrNull()
@@ -510,6 +513,11 @@ open class WalletEngine(
             ChainType.TRON -> {
                 val key = parseSecp256k1Key(trimmed, chainType)
                 registry.tron.addressFromPrivateKey(key) to canonicalSecpKey(key)
+            }
+            ChainType.OCTRA -> {
+                val seed = parseEd25519Seed(trimmed, chainType)
+                val derived = registry.octra.accountFromSeed(seed)
+                derived.address to Hex.encode(seed)
             }
         }
     }
@@ -653,6 +661,7 @@ open class WalletEngine(
         ChainType.BITCOIN -> registry.bitcoin.deriveAccount(seed, bitcoinHomeNetwork(), index)
             .let { it.address to it.path }
         ChainType.TRON -> registry.tron.deriveAccount(seed, index).let { it.address to it.path }
+        ChainType.OCTRA -> registry.octra.deriveAccount(seed, index).let { it.address to it.path }
     }
 
     /** The chain's canonical home network for derivation (Cosmos: coin 118 + hrp). */
@@ -733,6 +742,8 @@ open class WalletEngine(
                 network.nativeDecimals
             )
             ChainType.TRON -> registry.tron.getTrxBalance(network, address)
+                ?.let { formatBaseUnits(BigInteger.valueOf(it), network.nativeDecimals) }
+            ChainType.OCTRA -> registry.octra.getBalance(network, address)
                 ?.let { formatBaseUnits(BigInteger.valueOf(it), network.nativeDecimals) }
         }
         return amount?.let { BalanceResult.Ok(it, network.nativeSymbol) }
@@ -1045,6 +1056,10 @@ open class WalletEngine(
                 registry.tron.sendTrx(
                     network, secpPrivateKey(account), account.address, to, longAmount
                 )
+            ChainType.OCTRA ->
+                registry.octra.sendNative(
+                    network, octraSeed(account), account.address, to, longAmount
+                )
         }
     }
 
@@ -1075,6 +1090,7 @@ open class WalletEngine(
             ChainType.COSMOS -> registry.cosmos.isValidAddress(to, network.bech32Hrp)
             ChainType.BITCOIN -> registry.bitcoin.isValidAddress(to, network.isTestnet)
             ChainType.TRON -> registry.tron.isValidAddress(to)
+            ChainType.OCTRA -> registry.octra.isValidAddress(to)
         }
         if (!ok) {
             throw WalletException.InvalidParams(
@@ -1589,6 +1605,12 @@ open class WalletEngine(
                 throw WalletException.UnsupportedMethod(
                     "Bitcoin dApp transactions are not supported"
                 )
+            // No published Octra provider API exists to route against, so the
+            // bridge advertises `connect` only and never reaches here.
+            ChainType.OCTRA ->
+                throw WalletException.UnsupportedMethod(
+                    "Octra dApp transactions are not supported"
+                )
         }
     }
 
@@ -1646,6 +1668,9 @@ open class WalletEngine(
                 ).signatureBase64
                 ChainType.BITCOIN -> registry.bitcoin.signMessage(secpPrivateKey(account), bytes)
                 ChainType.TRON -> registry.tron.signMessageV2(secpPrivateKey(account), bytes)
+                ChainType.OCTRA -> throw WalletException.UnsupportedMethod(
+                    "Octra message signing is not supported"
+                )
             }
         }
     }
@@ -1806,6 +1831,29 @@ open class WalletEngine(
         return parseEd25519Seed(key, account.chainType)
     }
 
+    /**
+     * Octra's account key for a derived OR imported account.
+     *
+     * Separate from [ed25519Seed] on purpose: that one walks `account.path`
+     * with SLIP-10, and Octra has no derivation path — its key is a single
+     * HMAC over the BIP-39 seed. Routing an Octra account through
+     * [ed25519Seed] would run its "octra/0" string through a BIP-32 parser and
+     * silently produce a key the chain does not recognise, which is the one
+     * failure mode a wallet must never have.
+     */
+    private suspend fun octraSeed(account: WalletAccountRecord): ByteArray {
+        if (account.source == WalletAccountRecord.Source.DERIVED) {
+            val seed = seedFor(requireBound())
+                ?: throw WalletException.Unauthorized("Wallet has no mnemonic")
+            return withContext(cryptoDispatcher) {
+                OctraAdapter.privateSeedFromBip39(seed)
+            }
+        }
+        val key = repo.revealPrivateKey(account.id)
+            ?: throw WalletException.Unauthorized("Account has no stored private key")
+        return parseEd25519Seed(key, account.chainType)
+    }
+
     private fun parseSecp256k1Key(key: String, chainType: ChainType): BigInteger {
         val clean = key.removePrefix("0x").removePrefix("0X")
         val parsed = runCatching { BigInteger(clean, 16) }.getOrNull()
@@ -1872,6 +1920,7 @@ open class WalletEngine(
             ChainType.APTOS -> "$base/txn/$hash"
             ChainType.COSMOS -> "$base/txs/$hash"
             ChainType.TRON -> "$base/#/transaction/$hash"
+            ChainType.OCTRA -> "$base/tx/$hash"
         }
     }
 

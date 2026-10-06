@@ -350,7 +350,7 @@ internal fun explorerTxUrl(config: NetworkConfig?, hash: String): String? {
     if (config == null) return null
     val base = config.explorerUrl?.trimEnd('/') ?: return null
     val path = when (config.chainType) {
-        ChainType.EVM, ChainType.SOLANA, ChainType.BITCOIN -> "tx"
+        ChainType.EVM, ChainType.SOLANA, ChainType.BITCOIN, ChainType.OCTRA -> "tx"
         ChainType.APTOS -> "txn"
         ChainType.SUI -> "tx"
         ChainType.COSMOS -> "txs"
@@ -376,6 +376,7 @@ private fun isLikelyAddress(chain: ChainType, value: String): Boolean = when (ch
     ChainType.EVM -> evmAddress.matches(value)
     ChainType.SOLANA -> base58String.matches(value)
     ChainType.TRON -> value.length == 34 && value.startsWith("T")
+    ChainType.OCTRA -> value.length == 47 && value.startsWith("oct")
     else -> value.length >= 10
 }
 
@@ -384,6 +385,7 @@ private fun addressHint(chain: ChainType): String = when (chain) {
     ChainType.EVM -> "EVM address: 0x followed by 40 hex characters"
     ChainType.SOLANA -> "Solana address: 32–44 base58 characters"
     ChainType.TRON -> "TRON address: starts with T, 34 base58 characters"
+    ChainType.OCTRA -> "Octra address: starts with oct, 47 characters"
     else -> "Check the ${chain.displayName} address format"
 }
 
@@ -1771,7 +1773,7 @@ fun AddAccountSheet(
                 .verticalScroll(rememberScrollState())
         ) {
             RoomSheetHeader("Add account")
-            ChainType.entries.forEach { chain ->
+            derivedAccountChains.forEach { chain ->
                 SettingActionRow(
                     title = "Add ${chain.displayName} account",
                     subtitle = "Derived from this wallet's recovery phrase",
@@ -1808,17 +1810,26 @@ fun AddAccountSheet(
 }
 
 /** Chain families that accept raw private-key imports (per the engine contract). */
-private val keyImportChains = listOf(ChainType.EVM, ChainType.SOLANA, ChainType.TRON)
+private val keyImportChains =
+    listOf(ChainType.EVM, ChainType.SOLANA, ChainType.TRON, ChainType.OCTRA)
+
+/**
+ * Chains that can hold more than one DERIVED account. Octra's key comes from
+ * a single HMAC over the phrase with no index to advance, so it is excluded
+ * rather than offered as a row that could only fail.
+ */
+private val derivedAccountChains = ChainType.entries.filter { it != ChainType.OCTRA }
 
 /** Per-chain hint for the private-key field. */
 private fun privateKeyHint(chain: ChainType): String = when (chain) {
     ChainType.EVM, ChainType.TRON -> "64 hex characters, with or without the 0x prefix"
     ChainType.SOLANA -> "base58, 87–88 characters"
+    ChainType.OCTRA -> "32-byte seed, base58 or hex"
     else -> "Check the ${chain.displayName} key format"
 }
 
 /**
- * Private-key import: chain chips (EVM / Solana / TRON), a MASKED key field
+ * Private-key import: chain chips (EVM / Solana / TRON / Octra), a MASKED key field
  * (never rendered in clear by default — same reveal-toggle pattern as the
  * password vault) with per-chain hints, and an optional account label. The
  * typed key lives only in transient composition state.

@@ -835,6 +835,7 @@ class WalletBridgeProtocolTest {
         ChainType.COSMOS -> "cosmos1qqqsyqcyq5rqwzqfpg9scrgwpugpzysnzs23v9"
         ChainType.BITCOIN -> "bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4"
         ChainType.TRON -> "TJRabPrwbZy45sbavfcjinPJC18kjpRTv8"
+        ChainType.OCTRA -> "octCRus1yKzZbQoABuUhWQzcps8KhdqqQWxPzGciLgY698h"
     }
 
     /**

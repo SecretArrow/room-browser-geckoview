@@ -239,6 +239,10 @@ object WalletBridgeProtocol {
         ChainType.TRON -> listOf(
             METHOD_CONNECT, METHOD_SIGN_MESSAGE, METHOD_SIGN_TRANSACTION
         )
+        // Deliberately `connect` alone: no published provider API for Octra
+        // exists to route against, so this advertises only what every chain
+        // already answers and promises nothing Octra-specific.
+        ChainType.OCTRA -> listOf(METHOD_CONNECT)
     }
 
     /** JSON-RPC server-error-range code used when a flood is shed (never a 4xxx user code). */
@@ -913,6 +917,7 @@ object WalletBridgeProtocol {
             publicKey?.let { put("publicKey", it) }
         }.toString()
         ChainType.TRON -> buildJsonObject { put("address", address) }.toString()
+        ChainType.OCTRA -> buildJsonObject { put("address", address) }.toString()
     }
 
     /** The page-visible value of `eth_accounts` for a permitted host. */

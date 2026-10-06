@@ -6,6 +6,7 @@ import com.roombrowser.domain.wallet.chains.cosmos.CosmosAdapter
 import com.roombrowser.domain.wallet.chains.evm.ChainlistClient
 import com.roombrowser.domain.wallet.chains.evm.EvmNetworkSnapshot
 import com.roombrowser.domain.wallet.chains.evm.EvmAdapter
+import com.roombrowser.domain.wallet.chains.octra.OctraAdapter
 import com.roombrowser.domain.wallet.chains.solana.SolanaAdapter
 import com.roombrowser.domain.wallet.chains.sui.SuiAdapter
 import com.roombrowser.domain.wallet.chains.tron.TronAdapter
@@ -28,6 +29,7 @@ class ChainRegistry(rpcClient: JsonRpcClient = JsonRpcClient()) {
     val cosmos: CosmosAdapter = CosmosAdapter(rpcClient)
     val bitcoin: BitcoinAdapter = BitcoinAdapter(rpcClient)
     val tron: TronAdapter = TronAdapter(rpcClient)
+    val octra: OctraAdapter = OctraAdapter(rpcClient)
 
     val chainlist: ChainlistClient = ChainlistClient(rpcClient)
 
@@ -39,6 +41,7 @@ class ChainRegistry(rpcClient: JsonRpcClient = JsonRpcClient()) {
         ChainType.COSMOS -> CosmosAdapter.defaultNetworks()
         ChainType.BITCOIN -> BitcoinAdapter.defaultNetworks()
         ChainType.TRON -> TronAdapter.defaultNetworks()
+        ChainType.OCTRA -> OctraAdapter.defaultNetworks()
     }
 
     fun allDefaultNetworks(): List<NetworkConfig> = ChainType.entries.flatMap { defaultNetworks(it) }
@@ -60,6 +63,7 @@ class ChainRegistry(rpcClient: JsonRpcClient = JsonRpcClient()) {
         ChainType.COSMOS -> cosmos.derivationIndexOf(path)
         ChainType.BITCOIN -> bitcoin.derivationIndexOf(path)
         ChainType.TRON -> tron.derivationIndexOf(path)
+        ChainType.OCTRA -> octra.derivationIndexOf(path)
     }
 
     companion object {

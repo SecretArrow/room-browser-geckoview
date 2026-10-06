@@ -7,6 +7,7 @@ import com.roombrowser.domain.wallet.chains.ChainRegistry
 import com.roombrowser.domain.wallet.chains.bitcoin.BitcoinAdapter
 import com.roombrowser.domain.wallet.chains.cosmos.CosmosAdapter
 import com.roombrowser.domain.wallet.chains.evm.EvmAdapter
+import com.roombrowser.domain.wallet.chains.octra.OctraAdapter
 import com.roombrowser.domain.wallet.crypto.Hashes
 import com.roombrowser.domain.wallet.crypto.Hex
 import com.roombrowser.domain.wallet.crypto.Mnemonics
@@ -75,6 +76,8 @@ class WalletEngineTest {
         const val COSMOS0 = "cosmos19rl4cm2hmr8afy4kldpxz3fka4jguq0auqdal4"
         const val BTC0 = "bc1qcr8te4kr609gcawutmrza0j4xv80jy8z306fyu"
         const val TRON0 = "TUEZSdKsoDHQMeZwihtdoBiN46zxhGWYdH"
+        // Octra has a single derivation identity, not a BIP-32 path.
+        const val OCTRA0 = "octCRus1yKzZbQoABuUhWQzcps8KhdqqQWxPzGciLgY698h"
 
         // personal_sign of "hello world" with the EVM0 key (RFC6979: deterministic).
         const val EVM0_PERSONAL_SIGN =
@@ -429,7 +432,7 @@ class WalletEngineTest {
         assertThat(Mnemonics.isValid(mnemonic)).isTrue()
         assertThat(mnemonic.split(" ")).hasSize(24)
         val byChain = engine.accounts.value.associateBy { it.chainType }
-        assertThat(byChain).hasSize(7)
+        assertThat(byChain).hasSize(8)
 
         // The index-0 address must equal what the REAL adapter derives from
         // the returned mnemonic (pins the whole path/key handling per chain).
@@ -457,6 +460,9 @@ class WalletEngineTest {
         assertThat(byChain.getValue(ChainType.TRON).address)
             .isEqualTo(real.tron.deriveAccount(seed, 0).address)
         assertThat(byChain.getValue(ChainType.TRON).path).isEqualTo("m/44'/195'/0'/0/0")
+        assertThat(byChain.getValue(ChainType.OCTRA).address)
+            .isEqualTo(real.octra.deriveAccount(seed, 0).address)
+        assertThat(byChain.getValue(ChainType.OCTRA).path).isEqualTo("octra/0")
         assertThat(byChain.getValue(ChainType.EVM).source).isEqualTo(WalletAccountRecord.Source.DERIVED)
         assertThat(checkNotNull(engine.wallet.value).hasMnemonic).isTrue()
         assertThat(engine.lockState.value).isEqualTo(WalletLockState.LOCKED)
@@ -495,7 +501,7 @@ class WalletEngineTest {
         advanceUntilIdle()
 
         val byChain = engine.accounts.value.associateBy { it.chainType }
-        assertThat(byChain).hasSize(7)
+        assertThat(byChain).hasSize(8)
         assertThat(byChain.getValue(ChainType.EVM).address).isEqualTo(EVM0)
         assertThat(byChain.getValue(ChainType.SOLANA).address).isEqualTo(SOL0)
         assertThat(byChain.getValue(ChainType.APTOS).address).isEqualTo(APTOS0)
@@ -503,6 +509,7 @@ class WalletEngineTest {
         assertThat(byChain.getValue(ChainType.COSMOS).address).isEqualTo(COSMOS0)
         assertThat(byChain.getValue(ChainType.BITCOIN).address).isEqualTo(BTC0)
         assertThat(byChain.getValue(ChainType.TRON).address).isEqualTo(TRON0)
+        assertThat(byChain.getValue(ChainType.OCTRA).address).isEqualTo(OCTRA0)
         assertThat(checkNotNull(engine.wallet.value).hasMnemonic).isTrue()
     }
 
@@ -816,7 +823,7 @@ class WalletEngineTest {
                 profile,
                 ABANDON,
                 listOf(
-                    ChainType.COSMOS, ChainType.APTOS, ChainType.BITCOIN,
+                    ChainType.COSMOS, ChainType.APTOS, ChainType.BITCOIN, ChainType.OCTRA,
                     ChainType.EVM, ChainType.SOLANA, ChainType.TRON
                 )
             )
@@ -847,6 +854,15 @@ class WalletEngineTest {
             assertThat(Hex.decode(bitcoinKey!!).size).isEqualTo(33)
             assertThat(BitcoinAdapter().p2wpkhAddress(Hex.decode(bitcoinKey), testnet = false))
                 .isEqualTo(BTC0)
+
+            val octraKey = engine.publicKeyOf(accountOf(ChainType.OCTRA).id)
+            assertThat(octraKey).isNotNull()
+            assertThat(Hex.decode(octraKey!!).size).isEqualTo(32)
+            // The address is base58(sha256(pubkey)), so round-tripping it also
+            // pins the HMAC master key behind octraSeed() — the vault read,
+            // not just the adapter.
+            assertThat(OctraAdapter().addressFromPublicKey(Hex.decode(octraKey)))
+                .isEqualTo(OCTRA0)
 
             // Nothing is published on these. EVM matches MetaMask (EIP-1193
             // carries addresses only), Solana's address IS its public key and
@@ -1393,6 +1409,7 @@ class WalletEngineTest {
                     registry.bitcoin.deriveAccount(seed, registry.defaultNetworks(ChainType.BITCOIN).first(), 0)
                         .let { it.address to it.path }
                 ChainType.TRON -> registry.tron.deriveAccount(seed, 0).let { it.address to it.path }
+                ChainType.OCTRA -> registry.octra.deriveAccount(seed, 0).let { it.address to it.path }
             }
             fake.addDerivedAccount(profileId, chain, address, path, "${chain.displayName} 1")
         }
