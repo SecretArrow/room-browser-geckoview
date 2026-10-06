@@ -387,13 +387,15 @@ class TwoFactorE2eTest {
         assertTrue("Engine must come up on a fresh profile", bootstrapFreshEngine())
 
         assertTrue("The Page Actions sheet must open\n${uiTree()}", openPageActionsSheet())
-        val row = device.wait(Until.findObject(By.desc("2FA Management")), 4_000)
-        assertTrue("The 2FA Management row must be in the sheet\n${uiTree()}", row != null)
-        val rowNode = row!!
-        clickSmart(rowNode)
-        if (!waitGone("Page Actions", 4_000)) {
-            runCatching { clickCenter(rowNode) }
-        }
+        // The sheet renders its rows lazily: run 37375880648's dump ended at
+        // "Notes", so every row below it -- this one included -- is outside the
+        // composed window until the sheet is scrolled. Waiting without
+        // scrolling can never see it. (Test 1 above passes for the same reason
+        // rowOrderInSheet drags before each read.)
+        assertTrue(
+            "The 2FA Management row must be clickable and open its screen\n${uiTree()}",
+            clickTextScrollableVerified("2FA Management") { waitGone("Page Actions", 1_500) }
+        )
         assertTrue(
             "The sheet must be dismissed before the 2FA screen is asserted\n${uiTree()}",
             waitGone("Page Actions", 8_000)
