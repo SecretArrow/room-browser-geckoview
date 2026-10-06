@@ -34,6 +34,23 @@ on:
       - '**/*.md'
       - '.gitignore'
   workflow_dispatch:
+    inputs:
+      # Iterating on a single instrumented test otherwise costs the whole
+      # emulator suite: the build and the boot are minutes, the tests are the
+      # rest. Naming the class (or a comma-separated list) runs only those,
+      # which is what makes a fix loop affordable instead of one long cycle
+      # per attempt.
+      #
+      # It cannot weaken the release gate. On a push and on a pull_request
+      # `inputs` is empty, so the script's test renders false and the full
+      # two-invocation suite runs exactly as before; a filter only ever
+      # exists on a hand-dispatched run, and the release job below refuses a
+      # filtered run outright.
+      e2e_filter:
+        description: 'Instrumented test classes to run, e.g. com.roombrowser.TwoFactorE2eTest (comma-separate for several). Empty runs the whole suite.'
+        required: false
+        type: string
+        default: ''
 
 permissions:
   contents: write
@@ -544,8 +561,16 @@ jobs:
           RB_ABIS: "x86_64"
         run: ./gradlew assembleDebug assembleDebugAndroidTest --console=plain
 
-      - name: Run instrumented tests on emulator (API 30, x86_64)
+      - name: Run instrumented tests on emulator (API 30, x86_64)${{ inputs.e2e_filter != '' && ' — FILTERED, NOT A RELEASE GATE' || '' }}
         uses: reactivecircus/android-emulator-runner@v2
+        # The filter reaches the script through the environment rather than
+        # through `${{ }}` interpolation into the command text, so a value
+        # that is not a clean class name cannot become shell source. If this
+        # variable ever fails to arrive, the test below is false and the
+        # FULL suite runs — the failure direction that costs minutes instead
+        # of one that costs correctness.
+        env:
+          E2E_FILTER: ${{ inputs.e2e_filter }}
         with:
           api-level: 30
           arch: x86_64
@@ -618,11 +643,11 @@ jobs:
             # masking this fixes, silently, in the runs where adb is unhappy
             # ("Unable to connect to adb daemon on port: 5037" is a known
             # specimen here). The artifacts are best-effort; the failure is not.
-            cd android && ./gradlew connectedDebugAndroidTest --console=plain -Pandroid.testInstrumentationRunnerArguments.class=com.roombrowser.A00WarmupTest,com.roombrowser.WalletE2eTest || ( : > "$GITHUB_WORKSPACE/e2e-first-invocation-failed"; adb exec-out logcat -d -b crash > "$GITHUB_WORKSPACE/e2e-logcat-crash.txt"; adb exec-out logcat -d > "$GITHUB_WORKSPACE/e2e-logcat-full.txt"; adb shell uiautomator dump /sdcard/e2e-ui.xml >/dev/null 2>&1; adb pull /sdcard/e2e-ui.xml "$GITHUB_WORKSPACE/" >/dev/null 2>&1; adb pull /sdcard/e2e-shots "$GITHUB_WORKSPACE/" >/dev/null 2>&1; true)
+            cd android && if [ -n "$E2E_FILTER" ]; then ./gradlew connectedDebugAndroidTest --console=plain -Pandroid.testInstrumentationRunnerArguments.class="$E2E_FILTER"; else ./gradlew connectedDebugAndroidTest --console=plain -Pandroid.testInstrumentationRunnerArguments.class=com.roombrowser.A00WarmupTest,com.roombrowser.WalletE2eTest; fi || ( : > "$GITHUB_WORKSPACE/e2e-first-invocation-failed"; adb exec-out logcat -d -b crash > "$GITHUB_WORKSPACE/e2e-logcat-crash.txt"; adb exec-out logcat -d > "$GITHUB_WORKSPACE/e2e-logcat-full.txt"; adb shell uiautomator dump /sdcard/e2e-ui.xml >/dev/null 2>&1; adb pull /sdcard/e2e-ui.xml "$GITHUB_WORKSPACE/" >/dev/null 2>&1; adb pull /sdcard/e2e-shots "$GITHUB_WORKSPACE/" >/dev/null 2>&1; true)
             # The second invocation rewrites androidTest-results, and the old
             # dump ran after teardown -- so the probe lines are kept here.
             adb exec-out logcat -d -s 'WalletE2eTest:*' > "$GITHUB_WORKSPACE/e2e-probe.txt" || true
-            cd android && ./gradlew connectedDebugAndroidTest --console=plain -Pandroid.testInstrumentationRunnerArguments.notClass=com.roombrowser.A00WarmupTest,com.roombrowser.WalletE2eTest || (adb exec-out logcat -d -b crash > "$GITHUB_WORKSPACE/e2e-logcat-crash.txt"; adb exec-out logcat -d > "$GITHUB_WORKSPACE/e2e-logcat-full.txt"; adb shell uiautomator dump /sdcard/e2e-ui.xml >/dev/null 2>&1; adb pull /sdcard/e2e-ui.xml "$GITHUB_WORKSPACE/" >/dev/null 2>&1; adb pull /sdcard/e2e-shots "$GITHUB_WORKSPACE/" >/dev/null 2>&1; exit 1)
+            if [ -n "$E2E_FILTER" ]; then true; else cd android && ./gradlew connectedDebugAndroidTest --console=plain -Pandroid.testInstrumentationRunnerArguments.notClass=com.roombrowser.A00WarmupTest,com.roombrowser.WalletE2eTest || (adb exec-out logcat -d -b crash > "$GITHUB_WORKSPACE/e2e-logcat-crash.txt"; adb exec-out logcat -d > "$GITHUB_WORKSPACE/e2e-logcat-full.txt"; adb shell uiautomator dump /sdcard/e2e-ui.xml >/dev/null 2>&1; adb pull /sdcard/e2e-ui.xml "$GITHUB_WORKSPACE/" >/dev/null 2>&1; adb pull /sdcard/e2e-shots "$GITHUB_WORKSPACE/" >/dev/null 2>&1; exit 1); fi
 
       - name: Fail when the first invocation failed
         if: always()
@@ -853,8 +878,16 @@ jobs:
     # to parity separately). `!cancelled()` lets this run even if a desktop
     # job failed rather than skipping the whole release.
     needs: [ quality, e2e, desktop-windows, desktop-linux ]
+    # `!inputs.e2e_filter` is the guard that keeps a filtered run from ever
+    # publishing: `needs.e2e.result == 'success'` means "the suite passed",
+    # and a dispatch carrying an e2e_filter only ran the named classes. On a
+    # push, a tag and a pull_request `inputs` is empty, so this term is
+    # always true there and the gate is unchanged. Do not remove it because
+    # "dispatch never releases" — it does, on main, and that is the whole
+    # hazard: one green class would otherwise ship an APK.
     if: >-
       !cancelled() &&
+      !inputs.e2e_filter &&
       needs.quality.result == 'success' &&
       needs.e2e.result == 'success' &&
       (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
