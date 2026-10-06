@@ -31,6 +31,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -60,6 +61,16 @@ import java.util.UUID
 class WalletLockedException : IllegalStateException(
     "The wallet is locked; unlock the session before using key material"
 )
+
+/**
+ * How long a dApp request may wait for the first bind before answering
+ * DISCONNECTED. Comfortably longer than the 2.5 s cold-start deferral, so
+ * only an engine that genuinely never binds reaches it.
+ */
+internal const val HELD_REQUEST_TIMEOUT_MS = 15_000L
+
+/** Cap on requests parked across that window; beyond it they fail fast. */
+private const val MAX_HELD_REQUESTS = 16
 
 /**
  * Wallet orchestration for the bound profile: session lock, wallet lifecycle,
@@ -223,6 +234,10 @@ open class WalletEngine(
             // Fire-and-forget balance refresh; offline is silent (see refreshBalances).
             balancesJob = launch { quiet { refreshBalances() } }
         }
+        // Anything that arrived before this bind can now be asked properly.
+        // Deliberately AFTER the state resets above: the sheets read the
+        // networks and accounts those flows carry.
+        releaseHeldRequests(disconnected = false)
     }
 
     override fun unbind() {
@@ -233,6 +248,9 @@ open class WalletEngine(
         balancesJob?.cancel()
         balancesJob = null
         settleAllPending(WalletBridgeError.DISCONNECTED, "Wallet disconnected")
+        // Nothing bound means nothing to hold them for; a later bind must not
+        // pick up a request raised against a session that has ended.
+        releaseHeldRequests(disconnected = true)
         profileState.value = null
         unlockedState.value = false
         walletState.value = null
@@ -1120,6 +1138,21 @@ open class WalletEngine(
     // ------------------------------------------------------------------
 
     /**
+     * Requests that arrived before the first [bind]. The bind is deferred
+     * 2.5 s after startup on purpose — it class-loads the crypto stack, and
+     * doing that inline stalled first paint — so a page that connects on load
+     * lands in that window. Answering 4900 there is a claim the page acts on:
+     * EIP-1193 defines it as "the provider is disconnected", and a toolkit
+     * surfaces it once without retrying, so the user is told the wallet could
+     * not be reached by a wallet that was half a second from answering. These
+     * wait for the bind instead; only one that never comes (see
+     * [HELD_REQUEST_TIMEOUT_MS]) still answers DISCONNECTED.
+     */
+    private val heldRequests =
+        LinkedHashMap<String, Pair<DappRequest, (DappOutcome) -> Unit>>()
+    private var heldTimeout: Job? = null
+
+    /**
      * Bridge entry point. Semantically-identical requests from the same host
      * (e.g. a second Connect while one is already showing) are COALESCED: no
      * second prompt appears; when the original settles, every coalesced
@@ -1130,12 +1163,7 @@ open class WalletEngine(
      */
     override fun submitDappRequest(request: DappRequest, onSettled: (DappOutcome) -> Unit) {
         if (profileState.value == null) {
-            onSettled(
-                DappOutcome(
-                    request.id, null,
-                    WalletBridgeError(WalletBridgeError.DISCONNECTED, "Wallet disconnected")
-                )
-            )
+            holdUntilBound(request, onSettled)
             return
         }
         // A stale coalesced mapping for this id must never steal the new settle.
@@ -1156,6 +1184,41 @@ open class WalletEngine(
             current + request
         }
     }
+
+    private fun holdUntilBound(request: DappRequest, onSettled: (DappOutcome) -> Unit) {
+        if (heldRequests.size >= MAX_HELD_REQUESTS) {
+            onSettled(disconnectedFailure(request.id))
+            return
+        }
+        heldRequests[request.id] = request to onSettled
+        if (heldTimeout?.isActive != true) {
+            heldTimeout = engineScope.launch {
+                delay(HELD_REQUEST_TIMEOUT_MS)
+                // Cleared BEFORE the release: that call cancels the timeout
+                // job, and cancelling the job it is running inside would be
+                // cancelling itself.
+                heldTimeout = null
+                releaseHeldRequests(disconnected = true)
+            }
+        }
+    }
+
+    private fun releaseHeldRequests(disconnected: Boolean) {
+        heldTimeout?.cancel()
+        heldTimeout = null
+        if (heldRequests.isEmpty()) return
+        val held = heldRequests.values.toList()
+        heldRequests.clear()
+        held.forEach { (request, onSettled) ->
+            if (disconnected) onSettled(disconnectedFailure(request.id))
+            else submitDappRequest(request, onSettled)
+        }
+    }
+
+    private fun disconnectedFailure(id: String) = DappOutcome(
+        id, null,
+        WalletBridgeError(WalletBridgeError.DISCONNECTED, "Wallet disconnected")
+    )
 
     /**
      * UI entry point. Unknown/already-settled ids are silent no-ops. The

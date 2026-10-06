@@ -891,8 +891,10 @@ class BrowserViewModel(
             // chrome within 40 s). Binding 2.5 s after restore, on a
             // background dispatcher, keeps engine boot at pre-wallet speed;
             // the classes load while the user reads the start page. A dApp
-            // request in that window settles DISCONNECTED once and the page
-            // retries — pages always do.
+            // request in that window is HELD by the engine and answered
+            // properly once this bind lands — it is not failed: a toolkit
+            // treats a 4900 as "provider disconnected" and does not retry, so
+            // failing it there means a wallet that never connects at all.
             // NOT unbound in onCleared: the ':browser' process is
             // one-profile-per-process and dies with this ViewModel's
             // activity — an unbind here could yank the session out from

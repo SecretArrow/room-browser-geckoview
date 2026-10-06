@@ -29,6 +29,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.onCompletion
 import kotlinx.coroutines.flow.onSubscription
 import kotlinx.coroutines.test.StandardTestDispatcher
+import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.runTest
@@ -1215,13 +1216,71 @@ class WalletEngineTest {
     }
 
     @Test
-    fun `submitting while unbound settles DISCONNECTED immediately`() = runTest(testDispatcher) {
+    fun `a request raised before the first bind waits for it and is then answered`() =
+        runTest(testDispatcher) {
+            // The engine binds 2.5 s after startup on purpose — the bind
+            // class-loads the crypto stack and doing it inline stalled first
+            // paint — so a page that connects on load lands here. The old
+            // answer was an immediate 4900, which a toolkit reads as "provider
+            // disconnected" and does not retry: the user was told the wallet
+            // could not be reached by a wallet half a second from answering.
+            seedWallet(profile, ABANDON, listOf(ChainType.EVM))
+            val outcomes = mutableListOf<DappOutcome>()
+            engine.submitDappRequest(
+                DappRequest.Connect("c1", "app.uniswap.org", ChainType.EVM, "https://app.uniswap.org")
+            ) { outcomes += it }
+            assertThat(outcomes).isEmpty()
+            assertThat(engine.pendingRequests.value).isEmpty()
+
+            engine.bind(profile)
+            advanceUntilIdle()
+
+            assertThat(outcomes).isEmpty()
+            assertThat(engine.pendingRequests.value.map { it.id }).contains("c1")
+
+            engine.decideDappRequest(DappDecision("c1", approved = true))
+            advanceUntilIdle()
+            assertThat(outcomes.single().error).isNull()
+        }
+
+    @Test
+    fun `a request still held when the bind never comes answers DISCONNECTED`() =
+        runTest(testDispatcher) {
+            // The hold must expire, not hang: a page waiting on a prompt that
+            // can never appear is worse than an error it can act on.
+            val outcomes = mutableListOf<DappOutcome>()
+            engine.submitDappRequest(
+                DappRequest.Connect("c9", "app.uniswap.org", ChainType.EVM, "https://app.uniswap.org")
+            ) { outcomes += it }
+
+            advanceTimeBy(HELD_REQUEST_TIMEOUT_MS - 1)
+            assertThat(outcomes).isEmpty()
+
+            advanceUntilIdle()
+            assertThat(outcomes.single().requireError().code)
+                .isEqualTo(WalletBridgeError.DISCONNECTED)
+            assertThat(engine.pendingRequests.value).isEmpty()
+        }
+
+    @Test
+    fun `unbind drops a request that was waiting for the bind`() = runTest(testDispatcher) {
+        // A later bind must not pick up a request raised against a session
+        // that has already ended.
+        seedWallet(profile, ABANDON, listOf(ChainType.EVM))
         val outcomes = mutableListOf<DappOutcome>()
         engine.submitDappRequest(
-            DappRequest.Connect("c1", "app.uniswap.org", ChainType.EVM, "https://app.uniswap.org")
+            DappRequest.Connect("c2", "app.uniswap.org", ChainType.EVM, "https://app.uniswap.org")
         ) { outcomes += it }
+        assertThat(outcomes).isEmpty()
+
+        engine.unbind()
+        assertThat(outcomes.single().requireError().code)
+            .isEqualTo(WalletBridgeError.DISCONNECTED)
+
+        engine.bind(profile)
+        advanceUntilIdle()
         assertThat(outcomes).hasSize(1)
-        assertThat(outcomes[0].requireError().code).isEqualTo(WalletBridgeError.DISCONNECTED)
+        assertThat(engine.pendingRequests.value).isEmpty()
     }
 
     @Test
