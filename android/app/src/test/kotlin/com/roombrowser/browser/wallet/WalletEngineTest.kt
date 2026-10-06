@@ -1284,6 +1284,44 @@ class WalletEngineTest {
     }
 
     @Test
+    fun `activeNetworks is empty until the bind lands, then carries the chain`() =
+        runTest(testDispatcher) {
+            // The dApp relay waits on exactly this flow to get through the
+            // deferred 2.5 s bind: while it is empty there is no chain to
+            // answer eth_chainId from, and answering CHAIN_DISCONNECTED there
+            // is what wagmi reports as the connect itself failing. The wait is
+            // only sound while the flow stays empty pre-bind AND fills once
+            // the bind lands, which is what this pins.
+            seedWallet(profile, ABANDON, listOf(ChainType.EVM))
+            assertThat(engine.activeNetworks.value).isEmpty()
+
+            engine.bind(profile)
+            // Still empty here on purpose: bind() publishes the profile and
+            // clears this map synchronously, and the refresh that fills it is
+            // launched. A "bound" signal would go true at this point and let a
+            // relay read an engine with no networks in it.
+            assertThat(engine.activeNetworks.value).isEmpty()
+
+            advanceUntilIdle()
+            assertThat(engine.activeNetworks.value.getValue(ChainType.EVM).chainId)
+                .isEqualTo("1")
+        }
+
+    @Test
+    fun `unbind empties activeNetworks again`() = runTest(testDispatcher) {
+        // A read arriving after unbind must not be answered from the networks
+        // of a session that has ended.
+        seedWallet(profile, ABANDON, listOf(ChainType.EVM))
+        engine.bind(profile)
+        advanceUntilIdle()
+        assertThat(engine.activeNetworks.value).isNotEmpty()
+
+        engine.unbind()
+
+        assertThat(engine.activeNetworks.value).isEmpty()
+    }
+
+    @Test
     fun `isDappPermitted never matches a blank host`() = runTest(testDispatcher) {
         seedWallet(profile, ABANDON, listOf(ChainType.EVM))
         // Grant BEFORE bind so the engine's permission cache loads it.

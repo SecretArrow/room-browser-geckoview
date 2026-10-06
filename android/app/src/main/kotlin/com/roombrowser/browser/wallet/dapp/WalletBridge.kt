@@ -18,6 +18,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.JsonElement
@@ -238,12 +239,15 @@ class WalletBridge(
 
     /**
      * Read-only relay to the chain's active network. Needs only a
-     * NetworkConfig + method + params — the engine is not involved, so it
-     * works even while no engine is bound.
+     * NetworkConfig + method + params — no prompt, so it raises no sheet and
+     * never reaches the confirmation queue.
      *
      * Chain-identity calls never reach the network: see
      * [WalletBridgeProtocol.localChainAnswer] for why answering them from
      * local configuration is a correctness fix and not a shortcut.
+     *
+     * The active network is the one thing here the engine owns, and it is
+     * absent until the deferred bind lands — see [awaitActiveNetwork].
      */
     private fun relay(call: WalletRpcCall) {
         if (call.chainType != ChainType.EVM || !WalletBridgeProtocol.isReadonlyRpcMethod(call.method)) {
@@ -257,22 +261,25 @@ class WalletBridge(
             respondError(call.id, WalletBridgeError(WalletBridgeError.INVALID_PARAMS, "Relay params must be an array"))
             return
         }
-        val network = activeNetworkProvider(ChainType.EVM)
-        WalletBridgeProtocol.localChainAnswer(call.method, network)?.let { answer ->
-            respondSuccess(call.id, answer)
-            return
-        }
-        // Every configured endpoint is a candidate, in the order the network
-        // lists them. Only the first was ever tried, which made the others
-        // decorative: a network whose primary RPC is rate-limited or blocked
-        // failed every read even though a working endpoint was configured
-        // right behind it.
-        val endpoints = network?.rpcUrls?.filter { it.isNotBlank() }.orEmpty()
-        if (endpoints.isEmpty()) {
-            respondError(call.id, WalletBridgeError(WalletBridgeError.CHAIN_DISCONNECTED, "No active EVM network"))
-            return
-        }
         relayScope.launch {
+            val network = awaitActiveNetwork() ?: run {
+                respondError(call.id, WalletBridgeError(WalletBridgeError.CHAIN_DISCONNECTED, "No active EVM network"))
+                return@launch
+            }
+            WalletBridgeProtocol.localChainAnswer(call.method, network)?.let { answer ->
+                respondSuccess(call.id, answer)
+                return@launch
+            }
+            // Every configured endpoint is a candidate, in the order the network
+            // lists them. Only the first was ever tried, which made the others
+            // decorative: a network whose primary RPC is rate-limited or blocked
+            // failed every read even though a working endpoint was configured
+            // right behind it.
+            val endpoints = network.rpcUrls.filter { it.isNotBlank() }
+            if (endpoints.isEmpty()) {
+                respondError(call.id, WalletBridgeError(WalletBridgeError.CHAIN_DISCONNECTED, "No active EVM network"))
+                return@launch
+            }
             // The page's promise must always settle, and settling it late is
             // the same thing to a dApp as never settling it: every endpoint is
             // tried in turn, each with its own 8s connect/read timeout, so a
@@ -289,6 +296,39 @@ class WalletBridge(
                 )
             }
         }
+    }
+
+    /**
+     * The active EVM network, waiting out the deferred bind when a read
+     * arrives inside it.
+     *
+     * The bind runs ~2.5 s after startup on purpose (it class-loads the crypto
+     * stack), and until it lands there is no active network at all — so every
+     * read a page issued in that window answered 4901 "No active EVM network".
+     * A dApp cannot tell that from a broken wallet, and for `eth_chainId` it is
+     * not one read that failed: wagmi and everything built on it — Uniswap
+     * among them — treat a chain-id failure as the CONNECT failing, so the user
+     * is shown "Error connecting" and a Try again that repeats the same doomed
+     * call against a wallet that was milliseconds from answering. The chain is
+     * knowable a moment later, so this waits for the bind rather than guessing;
+     * bounded, so an engine that never binds still settles the page's promise
+     * instead of leaving it hanging.
+     *
+     * The wait is on the NETWORK and not on the bind: the bind publishes the
+     * profile synchronously and only fills the networks a moment later, so a
+     * signal that said "bound" would let this read a bound engine with nothing
+     * in it yet. A bound profile that enables no EVM chain can never satisfy
+     * it and pays the whole window before its reads are answered 4901 — those
+     * reads were failing either way, which is a cheaper price than a chain id
+     * this wallet refuses to give.
+     */
+    private suspend fun awaitActiveNetwork(): NetworkConfig? {
+        activeNetworkProvider(ChainType.EVM)?.let { return it }
+        val engine = engineProvider() ?: return null
+        withTimeoutOrNull(BIND_WAIT_MS) {
+            engine.activeNetworks.first { it[ChainType.EVM] != null }
+        }
+        return activeNetworkProvider(ChainType.EVM)
     }
 
     /**
@@ -597,6 +637,14 @@ class WalletBridge(
 
         /** Minimum gap between calls of the same (host, method). */
         private const val MIN_METHOD_GAP_MS = 300L
+
+        /**
+         * How long a read may wait for the engine's first bind before it is
+         * answered as CHAIN_DISCONNECTED. Comfortably longer than the 2.5 s
+         * the bind is deferred by, so only an engine that never binds reaches
+         * it.
+         */
+        private const val BIND_WAIT_MS = 8_000L
 
         /** Prompt-raising calls allowed to wait for the user at once, per host. */
         private const val MAX_PENDING_PER_HOST = 8
