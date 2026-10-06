@@ -45,7 +45,7 @@ import java.util.concurrent.TimeUnit
  *    errorMessage)` once the engine settles it (or the RPC relay completes).
  *
  * HOW THE CALLS ARRIVE NOW. There is no `@JavascriptInterface` on this side
- * any more, in either edition: the page reaches native code through the
+ * any more — the page reaches native code through the
  * engine's own page bridge and the call surfaces as
  * [com.roombrowser.browser.RoomSessionListener.onPageMessage], carrying the
  * channel this object is registered under
