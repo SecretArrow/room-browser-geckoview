@@ -108,7 +108,7 @@ class OctraAdapter(private val rpc: JsonRpcClient = JsonRpcClient()) : Derivatio
             if (e.code == SENDER_NOT_FOUND) return 0L
             throw e
         }
-        return rawAmount(result["raw"])
+        return rawAmount(result["balance_raw"] ?: result["raw"])
     }
 
     // ------------------------------------------------------------------

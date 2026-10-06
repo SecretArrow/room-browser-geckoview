@@ -26,9 +26,10 @@ import org.junit.Test
  * its own test suite and asserts against its own signer — so reproducing them
  * here proves this is the same algorithm, not merely a plausible one.
  *
- * The one thing no offline test can establish is that the live network
- * accepts a transaction built this way; that is what the devnet smoke run is
- * for, and it is why the mainnet preset ships unverified.
+ * The RPC fixtures below are the live node's replies verbatim, but no offline
+ * test — and no devnet probe either — establishes that the network accepts a
+ * signature: `octra_submit` answers `sender not found` before it verifies one,
+ * and devnet has no faucet to fund an account that could get further.
  */
 class OctraAdapterTest {
 
@@ -200,12 +201,19 @@ class OctraAdapterTest {
         }
     }
 
+    /**
+     * The live node's own balance payload, verbatim: `balance_raw` is the key
+     * that holds the amount, and `raw` does not exist. Reading the wrong one
+     * returned null for every funded account.
+     */
     @Test
-    fun `getBalance reads the raw field of octra_balance`() {
+    fun `getBalance reads balance_raw out of octra_balance`() {
         val server = MockWebServer()
         server.enqueue(
             MockResponse().setBody(
-                """{"jsonrpc":"2.0","id":1,"result":{"raw":"5000000","formatted":"5.0","nonce":7}}"""
+                """{"jsonrpc":"2.0","id":1,"result":{"address":"$OCTRA0",""" +
+                    """"balance":"5.000000","balance_raw":"5000000","nonce":7,""" +
+                    """"pending_nonce":7,"has_public_key":true}}"""
             )
         )
         server.start()
@@ -220,12 +228,32 @@ class OctraAdapterTest {
         }
     }
 
+    /** A node that answers with the old `raw` spelling still reads. */
+    @Test
+    fun `getBalance still accepts a bare raw field`() {
+        val server = MockWebServer()
+        server.enqueue(
+            MockResponse().setBody(
+                """{"jsonrpc":"2.0","id":1,"result":{"raw":"5000000","nonce":7}}"""
+            )
+        )
+        server.start()
+        try {
+            assertThat(runBlocking { adapter.getBalance(network(server), OCTRA0) })
+                .isEqualTo(5_000_000L)
+        } finally {
+            server.shutdown()
+        }
+    }
+
     @Test
     fun `sendNative prefers pending_nonce adds one and submits the signed object`() {
         val server = MockWebServer()
         server.enqueue(
             MockResponse().setBody(
-                """{"jsonrpc":"2.0","id":1,"result":{"raw":"5000000","nonce":7,"pending_nonce":9}}"""
+                """{"jsonrpc":"2.0","id":1,"result":{"address":"$VECTOR_ADDRESS",""" +
+                    """"balance":"5.000000","balance_raw":"5000000","nonce":7,""" +
+                    """"pending_nonce":9,"has_public_key":true}}"""
             )
         )
         server.enqueue(
