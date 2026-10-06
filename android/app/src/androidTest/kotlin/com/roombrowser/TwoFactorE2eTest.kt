@@ -292,11 +292,39 @@ class TwoFactorE2eTest {
     /** The [index]-th editable field top-to-bottom (the sheet's own order). */
     private fun editTextAt(index: Int): UiObject2? = runCatching {
         device.findObjects(By.clazz("android.widget.EditText"))
+            // A field clipped out of the sheet reports an empty rect; if it
+            // still sorted in, the index would name a field nobody can click.
+            .filter { it.visibleBounds.height() > 0 }
             .sortedBy { it.visibleBounds.top }
             .getOrNull(index)
     }.getOrNull()
 
-    /** Types [value] into the field under [label] and reads the value back. */
+    /** Every editable node's text and vertical span, for a readable failure. */
+    private fun editTextDump(): String = runCatching {
+        device.findObjects(By.clazz("android.widget.EditText")).joinToString(" | ") {
+            val b = it.visibleBounds
+            "'${it.text}'@${b.top}..${b.bottom}"
+        }
+    }.getOrElse { "dump failed: $it" }
+
+    /** Fresh lookups — a cached UiObject2 reports the properties it was found with. */
+    private fun readBack(value: String): Boolean = waitUntil(6_000) {
+        device.findObjects(By.clazz("android.widget.EditText"))
+            .mapNotNull { it.text }
+            .any { it.contains(value) }
+    }
+
+    /**
+     * Types [value] into the field under [label] and reads the value back.
+     *
+     * CI 37399663628 settled the shape of this: the click focuses the field
+     * (LatinIME "Starting input. Cursor position = 0,0" follows it) and the IME
+     * is up, but `UiObject2.setText` returns WITHOUT throwing and leaves the
+     * field empty — so a fallback keyed on a thrown exception never runs. Both
+     * mechanisms are therefore attempted per round and each is gated on the
+     * read-back; the shell burst goes first because it addresses the focused
+     * view through the live InputConnection and cannot miss a re-created node.
+     */
     private fun typeIntoField(label: String, value: String, index: Int): Boolean {
         for (round in 1..3) {
             hideImeIfNeeded()
@@ -311,20 +339,16 @@ class TwoFactorE2eTest {
             }
             val target = found ?: continue
             clickCenter(target)
-            waitImeShown(4_000)
-            if (!runCatching { target.setText(value) }.isSuccess) {
-                device.executeShellCommand("input keyevent KEYCODE_MOVE_END")
-                device.clearFocusedField(40)
-                device.waitForIdle(300)
-                device.executeShellCommand("input text $value")
-                device.waitForIdle(600)
-            }
-            if (waitUntil(5_000) {
-                    device.findObjects(By.clazz("android.widget.EditText"))
-                        .mapNotNull { it.text }
-                        .any { it.contains(value) }
-                }
-            ) return true
+            // The focus handoff is asynchronous and a burst sent before the
+            // InputConnection attaches is dropped whole, so the shown IME is
+            // the precondition for typing, not a nicety.
+            if (!waitImeShown(6_000)) continue
+            device.clearFocusedField(60)
+            device.waitForIdle(400)
+            device.executeShellCommand("input text $value")
+            if (readBack(value)) return true
+            runCatching { target.setText(value) }
+            if (readBack(value)) return true
         }
         return false
     }
@@ -428,15 +452,15 @@ class TwoFactorE2eTest {
                 hasText("Add 2FA account", 8_000)
             )
             assertTrue(
-                "The Account field must take the account name\n${uiTree()}",
+                "The Account field must take the account name\n${uiTree()}\nFIELDS: ${editTextDump()}",
                 typeIntoField("Account", accountName, index = 1)
             )
             assertTrue(
-                "The Setup key field must take the Base32 secret\n${uiTree()}",
+                "The Setup key field must take the Base32 secret\n${uiTree()}\nFIELDS: ${editTextDump()}",
                 typeIntoField("Setup key (Base32)", setupKey, index = 2)
             )
             assertTrue(
-                "The Add button must save and close the sheet\n${uiTree()}",
+                "The Add button must save and close the sheet\n${uiTree()}\nFIELDS: ${editTextDump()}",
                 clickTextScrollableVerified("Add") { waitGone("Add 2FA account", 1_500) }
             )
             assertTrue(
