@@ -212,6 +212,7 @@ class AgentSettingsE2eTest {
             "'Room Agent' text" to By.text("Room Agent"),
             "Agent settings gear" to By.desc("Agent settings"),
             "agent_model line" to By.desc("agent_model"),
+            "agent_mode chip" to By.desc("agent_mode"),
             "Page actions button" to By.desc("Page actions and settings"),
             "'Page Actions' sheet title" to By.text("Page Actions"),
             "'AI Agents' entry" to By.text("AI Agents"),

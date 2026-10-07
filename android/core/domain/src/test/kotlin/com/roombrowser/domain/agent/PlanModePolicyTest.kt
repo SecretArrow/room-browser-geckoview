@@ -3,13 +3,13 @@ package com.roombrowser.domain.agent
 import com.google.common.truth.Truth.assertThat
 import org.junit.Test
 
-class ChatOnlyPolicyTest {
+class PlanModePolicyTest {
 
     @Test
     fun `every refused name is in the catalogue`() {
         val catalogue = AgentTools.toolDefs().map { it.function.name }.toSet()
-        assertThat(ChatOnlyPolicy.REFUSED).isNotEmpty()
-        assertThat(catalogue).containsAtLeastElementsIn(ChatOnlyPolicy.REFUSED)
+        assertThat(PlanModePolicy.REFUSED).isNotEmpty()
+        assertThat(catalogue).containsAtLeastElementsIn(PlanModePolicy.REFUSED)
     }
 
     @Test
@@ -23,14 +23,14 @@ class ChatOnlyPolicyTest {
             AgentTools.APP_SETTINGS, AgentTools.APP_NOTES, AgentTools.APP_TABS
         )
         allowed.forEach { name ->
-            assertThat(ChatOnlyPolicy.refusal(name, null)).isNull()
+            assertThat(PlanModePolicy.refusal(name, null)).isNull()
         }
     }
 
     @Test
     fun `everything that can submit is refused, and the refusal names it`() {
-        ChatOnlyPolicy.REFUSED.forEach { name ->
-            val refusal = ChatOnlyPolicy.refusal(name, null)
+        PlanModePolicy.REFUSED.forEach { name ->
+            val refusal = PlanModePolicy.refusal(name, null)
             assertThat(refusal).isNotNull()
             assertThat(refusal).contains(name)
         }
@@ -39,25 +39,25 @@ class ChatOnlyPolicyTest {
     @Test
     fun `run_js is refused although the confirm gate leaves it unasked`() {
         assertThat(AgentTools.INTERACTIVE_TOOLS).doesNotContain(AgentTools.RUN_JS)
-        assertThat(ChatOnlyPolicy.refusal(AgentTools.RUN_JS, null)).isNotNull()
+        assertThat(PlanModePolicy.refusal(AgentTools.RUN_JS, null)).isNotNull()
     }
 
     @Test
     fun `app_2fa is refused only when it types into the page`() {
-        assertThat(ChatOnlyPolicy.refusal(AgentTools.APP_2FA, "fill")).isNotNull()
+        assertThat(PlanModePolicy.refusal(AgentTools.APP_2FA, "fill")).isNotNull()
         listOf("list", "code", "copy").forEach { action ->
-            assertThat(ChatOnlyPolicy.refusal(AgentTools.APP_2FA, action)).isNull()
+            assertThat(PlanModePolicy.refusal(AgentTools.APP_2FA, action)).isNull()
         }
     }
 
     @Test
     fun `changing what a site may do is refused, while reading it is not`() {
         listOf("toggle", "clear_site_data").forEach { action ->
-            assertThat(ChatOnlyPolicy.refusal(AgentTools.APP_SHIELDS, action)).isNotNull()
+            assertThat(PlanModePolicy.refusal(AgentTools.APP_SHIELDS, action)).isNotNull()
         }
-        assertThat(ChatOnlyPolicy.refusal(AgentTools.APP_SITE_PERMISSION, "set")).isNotNull()
-        assertThat(ChatOnlyPolicy.refusal(AgentTools.APP_SHIELDS, "read")).isNull()
-        assertThat(ChatOnlyPolicy.refusal(AgentTools.APP_SITE_PERMISSION, "list")).isNull()
+        assertThat(PlanModePolicy.refusal(AgentTools.APP_SITE_PERMISSION, "set")).isNotNull()
+        assertThat(PlanModePolicy.refusal(AgentTools.APP_SHIELDS, "read")).isNull()
+        assertThat(PlanModePolicy.refusal(AgentTools.APP_SITE_PERMISSION, "list")).isNull()
     }
 
     @Test
@@ -75,14 +75,14 @@ class ChatOnlyPolicyTest {
         // The app tools refuse an action outside their own enum, so a null or
         // unparsed one must not be turned into a refusal here — that would tell
         // the model the tool exists and is merely switched off.
-        assertThat(ChatOnlyPolicy.refusal(AgentTools.APP_SHIELDS, null)).isNull()
-        assertThat(ChatOnlyPolicy.refusal(AgentTools.APP_SHIELDS, "not_an_action")).isNull()
+        assertThat(PlanModePolicy.refusal(AgentTools.APP_SHIELDS, null)).isNull()
+        assertThat(PlanModePolicy.refusal(AgentTools.APP_SHIELDS, "not_an_action")).isNull()
     }
 
     @Test
     fun `an unknown name is left to the executor`() {
         // A typo must not be answered with a mode refusal: that would tell the
         // model the tool exists and is merely switched off here.
-        assertThat(ChatOnlyPolicy.refusal("not_a_tool", null)).isNull()
+        assertThat(PlanModePolicy.refusal("not_a_tool", null)).isNull()
     }
 }

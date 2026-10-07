@@ -12,6 +12,7 @@ import com.roombrowser.browser.engine.ProfileEngine
 import com.roombrowser.data.db.AgentMessageEntity
 import com.roombrowser.data.db.AgentProviderEntity
 import com.roombrowser.data.db.AgentSessionEntity
+import com.roombrowser.data.repo.AgentMode
 import com.roombrowser.data.repo.AgentSettings
 import com.roombrowser.domain.agent.ActionGate
 import com.roombrowser.domain.agent.ActionVerdict
@@ -300,14 +301,6 @@ class BrowserAgentController(
      */
     var chatHeadless by mutableStateOf(false)
         private set
-    /**
-     * The chat is set to READ ONLY: it opens and reads pages and nothing it
-     * runs can click, type, submit, post or sign. Surfaced so the panel shows
-     * the mode while it is on — a turn that suddenly refuses to act reads as a
-     * broken agent otherwise.
-     */
-    var chatOnly by mutableStateOf(true)
-        private set
     var modelsLoading by mutableStateOf(false)
         private set
     var modelsError by mutableStateOf<String?>(null)
@@ -420,7 +413,6 @@ class BrowserAgentController(
         activeModel = model
         chatModelAuto = settings.defaultModelAuto && provider != null
         chatHeadless = settings.chatHeadless
-        chatOnly = settings.chatOnly
     }
 
     // ------------------------------------------------------------- provider & model
@@ -559,14 +551,25 @@ class BrowserAgentController(
     }
 
     /**
-     * Turns the read-only mode on or off for every turn from now on. Persisted
-     * like the surface, because it is a standing choice about how this
-     * profile's agent works rather than a per-turn switch.
+     * Chooses what every turn from now on may do. Persisted like the surface,
+     * because it is a standing choice about how this profile's agent works
+     * rather than a per-turn switch.
+     *
+     * A mode is stored as the flags it means rather than beside them, so the
+     * switches in AI Agent settings keep editing the same state and cannot end
+     * up describing a mode other than the one the header shows. ASK turns the
+     * confirmation prompt ON: "asked before each action" is what the mode
+     * promises, and it would be a lie while that switch is off.
      */
-    fun setChatOnlyMode(only: Boolean) {
+    fun setAgentMode(mode: AgentMode) {
         scope.launch {
-            settings = appState.updateAgentSettings { it.copy(chatOnly = only) }
-            chatOnly = only
+            settings = appState.updateAgentSettings { s ->
+                when (mode) {
+                    AgentMode.PLAN -> s.copy(chatOnly = true, yolo = false)
+                    AgentMode.ASK -> s.copy(chatOnly = false, yolo = false, confirmActions = true)
+                    AgentMode.YOLO -> s.copy(chatOnly = false, yolo = true)
+                }
+            }
         }
     }
 
@@ -812,7 +815,7 @@ class BrowserAgentController(
         if (settings.yolo) {
             note(
                 "YOLO is on — this turn's actions run without asking. " +
-                    "Turn it off in AI Agent settings.",
+                    "Switch the mode in the agent panel.",
                 error = true
             )
         }
@@ -912,11 +915,11 @@ class BrowserAgentController(
                     appTools = { name, args -> visibleExecutor.executeAppTool(name, args) }
                 )
             } ?: visibleExecutor
-            // Chat only wraps the WHOLE turn, the headless gate included: that
-            // gate hands the app's own tools straight through, and one of them
-            // (app_2fa action=fill) reaches the page by that route.
+            // Plan mode wraps the WHOLE turn, the headless gate included:
+            // that gate hands the app's own tools straight through, and one of
+            // them (app_2fa action=fill) reaches the page by that route.
             val executor: ToolExecutor =
-                if (settings.chatOnly) ChatOnlyToolGate(pageExecutor) else pageExecutor
+                if (settings.chatMode == AgentMode.PLAN) PlanModeToolGate(pageExecutor) else pageExecutor
             // "Delete all agent chats" can run in the settings ACTIVITY while
             // a session is active here — verify it still exists, else start a
             // fresh one instead of writing to a dead row (FK safety).
@@ -939,10 +942,11 @@ class BrowserAgentController(
             val engine = SearchEngines.byId(vm.profileSettings().searchEngineId).label
             val basePrompt = settings.systemPromptOverride?.takeIf { it.isNotBlank() }
                 ?: AgentPrompts.render(System.currentTimeMillis(), ZoneId.systemDefault(), engine)
-            // A read-only turn says so up front: otherwise the model plans a
+            // A Plan turn says so up front: otherwise the model plans a
             // click, is refused, and spends its steps probing what is left.
             val prompt =
-                if (settings.chatOnly) basePrompt + AgentPrompts.CHAT_ONLY_CLAUSE else basePrompt
+                if (settings.chatMode == AgentMode.PLAN) basePrompt + AgentPrompts.PLAN_CLAUSE
+                else basePrompt
             val config = com.roombrowser.domain.agent.AgentConfig(
                 model = model,
                 maxSteps = settings.maxSteps,

@@ -47,15 +47,15 @@ Today is {DATE}. The browser's search engine is {ENGINE}.
         render(java.time.Instant.ofEpochMilli(epochMillis).atZone(zone).toLocalDate(), searchEngineLabel)
 
     /**
-     * Appended to the system prompt while "Chat only" is on. The model is told
-     * BEFORE it plans, because a tool that only refuses mid-plan costs a step
-     * and reads as the tool being broken.
+     * Appended to the system prompt while the chat is in Plan mode. The model
+     * is told BEFORE it plans, because a tool that only refuses mid-plan costs
+     * a step and reads as the tool being broken.
      */
-    val CHAT_ONLY_CLAUSE: String = """
+    val PLAN_CLAUSE: String = """
 
-CHAT ONLY MODE — this turn opens and reads pages and never acts on one:
+PLAN MODE — this turn reads pages and proposes work, and never carries it out:
 - Clicking, typing, pressing Enter, choosing an option, sending keys, running JavaScript, liking, reposting, replying, posting and approving a wallet request are switched off for this turn, and a call to one of them is refused.
-- Look what you need up with search_web, navigate and read_page, then answer from what you read. To follow a link, navigate to the href that read_page showed you.
-- Ask for the mode to be turned off only when the task genuinely cannot be done by reading.
+- Investigate with search_web, navigate and read_page, then answer with a short numbered plan: what you would do, in order, and what each step changes on the page.
+- Stop there. The user switches the mode to Ask to have you carry the plan out with a prompt before each action, or to YOLO to run it without being asked.
 """.trimEnd()
 }

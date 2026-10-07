@@ -44,6 +44,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.ArrowDownward
 import androidx.compose.material.icons.filled.AttachFile
 import androidx.compose.material.icons.filled.AutoAwesome
@@ -70,6 +71,8 @@ import androidx.compose.material3.Badge
 import androidx.compose.material3.BadgedBox
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilledIconButton
 import androidx.compose.material3.FilledTonalIconButton
@@ -125,6 +128,7 @@ import com.roombrowser.agent.ApprovalAnswer
 import com.roombrowser.agent.BrowserAgentController
 import com.roombrowser.browser.BrowserViewModel
 import com.roombrowser.data.db.AgentProviderEntity
+import com.roombrowser.data.repo.AgentMode
 import com.roombrowser.domain.agent.AgentTools
 import com.roombrowser.ui.common.LocalRoomExtras
 import com.roombrowser.ui.common.RoomBottomSheetShape
@@ -436,19 +440,26 @@ private fun AgentPanelHeader(
                 agent.chatModelAuto -> "${provider.name} · Auto"
                 else -> "${provider.name} · ${agent.activeModel ?: provider.defaultModel}"
             }
-            Text(
-                modelLine,
-                style = MaterialTheme.typography.labelMedium,
-                color = MaterialTheme.colorScheme.primary,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier
-                    // clickable BEFORE padding so the vertical padding counts
-                    // toward the touch target (taller, ≥32dp effective row).
-                    .clickable(enabled = provider != null) { showModelPicker = true }
-                    .semantics { contentDescription = "agent_model" }
-                    .padding(vertical = 8.dp)
-            )
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    modelLine,
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.primary,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier
+                        .weight(1f)
+                        // clickable BEFORE padding so the vertical padding
+                        // counts toward the touch target (≥32dp effective row).
+                        .clickable(enabled = provider != null) { showModelPicker = true }
+                        .semantics { contentDescription = "agent_model" }
+                        .padding(vertical = 8.dp)
+                )
+                // What the turn may DO, on the line of the model it runs on:
+                // a turn that suddenly refuses to act reads as a broken agent,
+                // so the mode belongs on screen rather than in settings.
+                ChatModePicker(agent)
+            }
             // Where a turn runs, on the same tappable line pattern as the
             // model above. It has to be visible BEFORE a turn is sent: the two
             // surfaces disagree about what "click that button" means, and only
@@ -463,18 +474,6 @@ private fun AgentPanelHeader(
                     .clickable { showSurfacePicker = true }
                     .semantics { contentDescription = "agent_surface" }
                     .padding(vertical = 6.dp)
-            )
-            // Chat only: a chip rather than a third tappable line, because its
-            // STATE is the thing to see — a turn that suddenly refuses to act
-            // reads as a broken agent, and the two lines above only say where
-            // the turn runs, not what it may do.
-            FilterChip(
-                selected = agent.chatOnly,
-                onClick = { agent.setChatOnlyMode(!agent.chatOnly) },
-                label = { Text("Chat only") },
-                modifier = Modifier
-                    .semantics { contentDescription = "agent_chat_only" }
-                    .padding(top = 2.dp)
             )
             // While a turn runs the panel stays with it, even if the user
             // walks off to another tab — otherwise the running work would
@@ -511,6 +510,78 @@ private fun AgentPanelHeader(
     }
     if (showSurfacePicker) {
         ChatSurfaceSheet(agent = agent, onDismiss = { showSurfacePicker = false })
+    }
+}
+
+/**
+ * What a turn may do, as a dropdown beside the model it runs on: Ask, Plan or
+ * YOLO. A menu rather than the sheet the two lines above open, because the
+ * choice is three short words and this is where the user is standing when they
+ * decide the agent should stop — or stop asking.
+ */
+@Composable
+private fun ChatModePicker(agent: BrowserAgentController) {
+    var expanded by remember { mutableStateOf(false) }
+    val mode = agent.settings.chatMode
+    Box {
+        FilterChip(
+            // Always "on": the chip shows the mode in force, and the chosen
+            // entry in the menu is what tells the three apart.
+            selected = true,
+            onClick = { expanded = true },
+            label = { Text(mode.title) },
+            trailingIcon = {
+                Icon(
+                    Icons.Filled.ArrowDropDown,
+                    contentDescription = null,
+                    // YOLO is the one mode that removes every check at once,
+                    // so it is the one that does not look like the other two.
+                    tint = if (mode == AgentMode.YOLO) MaterialTheme.colorScheme.onErrorContainer
+                    else MaterialTheme.colorScheme.onSecondaryContainer,
+                    modifier = Modifier.size(18.dp)
+                )
+            },
+            colors = if (mode == AgentMode.YOLO) {
+                FilterChipDefaults.filterChipColors(
+                    selectedContainerColor = MaterialTheme.colorScheme.errorContainer,
+                    selectedLabelColor = MaterialTheme.colorScheme.onErrorContainer
+                )
+            } else {
+                FilterChipDefaults.filterChipColors()
+            },
+            modifier = Modifier.semantics { contentDescription = "agent_mode" }
+        )
+        DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+            AgentMode.entries.forEach { option ->
+                DropdownMenuItem(
+                    text = {
+                        Column {
+                            Text(option.title)
+                            Text(
+                                option.blurb,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    },
+                    leadingIcon = {
+                        if (option == mode) {
+                            Icon(
+                                Icons.Filled.Check,
+                                contentDescription = null,
+                                modifier = Modifier.size(18.dp)
+                            )
+                        } else {
+                            Spacer(Modifier.size(18.dp))
+                        }
+                    },
+                    onClick = {
+                        expanded = false
+                        agent.setAgentMode(option)
+                    }
+                )
+            }
+        }
     }
 }
 

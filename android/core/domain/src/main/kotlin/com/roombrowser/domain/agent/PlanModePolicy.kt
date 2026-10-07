@@ -1,7 +1,7 @@
 package com.roombrowser.domain.agent
 
 /**
- * What a "Chat only" turn refuses: every tool that can put something INTO a
+ * What a Plan-mode turn refuses: every tool that can put something INTO a
  * page or send it THROUGH one.
  *
  * The mode exists so a chat can look something up and show the answer without
@@ -15,7 +15,7 @@ package com.roombrowser.domain.agent
  * open-ended half, where a tool added later should simply work. Every name
  * here is held to the catalogue by its test.
  */
-object ChatOnlyPolicy {
+object PlanModePolicy {
 
     /**
      * [AgentTools.RUN_JS] is here although it is deliberately absent from
@@ -64,9 +64,10 @@ object ChatOnlyPolicy {
         val refused = toolName in REFUSED ||
             (action != null && action in REFUSED_ACTIONS[toolName].orEmpty())
         if (!refused) return null
-        return "tool '$toolName' is switched off while this chat is in Chat only mode: the turn " +
-            "opens and reads pages and changes nothing else — nothing is clicked, typed, " +
-            "submitted, posted, signed or granted. Answer from read_page instead — and if this " +
-            "action is really wanted, tell the user to turn Chat only off in the agent panel."
+        return "tool '$toolName' is switched off while this chat is in Plan mode: the turn " +
+            "opens and reads pages and proposes the work instead of doing it — nothing is " +
+            "clicked, typed, submitted, posted, signed or granted. Answer from read_page and " +
+            "lay the steps out instead — and if this action is really wanted, tell the user to " +
+            "switch the chat mode to Ask or YOLO in the agent panel."
     }
 }

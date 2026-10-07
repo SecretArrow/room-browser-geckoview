@@ -87,10 +87,15 @@ data class AgentSettings(
      */
     val chatHeadless: Boolean = false,
     /**
-     * The chat only reads and opens pages: nothing it does is clicked, typed,
-     * submitted, posted or signed, and no tool that could do any of those is
-     * offered to it. On by default — the owner wants an unattended agent that
-     * cannot submit anything anywhere — so acting on the page is opted into.
+     * The chat is in PLAN mode: it only reads and opens pages, and nothing it
+     * runs is clicked, typed, submitted, posted or signed. On by default — the
+     * owner wants an unattended agent that cannot submit anything anywhere —
+     * so acting on the page is opted into, from the mode control in the chat
+     * header.
+     *
+     * This is where [AgentMode.PLAN] is stored, and it outranks [yolo]: a
+     * read-only turn refuses an acting tool before any prompt could be raised,
+     * so nothing acts while it is on.
      */
     val chatOnly: Boolean = true,
     val temperature: Double = 0.2,
@@ -233,6 +238,40 @@ data class AgentSettings(
         retryConnectionFailures = retryConnectionFailures,
         delayMs = retryDelaySeconds * 1000L
     )
+
+    /** What every turn may do, as the chat header shows it. */
+    val chatMode: AgentMode get() = AgentMode.of(this)
+}
+
+/**
+ * What an agent turn may do, as the three choices the chat header offers.
+ *
+ * Derived from the flags that are actually persisted — [AgentSettings.chatOnly]
+ * and [AgentSettings.yolo] — rather than stored beside them, so the mode picked
+ * in the header, a YOLO answered at an approval prompt and the switches in AI
+ * Agent settings cannot end up disagreeing about what the agent may do.
+ */
+enum class AgentMode(val title: String, val blurb: String) {
+    /** Acts on the page, asking before each action. */
+    ASK("Ask", "Act on the page, asking before every action"),
+    /** Reads, and answers with the steps instead of taking them. */
+    PLAN("Plan", "Read pages and answer with the steps, changing nothing"),
+    /** Acts without asking. */
+    YOLO("YOLO", "Act on the page without being asked");
+
+    companion object {
+        /**
+         * Read-only wins over everything else: while
+         * [AgentSettings.chatOnly] is on, a turn refuses an acting tool before
+         * the approval prompt could be raised, so reporting [YOLO] there would
+         * name a mode that cannot do what it says.
+         */
+        fun of(settings: AgentSettings): AgentMode = when {
+            settings.chatOnly -> PLAN
+            settings.yolo -> YOLO
+            else -> ASK
+        }
+    }
 }
 
 @Serializable
