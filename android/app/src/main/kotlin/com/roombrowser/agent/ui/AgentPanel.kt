@@ -26,7 +26,6 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
-import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -228,9 +227,13 @@ fun AgentPanelHost(
                     key(viewModel.activeTabId) {
                         AgentComposer(
                             agent = agent,
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .imePadding()
+                            // No imePadding: the browser Scaffold already
+                            // lifts this whole panel above the keyboard and
+                            // marks the IME inset consumed. Padding for it
+                            // again here cost the composer the keyboard's
+                            // height a second time, which is what pushed the
+                            // text field out of its own box.
+                            modifier = Modifier.fillMaxWidth()
                         )
                     }
                 }
@@ -440,41 +443,41 @@ private fun AgentPanelHeader(
                 agent.chatModelAuto -> "${provider.name} · Auto"
                 else -> "${provider.name} · ${agent.activeModel ?: provider.defaultModel}"
             }
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(
-                    modelLine,
-                    style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.primary,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier
-                        .weight(1f)
-                        // clickable BEFORE padding so the vertical padding
-                        // counts toward the touch target (≥32dp effective row).
-                        .clickable(enabled = provider != null) { showModelPicker = true }
-                        .semantics { contentDescription = "agent_model" }
-                        .padding(vertical = 8.dp)
-                )
-                // What the turn may DO, on the line of the model it runs on:
-                // a turn that suddenly refuses to act reads as a broken agent,
-                // so the mode belongs on screen rather than in settings.
-                ChatModePicker(agent)
-            }
+            Text(
+                modelLine,
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.primary,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier
+                    // clickable BEFORE padding so the vertical padding
+                    // counts toward the touch target (≥32dp effective row).
+                    .clickable(enabled = provider != null) { showModelPicker = true }
+                    .semantics { contentDescription = "agent_model" }
+                    .padding(vertical = 8.dp)
+            )
             // Where a turn runs, on the same tappable line pattern as the
             // model above. It has to be visible BEFORE a turn is sent: the two
             // surfaces disagree about what "click that button" means, and only
             // one of them can be watched.
-            Text(
-                if (agent.chatHeadless) "Headless · hidden page" else "Headed · this tab",
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier
-                    .clickable { showSurfacePicker = true }
-                    .semantics { contentDescription = "agent_surface" }
-                    .padding(vertical = 6.dp)
-            )
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    if (agent.chatHeadless) "Headless · hidden page" else "Headed · this tab",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier
+                        .weight(1f)
+                        .clickable { showSurfacePicker = true }
+                        .semantics { contentDescription = "agent_surface" }
+                        .padding(vertical = 6.dp)
+                )
+                // What the turn may DO, beside the surface it runs on: a turn
+                // that suddenly refuses to act reads as a broken agent, so the
+                // mode belongs on screen rather than in settings.
+                ChatModePicker(agent)
+            }
             // While a turn runs the panel stays with it, even if the user
             // walks off to another tab — otherwise the running work would
             // vanish from the screen it was started on. Says so, because a
@@ -1095,181 +1098,187 @@ private fun AgentComposer(agent: BrowserAgentController, modifier: Modifier = Mo
 
     Surface(color = MaterialTheme.colorScheme.surface) {
         Column(modifier.padding(horizontal = 16.dp, vertical = 8.dp)) {
-            // Row 1 — controls: the two context switches + file upload. The
-            // text field lives on its own full-width row below, so it reaches
-            // the panel edges ("lebar sampai ke pinggir layar").
-            //
-            // The chips SCROLL rather than squeeze: two labels plus a 48dp
-            // attach button do not fit a 320dp phone at a large font scale,
-            // and a wrapped or truncated "Default context" is unreadable in
-            // exactly the state the user needs to read it in.
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Row(
-                    Modifier
-                        .weight(1f)
-                        .horizontalScroll(rememberScrollState()),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    // DEFAULT CONTEXT — the standing instruction the agent
-                    // carries into every request until it is switched off.
-                    //
-                    // Tap toggles it. Tapping it while nothing is saved opens
-                    // the editor instead, because "on" and "empty" is not a
-                    // state worth being able to reach: the switch would turn
-                    // green and change nothing about the requests. Long press
-                    // edits from either state.
-                    FilterChip(
-                        selected = useDefaultContext,
-                        onClick = {
-                            if (defaultContext.isBlank()) {
-                                editingContext = true
-                            } else {
-                                val next = !useDefaultContext
-                                useDefaultContext = next
-                                agent.updateSettings { it.copy(useDefaultContext = next) }
-                            }
-                        },
-                        label = { Text("Default context") },
-                        leadingIcon = {
-                            Icon(
-                                if (useDefaultContext) Icons.Filled.Check else Icons.Filled.BookmarkBorder,
-                                contentDescription = null,
-                                modifier = Modifier.size(16.dp)
-                            )
-                        },
-                        modifier = Modifier
-                            .semantics { contentDescription = "agent_default_context" },
-                        colors = FilterChipDefaults.filterChipColors(
-                            selectedContainerColor = if (dark) IncludeGreenDarkContainer else IncludeGreenLightContainer,
-                            selectedLabelColor = if (dark) IncludeGreenDarkContent else IncludeGreenLightContent,
-                            selectedLeadingIconColor = if (dark) IncludeGreenDarkContent else IncludeGreenLightContent
-                        )
-                    )
-                    // Included page = GREEN (user request: "jika include page
-                    // di-ikutkan maka warna hijau") — green container + green
-                    // label/leading icon, and the page icon swaps for a check so
-                    // the state is unmistakable even without color vision.
-                    FilterChip(
-                        selected = includePage,
-                        onClick = { includePage = !includePage },
-                        label = { Text("Include page") },
-                        leadingIcon = {
-                            Icon(
-                                if (includePage) Icons.Filled.Check else Icons.Filled.Description,
-                                contentDescription = null,
-                                modifier = Modifier.size(16.dp)
-                            )
-                        },
-                        colors = FilterChipDefaults.filterChipColors(
-                            selectedContainerColor = if (dark) IncludeGreenDarkContainer else IncludeGreenLightContainer,
-                            selectedLabelColor = if (dark) IncludeGreenDarkContent else IncludeGreenLightContent,
-                            selectedLeadingIconColor = if (dark) IncludeGreenDarkContent else IncludeGreenLightContent
-                        )
-                    )
-                }
-                Spacer(Modifier.width(8.dp))
-                FilledTonalIconButton(
-                    onClick = { attachLauncher.launch(arrayOf("*/*")) },
-                    modifier = Modifier
-                        .size(48.dp)
-                        .semantics { contentDescription = "agent_attach_files" }
-                ) {
-                    BadgedBox(
-                        badge = {
-                            if (attachments.isNotEmpty()) Badge { Text("${attachments.size}") }
-                        }
+            // Everything above the text field is optional and can be
+            // clipped; the field is measured FIRST (it is the unweighted
+            // child below), so a short panel squeezes the chips empty
+            // instead of leaving nowhere to type.
+            Column(Modifier.weight(1f, fill = false)) {
+                // Row 1 — controls: the two context switches + file upload. The
+                // text field lives on its own full-width row below, so it reaches
+                // the panel edges ("lebar sampai ke pinggir layar").
+                //
+                // The chips SCROLL rather than squeeze: two labels plus a 48dp
+                // attach button do not fit a 320dp phone at a large font scale,
+                // and a wrapped or truncated "Default context" is unreadable in
+                // exactly the state the user needs to read it in.
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Row(
+                        Modifier
+                            .weight(1f)
+                            .horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        Icon(Icons.Filled.AttachFile, contentDescription = null, modifier = Modifier.size(20.dp))
-                    }
-                }
-            }
-
-            // What the two switches will actually send, in one line, whenever
-            // either is on. A green chip says "this is enabled"; it does not
-            // say WHAT is enabled, and the default context is text the user
-            // wrote days ago and cannot see from here. Tapping the line opens
-            // the editor.
-            val activeContexts = buildList {
-                if (useDefaultContext && defaultContext.isNotBlank()) {
-                    add("Context: " + defaultContext.replace(Regex("\\s+"), " ").trim())
-                }
-                if (includePage) add("This page")
-            }
-            if (activeContexts.isNotEmpty()) {
-                Spacer(Modifier.height(6.dp))
-                Text(
-                    activeContexts.joinToString("  ·  "),
-                    style = MaterialTheme.typography.labelSmall,
-                    color = if (dark) IncludeGreenDarkContent else IncludeGreenLightContent,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clickable { editingContext = true }
-                        .padding(vertical = 4.dp)
-                        .semantics { contentDescription = "agent_active_contexts" }
-                )
-            }
-
-            // Picked files — removable chips, horizontally scrollable.
-            if (attachments.isNotEmpty()) {
-                Spacer(Modifier.height(6.dp))
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .horizontalScroll(rememberScrollState()),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    attachments.forEachIndexed { index, attachment ->
-                        InputChip(
-                            selected = false,
-                            onClick = { attachments = attachments.filterIndexed { i, _ -> i != index } },
-                            label = {
-                                Text(
-                                    attachment.name,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis,
-                                    modifier = Modifier.widthIn(max = 160.dp)
-                                )
+                        // DEFAULT CONTEXT — the standing instruction the agent
+                        // carries into every request until it is switched off.
+                        //
+                        // Tap toggles it. Tapping it while nothing is saved opens
+                        // the editor instead, because "on" and "empty" is not a
+                        // state worth being able to reach: the switch would turn
+                        // green and change nothing about the requests. Long press
+                        // edits from either state.
+                        FilterChip(
+                            selected = useDefaultContext,
+                            onClick = {
+                                if (defaultContext.isBlank()) {
+                                    editingContext = true
+                                } else {
+                                    val next = !useDefaultContext
+                                    useDefaultContext = next
+                                    agent.updateSettings { it.copy(useDefaultContext = next) }
+                                }
                             },
-                            trailingIcon = {
+                            label = { Text("Default context") },
+                            leadingIcon = {
                                 Icon(
-                                    Icons.Filled.Close,
-                                    contentDescription = "agent_remove_attachment",
+                                    if (useDefaultContext) Icons.Filled.Check else Icons.Filled.BookmarkBorder,
+                                    contentDescription = null,
                                     modifier = Modifier.size(16.dp)
                                 )
-                            }
+                            },
+                            modifier = Modifier
+                                .semantics { contentDescription = "agent_default_context" },
+                            colors = FilterChipDefaults.filterChipColors(
+                                selectedContainerColor = if (dark) IncludeGreenDarkContainer else IncludeGreenLightContainer,
+                                selectedLabelColor = if (dark) IncludeGreenDarkContent else IncludeGreenLightContent,
+                                selectedLeadingIconColor = if (dark) IncludeGreenDarkContent else IncludeGreenLightContent
+                            )
+                        )
+                        // Included page = GREEN (user request: "jika include page
+                        // di-ikutkan maka warna hijau") — green container + green
+                        // label/leading icon, and the page icon swaps for a check so
+                        // the state is unmistakable even without color vision.
+                        FilterChip(
+                            selected = includePage,
+                            onClick = { includePage = !includePage },
+                            label = { Text("Include page") },
+                            leadingIcon = {
+                                Icon(
+                                    if (includePage) Icons.Filled.Check else Icons.Filled.Description,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(16.dp)
+                                )
+                            },
+                            colors = FilterChipDefaults.filterChipColors(
+                                selectedContainerColor = if (dark) IncludeGreenDarkContainer else IncludeGreenLightContainer,
+                                selectedLabelColor = if (dark) IncludeGreenDarkContent else IncludeGreenLightContent,
+                                selectedLeadingIconColor = if (dark) IncludeGreenDarkContent else IncludeGreenLightContent
+                            )
                         )
                     }
+                    Spacer(Modifier.width(8.dp))
+                    FilledTonalIconButton(
+                        onClick = { attachLauncher.launch(arrayOf("*/*")) },
+                        modifier = Modifier
+                            .size(48.dp)
+                            .semantics { contentDescription = "agent_attach_files" }
+                    ) {
+                        BadgedBox(
+                            badge = {
+                                if (attachments.isNotEmpty()) Badge { Text("${attachments.size}") }
+                            }
+                        ) {
+                            Icon(Icons.Filled.AttachFile, contentDescription = null, modifier = Modifier.size(20.dp))
+                        }
+                    }
                 }
-            }
 
-            Spacer(Modifier.height(6.dp))
-
-            // A turn that errored or was stopped can be sent again exactly as
-            // it was asked. Retyping it is the only alternative, and the
-            // failure — a provider hiccup, a rate limit — is usually not the
-            // request's fault.
-            if (!agent.running && agent.retryable != null) {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    modifier = Modifier.fillMaxWidth()
-                ) {
+                // What the two switches will actually send, in one line, whenever
+                // either is on. A green chip says "this is enabled"; it does not
+                // say WHAT is enabled, and the default context is text the user
+                // wrote days ago and cannot see from here. Tapping the line opens
+                // the editor.
+                val activeContexts = buildList {
+                    if (useDefaultContext && defaultContext.isNotBlank()) {
+                        add("Context: " + defaultContext.replace(Regex("\\s+"), " ").trim())
+                    }
+                    if (includePage) add("This page")
+                }
+                if (activeContexts.isNotEmpty()) {
+                    Spacer(Modifier.height(6.dp))
                     Text(
-                        "That turn did not finish.",
+                        activeContexts.joinToString("  ·  "),
                         style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.error,
+                        color = if (dark) IncludeGreenDarkContent else IncludeGreenLightContent,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
-                        modifier = Modifier.weight(1f)
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { editingContext = true }
+                            .padding(vertical = 4.dp)
+                            .semantics { contentDescription = "agent_active_contexts" }
                     )
-                    TextButton(
-                        onClick = { agent.retry() },
-                        modifier = Modifier.semantics { contentDescription = "agent_retry" }
+                }
+
+                // Picked files — removable chips, horizontally scrollable.
+                if (attachments.isNotEmpty()) {
+                    Spacer(Modifier.height(6.dp))
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        Icon(Icons.Filled.Refresh, contentDescription = null, modifier = Modifier.size(16.dp))
-                        Spacer(Modifier.width(6.dp))
-                        Text("Retry")
+                        attachments.forEachIndexed { index, attachment ->
+                            InputChip(
+                                selected = false,
+                                onClick = { attachments = attachments.filterIndexed { i, _ -> i != index } },
+                                label = {
+                                    Text(
+                                        attachment.name,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                        modifier = Modifier.widthIn(max = 160.dp)
+                                    )
+                                },
+                                trailingIcon = {
+                                    Icon(
+                                        Icons.Filled.Close,
+                                        contentDescription = "agent_remove_attachment",
+                                        modifier = Modifier.size(16.dp)
+                                    )
+                                }
+                            )
+                        }
+                    }
+                }
+
+                Spacer(Modifier.height(6.dp))
+
+                // A turn that errored or was stopped can be sent again exactly as
+                // it was asked. Retyping it is the only alternative, and the
+                // failure — a provider hiccup, a rate limit — is usually not the
+                // request's fault.
+                if (!agent.running && agent.retryable != null) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text(
+                            "That turn did not finish.",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.error,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f)
+                        )
+                        TextButton(
+                            onClick = { agent.retry() },
+                            modifier = Modifier.semantics { contentDescription = "agent_retry" }
+                        ) {
+                            Icon(Icons.Filled.Refresh, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Spacer(Modifier.width(6.dp))
+                            Text("Retry")
+                        }
                     }
                 }
             }

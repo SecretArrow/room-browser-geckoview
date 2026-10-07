@@ -18,6 +18,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.WindowInsetsSides
+import androidx.compose.foundation.layout.consumeWindowInsets
 import androidx.compose.foundation.layout.displayCutout
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -253,9 +254,9 @@ fun BrowserScreen(
         // bottom bar and every routed screen sit on a cohesive canvas.
         containerColor = LocalRoomExtras.current.background,
         // Keyboard: same semantics as the previous adjustResize window — the
-        // whole browser UI (toolbar included) rides above the IME. IME insets
-        // are consumed here so the agent composer's imePadding() never
-        // double-applies.
+        // whole browser UI (toolbar included) rides above the IME, and the
+        // inset is then marked consumed on the content Box below so no
+        // descendant pads for the keyboard a second time.
         modifier = Modifier.imePadding(),
         // Insets are applied EXPLICITLY (bottomBar + content Box below) —
         // deterministic, no double-counting, on every API level 28..35+.
@@ -302,6 +303,13 @@ fun BrowserScreen(
                             .only(WindowInsetsSides.Top + WindowInsetsSides.Horizontal)
                     }
                 )
+                // The Scaffold above already rides the whole UI above the
+                // keyboard, so the IME inset is SPENT by the time anything in
+                // here reads it. Marking it consumed is what makes that true
+                // for descendants: without it a child that pads for the IME
+                // itself (the agent composer did) adds the keyboard's height a
+                // second time and its last row is measured into nothing.
+                .consumeWindowInsets(WindowInsets.ime)
         ) {
             when (route) {
                 BrowserRoute.Browser -> BrowserContent(
