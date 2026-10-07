@@ -258,10 +258,17 @@ fun MainScreen(
                 // first-run onboarding whose only action needs scrolling is
                 // poor UX. Exactly ONE create affordance per state, as ever:
                 // the CreateProfileDialog confirm is the only other place
-                // the label exists.
-                WelcomeSection(onSkip = { viewModel.setFirstRunDone() })
-                Spacer(Modifier.height(4.dp))
-                CreateProfileButton(addAnother = false, onCreate = { showCreate = true })
+                // the label exists. Centred, like the empty state below: on a
+                // screen with nothing on it yet, a left-hugging CTA reads as a
+                // layout bug.
+                Column(
+                    Modifier.fillMaxWidth(),
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    WelcomeSection(onSkip = { viewModel.setFirstRunDone() })
+                    Spacer(Modifier.height(4.dp))
+                    CreateProfileButton(addAnother = false, onCreate = { showCreate = true })
+                }
             } else {
                 if (profiles.isEmpty()) {
                     // Welcome skipped on an empty list (the "Later" path, or
