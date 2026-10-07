@@ -269,6 +269,20 @@ internal class WebViewEngineHost : EngineHost {
         }
     }
 
+    override fun clearCache(context: Context, profileId: ProfileId) {
+        check(bound == profileId) { "Process not bound to ${profileId.value}" }
+        // Same throwaway-WebView trick as clearBrowsingData: clearCache is an
+        // instance method, and it drops only the HTTP cache.
+        runCatching {
+            val scratch = WebView(context)
+            try {
+                scratch.clearCache(true)
+            } finally {
+                scratch.destroy()
+            }
+        }
+    }
+
     /**
      * Remove the profile's WebView data directories from disk. Port of
      * `ProfileEngine.wipeProfileStorage` in the WebView edition.

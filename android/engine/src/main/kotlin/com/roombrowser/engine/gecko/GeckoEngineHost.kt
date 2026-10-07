@@ -589,6 +589,18 @@ internal class GeckoEngineHost : EngineHost {
             })
     }
 
+    override fun clearCache(context: Context, profileId: ProfileId) {
+        check(bound == profileId) { "Process not bound to ${profileId.value}" }
+        val active = runtime ?: return
+        // ALL_CACHES, never ALL: this is the "Cache" checkbox, and ALL would
+        // also drop cookies and site data.
+        active.storageController
+            .clearData(StorageController.ClearFlags.ALL_CACHES)
+            .accept({ }, { error ->
+                android.util.Log.e("GeckoEngineHost", "clearData(ALL_CACHES) failed", error)
+            })
+    }
+
     /**
      * Remove the profile's Gecko directories from disk.
      *

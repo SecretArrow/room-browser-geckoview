@@ -146,6 +146,17 @@ interface EngineHost {
      */
     fun clearBrowsingData(context: Context, profileId: ProfileId)
 
+    /**
+     * Erase only the bound profile's HTTP and image caches, leaving cookies,
+     * site data and permissions alone.
+     *
+     * The narrower sibling of [clearBrowsingData], for the "Cache" checkbox:
+     * dropping a cache is a routine action a user may take repeatedly, while
+     * erasing everything signs them out of every site. Refuses, like
+     * [clearBrowsingData], when this process is not bound to [profileId].
+     */
+    fun clearCache(context: Context, profileId: ProfileId)
+
     /** Remove the profile's engine directories from disk. */
     fun wipeProfileData(context: Context, profileId: ProfileId)
 

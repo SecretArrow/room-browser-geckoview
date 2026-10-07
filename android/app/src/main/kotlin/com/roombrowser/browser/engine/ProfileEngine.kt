@@ -256,6 +256,14 @@ object ProfileEngine {
     }
 
     /**
+     * Clear ONLY the profile's HTTP and image caches. Must be called from a
+     * process bound to that profile, like [clearEngineStorage].
+     */
+    fun clearEngineCache(context: Context, profileId: ProfileId) {
+        host.clearCache(context, profileId)
+    }
+
+    /**
      * Delete the profile's engine directories from disk.
      *
      * Filesystem-only, so unlike [clearEngineStorage] it needs no binding and

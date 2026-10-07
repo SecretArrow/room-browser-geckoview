@@ -2053,11 +2053,7 @@ class BrowserViewModel(
                 }
             }
             withContext(Dispatchers.Main) {
-                // KNOWN GAP, REPORTED RATHER THAN FAKED: `clearCache` on its
-                // own has no facade member. The host's clearBrowsingData
-                // erases EVERYTHING for the profile, which is a far larger
-                // action than dropping the HTTP cache, so it is not called
-                // here for a cache-only request — that request does nothing.
+                if (clearCache) ProfileEngine.clearEngineCache(getApplication(), profileId)
                 if (clearCookies || clearSiteData) {
                     ProfileEngine.clearEngineStorage(getApplication(), profileId)
                 }
