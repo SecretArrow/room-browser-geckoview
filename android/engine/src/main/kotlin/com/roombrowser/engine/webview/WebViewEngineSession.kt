@@ -2,6 +2,7 @@ package com.roombrowser.engine.webview
 
 import android.app.Activity
 import android.content.Context
+import android.content.Intent
 import android.graphics.Bitmap
 import android.net.Uri
 import android.net.http.SslError
@@ -1220,36 +1221,41 @@ internal class WebViewEngineSession(
         }
 
         /**
-         * REFUSED, AND THAT IS A REAL GAP REPORTED RATHER THAN HIDDEN.
+         * A `<input type=file>` request. The engine builds the picker Intent
+         * here so the app never has to know which engine asked, then hands the
+         * chosen documents back through `onReceiveValue`.
          *
-         * The app's `onShowFileChooser` (WebClients.kt:659-679) raises a file
-         * picker through the host, with a deliberate refusal path for a
-         * request that cannot be attributed to the active engine. The facade
-         * carries NO file-chooser transport -- there is no member for it on
-         * [EngineSessionListener] -- so there is no way to ask the app for a
-         * picker, and none to hand the chosen uris back.
-         *
-         * Given that, the choice is between letting the platform's own picker
-         * appear (which the app deliberately suppressed, and which would let a
-         * background tab raise UI over the page the user is reading) and
-         * completing the callback with a null result. The null result is what
-         * the app already does for a request it cannot own
-         * (`callback.onResult(null)`), so a file input currently cancels
-         * instead of opening a picker. The alternative -- returning without
-         * invoking the callback -- leaves the page waiting for a file for the
-         * life of its document, which the app's own comment calls worse than
-         * being told no.
-         *
-         * `true` is returned even though the request is refused: `false` hands
-         * the request to the platform's own picker, which is the very UI this
-         * refusal exists to suppress.
+         * `true` is returned so the platform's own picker never appears: the
+         * app raises the picker, and a second one from the system would sit on
+         * top of a page the user is not necessarily looking at.
          */
         override fun onShowFileChooser(
             webView: WebView?,
             filePathCallback: ValueCallback<Array<Uri>>?,
             fileChooserParams: WebChromeClient.FileChooserParams?
         ): Boolean {
-            runCatching { filePathCallback?.onReceiveValue(null) }
+            val target = listener
+            val params = fileChooserParams
+            // No folder picker in this app; a folder request is cancelled.
+            if (target == null || params == null ||
+                params.mode == WebChromeClient.FileChooserParams.MODE_OPEN_FOLDER
+            ) {
+                runCatching { filePathCallback?.onReceiveValue(null) }
+                return true
+            }
+            val types = params.acceptTypes?.filter { it.isNotBlank() }.orEmpty()
+            val intent = Intent(Intent.ACTION_GET_CONTENT).apply {
+                addCategory(Intent.CATEGORY_OPENABLE)
+                type = types.firstOrNull() ?: "*/*"
+                if (types.size > 1) putExtra(Intent.EXTRA_MIME_TYPES, types.toTypedArray())
+                putExtra(
+                    Intent.EXTRA_ALLOW_MULTIPLE,
+                    params.mode == WebChromeClient.FileChooserParams.MODE_OPEN_MULTIPLE
+                )
+            }
+            target.onFileChooserRequest(intent) { uris ->
+                runCatching { filePathCallback?.onReceiveValue(uris) }
+            }
             return true
         }
     }

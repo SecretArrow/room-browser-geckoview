@@ -2,6 +2,7 @@ package com.roombrowser.browser
 
 import android.app.Application
 import android.content.Intent
+import android.net.Uri
 import android.os.SystemClock
 import android.util.Log
 import androidx.compose.runtime.getValue
@@ -326,6 +327,27 @@ class BrowserViewModel(
         val cancel: () -> Unit
     )
 
+    /**
+     * A `<input type=file>` request from the page, waiting for the user to pick.
+     * Held as state so the browser UI launches the picker and answers it; the
+     * engine's own callback stays unanswered until [answerFileChooser] runs,
+     * and an unanswered one is an input that never settles.
+     */
+    data class FileChooserRequest(val intent: Intent, val accept: (Array<Uri>?) -> Unit)
+
+    var pendingFileChooser by mutableStateOf<FileChooserRequest?>(null)
+        private set
+
+    fun onFileChooserRequest(intent: Intent, accept: (Array<Uri>?) -> Unit) {
+        pendingFileChooser = FileChooserRequest(intent, accept)
+    }
+
+    /** Answer the outstanding request, if any. `null` means the user cancelled. */
+    fun answerFileChooser(uris: Array<Uri>?) {
+        pendingFileChooser?.accept?.invoke(uris)
+        pendingFileChooser = null
+    }
+
     /** Answers the outstanding challenge with credentials. */
     fun submitHttpAuth(user: String, password: String) {
         val pending = pendingHttpAuth ?: return
@@ -645,12 +667,9 @@ class BrowserViewModel(
             }
         }
 
-        /**
-         * A file input (<input type=file>) has NO facade counterpart: neither
-         * listener nor session can reach the picker the WebView edition opened
-         * through `onShowFileChooser`. Dropped rather than faked — reported as
-         * a gap. (The state it used to publish here was never read by the UI.)
-         */
+        override fun onFileChooserRequest(intent: Intent, accept: (Array<Uri>?) -> Unit) =
+            this@BrowserViewModel.onFileChooserRequest(intent, accept)
+
         override fun onDownloadRequest(
             session: EngineSession,
             url: String,

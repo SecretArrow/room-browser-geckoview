@@ -1,5 +1,8 @@
 package com.roombrowser.engine
 
+import android.content.Intent
+import android.net.Uri
+
 /**
  * What to do about a navigation the engine is about to start.
  *
@@ -427,6 +430,18 @@ interface EngineSessionListener {
      * report the exit as well as the entry.
      */
     fun onFullScreen(session: EngineSession, fullScreen: Boolean) {}
+
+    /**
+     * The page asked for a file. The engine builds the picker Intent (so the
+     * app never has to know which engine asked), and [accept] answers the
+     * engine with the chosen documents, or null for a cancelled picker.
+     *
+     * The default dismisses: a session with no UI, like a headless agent turn,
+     * must answer rather than leave the page's input waiting forever.
+     */
+    fun onFileChooserRequest(intent: Intent, accept: (Array<Uri>?) -> Unit) {
+        accept(null)
+    }
 
     /**
      * A message from one of this session's page-world scripts.

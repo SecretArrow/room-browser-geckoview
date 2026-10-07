@@ -1,5 +1,7 @@
 package com.roombrowser.browser
 
+import android.content.Intent
+import android.net.Uri
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
@@ -153,6 +155,12 @@ class RoomSessionListener(
          * only hides or restores its chrome.
          */
         fun onFullScreen(session: EngineSession, fullScreen: Boolean)
+        /**
+         * A `<input type=file>` request. The engine built the picker Intent;
+         * the host launches it and answers [accept] with the chosen documents,
+         * or null for a cancelled picker.
+         */
+        fun onFileChooserRequest(intent: Intent, accept: (Array<Uri>?) -> Unit)
         /**
          * A message from one of this session's page-world bridges. [payload]
          * is page-controlled and must be treated as hostile; the session's own
@@ -491,6 +499,10 @@ class RoomSessionListener(
 
     override fun onFullScreen(session: EngineSession, fullScreen: Boolean) {
         callbacks.onFullScreen(session, fullScreen)
+    }
+
+    override fun onFileChooserRequest(intent: Intent, accept: (Array<Uri>?) -> Unit) {
+        callbacks.onFileChooserRequest(intent, accept)
     }
 
     override fun onPageMessage(session: EngineSession, channel: String, payload: String) {

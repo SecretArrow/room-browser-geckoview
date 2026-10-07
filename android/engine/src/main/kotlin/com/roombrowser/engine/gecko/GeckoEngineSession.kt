@@ -1,6 +1,7 @@
 package com.roombrowser.engine.gecko
 
 import android.content.Context
+import android.content.Intent
 import android.graphics.Bitmap
 import android.net.Uri
 import android.os.Handler
@@ -56,7 +57,7 @@ import java.util.concurrent.atomic.AtomicLong
 internal class GeckoEngineSession(
     override val id: String,
     private val runtime: GeckoRuntime,
-    context: Context,
+    private val context: Context,
     profile: Profile,
     private val isPrivate: Boolean
 ) : EngineSession {
@@ -952,13 +953,12 @@ internal class GeckoEngineSession(
     private val promptDelegate = object : GeckoSession.PromptDelegate {
 
         /**
-         * HTTP authentication, the only prompt the facade models.
+         * HTTP authentication.
          *
-         * Every other prompt type -- JavaScript dialogs, choices, file pickers
-         * -- is left to GeckoView by returning null, which is how this override
-         * says "not mine" without pretending to have handled it. GeckoView's
-         * default for those is to dismiss, so a null here is a cancel and not
-         * a hang.
+         * Every other prompt type -- JavaScript dialogs, choices -- is still
+         * left to GeckoView by returning null, which is how this override says
+         * "not mine" without pretending to have handled it. GeckoView's default
+         * for those is to dismiss, so a null here is a cancel and not a hang.
          *
          * The navigation stays open until the returned result resolves, which
          * is why the responder resolves exactly once and why the
@@ -1002,6 +1002,54 @@ internal class GeckoEngineSession(
                     "",
                     responder
                 )
+            }
+            return result
+        }
+
+        /**
+         * A `<input type=file>` request. The engine builds the picker Intent
+         * here so the app never has to know which engine asked.
+         *
+         * SINGLE-SHOT like [onAuthPrompt]: the returned result is what settles
+         * the page's file input, so it is completed exactly once and
+         * immediately when there is no listener.
+         */
+        override fun onFilePrompt(
+            session: GeckoSession,
+            prompt: GeckoSession.PromptDelegate.FilePrompt
+        ): GeckoResult<GeckoSession.PromptDelegate.PromptResponse>? {
+            val result = GeckoResult<GeckoSession.PromptDelegate.PromptResponse>()
+            // This app offers no folder picker.
+            if (prompt.type == GeckoSession.PromptDelegate.FilePrompt.Type.FOLDER) {
+                result.complete(prompt.dismiss())
+                return result
+            }
+            val listener = this@GeckoEngineSession.listener
+            if (listener == null) {
+                result.complete(prompt.dismiss())
+                return result
+            }
+            val answered = AtomicBoolean(false)
+            val mimeTypes = prompt.mimeTypes ?: emptyArray<String>()
+            // `capture` is deliberately ignored: the system picker still opens
+            // the camera itself.
+            val intent = Intent(Intent.ACTION_GET_CONTENT).apply {
+                addCategory(Intent.CATEGORY_OPENABLE)
+                type = mimeTypes.firstOrNull() ?: "*/*"
+                if (mimeTypes.size > 1) putExtra(Intent.EXTRA_MIME_TYPES, mimeTypes)
+                putExtra(
+                    Intent.EXTRA_ALLOW_MULTIPLE,
+                    prompt.type == GeckoSession.PromptDelegate.FilePrompt.Type.MULTIPLE
+                )
+            }
+            listener.onFileChooserRequest(intent) { uris ->
+                if (!answered.compareAndSet(false, true)) return@onFileChooserRequest
+                runOnMain {
+                    result.complete(
+                        if (uris.isNullOrEmpty()) prompt.dismiss()
+                        else prompt.confirm(this@GeckoEngineSession.context, uris)
+                    )
+                }
             }
             return result
         }

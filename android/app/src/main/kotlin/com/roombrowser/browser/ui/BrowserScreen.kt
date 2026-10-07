@@ -2,6 +2,7 @@ package com.roombrowser.browser.ui
 
 import android.app.Activity
 import android.content.Intent
+import android.net.Uri
 import android.view.View
 import android.view.ViewGroup
 import android.widget.FrameLayout
@@ -143,6 +144,21 @@ fun BrowserScreen(
             snackbarHostState.showSnackbar(it)
             viewModel.snackbar.value = null
         }
+    }
+
+    val fileChooser = viewModel.pendingFileChooser
+    val launchedChooser = remember { mutableStateOf<Any?>(null) }
+    val filePicker = rememberLauncherForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        viewModel.answerFileChooser(fileChooserUris(result.resultCode, result.data))
+    }
+    LaunchedEffect(fileChooser) {
+        val request = fileChooser ?: return@LaunchedEffect
+        // A recomposition must not relaunch a picker that is already open.
+        if (launchedChooser.value === request) return@LaunchedEffect
+        launchedChooser.value = request
+        filePicker.launch(request.intent)
     }
 
     val agentMessage by viewModel.agent.messages.collectAsState()
@@ -571,6 +587,13 @@ fun BrowserScreen(
     // NOTE: the profile network warning is NOT a dialog anymore — a pending
     // decision launches the full-screen NetworkWarningActivity (BrowserActivity
     // owns the launch loop; while the gate stands no URL can load).
+}
+
+private fun fileChooserUris(resultCode: Int, data: Intent?): Array<Uri>? {
+    if (resultCode != Activity.RESULT_OK || data == null) return null
+    val clip = data.clipData
+    if (clip != null) return Array(clip.itemCount) { clip.getItemAt(it).uri }
+    return data.data?.let { arrayOf(it) }
 }
 
 /**
