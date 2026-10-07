@@ -2019,14 +2019,7 @@ class BrowserViewModel(
     // ---------- Find in page ----------
 
     fun findInPage(query: String) {
-        // KNOWN GAP, REPORTED RATHER THAN FAKED. This used findAllAsync, which
-        // highlights every match and reports how many there are. The facade
-        // has no find-in-page member, and the app will not re-implement one in
-        // page JavaScript: findInPageNavigate below already runs `window.find`,
-        // but that is a different feature (one moving highlight, not a
-        // match-all count), and passing it off as this one would look like a
-        // working find bar. Until the facade grows a member, typing in the
-        // find bar highlights nothing.
+        activeSession?.findInPage(query)
     }
 
     fun findInPageNavigate(forward: Boolean, query: String) {
@@ -2037,9 +2030,7 @@ class BrowserViewModel(
     }
 
     fun clearFindInPage() {
-        // KNOWN GAP, REPORTED RATHER THAN FAKED — see [findInPage]: clearMatches
-        // has no facade counterpart, so a highlight left by the navigation
-        // above stays until the page changes.
+        activeSession?.clearFindMatches()
     }
 
     // ---------- Reader mode ----------

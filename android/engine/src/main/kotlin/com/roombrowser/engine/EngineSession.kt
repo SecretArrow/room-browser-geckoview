@@ -209,6 +209,24 @@ interface EngineSession {
     fun exitFullScreen()
 
     /**
+     * Highlight every match of [query] in the current document.
+     *
+     * The replacement for `WebView.findAllAsync(query)`. A later call replaces
+     * the previous highlights, and an empty [query] clears them rather than
+     * searching for nothing. Stepping between matches is the app's own job --
+     * it runs `window.find` through [evaluateJs] for that.
+     */
+    fun findInPage(query: String)
+
+    /**
+     * Drop the highlights installed by [findInPage].
+     *
+     * The replacement for `WebView.clearMatches()`, and a no-op when there is
+     * nothing highlighted.
+     */
+    fun clearFindMatches()
+
+    /**
      * Erase this session's transient browsing artifacts: session cookies and
      * form data.
      *

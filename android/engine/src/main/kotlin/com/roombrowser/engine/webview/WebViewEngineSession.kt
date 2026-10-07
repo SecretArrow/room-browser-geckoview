@@ -591,6 +591,17 @@ internal class WebViewEngineSession(
         return restored
     }
 
+    override fun findInPage(query: String) {
+        // `findAllAsync("")` highlights nothing and drops the previous
+        // matches, which is exactly what the find bar wants when the field is
+        // emptied on a keystroke.
+        runOnMain { if (!closed) runCatching { webView.findAllAsync(query) } }
+    }
+
+    override fun clearFindMatches() {
+        runOnMain { if (!closed) runCatching { webView.clearMatches() } }
+    }
+
     /**
      * Session-scoped erase: session cookies and form data.
      *

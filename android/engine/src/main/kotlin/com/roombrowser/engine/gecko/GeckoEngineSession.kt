@@ -489,6 +489,35 @@ internal class GeckoEngineSession(
     }
 
     /**
+     * The finder highlights every match only when its display flags say so;
+     * with the default flags `find` merely moves to one match. An empty query
+     * takes the clear path because WebView's `findAllAsync("")` clears the
+     * highlights and the find bar calls this on every keystroke, including the
+     * one that empties the field.
+     */
+    override fun findInPage(query: String) {
+        runOnMain {
+            if (!isOpen) return@runOnMain
+            runCatching {
+                val finder = session.finder
+                if (query.isEmpty()) {
+                    finder.clear()
+                } else {
+                    finder.setDisplayFlags(GeckoSession.FINDER_DISPLAY_HIGHLIGHT_ALL)
+                    finder.find(query, GeckoSession.FINDER_FIND_FORWARD)
+                }
+            }
+        }
+    }
+
+    override fun clearFindMatches() {
+        runOnMain {
+            if (!isOpen) return@runOnMain
+            runCatching { session.finder.clear() }
+        }
+    }
+
+    /**
      * A REAL ERASE FOR A PRIVATE SESSION, and deliberately nothing for a
      * normal one.
      *
