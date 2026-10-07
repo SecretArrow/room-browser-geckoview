@@ -653,10 +653,9 @@ fun ShieldsSheet(viewModel: BrowserViewModel, onDismiss: () -> Unit) {
             // Sitting in a sheet titled with the current host, next to two
             // rows that really are per-site, this row read as "clear THIS
             // site's data". It never was: clearSiteDataForCurrentSite() ends
-            // in ProfileEngine.clearEngineStorage(), which calls
-            // removeAllCookies + WebStorage.deleteAllData +
-            // clearHttpAuthUsernamePassword + clearFormData for the whole
-            // profile — WebView has no per-origin equivalent (see
+            // in ProfileEngine.clearEngineStorage(), which wipes the whole
+            // profile — cookies, local storage, saved form data, stored HTTP
+            // credentials — and this app offers no per-origin equivalent (see
             // PROFILE_ISOLATION.md). The label itself is load-bearing
             // elsewhere so it stays; the line under it and the confirmation
             // are where the real scope is now stated, and a wipe that signs
@@ -665,7 +664,7 @@ fun ShieldsSheet(viewModel: BrowserViewModel, onDismiss: () -> Unit) {
                 Text("Clear site data")
             }
             Text(
-                "Clears cookies, local storage, saved form data and cached files for EVERY site in this profile — WebView cannot narrow this to one host, so you are signed out everywhere.",
+                "Clears cookies, local storage, saved form data and cached files for EVERY site in this profile — clearing one host at a time is not offered, so you are signed out everywhere.",
                 style = MaterialTheme.typography.bodySmall,
                 color = extras.textSecondary,
                 modifier = Modifier.padding(start = 12.dp, end = 8.dp, bottom = 4.dp)
