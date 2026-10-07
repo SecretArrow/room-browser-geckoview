@@ -151,6 +151,16 @@ interface EngineSession {
      */
     fun capturePixels(onResult: (Bitmap?) -> Unit)
 
+    /**
+     * Render the current document to PDF and hand the raw bytes to [onResult].
+     *
+     * [onResult] receives null when the engine cannot produce one -- a session
+     * that is not attached, or a renderer that failed. The callback is invoked
+     * on the main thread, and the stream, when non-null, is the caller's to
+     * read and close off the main thread.
+     */
+    fun saveAsPdf(onResult: (java.io.InputStream?) -> Unit)
+
     // NOTE: there is deliberately no setDesktopMode() here. Switching desktop
     // mode is not something a session can do to itself -- it needs the
     // profile, because leaving desktop mode means restoring the profile's own

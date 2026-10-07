@@ -447,6 +447,23 @@ internal class GeckoEngineSession(
     }
 
     /**
+     * Render the current document to PDF.
+     *
+     * `saveAsPdf` is @HandlerThread -- an IO-dispatcher thread with no Looper
+     * throws -- so the call is posted to the main thread. The stream is handed
+     * on unread; the caller reads it off the main thread. A GeckoPrintException
+     * or any other failure is reported as null rather than thrown.
+     */
+    override fun saveAsPdf(onResult: (java.io.InputStream?) -> Unit) {
+        runOnMain {
+            val onValue = GeckoResult.Consumer<java.io.InputStream> { stream -> onResult(stream) }
+            val onError = GeckoResult.Consumer<Throwable> { onResult(null) }
+            runCatching { session.saveAsPdf().accept(onValue, onError) }
+                .onFailure { onResult(null) }
+        }
+    }
+
+    /**
      * Ask Gecko to flush and hand back the state it last reported.
      *
      * `GeckoSession.saveState()` does not exist in this API -- it was removed

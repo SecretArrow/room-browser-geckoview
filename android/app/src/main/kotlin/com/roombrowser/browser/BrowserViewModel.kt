@@ -2001,6 +2001,38 @@ class BrowserViewModel(
         if (allow) pending.responder.grant() else pending.responder.deny()
     }
 
+    // ---------- Save as PDF ----------
+
+    /**
+     * Render the active page to PDF and publish it through the download engine,
+     * so it lands in Download/RoomBrowser beside a retrieved file. A null
+     * stream means the engine could not produce one.
+     */
+    fun savePageAsPdf() {
+        val session = activeSession
+        if (session == null) {
+            showMessage("No page to save")
+            return
+        }
+        session.saveAsPdf { stream ->
+            if (stream == null) {
+                showMessage("Could not save this page as PDF")
+                return@saveAsPdf
+            }
+            downloadEngine.saveStream(
+                suggestedName = "page-${System.currentTimeMillis()}.pdf",
+                mime = "application/pdf",
+                source = stream,
+                limitBytes = DownloadEngine.MAX_INLINE_BYTES
+            ) { ok ->
+                showMessage(
+                    if (ok) "Saved to Downloads/RoomBrowser"
+                    else "Could not save this page as PDF"
+                )
+            }
+        }
+    }
+
     // ---------- Clear data ----------
 
     fun clearBrowsingData(

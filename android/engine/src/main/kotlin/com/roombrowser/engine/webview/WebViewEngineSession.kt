@@ -539,6 +539,11 @@ internal class WebViewEngineSession(
         }
     }
 
+    /** Not supported here: WebView's PDF lever is the Activity's PrintManager. */
+    override fun saveAsPdf(onResult: (java.io.InputStream?) -> Unit) {
+        onResult(null)
+    }
+
     /**
      * Capture the engine's back/forward state under an opaque token. Port of
      * `saveEngineStateBeforeDestroy` (BrowserViewModel.kt:1452-1456).

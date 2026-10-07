@@ -37,6 +37,7 @@ import okhttp3.Response
 import java.io.File
 import java.io.FileOutputStream
 import java.io.IOException
+import java.io.InputStream
 import java.util.concurrent.ConcurrentHashMap
 
 /**
@@ -65,6 +66,12 @@ class DownloadEngine(
         private const val NOTIF_TAG = "rb_dl"
         private const val PROGRESS_BYTES = 64 * 1024
         private const val PROGRESS_MS = 1_000L
+
+        /**
+         * Cap on app-produced bytes published through [saveStream]. A rendered
+         * page can be enormous; refusing beats filling the user's storage.
+         */
+        const val MAX_INLINE_BYTES = 64L * 1024 * 1024
 
         /** The action the notification buttons broadcast. */
         const val ACTION = "com.roombrowser.DOWNLOAD_ACTION"
@@ -508,6 +515,76 @@ class DownloadEngine(
             partFile.delete()
             Uri.fromFile(target).toString()
         }
+    }
+
+    /**
+     * Publish bytes the app produced itself -- a rendered page PDF -- through
+     * the same Downloads storage a retrieved file uses, so it appears in the
+     * browser's own downloads list. [source] is read on this engine's IO scope
+     * and closed here; a source past [limitBytes] is refused, not written.
+     */
+    fun saveStream(
+        suggestedName: String,
+        mime: String,
+        source: InputStream,
+        limitBytes: Long,
+        onResult: (Boolean) -> Unit
+    ) {
+        scope.launch {
+            val entity = DownloadEntity(
+                profileId = profileId.value,
+                url = "",
+                fileName = dedupeName(profileId, suggestedName),
+                mimeType = mime.ifBlank { "application/octet-stream" },
+                destination = "",
+                totalBytes = -1,
+                downloadedBytes = 0,
+                status = DownloadStatus.RUNNING.name,
+                createdAt = System.currentTimeMillis()
+            )
+            var id = 0L
+            var ok = false
+            try {
+                id = repo.insertDownload(entity)
+                val partFile = partFileFor(id).apply { parentFile?.mkdirs() }
+                val size = source.use { input ->
+                    FileOutputStream(partFile).use { out -> copyCapped(input, out, limitBytes) }
+                }
+                val destination = publish(entity, partFile)
+                repo.completeDownload(
+                    id = id,
+                    status = DownloadStatus.COMPLETED.name,
+                    destination = destination,
+                    downloaded = size,
+                    total = size,
+                    completedAt = System.currentTimeMillis()
+                )
+                notifyDone(id, entity.fileName, destination)
+                ok = true
+            } catch (e: Throwable) {
+                runCatching { source.close() }
+                if (id != 0L) {
+                    val message = e.message ?: "save failed"
+                    repo.updateDownloadStatus(id, DownloadStatus.FAILED.name, message)
+                    notifyFailure(id, entity.fileName, message)
+                }
+            }
+            withContext(Dispatchers.Main) { onResult(ok) }
+        }
+    }
+
+    /** Copies [input] to [out], refusing a source past [limit] bytes. */
+    private fun copyCapped(input: InputStream, out: FileOutputStream, limit: Long): Long {
+        val buffer = ByteArray(16 * 1024)
+        var total = 0L
+        while (true) {
+            val read = input.read(buffer)
+            if (read == -1) break
+            total += read
+            if (total > limit) throw IOException("file too large")
+            out.write(buffer, 0, read)
+        }
+        return total
     }
 
     /** Removes a published file, whether MediaStore owns it or the filesystem does. */
