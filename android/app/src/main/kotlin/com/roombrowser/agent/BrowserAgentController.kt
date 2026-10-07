@@ -300,6 +300,14 @@ class BrowserAgentController(
      */
     var chatHeadless by mutableStateOf(false)
         private set
+    /**
+     * The chat is set to READ ONLY: it opens and reads pages and nothing it
+     * runs can click, type, submit, post or sign. Surfaced so the panel shows
+     * the mode while it is on — a turn that suddenly refuses to act reads as a
+     * broken agent otherwise.
+     */
+    var chatOnly by mutableStateOf(false)
+        private set
     var modelsLoading by mutableStateOf(false)
         private set
     var modelsError by mutableStateOf<String?>(null)
@@ -412,6 +420,7 @@ class BrowserAgentController(
         activeModel = model
         chatModelAuto = settings.defaultModelAuto && provider != null
         chatHeadless = settings.chatHeadless
+        chatOnly = settings.chatOnly
     }
 
     // ------------------------------------------------------------- provider & model
@@ -546,6 +555,18 @@ class BrowserAgentController(
         scope.launch {
             settings = appState.updateAgentSettings { it.copy(chatHeadless = headless) }
             chatHeadless = headless
+        }
+    }
+
+    /**
+     * Turns the read-only mode on or off for every turn from now on. Persisted
+     * like the surface, because it is a standing choice about how this
+     * profile's agent works rather than a per-turn switch.
+     */
+    fun setChatOnly(only: Boolean) {
+        scope.launch {
+            settings = appState.updateAgentSettings { it.copy(chatOnly = only) }
+            chatOnly = only
         }
     }
 
@@ -885,12 +906,17 @@ class BrowserAgentController(
             } else {
                 null
             }
-            val executor: ToolExecutor = headless?.let {
+            val pageExecutor: ToolExecutor = headless?.let {
                 HeadlessChatToolGate(
                     page = it,
                     appTools = { name, args -> visibleExecutor.executeAppTool(name, args) }
                 )
             } ?: visibleExecutor
+            // Chat only wraps the WHOLE turn, the headless gate included: that
+            // gate hands the app's own tools straight through, and one of them
+            // (app_2fa action=fill) reaches the page by that route.
+            val executor: ToolExecutor =
+                if (settings.chatOnly) ChatOnlyToolGate(pageExecutor) else pageExecutor
             // "Delete all agent chats" can run in the settings ACTIVITY while
             // a session is active here — verify it still exists, else start a
             // fresh one instead of writing to a dead row (FK safety).
@@ -911,8 +937,12 @@ class BrowserAgentController(
             repo.addMessage(sessionId, "user", display)
 
             val engine = SearchEngines.byId(vm.profileSettings().searchEngineId).label
-            val prompt = settings.systemPromptOverride?.takeIf { it.isNotBlank() }
+            val basePrompt = settings.systemPromptOverride?.takeIf { it.isNotBlank() }
                 ?: AgentPrompts.render(System.currentTimeMillis(), ZoneId.systemDefault(), engine)
+            // A read-only turn says so up front: otherwise the model plans a
+            // click, is refused, and spends its steps probing what is left.
+            val prompt =
+                if (settings.chatOnly) basePrompt + AgentPrompts.CHAT_ONLY_CLAUSE else basePrompt
             val config = com.roombrowser.domain.agent.AgentConfig(
                 model = model,
                 maxSteps = settings.maxSteps,

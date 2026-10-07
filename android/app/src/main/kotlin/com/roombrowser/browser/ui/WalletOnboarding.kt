@@ -301,12 +301,14 @@ private fun WalletOnboardingChoice(
 }
 
 /**
- * The chains a new wallet derives before the user touches the chip row.
+ * The chains a new wallet derives before the user touches the chip row: all of
+ * them, so a fresh wallet works on every chain without the user having to find
+ * the chip row first. Unchecking a chip is still how a chain is left out.
  *
  * Shared by the create form, the import form and the backup restore — one
  * value so the three cannot drift apart.
  */
-internal val DefaultWalletChains = setOf(ChainType.EVM, ChainType.SOLANA, ChainType.OCTRA)
+internal val DefaultWalletChains: Set<ChainType> = ChainType.entries.toSet()
 
 /** Reusable chain-chip row; create and import share [DefaultWalletChains]. */
 @Composable

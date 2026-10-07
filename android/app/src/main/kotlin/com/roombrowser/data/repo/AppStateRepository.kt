@@ -86,9 +86,17 @@ data class AgentSettings(
      * mean anything to the person giving the order.
      */
     val chatHeadless: Boolean = false,
+    /**
+     * The chat only reads and opens pages: nothing it does is clicked, typed,
+     * submitted, posted or signed, and no tool that could do any of those is
+     * offered to it. Off by default, because acting on the page is the agent's
+     * ordinary job.
+     */
+    val chatOnly: Boolean = false,
     val temperature: Double = 0.2,
     val maxSteps: Int = 25,
-    val confirmActions: Boolean = false,
+    /** On by default, so an action is never taken without the user seeing it. */
+    val confirmActions: Boolean = true,
     /**
      * Let the agent read the DIGITS of a code generated from a stored
      * authenticator seed. Off by default, and the switch matters because a

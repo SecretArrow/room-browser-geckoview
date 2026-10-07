@@ -456,6 +456,18 @@ private fun AgentPanelHeader(
                     .semantics { contentDescription = "agent_surface" }
                     .padding(vertical = 6.dp)
             )
+            // Chat only: a chip rather than a third tappable line, because its
+            // STATE is the thing to see — a turn that suddenly refuses to act
+            // reads as a broken agent, and the two lines above only say where
+            // the turn runs, not what it may do.
+            FilterChip(
+                selected = agent.chatOnly,
+                onClick = { agent.setChatOnly(!agent.chatOnly) },
+                label = { Text("Chat only") },
+                modifier = Modifier
+                    .semantics { contentDescription = "agent_chat_only" }
+                    .padding(top = 2.dp)
+            )
             // While a turn runs the panel stays with it, even if the user
             // walks off to another tab — otherwise the running work would
             // vanish from the screen it was started on. Says so, because a

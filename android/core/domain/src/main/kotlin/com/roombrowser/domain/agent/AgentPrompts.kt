@@ -45,4 +45,17 @@ Today is {DATE}. The browser's search engine is {ENGINE}.
     /** Small helper for callers that only have a millis timestamp. */
     fun render(epochMillis: Long, zone: ZoneId, searchEngineLabel: String): String =
         render(java.time.Instant.ofEpochMilli(epochMillis).atZone(zone).toLocalDate(), searchEngineLabel)
+
+    /**
+     * Appended to the system prompt while "Chat only" is on. The model is told
+     * BEFORE it plans, because a tool that only refuses mid-plan costs a step
+     * and reads as the tool being broken.
+     */
+    val CHAT_ONLY_CLAUSE: String = """
+
+CHAT ONLY MODE — this turn opens and reads pages and never acts on one:
+- Clicking, typing, pressing Enter, choosing an option, sending keys, running JavaScript, liking, reposting, replying, posting and approving a wallet request are switched off for this turn, and a call to one of them is refused.
+- Look what you need up with search_web, navigate and read_page, then answer from what you read. To follow a link, navigate to the href that read_page showed you.
+- Ask for the mode to be turned off only when the task genuinely cannot be done by reading.
+""".trimEnd()
 }
