@@ -2,7 +2,6 @@ package com.roombrowser.engine.webview
 
 import android.app.Activity
 import android.content.Context
-import android.content.Intent
 import android.graphics.Bitmap
 import android.net.Uri
 import android.net.http.SslError
@@ -1233,6 +1232,12 @@ internal class WebViewEngineSession(
          * `true` is returned so the platform's own picker never appears: the
          * app raises the picker, and a second one from the system would sit on
          * top of a page the user is not necessarily looking at.
+         *
+         * The Intent comes from `createIntent()` rather than being assembled
+         * here, because that is what maps the request's mode -- single,
+         * multiple, folder, save -- onto the right picker. The mode constants
+         * themselves are not usable: `MODE_OPEN_FOLDER` is absent from the
+         * public SDK, so a hand-built Intent cannot even name it.
          */
         override fun onShowFileChooser(
             webView: WebView?,
@@ -1240,23 +1245,10 @@ internal class WebViewEngineSession(
             fileChooserParams: WebChromeClient.FileChooserParams?
         ): Boolean {
             val target = listener
-            val params = fileChooserParams
-            // No folder picker in this app; a folder request is cancelled.
-            if (target == null || params == null ||
-                params.mode == WebChromeClient.FileChooserParams.MODE_OPEN_FOLDER
-            ) {
+            val intent = fileChooserParams?.createIntent()
+            if (target == null || intent == null) {
                 runCatching { filePathCallback?.onReceiveValue(null) }
                 return true
-            }
-            val types = params.acceptTypes?.filter { it.isNotBlank() }.orEmpty()
-            val intent = Intent(Intent.ACTION_GET_CONTENT).apply {
-                addCategory(Intent.CATEGORY_OPENABLE)
-                type = types.firstOrNull() ?: "*/*"
-                if (types.size > 1) putExtra(Intent.EXTRA_MIME_TYPES, types.toTypedArray())
-                putExtra(
-                    Intent.EXTRA_ALLOW_MULTIPLE,
-                    params.mode == WebChromeClient.FileChooserParams.MODE_OPEN_MULTIPLE
-                )
             }
             target.onFileChooserRequest(intent) { uris ->
                 runCatching { filePathCallback?.onReceiveValue(uris) }
