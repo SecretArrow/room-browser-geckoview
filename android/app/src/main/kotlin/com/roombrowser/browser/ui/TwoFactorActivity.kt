@@ -1,9 +1,7 @@
 package com.roombrowser.browser.ui
 
-import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
-import android.net.Uri
 import android.os.Bundle
 import android.view.WindowManager
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -35,18 +33,14 @@ import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Delete
-import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.MoreVert
-import androidx.compose.material.icons.filled.QrCodeScanner
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -62,7 +56,6 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
-import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
@@ -89,8 +82,6 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.window.Dialog
-import androidx.compose.ui.window.DialogProperties
 import androidx.fragment.app.FragmentActivity
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.flowWithLifecycle
@@ -98,32 +89,23 @@ import androidx.lifecycle.repeatOnLifecycle
 import com.roombrowser.RoomBrowserApp
 import com.roombrowser.data.repo.TotpRepository
 import com.roombrowser.domain.credentials.PasswordVaultCrypto
-import com.roombrowser.domain.credentials.VaultAuthException
-import com.roombrowser.domain.credentials.VaultFormatException
 import com.roombrowser.domain.model.ProfileId
 import com.roombrowser.domain.security.PinLockCrypto
 import com.roombrowser.domain.security.ProfileLockGate
 import com.roombrowser.domain.security.WalletLockStatus
 import com.roombrowser.domain.theme.BuiltInThemes
-import com.roombrowser.domain.totp.Base32
-import com.roombrowser.domain.totp.OtpAuthUri
-import com.roombrowser.domain.totp.TotpAlgorithm
 import com.roombrowser.domain.totp.TotpBackup
-import com.roombrowser.domain.totp.TotpBackupFormatException
 import com.roombrowser.domain.totp.TotpEntry
 import com.roombrowser.domain.totp.TotpGenerator
 import com.roombrowser.main.PassphrasePrompt
-import com.roombrowser.qr.QrScannerActivity
 import com.roombrowser.security.BiometricGate
 import com.roombrowser.security.PinUnlockResult
 import com.roombrowser.security.WalletLockManager
 import com.roombrowser.ui.common.EmptyState
 import com.roombrowser.ui.common.LocalRoomExtras
-import com.roombrowser.ui.common.RoomBottomSheetShape
 import com.roombrowser.ui.common.RoomBrowserTheme
 import com.roombrowser.ui.common.RoomCard
 import com.roombrowser.ui.common.RoomCardShape
-import com.roombrowser.ui.common.RoomSheetHeader
 import com.roombrowser.ui.common.VaultPassphraseDialog
 import com.roombrowser.ui.common.copySensitive
 import kotlinx.coroutines.Dispatchers
@@ -145,6 +127,9 @@ import kotlinx.coroutines.withContext
  */
 class TwoFactorActivity : FragmentActivity() {
 
+    /** What the editor reported on the way out; cleared once announced. */
+    private var editorMessage by mutableStateOf<String?>(null)
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
@@ -161,6 +146,12 @@ class TwoFactorActivity : FragmentActivity() {
         val profileName = intent.getStringExtra(EXTRA_PROFILE_NAME).orEmpty()
         val graph = (application as RoomBrowserApp).graph
         val biometricsAvailable = BiometricGate.canAuthenticate(this)
+        val editor = registerForActivityResult(
+            ActivityResultContracts.StartActivityForResult()
+        ) { result ->
+            editorMessage =
+                result.data?.getStringExtra(TwoFactorEditorActivity.EXTRA_RESULT_MESSAGE)
+        }
         setContent {
             var spec by remember { mutableStateOf(BuiltInThemes.default()) }
             LaunchedEffect(Unit) {
@@ -175,6 +166,12 @@ class TwoFactorActivity : FragmentActivity() {
                     repo = graph.totpRepo,
                     lockManager = graph.walletLock,
                     biometricsAvailable = biometricsAvailable,
+                    editorMessage = editorMessage,
+                    onEditorMessageShown = { editorMessage = null },
+                    onAddAccount = { TwoFactorEditorActivity.launch(this, profileId.value, null) },
+                    onEditAccount = {
+                        TwoFactorEditorActivity.launch(this, profileId.value, it.id)
+                    },
                     onClose = { finish() },
                     onUnlockRequest = {
                         BiometricGate.unlock(
@@ -233,6 +230,10 @@ private fun TwoFactorRoot(
     repo: TotpRepository,
     lockManager: WalletLockManager,
     biometricsAvailable: Boolean,
+    editorMessage: String?,
+    onEditorMessageShown: () -> Unit,
+    onAddAccount: () -> Unit,
+    onEditAccount: (TotpEntry) -> Unit,
     onClose: () -> Unit,
     onUnlockRequest: () -> Unit,
     onEnsureUnlocked: (onReady: () -> Unit, onFailure: () -> Unit) -> Unit
@@ -316,10 +317,14 @@ private fun TwoFactorRoot(
     var entries by remember { mutableStateOf<List<TotpEntry>>(emptyList()) }
     var query by rememberSaveable { mutableStateOf("") }
     var sort by rememberSaveable { mutableStateOf(TotpSort.RECENT) }
-    var editorOpen by remember { mutableStateOf(false) }
-    var editing by remember { mutableStateOf<TotpEntry?>(null) }
     var detailsOf by remember { mutableStateOf<TotpEntry?>(null) }
     var deleteTarget by remember { mutableStateOf<TotpEntry?>(null) }
+
+    LaunchedEffect(editorMessage) {
+        val message = editorMessage ?: return@LaunchedEffect
+        onEditorMessageShown()
+        snackbarHostState.showSnackbar(message)
+    }
 
     LaunchedEffect(unlocked, lifecycle) {
         if (!unlocked) {
@@ -350,8 +355,6 @@ private fun TwoFactorRoot(
     var exportText by remember { mutableStateOf<String?>(null) }
     var exportSaveName by remember { mutableStateOf("") }
     var exportPrompt by remember { mutableStateOf<PassphrasePrompt?>(null) }
-    var importText by remember { mutableStateOf<String?>(null) }
-    var importPrompt by remember { mutableStateOf<PassphrasePrompt?>(null) }
 
     fun showMessage(text: String) {
         scope.launch { snackbarHostState.showSnackbar(text) }
@@ -377,40 +380,6 @@ private fun TwoFactorRoot(
                     .onFailure {
                         showMessage("Export failed — ${it.message ?: "could not write the file"}")
                     }
-            }
-        }
-    }
-
-    val pickTotpFileLauncher = rememberLauncherForActivityResult(
-        ActivityResultContracts.OpenDocument()
-    ) { uri ->
-        if (uri == null) return@rememberLauncherForActivityResult
-        scope.launch {
-            runCatching {
-                withContext(Dispatchers.IO) {
-                    readCappedText(context, uri, MAX_TOTP_FILE_BYTES, "a two-factor file")
-                }
-            }.onSuccess { text ->
-                val envelopeCheck = runCatching { TotpBackup.isSealedFile(text) }
-                if (envelopeCheck.getOrDefault(false)) {
-                    importText = text
-                    importPrompt = PassphrasePrompt(
-                        forExport = false,
-                        profileName = "",
-                        credentialCount = 0,
-                        titleOverride = "Import 2FA accounts",
-                        bodyOverride = "This is a sealed Room Browser two-factor file. " +
-                            "Enter the passphrase it was exported with.",
-                        id = ++promptSeq
-                    )
-                } else {
-                    showMessage(
-                        envelopeCheck.exceptionOrNull()?.message
-                            ?: "That file is not a Room Browser two-factor export"
-                    )
-                }
-            }.onFailure {
-                showMessage("Import failed — ${it.message ?: "the file could not be read"}")
             }
         }
     }
@@ -494,72 +463,6 @@ private fun TwoFactorRoot(
         }
     }
 
-    fun confirmImportPassphrase(passphrase: String) {
-        val text = importText ?: return
-        val prompt = importPrompt ?: return
-        scope.launch {
-            val chars = passphrase.toCharArray()
-            val opened = runCatching {
-                withContext(Dispatchers.Default) {
-                    try {
-                        TotpBackup.open(text, chars)
-                    } finally {
-                        PasswordVaultCrypto.wipe(chars)
-                    }
-                }
-            }
-            opened.onSuccess { contents ->
-                val newEntries = contents.entries
-                if (newEntries.isEmpty()) {
-                    importPrompt = null
-                    importText = null
-                    showMessage("That file carried no accounts. Nothing was imported.")
-                    return@onSuccess
-                }
-                onEnsureUnlocked(
-                    {
-                        scope.launch {
-                            runCatching { repo.importAll(profileId, newEntries) }
-                                .onSuccess {
-                                    importPrompt = null
-                                    importText = null
-                                    editorOpen = false
-                                    editing = null
-                                    showMessage(
-                                        if (newEntries.size == 1) "1 account imported"
-                                        else "${newEntries.size} accounts imported"
-                                    )
-                                }
-                                .onFailure {
-                                    showMessage(
-                                        "Import failed — ${it.message ?: "nothing was imported"}"
-                                    )
-                                }
-                        }
-                    },
-                    { showMessage("Unlock 2FA to import") }
-                )
-            }.onFailure { error ->
-                when (error) {
-                    is VaultAuthException -> importPrompt = prompt.copy(
-                        error = "Wrong passphrase — try again",
-                        id = ++promptSeq
-                    )
-                    is TotpBackupFormatException, is VaultFormatException -> {
-                        importPrompt = null
-                        importText = null
-                        showMessage("That two-factor file is damaged. Nothing was imported.")
-                    }
-                    else -> {
-                        importPrompt = null
-                        importText = null
-                        showMessage("Import failed — ${error.message ?: "nothing was imported"}")
-                    }
-                }
-            }
-        }
-    }
-
     val needle = query.trim().lowercase()
     val visible = entries
         .filter {
@@ -609,10 +512,7 @@ private fun TwoFactorRoot(
                 },
                 actions = {
                     IconButton(
-                        onClick = {
-                            editing = null
-                            editorOpen = true
-                        },
+                        onClick = onAddAccount,
                         modifier = Modifier.semantics { contentDescription = "Add 2FA" }
                     ) {
                         Icon(Icons.Filled.Add, contentDescription = null)
@@ -689,10 +589,7 @@ private fun TwoFactorRoot(
                         "\"${profileName.ifBlank { "this profile" }}\"."
                 )
                 Button(
-                    onClick = {
-                        editing = null
-                        editorOpen = true
-                    },
+                    onClick = onAddAccount,
                     modifier = Modifier
                         .align(Alignment.CenterHorizontally)
                         .padding(top = 4.dp)
@@ -730,10 +627,7 @@ private fun TwoFactorRoot(
                                 entry = entry,
                                 clock = { tick },
                                 onCopy = { code -> copyCode(entry, code) },
-                                onEdit = {
-                                    editing = entry
-                                    editorOpen = true
-                                },
+                                onEdit = { onEditAccount(entry) },
                                 onDetails = { detailsOf = entry },
                                 onDelete = { deleteTarget = entry }
                             )
@@ -744,27 +638,6 @@ private fun TwoFactorRoot(
         }
     }
 
-    if (editorOpen) {
-        TwoFactorEditorSheet(
-            profileId = profileId,
-            initial = editing,
-            repo = repo,
-            onImportFromFile = {
-                pickTotpFileLauncher.launch(arrayOf("text/plain", "application/json", "*/*"))
-            },
-            onDismiss = {
-                editorOpen = false
-                editing = null
-            },
-            onSaved = { message ->
-                editorOpen = false
-                editing = null
-                scope.launch { snackbarHostState.showSnackbar(message) }
-            },
-            onError = { message -> scope.launch { snackbarHostState.showSnackbar(message) } }
-        )
-    }
-
     exportPrompt?.let { prompt ->
         VaultPassphraseDialog(
             prompt = prompt,
@@ -772,17 +645,6 @@ private fun TwoFactorRoot(
             onDismiss = {
                 exportPrompt = null
                 exportEntries = emptyList()
-            }
-        )
-    }
-
-    importPrompt?.let { prompt ->
-        VaultPassphraseDialog(
-            prompt = prompt,
-            onConfirm = { confirmImportPassphrase(it) },
-            onDismiss = {
-                importPrompt = null
-                importText = null
             }
         )
     }
@@ -1112,264 +974,5 @@ private fun DetailLine(label: String, value: String) {
             style = MaterialTheme.typography.bodyMedium,
             color = extras.textPrimary
         )
-    }
-}
-
-/**
- * Add/edit sheet. Four ways in, all of which end at the same validated form:
- * scan the QR, paste an `otpauth://` link, type the setup key, or import a
- * sealed 2FA file.
- */
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-private fun TwoFactorEditorSheet(
-    profileId: ProfileId,
-    initial: TotpEntry?,
-    repo: TotpRepository,
-    onImportFromFile: () -> Unit,
-    onDismiss: () -> Unit,
-    onSaved: (String) -> Unit,
-    onError: (String) -> Unit
-) {
-    val extras = LocalRoomExtras.current
-    val context = LocalContext.current
-    val scope = rememberCoroutineScope()
-    val fieldShape = RoundedCornerShape((extras.radius * 0.6f).dp)
-
-    var issuer by remember { mutableStateOf(initial?.issuer ?: "") }
-    var account by remember { mutableStateOf(initial?.account ?: "") }
-    var secret by remember { mutableStateOf(initial?.secret ?: "") }
-    var algorithm by remember { mutableStateOf(initial?.algorithm ?: TotpAlgorithm.SHA1) }
-    var digits by remember { mutableStateOf((initial?.digits ?: 6).toString()) }
-    var period by remember { mutableStateOf((initial?.period ?: 30).toString()) }
-    var busy by remember { mutableStateOf(false) }
-
-    fun applyParsed(text: String) {
-        runCatching { OtpAuthUri.parse(text) }
-            .onSuccess { parsed ->
-                issuer = parsed.issuer.orEmpty()
-                account = parsed.account
-                secret = parsed.secret
-                algorithm = parsed.algorithm
-                digits = parsed.digits.toString()
-                period = parsed.period.toString()
-            }
-            .onFailure { onError("That is not a usable 2FA link: ${it.message}") }
-    }
-
-    val scanLauncher = rememberLauncherForActivityResult(
-        ActivityResultContracts.StartActivityForResult()
-    ) { result ->
-        val text = result.data?.getStringExtra(QrScannerActivity.EXTRA_QR_TEXT)
-        if (!text.isNullOrBlank()) applyParsed(text) else onError("No QR code was read")
-    }
-
-    val editShape = fieldShape
-    Dialog(
-        onDismissRequest = onDismiss,
-        properties = DialogProperties(usePlatformDefaultWidth = false)
-    ) {
-        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.BottomCenter) {
-            Surface(shape = RoomBottomSheetShape, color = MaterialTheme.colorScheme.surface) {
-                Column(
-                    Modifier
-                        .padding(horizontal = 16.dp)
-                        .verticalScroll(rememberScrollState())
-                ) {
-                    RoomSheetHeader(if (initial == null) "Add 2FA account" else "Edit 2FA account")
-                    if (initial == null) {
-                        Row(
-                            Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.spacedBy(10.dp)
-                        ) {
-                            OutlinedButton(
-                                onClick = {
-                                    scanLauncher.launch(
-                                        Intent(context, QrScannerActivity::class.java)
-                                    )
-                                },
-                                modifier = Modifier
-                                    .weight(1f)
-                                    .heightIn(min = 48.dp)
-                            ) {
-                                Icon(Icons.Filled.QrCodeScanner, contentDescription = null)
-                                Spacer(Modifier.width(6.dp))
-                                Text("Scan QR")
-                            }
-                            OutlinedButton(
-                                onClick = {
-                                    val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE)
-                                        as ClipboardManager
-                                    val pasted = clipboard.primaryClip
-                                        ?.takeIf { it.itemCount > 0 }
-                                        ?.getItemAt(0)
-                                        ?.coerceToText(context)
-                                        ?.toString()
-                                    if (pasted.isNullOrBlank()) {
-                                        onError("The clipboard is empty")
-                                    } else {
-                                        applyParsed(pasted)
-                                    }
-                                },
-                                modifier = Modifier
-                                    .weight(1f)
-                                    .heightIn(min = 48.dp)
-                            ) { Text("Paste link") }
-                        }
-                        Spacer(Modifier.height(10.dp))
-                        OutlinedButton(
-                            onClick = onImportFromFile,
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .heightIn(min = 48.dp)
-                        ) {
-                            Icon(Icons.Filled.FolderOpen, contentDescription = null)
-                            Spacer(Modifier.width(6.dp))
-                            Text("Import from file")
-                        }
-                        Spacer(Modifier.height(12.dp))
-                    }
-                    OutlinedTextField(
-                        value = issuer,
-                        onValueChange = { issuer = it },
-                        label = { Text("Service (optional)") },
-                        singleLine = true,
-                        shape = editShape,
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                    Spacer(Modifier.height(8.dp))
-                    OutlinedTextField(
-                        value = account,
-                        onValueChange = { account = it },
-                        label = { Text("Account") },
-                        singleLine = true,
-                        shape = editShape,
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                    Spacer(Modifier.height(8.dp))
-                    OutlinedTextField(
-                        value = secret,
-                        onValueChange = { secret = it },
-                        label = { Text("Setup key (Base32)") },
-                        singleLine = true,
-                        shape = editShape,
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                    Spacer(Modifier.height(8.dp))
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        TotpAlgorithm.entries.forEach { option ->
-                            FilterChip(
-                                selected = algorithm == option,
-                                onClick = { algorithm = option },
-                                label = { Text(option.name) }
-                            )
-                        }
-                    }
-                    Spacer(Modifier.height(8.dp))
-                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                        OutlinedTextField(
-                            value = digits,
-                            onValueChange = { digits = it.filter(Char::isDigit).take(1) },
-                            label = { Text("Digits") },
-                            singleLine = true,
-                            shape = editShape,
-                            modifier = Modifier.weight(1f)
-                        )
-                        OutlinedTextField(
-                            value = period,
-                            onValueChange = { period = it.filter(Char::isDigit).take(3) },
-                            label = { Text("Period (s)") },
-                            singleLine = true,
-                            shape = editShape,
-                            modifier = Modifier.weight(1f)
-                        )
-                    }
-                    Spacer(Modifier.height(16.dp))
-                    Row(
-                        Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(10.dp)
-                    ) {
-                        Button(
-                            onClick = {
-                                val key = secret.filterNot(Char::isWhitespace).uppercase()
-                                val digitCount = digits.toIntOrNull() ?: 0
-                                val step = period.toIntOrNull() ?: 0
-                                when {
-                                    account.isBlank() ->
-                                        onError("An account name is required")
-                                    key.isEmpty() ->
-                                        onError("A setup key is required")
-                                    runCatching { Base32.decode(key) }.isFailure ->
-                                        onError("That setup key is not valid Base32")
-                                    digitCount != 6 && digitCount != 8 ->
-                                        onError("Digits must be 6 or 8")
-                                    step !in 1..300 ->
-                                        onError("The period must be between 1 and 300 seconds")
-                                    busy -> Unit
-                                    else -> {
-                                        busy = true
-                                        scope.launch {
-                                            runCatching {
-                                                repo.save(
-                                                    profileId = profileId,
-                                                    issuer = issuer.trim(),
-                                                    account = account.trim(),
-                                                    secret = key,
-                                                    algorithm = algorithm,
-                                                    digits = digitCount,
-                                                    period = step,
-                                                    id = initial?.id
-                                                )
-                                            }.onSuccess {
-                                                onSaved(
-                                                    if (initial == null) "Account added"
-                                                    else "Account updated"
-                                                )
-                                            }.onFailure {
-                                                busy = false
-                                                onError("Could not save the account")
-                                            }
-                                        }
-                                    }
-                                }
-                            },
-                            enabled = !busy,
-                            modifier = Modifier
-                                .weight(1f)
-                                .heightIn(min = 48.dp)
-                        ) { Text(if (initial == null) "Add" else "Update") }
-                        OutlinedButton(
-                            onClick = onDismiss,
-                            modifier = Modifier
-                                .weight(1f)
-                                .heightIn(min = 48.dp)
-                        ) { Text("Cancel") }
-                    }
-                    Spacer(Modifier.height(24.dp))
-                }
-            }
-        }
-    }
-}
-
-/** The largest 2FA file this screen reads into memory: a picker can hand us
- *  any file on the device, and a whole one on the heap is a crash. */
-private const val MAX_TOTP_FILE_BYTES = 4 * 1024 * 1024
-
-private fun readCappedText(context: Context, uri: Uri, limit: Int, what: String): String {
-    val input = context.contentResolver.openInputStream(uri)
-        ?: error("the selected file could not be opened")
-    return input.use { stream ->
-        val out = java.io.ByteArrayOutputStream()
-        val buffer = ByteArray(64 * 1024)
-        var total = 0
-        while (true) {
-            val read = stream.read(buffer)
-            if (read < 0) break
-            total += read
-            if (total > limit) error("that file is too large to be $what")
-            out.write(buffer, 0, read)
-        }
-        out.toString("UTF-8")
     }
 }

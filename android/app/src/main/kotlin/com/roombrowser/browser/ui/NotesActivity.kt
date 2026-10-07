@@ -7,8 +7,8 @@ import android.text.format.DateUtils
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -28,9 +28,6 @@ import androidx.compose.foundation.layout.union
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
@@ -41,9 +38,6 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.ModalBottomSheet
-import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
@@ -71,10 +65,8 @@ import com.roombrowser.domain.model.ProfileId
 import com.roombrowser.domain.theme.BuiltInThemes
 import com.roombrowser.ui.common.EmptyState
 import com.roombrowser.ui.common.LocalRoomExtras
-import com.roombrowser.ui.common.RoomBottomSheetShape
 import com.roombrowser.ui.common.RoomBrowserTheme
 import com.roombrowser.ui.common.RoomCard
-import com.roombrowser.ui.common.RoomSheetHeader
 import kotlinx.coroutines.launch
 
 /**
@@ -87,8 +79,15 @@ import kotlinx.coroutines.launch
  *
  * The profile id arrives as an Intent extra and is the only scoping: no
  * WebView is bound, so nothing here can affect engine isolation.
+ *
+ * Writing happens in [NoteEditorActivity], its OWN window: a full-screen text
+ * surface no longer shares the list's window, where the keyboard could squeeze
+ * the fields out of view.
  */
 class NotesActivity : ComponentActivity() {
+
+    /** What the editor reported on the way out; cleared once announced. */
+    private var editorMessage by mutableStateOf<String?>(null)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -101,6 +100,11 @@ class NotesActivity : ComponentActivity() {
         val profileId = ProfileId(profileIdValue)
         val profileName = intent.getStringExtra(EXTRA_PROFILE_NAME).orEmpty()
         val graph = (application as RoomBrowserApp).graph
+        val editor = registerForActivityResult(
+            ActivityResultContracts.StartActivityForResult()
+        ) { result ->
+            editorMessage = result.data?.getStringExtra(NoteEditorActivity.EXTRA_RESULT_MESSAGE)
+        }
         setContent {
             var spec by remember { mutableStateOf(BuiltInThemes.default()) }
             LaunchedEffect(Unit) {
@@ -113,6 +117,10 @@ class NotesActivity : ComponentActivity() {
                     profileId = profileId,
                     profileName = profileName,
                     repo = graph.browserRepo,
+                    editorMessage = editorMessage,
+                    onEditorMessageShown = { editorMessage = null },
+                    onAddNote = { NoteEditorActivity.launch(this, profileId.value, null) },
+                    onEditNote = { NoteEditorActivity.launch(this, profileId.value, it.id) },
                     onClose = { finish() }
                 )
             }
@@ -139,28 +147,23 @@ private fun NotesRoot(
     profileId: ProfileId,
     profileName: String,
     repo: BrowserRepository,
+    editorMessage: String?,
+    onEditorMessageShown: () -> Unit,
+    onAddNote: () -> Unit,
+    onEditNote: (NoteEntity) -> Unit,
     onClose: () -> Unit
 ) {
-    val extras = LocalRoomExtras.current
     val snackbarHostState = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
 
     val notes by repo.observeNotes(profileId).collectAsState(initial = emptyList())
 
-    var editorOpen by remember { mutableStateOf(false) }
-    var editing by remember { mutableStateOf<NoteEntity?>(null) }
     var deleteTarget by remember { mutableStateOf<NoteEntity?>(null) }
 
-    fun saveNote(title: String, body: String, id: String?) {
-        scope.launch {
-            runCatching { repo.saveNote(profileId, title.trim(), body, id) }
-                .onSuccess {
-                    editorOpen = false
-                    editing = null
-                    snackbarHostState.showSnackbar(if (id == null) "Note saved" else "Note updated")
-                }
-                .onFailure { snackbarHostState.showSnackbar("Could not save note") }
-        }
+    LaunchedEffect(editorMessage) {
+        val message = editorMessage ?: return@LaunchedEffect
+        onEditorMessageShown()
+        snackbarHostState.showSnackbar(message)
     }
 
     fun deleteNote(note: NoteEntity) {
@@ -197,10 +200,7 @@ private fun NotesRoot(
                 },
                 actions = {
                     IconButton(
-                        onClick = {
-                            editing = null
-                            editorOpen = true
-                        },
+                        onClick = onAddNote,
                         modifier = Modifier.semantics { contentDescription = "Add note" }
                     ) {
                         Icon(Icons.Filled.Add, contentDescription = null)
@@ -226,10 +226,7 @@ private fun NotesRoot(
                         "and travel with its export."
                 )
                 Button(
-                    onClick = {
-                        editing = null
-                        editorOpen = true
-                    },
+                    onClick = onAddNote,
                     modifier = Modifier
                         .align(Alignment.CenterHorizontally)
                         .padding(top = 4.dp)
@@ -243,27 +240,13 @@ private fun NotesRoot(
                     items(notes, key = { it.id }) { note ->
                         NoteRow(
                             note = note,
-                            onOpen = {
-                                editing = note
-                                editorOpen = true
-                            },
+                            onOpen = { onEditNote(note) },
                             onDelete = { deleteTarget = note }
                         )
                     }
                 }
             }
         }
-    }
-
-    if (editorOpen) {
-        NoteEditorSheet(
-            initial = editing,
-            onDismiss = {
-                editorOpen = false
-                editing = null
-            },
-            onSave = ::saveNote
-        )
     }
 
     deleteTarget?.let { target ->
@@ -336,73 +319,6 @@ private fun NoteRow(note: NoteEntity, onOpen: () -> Unit, onDelete: () -> Unit) 
             ) {
                 Icon(Icons.Filled.Delete, contentDescription = null, tint = extras.icon)
             }
-        }
-    }
-}
-
-/**
- * Add/edit sheet. A note needs a title or a body (both blank disables Save), so
- * an accidental blank save cannot create an empty row.
- */
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-private fun NoteEditorSheet(
-    initial: NoteEntity?,
-    onDismiss: () -> Unit,
-    onSave: (title: String, body: String, id: String?) -> Unit
-) {
-    val extras = LocalRoomExtras.current
-    var title by remember { mutableStateOf(initial?.title ?: "") }
-    var body by remember { mutableStateOf(initial?.body ?: "") }
-    val fieldShape = RoundedCornerShape((extras.radius * 0.6f).dp)
-    val canSave = title.isNotBlank() || body.isNotBlank()
-
-    ModalBottomSheet(onDismissRequest = onDismiss, shape = RoomBottomSheetShape) {
-        Column(
-            Modifier
-                .padding(horizontal = 16.dp)
-                .verticalScroll(rememberScrollState())
-        ) {
-            RoomSheetHeader(if (initial == null) "Add note" else "Edit note")
-            OutlinedTextField(
-                value = title,
-                onValueChange = { title = it },
-                label = { Text("Title") },
-                singleLine = true,
-                shape = fieldShape,
-                modifier = Modifier.fillMaxWidth()
-            )
-            Spacer(Modifier.height(8.dp))
-            OutlinedTextField(
-                value = body,
-                onValueChange = { body = it },
-                label = { Text("Note") },
-                minLines = 5,
-                shape = fieldShape,
-                modifier = Modifier.fillMaxWidth()
-            )
-            Spacer(Modifier.height(16.dp))
-            Row(
-                Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(10.dp)
-            ) {
-                Button(
-                    onClick = {
-                        if (canSave) onSave(title, body, initial?.id)
-                    },
-                    enabled = canSave,
-                    modifier = Modifier
-                        .weight(1f)
-                        .heightIn(min = 48.dp)
-                ) { Text(if (initial == null) "Save" else "Update") }
-                OutlinedButton(
-                    onClick = onDismiss,
-                    modifier = Modifier
-                        .weight(1f)
-                        .heightIn(min = 48.dp)
-                ) { Text("Cancel") }
-            }
-            Spacer(Modifier.height(24.dp))
         }
     }
 }
