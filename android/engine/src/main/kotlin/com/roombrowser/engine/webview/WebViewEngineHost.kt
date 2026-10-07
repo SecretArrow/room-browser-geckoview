@@ -8,6 +8,7 @@ import android.webkit.WebViewDatabase
 import com.roombrowser.domain.model.Profile
 import com.roombrowser.domain.model.ProfileId
 import com.roombrowser.engine.BlockedResourceSink
+import com.roombrowser.engine.EngineActivityDelegate
 import com.roombrowser.engine.EngineHost
 import com.roombrowser.engine.EngineOption
 import com.roombrowser.engine.EngineSession
@@ -217,6 +218,22 @@ internal class WebViewEngineHost : EngineHost {
      * that is correct for the app to make in both editions.
      */
     override fun setResourceFilter(filter: ResourceFilter, blocked: BlockedResourceSink) {
+        // Intentionally empty: see the KDoc above. Not a TODO.
+    }
+
+    /**
+     * DELIBERATELY A NO-OP, for the same reason as [setResourceFilter]: the
+     * window this delegate would open is one the app already opens itself.
+     *
+     * Android WebView asks the APP for anything that needs an Activity -- the
+     * app implements `WebChromeClient.onShowFileChooser` and answers its own
+     * permission and auth prompts, and it IS an Activity, so it starts what it
+     * needs with its own `registerForActivityResult`. There is no engine-side
+     * pending intent to hand over. GeckoView has to have this member because it
+     * runs outside the app's process and reaches the passkey provider through a
+     * `PendingIntent` the app alone can launch.
+     */
+    override fun setActivityDelegate(delegate: EngineActivityDelegate?) {
         // Intentionally empty: see the KDoc above. Not a TODO.
     }
 

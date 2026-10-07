@@ -13,6 +13,7 @@ import com.roombrowser.domain.model.UserAgents
 import com.roombrowser.domain.model.WebRtcPolicy
 import com.roombrowser.domain.model.claimedScreen
 import com.roombrowser.engine.BlockedResourceSink
+import com.roombrowser.engine.EngineActivityDelegate
 import com.roombrowser.engine.EngineHost
 import com.roombrowser.engine.EngineOption
 import com.roombrowser.engine.EnginePageScripts
@@ -111,6 +112,20 @@ object ProfileEngine {
     }
 
     fun boundProfile(): ProfileId? = host.boundProfile()
+
+    /**
+     * Hand the engine a way to open a system window on its behalf.
+     *
+     * Reachable from `:app` without naming the engine: [EngineActivityDelegate]
+     * is the facade's own type and `android.content.IntentSender` is framework,
+     * so the caller is byte-identical in both editions. Called from the browser
+     * activity's `onCreate` BEFORE [bindProcessToProfile] -- the engine's
+     * runtime is created by the bind and its passkey support is only wired up
+     * while it is being created.
+     */
+    fun setActivityDelegate(delegate: EngineActivityDelegate?) {
+        host.setActivityDelegate(delegate)
+    }
 
     /**
      * Create and configure a session for the bound profile.

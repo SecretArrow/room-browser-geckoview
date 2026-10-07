@@ -6,6 +6,7 @@ import android.util.Log
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.ActivityResultLauncher
+import androidx.activity.result.IntentSenderRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -66,6 +67,18 @@ class BrowserActivity : FragmentActivity() {
 
     private lateinit var networkWarningLauncher: ActivityResultLauncher<Intent>
 
+    /**
+     * The passkey (and any other system-window) bridge, and its launcher.
+     *
+     * The bridge is built once at construction because the delegate has to be
+     * installed BEFORE the engine binds; the launcher it forwards to is
+     * registered in [onCreate], which runs before any prompt can arrive.
+     */
+    private val engineActivityBridge = EngineActivityBridge { request ->
+        passkeyLauncher.launch(request)
+    }
+    private lateinit var passkeyLauncher: ActivityResultLauncher<IntentSenderRequest>
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         // Edge-to-edge with runtime insets: the UI applies WindowInsets
@@ -96,6 +109,23 @@ class BrowserActivity : FragmentActivity() {
         val initialUrl = intent.getStringExtra(EXTRA_INITIAL_URL)
             ?: savedInstanceState?.getString(EXTRA_INITIAL_URL)
         launchRequest = initialUrl?.let { LaunchRequest(it, System.nanoTime()) }
+
+        // ---- Passkeys ------------------------------------------------
+        // The credential prompt belongs to the system's credential provider
+        // and only an Activity can start it, so the engine -- which has no
+        // Activity -- hands us the PendingIntent and waits. Installed BEFORE
+        // the bind below, because the bind is what creates the engine runtime
+        // and wires this in; a delegate that arrived afterwards would leave
+        // every passkey request failing, which a page shows as a sign-in that
+        // spins forever.
+        passkeyLauncher = registerForActivityResult(
+            ActivityResultContracts.StartIntentSenderForResult()
+        ) { result ->
+            engineActivityBridge.deliver(
+                if (result.resultCode == RESULT_OK) result.data else null
+            )
+        }
+        ProfileEngine.setActivityDelegate(engineActivityBridge)
 
         // THE isolation-critical step: bind this process to the profile.
         val bound = ProfileEngine.bindProcessToProfile(profileId)
@@ -313,6 +343,12 @@ class BrowserActivity : FragmentActivity() {
     }
 
     override fun onDestroy() {
+        // Answer anything still waiting BEFORE the delegate goes: an engine
+        // call left unresolved is a page that never finishes loading. Then
+        // withdraw the delegate, so a prompt arriving after this activity is
+        // gone fails cleanly instead of launching into a dead window.
+        engineActivityBridge.cancelAll()
+        ProfileEngine.setActivityDelegate(null)
         taskPageHost?.let { AiTaskPageHosts.unregister(it) }
         taskPageHost = null
         super.onDestroy()

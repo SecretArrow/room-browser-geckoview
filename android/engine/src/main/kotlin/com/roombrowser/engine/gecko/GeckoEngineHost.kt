@@ -1,18 +1,21 @@
 package com.roombrowser.engine.gecko
 
 import android.content.Context
+import android.content.Intent
 import android.os.Handler
 import android.os.Looper
 import com.roombrowser.domain.engine.FilterEngine
 import com.roombrowser.domain.model.Profile
 import com.roombrowser.domain.model.ProfileId
 import com.roombrowser.engine.BlockedResourceSink
+import com.roombrowser.engine.EngineActivityDelegate
 import com.roombrowser.engine.EngineHost
 import com.roombrowser.engine.EngineOption
 import com.roombrowser.engine.EngineSession
 import com.roombrowser.engine.ResourceFilter
 import org.json.JSONArray
 import org.json.JSONObject
+import org.mozilla.geckoview.GeckoResult
 import org.mozilla.geckoview.GeckoRuntime
 import org.mozilla.geckoview.StorageController
 import org.mozilla.geckoview.WebExtension
@@ -95,6 +98,17 @@ internal class GeckoEngineHost : EngineHost {
     @Volatile
     private var blockedSink: BlockedResourceSink? = null
 
+    /**
+     * The app's window, or null while the app has offered none.
+     *
+     * HELD BEFORE THE RUNTIME EXISTS, which is the ordering the app actually
+     * uses: it installs this in `onCreate` and binds in the same method, and
+     * [runtime] is what [bind] creates. A delegate that arrives first is
+     * applied by [bindOnMainThread] instead of being dropped.
+     */
+    @Volatile
+    private var activityDelegate: EngineActivityDelegate? = null
+
     override fun engineName(context: Context): String = ENGINE_LABEL
 
     /**
@@ -143,6 +157,10 @@ internal class GeckoEngineHost : EngineHost {
         runtime = created
         bound = profileId
         installBridge(created)
+        // Applied here, not only from [setActivityDelegate]: the app's call
+        // arrives before this runtime exists, and a delegate dropped on that
+        // ordering would leave every passkey request failing.
+        applyActivityDelegate(created)
         return true
     }
 
@@ -475,6 +493,50 @@ internal class GeckoEngineHost : EngineHost {
 
     override fun boundProfile(): ProfileId? = bound
 
+    override fun setActivityDelegate(delegate: EngineActivityDelegate?) {
+        activityDelegate = delegate
+        val active = runtime ?: return
+        // @UiThread on the engine's side, and the app calls this from
+        // `onCreate`, so onMainThread runs it inline there and hops on the
+        // withdrawal path, which can arrive from any thread.
+        onMainThread { applyActivityDelegate(active) }
+    }
+
+    /**
+     * Build the engine's delegate out of the app's, and install it.
+     *
+     * THE ADAPTER IS NOT CEREMONY. GeckoView's contract is
+     * `GeckoResult<Intent>` and it states that a result which is not
+     * `RESULT_OK` MUST be completed with an exception -- so the app's "the
+     * user cancelled, here is null" has to be translated rather than forwarded,
+     * or a cancelled prompt would be reported to the page as an activity that
+     * succeeded and returned nothing.
+     */
+    private fun applyActivityDelegate(active: GeckoRuntime) {
+        val delegated = activityDelegate
+        if (delegated == null) {
+            active.setActivityDelegate(null)
+            return
+        }
+        active.setActivityDelegate(
+            GeckoRuntime.ActivityDelegate { pendingIntent ->
+                val result = GeckoResult<Intent>()
+                postToMain {
+                    delegated.startIntentSenderForResult(pendingIntent.intentSender) { data ->
+                        if (data != null) {
+                            result.complete(data)
+                        } else {
+                            result.completeExceptionally(
+                                IllegalStateException("activity result was cancelled")
+                            )
+                        }
+                    }
+                }
+                result
+            }
+        )
+    }
+
     override fun createSession(
         context: Context,
         profile: Profile,
@@ -590,6 +652,7 @@ internal class GeckoEngineHost : EngineHost {
         blockerPort = null
         resourceFilter = null
         blockedSink = null
+        activityDelegate = null
         synchronized(bridgeWaiters) { bridgeWaiters.clear() }
     }
 

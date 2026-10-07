@@ -120,6 +120,24 @@ interface EngineHost {
     fun setResourceFilter(filter: ResourceFilter, blocked: BlockedResourceSink)
 
     /**
+     * Hand the engine a way to open another app's window and read its answer.
+     *
+     * Needed by an engine that starts system UI on the page's behalf and gets
+     * the result back through the app's Activity -- GeckoView's passkey
+     * requests are that case, and without a delegate they fail rather than
+     * being refused. The WebView edition answers its own prompts inside the
+     * app, so it implements this as a documented no-op.
+     *
+     * EXPECTED TO BE CALLED BEFORE [bind], AND THAT ORDER IS THE POINT. The app
+     * installs its delegate in `onCreate` and binds in the same method, while
+     * the engine's runtime is created BY [bind]; a delegate that arrives first
+     * must therefore be REMEMBERED and applied when the runtime appears rather
+     * than dropped. Null withdraws it, for the case where the Activity that
+     * owned it is going away and should not be launched into afterwards.
+     */
+    fun setActivityDelegate(delegate: EngineActivityDelegate?)
+
+    /**
      * Erase all engine storage for the bound profile.
      *
      * Refuses -- rather than silently clearing the wrong profile -- when this
