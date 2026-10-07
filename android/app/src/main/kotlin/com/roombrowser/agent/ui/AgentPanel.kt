@@ -907,7 +907,15 @@ private fun AgentApprovalDialog(
         onDismissRequest = { agent.respondApproval(ApprovalAnswer.Deny) },
         title = { Text("Confirm agent action") },
         text = {
-            Column {
+            // Material3 gives this slot no scrolling of its own and clips an
+            // overlong body, and a wallet label carries the whole request
+            // detail — so it scrolls here, capped, rather than lose the part
+            // that says what the answers do.
+            Column(
+                Modifier
+                    .heightIn(max = 320.dp)
+                    .verticalScroll(rememberScrollState())
+            ) {
                 Text(approval.label, style = MaterialTheme.typography.bodyLarge)
                 Spacer(Modifier.height(8.dp))
                 Text(
