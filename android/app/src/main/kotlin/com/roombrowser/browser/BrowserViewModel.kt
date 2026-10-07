@@ -339,6 +339,9 @@ class BrowserViewModel(
         private set
 
     fun onFileChooserRequest(intent: Intent, accept: (Array<Uri>?) -> Unit) {
+        // A page may ask twice; the older request is cancelled rather than
+        // dropped, because a dropped one leaves its input waiting forever.
+        pendingFileChooser?.accept?.invoke(null)
         pendingFileChooser = FileChooserRequest(intent, accept)
     }
 

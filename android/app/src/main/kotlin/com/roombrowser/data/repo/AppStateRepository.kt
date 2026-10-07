@@ -89,10 +89,10 @@ data class AgentSettings(
     /**
      * The chat only reads and opens pages: nothing it does is clicked, typed,
      * submitted, posted or signed, and no tool that could do any of those is
-     * offered to it. Off by default, because acting on the page is the agent's
-     * ordinary job.
+     * offered to it. On by default — the owner wants an unattended agent that
+     * cannot submit anything anywhere — so acting on the page is opted into.
      */
-    val chatOnly: Boolean = false,
+    val chatOnly: Boolean = true,
     val temperature: Double = 0.2,
     val maxSteps: Int = 25,
     /** On by default, so an action is never taken without the user seeing it. */
