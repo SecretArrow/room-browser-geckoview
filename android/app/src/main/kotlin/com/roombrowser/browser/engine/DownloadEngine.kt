@@ -564,6 +564,9 @@ class DownloadEngine(
             } catch (e: Throwable) {
                 runCatching { source.close() }
                 if (id != 0L) {
+                    // A capped or interrupted save leaves a `.part` behind, and
+                    // nothing else in the app ever looks at it again.
+                    runCatching { partFileFor(id).delete() }
                     val message = e.message ?: "save failed"
                     repo.updateDownloadStatus(id, DownloadStatus.FAILED.name, message)
                     notifyFailure(id, entity.fileName, message)

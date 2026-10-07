@@ -306,7 +306,7 @@ class BrowserAgentController(
      * the mode while it is on — a turn that suddenly refuses to act reads as a
      * broken agent otherwise.
      */
-    var chatOnly by mutableStateOf(false)
+    var chatOnly by mutableStateOf(true)
         private set
     var modelsLoading by mutableStateOf(false)
         private set

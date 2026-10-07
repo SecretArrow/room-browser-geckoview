@@ -51,6 +51,34 @@ class ChatOnlyPolicyTest {
     }
 
     @Test
+    fun `changing what a site may do is refused, while reading it is not`() {
+        listOf("toggle", "clear_site_data").forEach { action ->
+            assertThat(ChatOnlyPolicy.refusal(AgentTools.APP_SHIELDS, action)).isNotNull()
+        }
+        assertThat(ChatOnlyPolicy.refusal(AgentTools.APP_SITE_PERMISSION, "set")).isNotNull()
+        assertThat(ChatOnlyPolicy.refusal(AgentTools.APP_SHIELDS, "read")).isNull()
+        assertThat(ChatOnlyPolicy.refusal(AgentTools.APP_SITE_PERMISSION, "list")).isNull()
+    }
+
+    @Test
+    fun `every refused action is one its own tool offers`() {
+        // Refusing an action a tool does not have would quietly refuse nothing,
+        // and the action arrives from the model, so the names are the contract.
+        assertThat(AgentAppActions.SHIELD_ACTIONS).containsAtLeast("toggle", "clear_site_data")
+        assertThat(AgentAppActions.PERMISSION_ACTIONS).containsAtLeast("set")
+        assertThat(AgentAppActions.TOTP_ACTIONS).contains("fill")
+    }
+
+    @Test
+    fun `an unknown action is left to the executor`() {
+        // The app tools refuse an action outside their own enum, so a null or
+        // unparsed one must not be turned into a refusal here — that would tell
+        // the model the tool exists and is merely switched off.
+        assertThat(ChatOnlyPolicy.refusal(AgentTools.APP_SHIELDS, null)).isNull()
+        assertThat(ChatOnlyPolicy.refusal(AgentTools.APP_SHIELDS, "not_an_action")).isNull()
+    }
+
+    @Test
     fun `an unknown name is left to the executor`() {
         // A typo must not be answered with a mode refusal: that would tell the
         // model the tool exists and is merely switched off here.
