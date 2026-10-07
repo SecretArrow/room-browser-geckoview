@@ -563,7 +563,7 @@ class BrowserAgentController(
      * like the surface, because it is a standing choice about how this
      * profile's agent works rather than a per-turn switch.
      */
-    fun setChatOnly(only: Boolean) {
+    fun setChatOnlyMode(only: Boolean) {
         scope.launch {
             settings = appState.updateAgentSettings { it.copy(chatOnly = only) }
             chatOnly = only

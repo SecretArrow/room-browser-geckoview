@@ -462,7 +462,7 @@ private fun AgentPanelHeader(
             // the turn runs, not what it may do.
             FilterChip(
                 selected = agent.chatOnly,
-                onClick = { agent.setChatOnly(!agent.chatOnly) },
+                onClick = { agent.setChatOnlyMode(!agent.chatOnly) },
                 label = { Text("Chat only") },
                 modifier = Modifier
                     .semantics { contentDescription = "agent_chat_only" }
