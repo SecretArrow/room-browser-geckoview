@@ -351,9 +351,19 @@ private fun ErrorPage(error: PageError, onRetry: () -> Unit) {
         verticalArrangement = Arrangement.Center
     ) {
         val (title, message) = when (error) {
-            is PageError.NoInternet -> "No Internet" to "Unable to connect. Check your network and try again."
-            is PageError.Ssl -> "Connection Not Secure" to (error.message + " Room Browser never bypasses certificate errors automatically.")
-            is PageError.DnsFailure -> "DNS Resolution Failed" to "The site's address could not be resolved. Your DNS configuration may block this domain."
+            is PageError.NoInternet ->
+                "No Internet" to "This device is not online. Check Wi-Fi or mobile data, then try again."
+            is PageError.Unreachable ->
+                "Site Unreachable" to "Your connection is working, but this site did not answer. It may be down right now, or this network may be blocking it."
+            is PageError.Ssl ->
+                "Connection Not Secure" to (
+                    error.message +
+                        " An expired certificate, a wrong device date and time, or a public" +
+                        " Wi-Fi sign-in page in the way all look like this. Room Browser will" +
+                        " not bypass it for you."
+                    )
+            is PageError.DnsFailure ->
+                "DNS Resolution Failed" to "Your connection is working, but this site's address could not be resolved. A private DNS setting or a Wi-Fi sign-in page may be in the way."
             is PageError.Generic -> "Page Problem" to (error.message ?: "The page could not be loaded.")
         }
         Box(
@@ -614,6 +624,7 @@ private fun Homepage(
  */
 private fun PageError.urlOrNull(): String = when (this) {
     is PageError.NoInternet -> url
+    is PageError.Unreachable -> url
     is PageError.Ssl -> url
     is PageError.DnsFailure -> url
     is PageError.Generic -> url

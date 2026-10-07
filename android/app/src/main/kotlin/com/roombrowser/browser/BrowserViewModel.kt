@@ -2,6 +2,8 @@ package com.roombrowser.browser
 
 import android.app.Application
 import android.content.Intent
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
 import android.net.Uri
 import android.os.SystemClock
 import android.util.Log
@@ -36,6 +38,7 @@ import com.roombrowser.domain.agent.AgentAppActions
 import com.roombrowser.domain.credentials.CredentialDomainMatcher
 import com.roombrowser.domain.credentials.SavedCredential
 import com.roombrowser.domain.engine.FilterEngine
+import com.roombrowser.domain.engine.PageFailure
 import com.roombrowser.domain.engine.UrlIntelligence
 import com.roombrowser.domain.model.BrowserGlobalSettings
 import com.roombrowser.domain.model.Device
@@ -81,6 +84,7 @@ data class PageState(
 
 sealed interface PageError {
     data class NoInternet(val url: String) : PageError
+    data class Unreachable(val url: String) : PageError
     data class Ssl(val url: String, val message: String) : PageError
     data class DnsFailure(val url: String) : PageError
     data class Generic(val url: String, val message: String?) : PageError
@@ -542,9 +546,14 @@ class BrowserViewModel(
             // The KIND is the engine-neutral answer this branches on. The
             // numeric code is each engine's own numbering and is deliberately
             // NOT compared, because the two editions do not share one.
+            //
+            // The kind says HOW the load failed, never whether the DEVICE is
+            // at fault: TRANSPORT straight to "No Internet" told users their
+            // network was down when only that one server was silent.
+            // [PageFailure] makes that call from the connection's own state.
             pageError = when (kind) {
-                PageErrorKind.DNS -> PageError.DnsFailure(url)
-                PageErrorKind.TRANSPORT -> PageError.NoInternet(url)
+                PageErrorKind.DNS -> transportFailure(url, hostLookup = true)
+                PageErrorKind.TRANSPORT -> transportFailure(url, hostLookup = false)
                 else -> PageError.Generic(url, description)
             }
             pageState = pageState.copy(loading = false)
@@ -1089,7 +1098,22 @@ class BrowserViewModel(
 
     fun goBack() { activeSession?.goBack() }
     fun goForward() { activeSession?.goForward() }
-    fun reload() { activeSession?.reload() }
+    /**
+     * Retry the page whose error surface is on screen.
+     *
+     * The error page REPLACES the engine surface, so EngineViewHost is out of
+     * the composition while one is up. Clearing the error first brings it back,
+     * and queueing the reload through the deferred path lets it start on an
+     * attached session instead of racing the attach.
+     */
+    fun reload() {
+        val session = activeSession ?: return
+        if (pageError != null) {
+            pageError = null
+            pageState = pageState.copy(isHomepage = false)
+        }
+        runWhenAttached(session) { session.reload() }
+    }
     fun stopLoading() { activeSession?.stop() }
 
     /**
@@ -2808,6 +2832,34 @@ class BrowserViewModel(
         SSL_INVALID -> "The site's certificate is invalid."
         else -> "The site's certificate could not be verified."
     }
+
+    /** The page a failed main-frame load gets, given what the engine reported
+     *  and whether this device is actually online. */
+    private fun transportFailure(url: String, hostLookup: Boolean): PageError =
+        when (PageFailure.of(hostLookup, deviceOnline())) {
+            PageFailure.OFFLINE -> PageError.NoInternet(url)
+            PageFailure.DNS -> PageError.DnsFailure(url)
+            PageFailure.UNREACHABLE -> PageError.Unreachable(url)
+        }
+
+    /**
+     * Whether this device holds a connection that claims to reach the
+     * internet — the fact the engine's error kind cannot supply, and the one
+     * that separates "your network is down" from "that server did not answer".
+     *
+     * NET_CAPABILITY_INTERNET, not ..._VALIDATED: a device whose connectivity
+     * probe is itself blocked (a corporate firewall, a VPN that drops the
+     * probe host) never reports VALIDATED while browsing fine, and reading
+     * that as "offline" would recreate the same lie in the other direction.
+     */
+    private fun deviceOnline(): Boolean = runCatching {
+        val manager = getApplication<Application>()
+            .getSystemService(android.content.Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
+            ?: return false
+        val network = manager.activeNetwork ?: return false
+        manager.getNetworkCapabilities(network)
+            ?.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) == true
+    }.getOrDefault(false)
 
     override fun onCleared() {
         Log.d(NAV_TAG, "vm=$navId onCleared")
