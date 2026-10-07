@@ -65,6 +65,7 @@ import androidx.compose.material.icons.filled.SmartToy
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.filled.Tab
 import androidx.compose.material.icons.filled.TouchApp
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Badge
 import androidx.compose.material3.BadgedBox
 import androidx.compose.material3.Button
@@ -248,6 +249,13 @@ fun AgentPanelHost(
                 },
                 modifier = Modifier.align(Alignment.TopStart)
             )
+        }
+
+        // An approval raised while the panel is closed has no card to appear
+        // on, so it would wait out its timeout unseen. Never both at once.
+        val pending = agent.approval
+        if (!expanded && pending != null) {
+            AgentApprovalDialog(pending, agent)
         }
     }
 }
@@ -860,17 +868,93 @@ private fun ApprovalCard(approval: com.roombrowser.agent.AgentApproval, agent: B
             }
             Spacer(Modifier.height(2.dp))
             Text(
-                if (approval.destructive) {
-                    "This cannot be undone, and it asks every time — there is no answer here " +
-                        "that stops the asking."
-                } else {
-                    "\"Always allow\" stops the agent asking about anything, until you turn it " +
-                        "off in AI Agent settings."
-                },
+                approvalFootnote(approval),
                 style = MaterialTheme.typography.labelSmall
             )
         }
     }
+}
+
+/**
+ * What the third answer does, which is not one thing: for a wallet request
+ * "Always allow" covers that request alone, and there is no trust store to
+ * switch off.
+ */
+private fun approvalFootnote(approval: com.roombrowser.agent.AgentApproval): String = when {
+    approval.destructive ->
+        "This cannot be undone, and it asks every time — there is no answer here " +
+            "that stops the asking."
+    approval.name == BrowserAgentController.WALLET_APPROVAL_NAME ->
+        "\"Always allow\" covers this request only — wallet requests always ask, and " +
+            "the next one asks again."
+    else ->
+        "\"Always allow\" stops the agent asking about anything, until you turn it " +
+            "off in AI Agent settings."
+}
+
+/**
+ * The confirmation prompt for the browser surface, for a request that arrived
+ * with the chat minimized. Dismissal denies, so an unanswered prompt can never
+ * read as consent.
+ */
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
+@Composable
+private fun AgentApprovalDialog(
+    approval: com.roombrowser.agent.AgentApproval,
+    agent: BrowserAgentController
+) {
+    AlertDialog(
+        onDismissRequest = { agent.respondApproval(ApprovalAnswer.Deny) },
+        title = { Text("Confirm agent action") },
+        text = {
+            Column {
+                Text(approval.label, style = MaterialTheme.typography.bodyLarge)
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    "The AI agent is waiting for this answer while its chat is minimized, " +
+                        "so this dialog is the only place to give it. Nothing has happened " +
+                        "yet, and nothing happens unless you allow it.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    approvalFootnote(approval),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    "Asked by the \"${approval.name}\" tool. Closing this or not answering " +
+                        "denies it — the agent is told the action was refused and carries on " +
+                        "without it.",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        },
+        confirmButton = {
+            // Wraps rather than clips: three answers do not fit one row on a
+            // narrow phone, and "Always allow" is the one that must stay
+            // readable rather than be the one pushed off the edge.
+            FlowRow(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
+                if (!approval.destructive) {
+                    TextButton(onClick = { agent.respondApproval(ApprovalAnswer.AlwaysAllow) }) {
+                        Text("Always allow")
+                    }
+                }
+                OutlinedButton(onClick = { agent.respondApproval(ApprovalAnswer.Deny) }) {
+                    Text("Deny")
+                }
+                Button(onClick = { agent.respondApproval(ApprovalAnswer.Allow) }) {
+                    Text("Allow")
+                }
+            }
+        }
+    )
 }
 
 // ------------------------------------------------------------------- composer

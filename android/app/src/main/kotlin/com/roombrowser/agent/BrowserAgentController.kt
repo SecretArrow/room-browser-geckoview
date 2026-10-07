@@ -1428,8 +1428,12 @@ class BrowserAgentController(
     companion object {
         private const val APPROVAL_TIMEOUT_MS = 120_000L
 
-        /** Name on the wallet approval prompt, distinct from a normal tool gate. */
-        private const val WALLET_APPROVAL_NAME = "wallet"
+        /**
+         * Name on the wallet approval prompt, distinct from a normal tool gate.
+         * Internal because the prompt's own wording depends on it: "Always
+         * allow" means "once" for this name and "stop asking" for the rest.
+         */
+        internal const val WALLET_APPROVAL_NAME = "wallet"
 
         /**
          * How long one local gate decision may take. Generous enough for the
