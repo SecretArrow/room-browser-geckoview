@@ -64,9 +64,10 @@ class ChatOnlyPolicyTest {
     fun `every refused action is one its own tool offers`() {
         // Refusing an action a tool does not have would quietly refuse nothing,
         // and the action arrives from the model, so the names are the contract.
-        assertThat(AgentAppActions.SHIELD_ACTIONS).containsAtLeast("toggle", "clear_site_data")
-        assertThat(AgentAppActions.PERMISSION_ACTIONS).containsAtLeast("set")
-        assertThat(AgentAppActions.TOTP_ACTIONS).contains("fill")
+        assertThat(AgentAppActions.SHIELD_ACTIONS)
+            .containsAtLeastElementsIn(listOf("toggle", "clear_site_data"))
+        assertThat(AgentAppActions.PERMISSION_ACTIONS).containsAtLeastElementsIn(listOf("set"))
+        assertThat(AgentAppActions.TOTP_ACTIONS).containsAtLeastElementsIn(listOf("fill"))
     }
 
     @Test
