@@ -21,6 +21,11 @@ val baseVersionName =
 val ciBuildNumber = System.getenv("GITHUB_RUN_NUMBER")?.toIntOrNull() ?: 0
 val baseVersionCode = if (ciBuildNumber > 0) ciBuildNumber else 1
 
+// Keeps every release permanently above the `200000 + tag` band the Quick APK
+// workflow used to stamp, so an APK installed from that workflow can never
+// outrank a published release again. Forward-only: published codes are ~400000.
+val releaseCodeBase = 1_000_000
+
 // The ABIs the bundled engine actually ships native libraries for. Measured
 // from the AAR rather than assumed: GeckoView publishes arm64-v8a, armeabi-v7a
 // and x86_64, and NO 32-bit x86 build at all.
@@ -45,8 +50,8 @@ android {
         // Deliberately NOT the WebView edition's `com.roombrowser` (owner's
         // decision, 2026-10-04). Both editions are signed with the same
         // release key, and versionCode is `abiRank * 100_000 +
-        // GITHUB_RUN_NUMBER` — a per-repo counter. This repo has had ~25
-        // pipeline runs against the sibling's ~150, so an identical
+        // releaseCodeBase + GITHUB_RUN_NUMBER` — a per-repo counter. This repo
+        // has had ~25 pipeline runs against the sibling's ~150, so an identical
         // applicationId made the two APKs fight over one install slot: the
         // GeckoView APK carried a versionCode ~120 lower than the sibling's
         // published one, which Android refuses to install over it
@@ -58,7 +63,7 @@ android {
         applicationId = "com.roombrowser.gecko"
         minSdk = 28
         targetSdk = 35
-        versionCode = baseVersionCode
+        versionCode = releaseCodeBase + baseVersionCode
         versionName = baseVersionName
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
@@ -117,7 +122,7 @@ android {
                     "x86_64" -> 2
                     else -> 0
                 }
-                impl.versionCode.set(abiRank * 100_000 + baseVersionCode)
+                impl.versionCode.set(abiRank * 100_000 + releaseCodeBase + baseVersionCode)
                 impl.outputFileName.set(
                     "room-browser-v$baseVersionName-${abi ?: "universal"}-$buildTypeName.apk"
                 )
