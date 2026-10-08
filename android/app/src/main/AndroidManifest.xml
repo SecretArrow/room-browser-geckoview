@@ -23,6 +23,20 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <!-- Passkeys. GeckoView answers a page's navigator.credentials call through
+         the device's credential provider. From Android 14 it does that through
+         Credential Manager, and both halves of that call are permission-gated
+         by the platform: the request carries the page's origin, which the
+         system service refuses to accept without the first permission, and the
+         candidate list it returns refuses to be read without the second, from
+         inside the app's own main-thread callback.
+
+         Either refusal drops the request onto the Google Play FIDO path, which
+         a third-party build cannot service, and that path reports its failure
+         nowhere. The page then waits forever: no prompt, no error, nothing to
+         choose. Both are normal permissions, granted at install. -->
+    <uses-permission android:name="android.permission.CREDENTIAL_MANAGER_SET_ORIGIN" />
+    <uses-permission android:name="android.permission.CREDENTIAL_MANAGER_QUERY_CANDIDATE_CREDENTIALS" />
 
     <uses-feature android:name="android.hardware.camera" android:required="false" />
     <uses-feature android:name="android.hardware.fingerprint" android:required="false" />
