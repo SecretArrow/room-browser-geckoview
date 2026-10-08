@@ -71,6 +71,7 @@ import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import androidx.fragment.app.FragmentActivity
+import com.roombrowser.browser.AgentActivity
 import com.roombrowser.browser.BrowserViewModel
 import com.roombrowser.domain.engine.UrlIntelligence
 import com.roombrowser.domain.model.ProfileId
@@ -133,7 +134,8 @@ fun BrowserScreen(
     activity: Activity,
     viewModel: BrowserViewModel,
     launchRequest: LaunchRequest?,
-    onSwitchProfile: (targetProfileId: ProfileId) -> Unit
+    onSwitchProfile: (targetProfileId: ProfileId) -> Unit,
+    openAgentSignal: Int = 0
 ) {
     var route by remember { mutableStateOf<BrowserRoute>(BrowserRoute.Browser) }
     var agentPanelExpanded by rememberSaveable { mutableStateOf(false) }
@@ -206,6 +208,26 @@ fun BrowserScreen(
         viewModel.screenRequest.value = null
     }
 
+    // Where the agent is drawn is a setting, but every entry point to it is
+    // this one call: the pill, the page menu and the session picker all mean
+    // "open the agent", and none of them should have to know which surface
+    // that is. The agent itself is the same either way — the activity renders
+    // this same ViewModel.
+    fun openAgent() {
+        if (viewModel.agent.settings.chatInOwnScreen) {
+            AgentActivity.launch(activity, viewModel.profileId.value)
+        } else {
+            agentPanelExpanded = true
+        }
+    }
+
+    // The browser was brought back by the full-screen agent's fallback path,
+    // which had no live ViewModel to render. Counter rather than a flag, so a
+    // second arrival re-fires.
+    LaunchedEffect(openAgentSignal) {
+        if (openAgentSignal > 0) openAgent()
+    }
+
     // AI settings & chat history live in their OWN activities (default
     // process) — the browser surface simply launches them and, for chat
     // history, receives the picked session back as a result.
@@ -217,7 +239,7 @@ fun BrowserScreen(
         ) ?: -1L
         if (sessionId > 0) {
             viewModel.agent.openSession(sessionId)
-            agentPanelExpanded = true
+            openAgent()
         }
     }
 
@@ -280,7 +302,7 @@ fun BrowserScreen(
                     ),
                     viewModel = viewModel,
                     onOpenTabs = { route = BrowserRoute.Tabs },
-                    onOpenAgent = { agentPanelExpanded = true },
+                    onOpenAgent = { openAgent() },
                     onShowPageActions = { showPageActions = true }
                 )
             }
@@ -395,7 +417,7 @@ fun BrowserScreen(
             onOpenSettings = { route = BrowserRoute.Settings; showPageActions = false },
             onOpenProfileSettings = { route = BrowserRoute.ProfileSettings; showPageActions = false },
             onOpenAbout = { route = BrowserRoute.About; showPageActions = false },
-            onOpenAgent = { agentPanelExpanded = true; showPageActions = false },
+            onOpenAgent = { openAgent(); showPageActions = false },
             onOpenAiTasks = { launchAiTasks(); showPageActions = false },
             onOpenAgentSettings = { launchAgentSettings(); showPageActions = false },
             onOpenAgentSessions = { launchAgentSessions(); showPageActions = false },

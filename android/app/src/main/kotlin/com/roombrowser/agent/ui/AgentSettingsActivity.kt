@@ -377,6 +377,19 @@ private fun AgentSettingsRoot(
                     controller.updateSettings { s -> s.copy(showAgentButton = checked) }
                 }
             )
+            // Below the button switch because both answer "where is the agent",
+            // this one being which window it is drawn in rather than whether it
+            // is offered. No parentheses in the title: UiAutomator's By.desc
+            // reads its argument as a regular expression.
+            SettingSwitchRow(
+                title = "Open the agent as its own screen",
+                subtitle = "The chat opens full-screen instead of sliding over the page. " +
+                    "Off, the page stays visible while the agent works on it",
+                checked = controller.settings.chatInOwnScreen,
+                onCheckedChange = { checked ->
+                    controller.updateSettings { s -> s.copy(chatInOwnScreen = checked) }
+                }
+            )
             SettingSwitchRow(
                 title = "Confirm actions",
                 subtitle = "Ask for Allow/Deny before the agent clicks, types or submits",

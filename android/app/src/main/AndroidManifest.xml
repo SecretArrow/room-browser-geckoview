@@ -131,6 +131,21 @@
             android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboard|keyboardHidden|density|uiMode|locale|layoutDirection|fontScale"
             android:windowSoftInputMode="adjustResize" />
 
+        <!--
+          Room Agent as its own screen, the alternative to the panel. It has to
+          live in ':browser' like BrowserActivity: it renders the SAME
+          BrowserViewModel off BrowserSession rather than building one, and a
+          ViewModel cannot cross a process boundary. configChanges mirrors
+          BrowserActivity so a rotation does not tear down and rebuild the
+          transcript mid-turn.
+        -->
+        <activity
+            android:name=".browser.AgentActivity"
+            android:process=":browser"
+            android:exported="false"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboard|keyboardHidden|density|uiMode|locale|layoutDirection|fontScale"
+            android:windowSoftInputMode="adjustResize" />
+
         <!-- QR scanner (camera) — separate process keeps camera off the engine process -->
         <!-- configChanges mirrors the sibling activities: without it a rotation
              mid-scan recreates the activity and restarts the camera session. -->

@@ -9,6 +9,7 @@ import androidx.activity.result.ActivityResultLauncher
 import androidx.activity.result.IntentSenderRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.fragment.app.FragmentActivity
@@ -58,6 +59,15 @@ class BrowserActivity : FragmentActivity() {
      * never carry that, which is how the second launch used to be dropped.
      */
     private var launchRequest by mutableStateOf<LaunchRequest?>(null)
+
+    /**
+     * How many times this launch or a later [onNewIntent] asked for the agent.
+     *
+     * A counter, not a flag, for the same reason [launchRequest] is state and
+     * not a field: [AgentActivity] falls back to this activity when it had no
+     * ViewModel to draw, and a flag could only ever fire once.
+     */
+    private var openAgentSignal by mutableIntStateOf(0)
 
     /** True while the full-screen NetworkWarningActivity is on top. */
     private var networkWarningRunning = false
@@ -109,6 +119,7 @@ class BrowserActivity : FragmentActivity() {
         val initialUrl = intent.getStringExtra(EXTRA_INITIAL_URL)
             ?: savedInstanceState?.getString(EXTRA_INITIAL_URL)
         launchRequest = initialUrl?.let { LaunchRequest(it, System.nanoTime()) }
+        if (intent.getBooleanExtra(AgentActivity.EXTRA_OPEN_AGENT, false)) openAgentSignal++
 
         // ---- Passkeys ------------------------------------------------
         // The credential prompt belongs to the system's credential provider
@@ -153,6 +164,10 @@ class BrowserActivity : FragmentActivity() {
         }
         val viewModel = ViewModelProvider(this, factory)[BrowserViewModel::class.java]
         browserViewModel = viewModel
+        // Published for the surfaces that are a different Activity but the
+        // same browser — the full-screen Room Agent, which must not build a
+        // second ViewModel on the engine this process already bound.
+        BrowserSession.publish(viewModel)
 
         // The surface a task saved as Headed or Standard runs on. Registered
         // here because it needs a live tab strip, and dropped in onDestroy so a
@@ -219,7 +234,8 @@ class BrowserActivity : FragmentActivity() {
                     activity = this,
                     viewModel = viewModel,
                     launchRequest = launchRequest,
-                    onSwitchProfile = { targetProfileId -> switchProfile(targetProfileId) }
+                    onSwitchProfile = { targetProfileId -> switchProfile(targetProfileId) },
+                    openAgentSignal = openAgentSignal
                 )
             }
         }
@@ -236,6 +252,7 @@ class BrowserActivity : FragmentActivity() {
         intent.getStringExtra(EXTRA_INITIAL_URL)?.let { url ->
             launchRequest = LaunchRequest(url, System.nanoTime())
         }
+        if (intent.getBooleanExtra(AgentActivity.EXTRA_OPEN_AGENT, false)) openAgentSignal++
     }
 
     override fun onResume() {
@@ -351,6 +368,10 @@ class BrowserActivity : FragmentActivity() {
         ProfileEngine.setActivityDelegate(null)
         taskPageHost?.let { AiTaskPageHosts.unregister(it) }
         taskPageHost = null
+        // compareAndSet, not a plain null: a profile switch finishes this
+        // instance AFTER its replacement has already published, and a plain
+        // clear would withdraw the live ViewModel out from under it.
+        browserViewModel?.let { BrowserSession.clear(it) }
         super.onDestroy()
     }
 

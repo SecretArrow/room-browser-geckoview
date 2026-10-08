@@ -21,16 +21,21 @@ import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.displayCutout
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.systemBars
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
@@ -88,6 +93,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
@@ -106,6 +112,9 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalLifecycleOwner
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
 import androidx.compose.ui.semantics.CustomAccessibilityAction
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.customActions
@@ -165,18 +174,7 @@ fun AgentPanelHost(
     // Room's multi-instance invalidation ping was lost on a slow filesystem.
     // Fires BOTH when the panel expands AND when the browser resumes while
     // the panel is already open (returning from the settings activities).
-    val lifecycleOwner = androidx.compose.ui.platform.LocalLifecycleOwner.current
-    var resumeCount by androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf(0) }
-    androidx.compose.runtime.DisposableEffect(lifecycleOwner) {
-        val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
-            if (event == androidx.lifecycle.Lifecycle.Event.ON_RESUME) resumeCount++
-        }
-        lifecycleOwner.lifecycle.addObserver(observer)
-        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
-    }
-    androidx.compose.runtime.LaunchedEffect(expanded, resumeCount) {
-        if (expanded) agent.refreshProviders()
-    }
+    RefreshProvidersOnResume(agent = agent, active = expanded)
 
     BoxWithConstraints(Modifier.fillMaxSize()) {
         // The panel's height follows the window it is given instead of being
@@ -264,6 +262,87 @@ fun AgentPanelHost(
         if (!expanded && pending != null) {
             AgentApprovalDialog(pending, agent)
         }
+    }
+}
+
+/**
+ * Room Agent as its own screen: the same header, transcript and composer the
+ * panel draws, on a window with no browser behind it.
+ *
+ * It renders the SAME [BrowserViewModel] the browser is using — see
+ * [com.roombrowser.browser.BrowserSession] — so a turn started here and a turn
+ * started in the panel are one conversation on one page. That is the whole
+ * distinction between the two surfaces: where the chat is drawn, and nothing
+ * about what the turn may do.
+ */
+@Composable
+fun AgentScreenHost(
+    viewModel: BrowserViewModel,
+    onClose: () -> Unit,
+    onOpenSettings: () -> Unit,
+    onOpenSessions: () -> Unit
+) {
+    val agent = viewModel.agent
+    BackHandler { onClose() }
+    RefreshProvidersOnResume(agent = agent, active = true)
+
+    Column(
+        Modifier
+            .fillMaxSize()
+            .background(MaterialTheme.colorScheme.surface)
+            .windowInsetsPadding(WindowInsets.systemBars.union(WindowInsets.displayCutout))
+    ) {
+        AgentPanelHeader(
+            agent = agent,
+            activeTabId = viewModel.activeTabId,
+            onCollapse = onClose,
+            onNewSession = { agent.newSession() },
+            onOpenSessions = onOpenSessions,
+            onOpenSettings = onOpenSettings
+        )
+        AgentConversation(
+            agent = agent,
+            onOpenSettings = onOpenSettings,
+            modifier = Modifier
+                .weight(1f)
+                .fillMaxWidth()
+        )
+        key(viewModel.activeTabId) {
+            AgentComposer(
+                agent = agent,
+                // The panel is lifted by the browser Scaffold, which is why it
+                // needs no imePadding. There is no Scaffold here, so this one
+                // asks for the keyboard's height itself.
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .imePadding()
+            )
+        }
+    }
+
+    agent.approval?.let { AgentApprovalDialog(it, agent) }
+}
+
+/**
+ * Re-reads the provider list when this surface becomes active, and again every
+ * time the activity resumes. A provider configured in the settings activities
+ * (default process) has to be visible here immediately even if Room's
+ * cross-process invalidation ping was lost on a slow filesystem, and returning
+ * from those activities is exactly when it matters.
+ */
+@Composable
+private fun RefreshProvidersOnResume(agent: BrowserAgentController, active: Boolean) {
+    val lifecycleOwner = LocalLifecycleOwner.current
+    var resumeCount by remember { mutableStateOf(0) }
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) resumeCount++
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+    LaunchedEffect(active, resumeCount) {
+        if (active) agent.refreshProviders()
     }
 }
 
@@ -461,6 +540,11 @@ private fun AgentPanelHeader(
             // surfaces disagree about what "click that button" means, and only
             // one of them can be watched.
             Row(verticalAlignment = Alignment.CenterVertically) {
+                // What the turn may DO leads, and the surface it runs on
+                // follows: a turn that suddenly refuses to act reads as a
+                // broken agent, so the mode is the control the eye should land
+                // on first rather than the setting beside it.
+                ChatModePicker(agent)
                 Text(
                     if (agent.chatHeadless) "Headless · hidden page" else "Headed · this tab",
                     style = MaterialTheme.typography.labelSmall,
@@ -473,10 +557,6 @@ private fun AgentPanelHeader(
                         .semantics { contentDescription = "agent_surface" }
                         .padding(vertical = 6.dp)
                 )
-                // What the turn may DO, beside the surface it runs on: a turn
-                // that suddenly refuses to act reads as a broken agent, so the
-                // mode belongs on screen rather than in settings.
-                ChatModePicker(agent)
             }
             // While a turn runs the panel stays with it, even if the user
             // walks off to another tab — otherwise the running work would

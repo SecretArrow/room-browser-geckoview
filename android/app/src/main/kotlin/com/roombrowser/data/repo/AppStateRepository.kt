@@ -87,6 +87,17 @@ data class AgentSettings(
      */
     val chatHeadless: Boolean = false,
     /**
+     * Room Agent opens as its own screen instead of the panel over the page.
+     * Off by default: the panel keeps the page visible while the agent drives
+     * it, which is the whole point of watching an agent work.
+     *
+     * On, the agent opens in a full-screen activity. It is the SAME browser
+     * and the same conversation — the activity shares the browser process's
+     * live state rather than starting a second one — so this changes where the
+     * chat is drawn and nothing about what the turn may do.
+     */
+    val chatInOwnScreen: Boolean = false,
+    /**
      * The chat is in PLAN mode: it only reads and opens pages, and nothing it
      * runs is clicked, typed, submitted, posted or signed. On by default — the
      * owner wants an unattended agent that cannot submit anything anywhere —
