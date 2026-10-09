@@ -152,11 +152,12 @@ class UrlIntelligenceTest {
 
     @Test
     fun `a circle's own address survives the engine reporting a blank document`() {
-        val circle = "oct://" + "A".repeat(44) + "/index.html"
-        assertThat(UrlIntelligence.settledUrl("about:blank", circle)).isEqualTo(circle)
+        val circle = "oct" + "A".repeat(44)
+        val address = "oct://$circle/index.html"
+        assertThat(UrlIntelligence.settledUrl("about:blank", address)).isEqualTo(address)
         // The reported url is what an ordinary page keeps: only a blank report over an
         // oct address is substituted, so a real about:blank navigation stays blank.
-        assertThat(UrlIntelligence.settledUrl("https://example.com/", circle))
+        assertThat(UrlIntelligence.settledUrl("https://example.com/", address))
             .isEqualTo("https://example.com/")
         assertThat(UrlIntelligence.settledUrl("about:blank", "about:blank")).isEqualTo("about:blank")
         assertThat(UrlIntelligence.settledUrl("about:blank", "about:home")).isEqualTo("about:blank")
