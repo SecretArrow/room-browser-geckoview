@@ -63,6 +63,13 @@ object AppStateKeys {
      * adopted rather than dropped — see [profileLockRecord].
      */
     const val LEGACY_PROFILE_LOCK_PREFIX = "wallet_lock:"
+
+    /**
+     * Per-profile sealed-circle passphrase prefix: `oct_passphrase:<profileId>`.
+     * The value is ciphertext under [com.roombrowser.security.OctCircleKeyCrypto],
+     * never the passphrase itself.
+     */
+    const val OCT_PASSPHRASE_PREFIX = "oct_passphrase:"
 }
 
 /** AI agent behavior settings (app-global, stored as JSON in app_state). */
@@ -597,6 +604,27 @@ class AppStateRepository(private val dao: AppStateDao) {
     suspend fun clearProfileLockRecord(profileId: String) {
         dao.remove(AppStateKeys.PROFILE_LOCK_PREFIX + profileId)
         dao.remove(AppStateKeys.LEGACY_PROFILE_LOCK_PREFIX + profileId)
+    }
+
+    // ---------- Sealed-circle passphrase ----------
+
+    /**
+     * The stored passphrase blob for this profile, already sealed with the
+     * profile's circle key — still ciphertext here, and never returned to a
+     * caller that has not asked to decrypt it.
+     *
+     * A row that cannot be read is treated as absent. That degrades to
+     * "prompt me again", which is the correct direction for a lockout.
+     */
+    suspend fun sealedCirclePassphrase(profileId: String): String? =
+        dao.get(AppStateKeys.OCT_PASSPHRASE_PREFIX + profileId)
+
+    suspend fun saveSealedCirclePassphrase(profileId: String, sealed: String) {
+        dao.put(AppStateEntity(AppStateKeys.OCT_PASSPHRASE_PREFIX + profileId, sealed))
+    }
+
+    suspend fun clearSealedCirclePassphrase(profileId: String) {
+        dao.remove(AppStateKeys.OCT_PASSPHRASE_PREFIX + profileId)
     }
 
     private fun serializeSet(values: Set<String>): String =

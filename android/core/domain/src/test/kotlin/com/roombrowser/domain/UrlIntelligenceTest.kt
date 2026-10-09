@@ -2,6 +2,7 @@ package com.roombrowser.domain.engine
 
 import com.google.common.truth.Truth.assertThat
 import com.roombrowser.domain.engine.UrlIntelligence.Input
+import com.roombrowser.domain.oct.OctUri
 import org.junit.Test
 
 class UrlIntelligenceTest {
@@ -108,6 +109,28 @@ class UrlIntelligenceTest {
     }
 
     @Test
+    fun `an oct uri is a circle, not a search query`() {
+        val circle = "oct" + "A".repeat(44)
+        val (input, url) = UrlIntelligence.classify("oct://$circle/post/1")
+        assertThat(input).isEqualTo(Input.Oct(OctUri.parse("oct://$circle/post/1")!!))
+        assertThat(url).isEqualTo("oct://$circle/post/1")
+    }
+
+    @Test
+    fun `a bare oct uri resolves to the circle index`() {
+        val circle = "oct" + "A".repeat(44)
+        val (input, url) = UrlIntelligence.classify("oct://$circle")
+        assertThat(input).isEqualTo(Input.Oct(OctUri(circle, "/index.html")))
+        assertThat(url).isEqualTo("oct://$circle/index.html")
+    }
+
+    @Test
+    fun `an oct uri that names no circle stays a search`() {
+        val (input, _) = UrlIntelligence.classify("oct://not-a-circle")
+        assertThat(input).isInstanceOf(Input.Search::class.java)
+    }
+
+    @Test
     fun `hostOf parses hosts`() {
         assertThat(UrlIntelligence.hostOf("https://Example.COM/path")).isEqualTo("example.com")
         assertThat(UrlIntelligence.hostOf("https://user@site.org:8443/x")).isEqualTo("site.org")
@@ -125,5 +148,20 @@ class UrlIntelligenceTest {
         assertThat(UrlIntelligence.looksLikeUrl("https://example.com")).isTrue()
         assertThat(UrlIntelligence.looksLikeUrl("example.com")).isTrue()
         assertThat(UrlIntelligence.looksLikeUrl("hello world")).isFalse()
+    }
+
+    @Test
+    fun `a circle's own address survives the engine reporting a blank document`() {
+        val circle = "oct" + "A".repeat(44)
+        val address = "oct://$circle/index.html"
+        assertThat(UrlIntelligence.settledUrl("about:blank", address)).isEqualTo(address)
+        // The reported url is what an ordinary page keeps: only a blank report over an
+        // oct address is substituted, so a real about:blank navigation stays blank.
+        assertThat(UrlIntelligence.settledUrl("https://example.com/", address))
+            .isEqualTo("https://example.com/")
+        assertThat(UrlIntelligence.settledUrl("about:blank", "about:blank")).isEqualTo("about:blank")
+        assertThat(UrlIntelligence.settledUrl("about:blank", "about:home")).isEqualTo("about:blank")
+        assertThat(UrlIntelligence.settledUrl("about:blank", null)).isEqualTo("about:blank")
+        assertThat(UrlIntelligence.settledUrl("about:blank", "oct://not-a-circle")).isEqualTo("about:blank")
     }
 }

@@ -1,6 +1,7 @@
 package com.roombrowser.domain.engine
 
 import com.roombrowser.domain.model.SearchEngines
+import com.roombrowser.domain.oct.OctUri
 
 /**
  * Omnibox URL/search intelligence: detects URLs, bare hosts, IP literals,
@@ -13,6 +14,8 @@ object UrlIntelligence {
         /** A web address the WebView can load directly. */
         data class Web(val url: String, val upgradedToHttps: Boolean) : Input
         data class Search(val query: String) : Input
+        /** An Octra Circle. Not a web address: the app resolves and renders it itself. */
+        data class Oct(val circle: OctUri) : Input
     }
 
     private val PROTOCOL = Regex("^[a-zA-Z][a-zA-Z0-9+.-]*:.*$")
@@ -21,6 +24,9 @@ object UrlIntelligence {
     private val LOOKS_LIKE_DOMAIN = Regex("^[a-zA-Z0-9-]+(\\.[a-zA-Z0-9-]+)+(:\\d+)?(/.*)?$")
     private val LOCALHOST = Regex("^(localhost|127\\.0\\.0\\.1|\\[::1\\])(:\\d+)?(/.*)?$", RegexOption.IGNORE_CASE)
     private val WHITESPACE = Regex("\\s")
+
+    /** The engine's report for a document it was handed rather than sent to fetch. */
+    private const val BLANK = "about:blank"
 
     /**
      * Classify raw omnibox input.
@@ -71,6 +77,11 @@ object UrlIntelligence {
             }
             if (lowered.startsWith("https://")) {
                 return Input.Web(raw, upgradedToHttps = false) to raw
+            }
+            // `oct://` before the search fallback: a circle is a page this app fetches
+            // and renders itself. A malformed one is claimed by nobody and stays a search.
+            if (lowered.startsWith(OctUri.PREFIX)) {
+                OctUri.parse(raw)?.let { return Input.Oct(it) to it.raw }
             }
             // about:, data:, blob:, javascript: treated as search to avoid surprises
             return Input.Search(raw) to SearchEngines.buildSearchUrl(searchEngineId, raw)
@@ -135,4 +146,18 @@ object UrlIntelligence {
         if (t.isEmpty() || WHITESPACE.containsMatchIn(t)) return false
         return classify(t).first is Input.Web
     }
+
+    /**
+     * The address a tab is really showing, when the engine reports only the blank
+     * document it was handed.
+     *
+     * An `oct://` circle is rendered from bytes rather than fetched, so the engine commits
+     * `about:blank` for it -- deliberately, because a document with no host is one the
+     * privileged bridges decline to answer. The tab's own model nevertheless holds the
+     * address the user typed, and that is what the omnibox has to show and what a
+     * back/forward entry has to name. Everything else is reported as the engine said it,
+     * so a genuine blank navigation is still a blank navigation.
+     */
+    fun settledUrl(reported: String, model: String?): String =
+        if (reported == BLANK && model != null && OctUri.parse(model) != null) model else reported
 }

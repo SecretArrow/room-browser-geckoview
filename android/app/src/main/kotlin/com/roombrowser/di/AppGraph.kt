@@ -135,6 +135,15 @@ class AppGraph(context: Context) {
     val profileManager: ProfileManager by lazy { ProfileManager(profileRepo) }
 
     /**
+     * The `oct://` reader. Circles come over JSON-RPC, so this rides the wallet's own
+     * transport and inherits its endpoint failover and its proxy scope; there is deliberately
+     * no second HTTP client here.
+     */
+    val octCircles: com.roombrowser.domain.wallet.chains.octra.OctCircleClient by lazy {
+        com.roombrowser.domain.wallet.chains.octra.OctCircleClient()
+    }
+
+    /**
      * Wallet engine: the session/state holder for the bound profile's wallet
      * (accounts, balances, networks, dApp request queue). Main-thread
      * confined like the rest of the graph; both wallet surfaces (WalletActivity

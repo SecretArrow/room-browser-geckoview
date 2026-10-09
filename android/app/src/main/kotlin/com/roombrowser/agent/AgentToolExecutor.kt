@@ -14,6 +14,7 @@ import com.roombrowser.domain.agent.PageSnapshotFormatter
 import com.roombrowser.domain.agent.ToolExecutor
 import com.roombrowser.domain.agent.ToolResult
 import com.roombrowser.domain.engine.UrlIntelligence
+import com.roombrowser.domain.oct.OctUri
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -639,6 +640,9 @@ class AgentToolExecutor(
         return when {
             input.startsWith("http://") || input.startsWith("https://") -> input
             input.startsWith("about:") -> input
+            // A circle id is not a domain, so the bare-host rule below would
+            // rewrite "oct://<id>" into "https://oct://<id>".
+            input.startsWith(OctUri.PREFIX) -> input
             input.contains('.') && !input.contains(' ') -> "https://$input"
             else -> null
         }

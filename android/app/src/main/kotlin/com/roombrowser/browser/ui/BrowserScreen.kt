@@ -474,6 +474,17 @@ fun BrowserScreen(
         )
     }
 
+    // The sealed-circle passphrase. Same contract as the credential challenge above:
+    // every exit answers it. It does not hold the engine open — the resolve that asked
+    // is suspended instead — but a dialog left unanswered is a tab that never loads.
+    viewModel.pendingCirclePassphrase?.let { circleId ->
+        CirclePassphraseDialog(
+            circleId = circleId,
+            onSubmit = { viewModel.submitCirclePassphrase(it) },
+            onCancel = { viewModel.dismissCirclePassphrase() }
+        )
+    }
+
     if (showFindBar) {
         FindInPageBar(
             onFind = { viewModel.findInPage(it) },
@@ -625,6 +636,66 @@ private fun fileChooserUris(resultCode: Int, data: Intent?): Array<Uri>? {
     val clip = data.clipData
     if (clip != null) return Array(clip.itemCount) { clip.getItemAt(it).uri }
     return data.data?.let { arrayOf(it) }
+}
+
+/**
+ * The sealed-circle passphrase prompt.
+ *
+ * The circle id is rendered shortened and as content, never as the title: it is
+ * attacker-chosen text, and the title is where the user reads what is being asked.
+ * The answer is remembered for every sealed circle in this profile — a sealed circle
+ * uses the same passphrase as its siblings — and a "Forget" action in the profile's
+ * network settings is the undo.
+ */
+@Composable
+private fun CirclePassphraseDialog(
+    circleId: String,
+    onSubmit: (String) -> Unit,
+    onCancel: () -> Unit
+) {
+    var passphrase by remember(circleId) { mutableStateOf("") }
+    AlertDialog(
+        onDismissRequest = onCancel,
+        title = { Text("Sealed circle") },
+        text = {
+            Column(
+                modifier = Modifier.imePadding(),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                Text(
+                    text = circleId.take(11) + "..." + circleId.takeLast(6),
+                    style = MaterialTheme.typography.bodyMedium,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                Text(
+                    text = "This circle is sealed. Its passphrase is remembered for the " +
+                        "circles you open in this profile.",
+                    style = MaterialTheme.typography.bodySmall
+                )
+                OutlinedTextField(
+                    value = passphrase,
+                    onValueChange = { passphrase = it },
+                    singleLine = true,
+                    visualTransformation = PasswordVisualTransformation(),
+                    label = { Text("Passphrase") },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .semantics { contentDescription = "octpass_input" }
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(
+                onClick = { onSubmit(passphrase) },
+                enabled = passphrase.isNotEmpty(),
+                modifier = Modifier.semantics { contentDescription = "octpass_submit" }
+            ) { Text("Open") }
+        },
+        dismissButton = {
+            TextButton(onClick = onCancel) { Text("Cancel") }
+        }
+    )
 }
 
 /**

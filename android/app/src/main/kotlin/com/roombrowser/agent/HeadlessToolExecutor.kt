@@ -12,6 +12,7 @@ import com.roombrowser.domain.agent.ToolExecutor
 import com.roombrowser.domain.agent.ToolResult
 import com.roombrowser.domain.agent.formatDurationMs
 import com.roombrowser.domain.engine.UrlIntelligence
+import com.roombrowser.domain.oct.OctUri
 import com.roombrowser.domain.task.AiTaskPermissions
 import com.roombrowser.domain.task.profileUnattendedRefusal
 import com.roombrowser.domain.task.unattendedRefusal
@@ -446,6 +447,9 @@ class HeadlessToolExecutor(
         return when {
             input.startsWith("http://") || input.startsWith("https://") -> input
             input.startsWith("about:") -> input
+            // A circle id is not a domain, so the bare-host rule below would
+            // rewrite "oct://<id>" into "https://oct://<id>".
+            input.startsWith(OctUri.PREFIX) -> input
             input.contains('.') && !input.contains(' ') -> "https://$input"
             else -> null
         }

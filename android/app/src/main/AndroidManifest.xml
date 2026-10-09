@@ -108,6 +108,16 @@
                 <data android:scheme="http" />
                 <data android:scheme="https" />
             </intent-filter>
+            <!-- Octra Circles. Deliberately a SEPARATE filter: this app is the
+                 only handler for a scheme no other app can serve, and adding it
+                 to the filter above would fold it into the default-browser
+                 candidacy rules, which are about http/https. -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="oct" />
+            </intent-filter>
             <!-- Share sheet target: receiving shared URLs/text -->
             <intent-filter>
                 <action android:name="android.intent.action.SEND" />
