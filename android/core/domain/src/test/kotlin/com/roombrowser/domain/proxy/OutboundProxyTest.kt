@@ -1,7 +1,6 @@
 package com.roombrowser.domain.proxy
 
 import com.google.common.truth.Truth.assertThat
-import java.net.InetSocketAddress
 import java.net.Proxy
 import java.net.ProxySelector
 import java.net.URI
@@ -37,8 +36,10 @@ class OutboundProxyTest {
         assertThat(wallet.first().type()).isEqualTo(Proxy.Type.HTTP)
         assertThat(wallet.first().address().toString()).contains("203.0.113.9")
 
-        assertThat(OutboundProxy.selector(ProxyScope.AGENT).select(uri))
-            .containsNoneOf(Proxy(Type.HTTP, InetSocketAddress.createUnresolved("203.0.113.9", 8080)))
+        // The platform default, not merely "something other than the wallet entry":
+        // installing on one scope must leave the others exactly as they were.
+        val untouched = ProxySelector.getDefault()?.select(uri) ?: listOf(Proxy.NO_PROXY)
+        assertThat(OutboundProxy.selector(ProxyScope.AGENT).select(uri)).isEqualTo(untouched)
     }
 
     @Test
