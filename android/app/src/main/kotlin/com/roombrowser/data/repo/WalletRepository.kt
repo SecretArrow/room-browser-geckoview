@@ -360,6 +360,44 @@ class WalletRepository(
         )
     }
 
+    /**
+     * The profile's wallet as an export sees it.
+     *
+     * Read from the DAOs rather than from the `accounts` flow: the flow lags a
+     * write by one Room invalidation, and an export taken right after wallet
+     * creation must not describe a wallet with no accounts in it.
+     *
+     * Derived accounts are re-derived from the phrase, so their keys are left
+     * null rather than duplicated; an imported key is reproduced by nothing
+     * else and is the one piece of key material this returns in the clear.
+     */
+    override suspend fun backupContents(
+        profileId: ProfileId,
+        mnemonic: String?
+    ): WalletBackup.Contents {
+        val phrase = mnemonic ?: revealMnemonic(profileId)
+        val entries = accounts(profileId).map { record ->
+            WalletBackup.KeyEntry(
+                chain = record.chainType.displayName,
+                label = record.label,
+                address = record.address,
+                path = record.path,
+                privateKey = if (record.source == WalletAccountRecord.Source.IMPORTED) {
+                    revealPrivateKey(record.id)
+                } else {
+                    null
+                }
+            )
+        }
+        val wallet = wallet(profileId)
+        return WalletBackup.Contents(
+            walletLabel = wallet?.label?.takeIf { it.isNotBlank() } ?: "Wallet",
+            createdAt = wallet?.createdAt ?: 0L,
+            mnemonic = phrase,
+            accounts = entries
+        )
+    }
+
     /** Renames one account by id. */
     override suspend fun renameAccount(accountId: String, label: String) {
         withContext(Dispatchers.IO) { accountDao.rename(accountId, label) }

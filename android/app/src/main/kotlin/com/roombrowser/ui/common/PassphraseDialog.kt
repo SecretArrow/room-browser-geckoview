@@ -45,9 +45,12 @@ internal fun VaultPassphraseDialog(
     var passphrase by remember(prompt.id) { mutableStateOf("") }
     var confirmation by remember(prompt.id) { mutableStateOf("") }
     val mismatch = prompt.forExport && confirmation.isNotEmpty() && confirmation != passphrase
-    // One sentence covers both sealed blocks: a profile may carry logins, its
-    // authenticator accounts, or both, and "0 saved passwords will be sealed"
-    // is a false statement about a 2FA-only export.
+    // One sentence covers every sealed block: a profile may carry logins, its
+    // authenticator accounts, a wallet, or any combination, and "0 saved
+    // passwords will be sealed" is a false statement about a 2FA-only export.
+    // The wallet contributes its own wording rather than a count — a phrase is
+    // not an item, and this is the line that tells the user they are about to
+    // put their money in a file.
     val sealedWhat = buildList {
         if (prompt.credentialCount > 0) {
             add(
@@ -61,6 +64,7 @@ internal fun VaultPassphraseDialog(
                     (if (prompt.totpCount == 1) "account" else "accounts")
             )
         }
+        prompt.walletPhrase?.let { add(it) }
     }.joinToString(" and ")
     val valid = if (prompt.forExport) {
         passphrase.length >= MIN_EXPORT_PASSPHRASE && passphrase == confirmation

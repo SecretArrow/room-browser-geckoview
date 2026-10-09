@@ -22,6 +22,8 @@ import com.roombrowser.domain.export.PasswordTransfer
 import com.roombrowser.domain.export.PasswordTransferFormatException
 import com.roombrowser.domain.export.ProfileBackup
 import com.roombrowser.domain.export.ProfileBackupResult
+import com.roombrowser.domain.export.WalletBackup
+import com.roombrowser.domain.export.WalletBackupFormatException
 import com.roombrowser.domain.model.Profile
 import com.roombrowser.domain.model.ProfileId
 import com.roombrowser.domain.model.ProfileSettings
@@ -30,6 +32,7 @@ import com.roombrowser.domain.profile.ProfileManager
 import com.roombrowser.domain.theme.BuiltInThemes
 import com.roombrowser.domain.totp.TotpBackup
 import com.roombrowser.domain.totp.TotpBackupFormatException
+import com.roombrowser.domain.wallet.model.ChainType
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
@@ -65,6 +68,10 @@ data class PassphrasePrompt(
      *  that the one passphrase also unlocks those, or a 2FA-only profile is
      *  asked for a passphrase with nothing on screen explaining why. */
     val totpCount: Int = 0,
+    /** How the wallet block is described on the export side, already worded:
+     *  a wallet can be a phrase, imported keys, or both, and a count alone
+     *  cannot say which. Null when no wallet is going into the file. */
+    val walletPhrase: String? = null,
     val error: String? = null,
     val passwordsFile: Boolean = false,
     /** Overrides the dialog title when the caller's phrasing is not the
@@ -97,11 +104,18 @@ data class VaultGateRequest(val id: Int)
 data class DeletePrompt(val profile: Profile, val credentialCount: Int?, val totpCount: Int)
 
 /**
- * Which parts of a profile an export carries. Every flag defaults to true, so
- * the dialog opens on the complete file.
+ * Which parts of a profile an export carries. Every flag but one defaults to
+ * true, so the dialog opens on the complete file.
  *
  * The profile's own settings and theme are NOT here: they are the profile, and
  * a file without them would import as a nameless shell.
+ *
+ * THE WALLET IS THE EXCEPTION, and defaults OFF on purpose. Every other
+ * section costs the user privacy if it leaks; this one costs them the money.
+ * A file carrying the wallet block is worth exactly what the wallet holds, and
+ * the file the user is about to email or drop in cloud storage is the same
+ * file — so the box is there, it says what it does, and it is not ticked for
+ * them.
  */
 data class ExportSections(
     val bookmarks: Boolean = true,
@@ -109,10 +123,11 @@ data class ExportSections(
     val passwords: Boolean = true,
     val totp: Boolean = true,
     val sitePermissions: Boolean = true,
-    val siteSettings: Boolean = true
+    val siteSettings: Boolean = true,
+    val wallet: Boolean = false
 ) {
-    /** True when a part that lives behind the device vault was asked for. */
-    val needsVault: Boolean get() = passwords || totp
+    /** True when a sealed block has to be built, and so a passphrase set. */
+    val needsVault: Boolean get() = passwords || totp || wallet
 
     /** The selections a passwords-only file implies: nothing but the logins. */
     companion object {
@@ -121,7 +136,8 @@ data class ExportSections(
             notes = false,
             totp = false,
             sitePermissions = false,
-            siteSettings = false
+            siteSettings = false,
+            wallet = false
         )
     }
 }
@@ -145,11 +161,24 @@ internal fun importedSummaryLine(
         if (summary.totp > 0) add(count(summary.totp, "authenticator account"))
         if (summary.sitePermissions > 0) add(count(summary.sitePermissions, "site permission"))
         if (summary.siteSettings > 0) add(count(summary.siteSettings, "per-site setting"))
+        summary.wallet?.let { wallet ->
+            val restored = wallet.derivedAccountCount + wallet.importedAccountCount
+            if (restored > 0) add(count(restored, "wallet account"))
+            if (wallet.phraseRestored) add("recovery phrase")
+            // Named rather than absorbed: a key the file carried and this build
+            // could not take is the one thing about a wallet import the user
+            // must not learn from a missing balance later.
+            if (wallet.skipped.isNotEmpty()) {
+                add(count(wallet.skipped.size, "wallet key") + " skipped")
+            }
+        }
     }
     val details = if (parts.isEmpty()) "settings only" else parts.joinToString(", ")
     return "Imported \"${summary.profile.name}\" ($details)"
 }
 
+/** "1 bookmark" / "4 bookmarks" — the plural rule the import report uses for
+ *  every section, so its parts read as one sentence. */
 private fun count(n: Int, noun: String): String = if (n == 1) "1 $noun" else "$n ${noun}s"
 
 /**
@@ -272,6 +301,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
      * past the seal is a seed that can outlive the export.
      */
     private var exportTotp: List<TotpBackup.Entry> = emptyList()
+
+    /**
+     * The profile's wallet contents while an export is being assembled, under
+     * the same rule as [exportTotp]: held only between the read and the seal,
+     * then dropped. This one holds a recovery phrase and private keys in the
+     * clear, so it is dropped whether the export succeeded or not.
+     */
+    private var exportWallet: WalletBackup.Contents? = null
 
     /** A parsed import payload waiting for its file passphrase / gate. */
     private var importPayload: ProfileBackup.BackupPayload? = null
@@ -522,11 +559,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     /**
      * Export step 1 — the dialog confirmed. Anything the selection put behind
-     * the device vault (saved logins, authenticator accounts) has to be read
-     * first, so that reading is gated: if the vault is still locked for this
-     * session, the UI gate runs first ([vaultGateRequest]); on failure the
-     * export aborts with a message and nothing is built. A selection with
-     * neither raises no gate, because there is nothing to unlock for.
+     * the device vault (saved logins, authenticator accounts — and the wallet,
+     * which is not gated by that vault but is key material all the same) has
+     * to be read first, and that reading is gated: if the vault is still
+     * locked for this session, the UI gate runs first ([vaultGateRequest]); on
+     * failure the export aborts with a message and nothing is built. A
+     * selection with none of them raises no gate, because there is nothing to
+     * unlock for.
      */
     fun startExport(profile: Profile, sections: ExportSections) {
         exportDraft = ExportDraft(profile, sections)
@@ -534,7 +573,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         passphrasePrompt = null
         pendingExportNote = null
         if (!sections.needsVault) {
-            viewModelScope.launch { buildExport(emptyList(), vault = null, totp = null) }
+            viewModelScope.launch { buildExport(emptyList(), vault = null, totp = null, wallet = null) }
             return
         }
         if (vaultUnlocked()) {
@@ -545,8 +584,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     /** Export step 2 — the gate passed (or the session was already unlocked):
-     *  unlock the repo and read the profile's credentials and authenticator
-     *  accounts. Only the stores the selection asked for are read at all. */
+     *  unlock the repo and read the profile's credentials, authenticator
+     *  accounts and wallet. Only the stores the selection asked for are read
+     *  at all. */
     private fun readVaultForExport() {
         val draft = exportDraft ?: return
         viewModelScope.launch {
@@ -577,10 +617,22 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 } else {
                     emptyList()
                 }
-                creds to totp
+                // The wallet is not behind the credential vault — its key
+                // material sits under the profile's own device key — so this
+                // read is not gated by the unlock above. It is still gated by
+                // the user-presence check that ran before it, which is what
+                // makes handing over a recovery phrase a deliberate act.
+                // Contents that could restore nothing are dropped rather than
+                // sealed: that block would be a decoy.
+                val wallet = if (draft.sections.wallet) {
+                    graph.walletRepo.backupContents(draft.profile.id, null).takeIf { !it.isEmpty }
+                } else {
+                    null
+                }
+                Triple(creds, totp, wallet)
             }
-            outcome.onSuccess { (creds, totp) ->
-                if (creds.isEmpty() && totp.isEmpty()) {
+            outcome.onSuccess { (creds, totp, wallet) ->
+                if (creds.isEmpty() && totp.isEmpty() && wallet == null) {
                     // A passwords-only export has nothing to fall back on. The
                     // whole-profile path below writes a file with no sealed
                     // block, which is right for a backup and wrong here: the
@@ -591,16 +643,18 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         abortExport("this profile has no saved passwords yet")
                         return@onSuccess
                     }
-                    buildExport(creds, vault = null, totp = null)
+                    buildExport(creds, vault = null, totp = null, wallet = null)
                     return@onSuccess
                 }
                 exportCredentials = creds
                 exportTotp = totp
+                exportWallet = wallet
                 passphrasePrompt = PassphrasePrompt(
                     forExport = true,
                     profileName = draft.profile.name,
                     credentialCount = creds.size,
                     totpCount = totp.size,
+                    walletPhrase = wallet?.let { walletPhraseFor(it) },
                     id = ++promptSeq
                 )
             }.onFailure {
@@ -609,14 +663,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    /** Export step 3 (only with ≥1 credential or ≥1 authenticator account) —
+    /** Export step 3 (only when a selected section had something to seal) —
      *  the passphrase was set: seal each block (plaintext only inside the
-     *  ciphers) and continue. The passphrase CharArray is wiped immediately
-     *  after use. */
+     *  ciphers) and continue. One passphrase, up to three independent
+     *  ciphertexts; the passphrase CharArray is wiped immediately after
+     *  use. */
     fun confirmExportPassphrase(passphrase: String) {
         val creds = exportCredentials
         val totpEntries = exportTotp
-        if (creds.isEmpty() && totpEntries.isEmpty()) {
+        val walletContents = exportWallet
+        if (creds.isEmpty() && totpEntries.isEmpty() && walletContents == null) {
             passphrasePrompt = null
             return
         }
@@ -655,7 +711,21 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                                 passphrase = chars
                             )
                         }
-                        vault to totp
+                        // The wallet last and under the same passphrase as the
+                        // other two, but again as its own ciphertext: one
+                        // prompt cannot be made to fail for the wrong block,
+                        // and a profile with only a wallet writes only this.
+                        val wallet = walletContents?.let { contents ->
+                            WalletBackup.sealBlock(
+                                contents = contents,
+                                header = WalletBackup.Header(
+                                    profileLabel = draft?.profile?.name.orEmpty(),
+                                    exportedAt = System.currentTimeMillis()
+                                ),
+                                passphrase = chars
+                            )
+                        }
+                        Triple(vault, totp, wallet)
                     } finally {
                         PasswordVaultCrypto.wipe(chars)
                     }
@@ -663,7 +733,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             }
             passphrasePrompt = null
             outcome
-                .onSuccess { (vault, totp) -> buildExport(creds, vault, totp) }
+                .onSuccess { (vault, totp, wallet) -> buildExport(creds, vault, totp, wallet) }
                 .onFailure {
                     abortExport(it.message ?: "could not seal the profile's saved data")
                 }
@@ -671,11 +741,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     /** Export step 4 — assemble the payload from the selected sections (plus
-     *  whichever sealed blocks exist) and stage it for delivery. */
+     *  whichever of the three sealed blocks exist) and stage it for
+     *  delivery. */
     private suspend fun buildExport(
         creds: List<SavedCredential>,
         vault: ProfileBackup.VaultBackup?,
-        totp: ProfileBackup.VaultBackup?
+        totp: ProfileBackup.VaultBackup?,
+        wallet: ProfileBackup.VaultBackup?
     ) {
         val draft = exportDraft ?: return
         runCatching {
@@ -721,12 +793,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         emptyList()
                     },
                     vault = vault,
-                    totp = totp
+                    totp = totp,
+                    wallet = wallet
                 )
             )
         }.onSuccess { json ->
             exportCredentials = emptyList() // plaintext list dropped for good
-            exportTotp = emptyList()        // and the seeds with it
+            exportTotp = emptyList()        // the seeds with it
+            exportWallet = null             // and the phrase with those
             exportDraft = null
             pendingExport = PendingExport(
                 fileName = exportFileName(draft.profile.name),
@@ -788,6 +862,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             passphrasePrompt = null
             outcome.onSuccess { text ->
                 exportCredentials = emptyList() // plaintext list dropped for good
+                exportWallet = null
                 exportDraft = null
                 pendingExport = PendingExport(
                     fileName = PasswordTransfer.fileName(draft.profile.name, System.currentTimeMillis()),
@@ -866,6 +941,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         exportDraft = null
         exportCredentials = emptyList()
         exportTotp = emptyList()
+        exportWallet = null
         passphrasePrompt = null
         pendingExport = null
         // A cancel or a failure is exactly the case where the pending delete
@@ -875,7 +951,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         pendingExportNote = null
     }
 
-    // ---------- Backup v3: import ----------
+    // ---------- Backup v4: import ----------
 
     /**
      * SAF import — read the picked file (any JSON picker result), then the
@@ -920,9 +996,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         "(v${parsed.maxSupported}). Update the app and try again. Nothing was imported."
             is ProfileBackupResult.Parsed -> {
                 importPayload = parsed.payload
-                if (parsed.payload.vault == null && parsed.payload.totp == null) {
-                    // Neither sealed block → nothing touches the device keys;
-                    // the restore needs no gate and no passphrase.
+                if (
+                    parsed.payload.vault == null &&
+                    parsed.payload.totp == null &&
+                    parsed.payload.wallet == null
+                ) {
+                    // No sealed block → nothing touches the device keys; the
+                    // restore needs no gate and no passphrase.
                     finalizeImport(emptyList())
                 } else {
                     // No counts here: the file does not say how many entries
@@ -940,15 +1020,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     /**
-     * Import step 2 (v3 with a sealed block) — the file's passphrase: decrypt
-     * the vault and the authenticator block, or stay in the dialog for a retry.
-     * Wrong passphrase NEVER writes anything; a corrupt blob aborts the whole
-     * import.
+     * Import step 2 (a file with a sealed block) — the file's passphrase:
+     * decrypt the password vault, the authenticator block and the wallet, or
+     * stay in the dialog for a retry. Wrong passphrase NEVER writes anything;
+     * a corrupt blob aborts the whole import.
      */
     fun confirmImportPassphrase(passphrase: String) {
         // A sealed passwords file reaches this dialog by the same route as a
-        // whole-profile backup — one passphrase prompt, two things it can be
-        // about — so the branch is here rather than in the dialog, and the
+        // whole-profile backup — one passphrase prompt, more than one thing it
+        // can be about — so the branch is here rather than in the dialog, and the
         // dialog stays untouched by the passwords flow.
         if (passwordImport != null) {
             confirmPasswordImportPassphrase(passphrase)
@@ -957,24 +1037,31 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val payload = importPayload
         val vault = payload?.vault
         val totpVault = payload?.totp
-        if (vault == null && totpVault == null) {
+        val walletVault = payload?.wallet
+        if (vault == null && totpVault == null && walletVault == null) {
             passphrasePrompt = null
             return
         }
         viewModelScope.launch {
             val chars = passphrase.toCharArray()
-            // Both blocks are sealed under this one passphrase, so one decrypt
-            // round proves it for both. The wrong-passphrase retry is the same
-            // dialog either way: a VaultAuthException from the FIRST block that
-            // exists is the answer, and the second is only tried once the first
-            // has already said the passphrase is right.
+            // Every block is sealed under this one passphrase, so one decrypt
+            // round proves it for all of them. The wrong-passphrase retry is the
+            // same dialog either way: a VaultAuthException from the FIRST block
+            // that exists is the answer, and the rest are only tried once the
+            // first has already said the passphrase is right.
             val decrypted = try {
                 withContext(Dispatchers.Default) {
                     try {
                         val creds = vault?.let { PasswordVaultCrypto.decrypt(it.toCipherData(), chars) }
                         val totp = totpVault?.let { TotpBackup.openContents(it, chars).entries }
                             ?: emptyList()
-                        creds to totp
+                        // The third cipher, opening to the wallet payload an
+                        // import restores from. Its plaintext leaves this block
+                        // only as the structured payload: the readable document
+                        // the format also returns is for a human reading the
+                        // file, not for the write path.
+                        val wallet = walletVault?.let { WalletBackup.openBlock(it, chars) }
+                        Triple(creds, totp, wallet)
                     } finally {
                         PasswordVaultCrypto.wipe(chars)
                     }
@@ -1000,8 +1087,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 importPayload = null
                 importError = "The export's authenticator accounts are damaged. Nothing was imported."
                 return@launch
+            } catch (e: WalletBackupFormatException) {
+                passphrasePrompt = null
+                importPayload = null
+                importError = "The export's wallet keys are damaged. Nothing was imported."
+                return@launch
             }
-            val (credBlob, totpEntries) = decrypted
+            val (credBlob, totpEntries, walletRestored) = decrypted
             val creds = if (credBlob == null) {
                 emptyList()
             } else {
@@ -1017,12 +1109,17 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 }
             }
             passphrasePrompt = null
+            // The wallet is deliberately NOT part of this condition: its rows
+            // are written under the new profile's own device key, not under the
+            // credential vault, so unlocking that vault would be a gate on the
+            // wrong thing. The file's passphrase, already proved above, is the
+            // user-presence proof this path stands on.
             if ((creds.isNotEmpty() || totpEntries.isNotEmpty()) && !vaultUnlocked()) {
                 // Writing into the device vault is gated like reading it. ONE
                 // gate covers both stores — the 2FA screen opens the same one.
-                requestVaultGate { finalizeImport(creds, totpEntries) }
+                requestVaultGate { finalizeImport(creds, totpEntries, walletRestored?.payload) }
             } else {
-                finalizeImport(creds, totpEntries)
+                finalizeImport(creds, totpEntries, walletRestored?.payload)
             }
         }
     }
@@ -1030,9 +1127,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     /**
      * Import final step — ONE Room transaction (see
      * ProfileRepositoryImpl.importBackup): profile row + bookmarks + site
-     * permissions + site settings + credentials and authenticator accounts,
-     * each re-encrypted under the new profile's own device keys. Any failure
-     * rolls the whole import back.
+     * permissions + site settings + credentials, authenticator accounts and
+     * wallet, each re-encrypted under the new profile's own device keys. Any
+     * failure rolls the whole import back.
      *
      * Duplicate safety: the import NEVER reuses the file's UUID, so an
      * existing profile can never be overwritten — if the file's UUID or its
@@ -1042,7 +1139,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
      */
     private fun finalizeImport(
         creds: List<SavedCredential>,
-        totpEntries: List<TotpBackup.Entry> = emptyList()
+        totpEntries: List<TotpBackup.Entry> = emptyList(),
+        walletPayload: WalletBackup.Payload? = null
     ) {
         val payload = importPayload ?: return
         viewModelScope.launch {
@@ -1096,6 +1194,19 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                             graph.totpRepo.unlock()
                             graph.totpRepo.importAll(fresh.id, totpEntries)
                         }
+                    },
+                    writeWallet = {
+                        // A report rather than a count, because a restore can
+                        // take most of a file's keys and skip the rest — and the
+                        // skipped ones are named in the summary instead of being
+                        // counted as restored.
+                        walletPayload?.let { backup ->
+                            graph.walletRepo.restore(
+                                profileId = fresh.id,
+                                payload = backup,
+                                enabledChains = derivedChainsOf(backup)
+                            )
+                        }
                     }
                 )
                 summary
@@ -1110,6 +1221,30 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             }
         }
     }
+
+    /**
+     * The chains a backup's PHRASE was derived for, read off the file itself.
+     *
+     * The derived entries are exactly the ones that carry no private key — a
+     * derived account is re-derived from the phrase, so the export never wrote
+     * its key — which makes the file, rather than the importing device, the
+     * authority on which chains the phrase produced. A profile restored on a
+     * build whose chain list has since changed still gets its own chains back.
+     *
+     * The name is matched the way the wallet repository matches it: the enum
+     * name first, then the display name, because the file stores the label the
+     * user saw.
+     */
+    private fun derivedChainsOf(payload: WalletBackup.Payload): List<ChainType> =
+        payload.accounts
+            .filter { it.privateKey.isNullOrBlank() }
+            .mapNotNull { entry ->
+                ChainType.fromName(entry.chain)
+                    ?: ChainType.entries.firstOrNull {
+                        it.displayName.equals(entry.chain, ignoreCase = true)
+                    }
+            }
+            .distinct()
 
     /** "<name>" when free, otherwise "<name> (imported)", "… 2", "… 3" —
      *  the same disambiguation ProfileManager.duplicate uses. */
@@ -1126,8 +1261,24 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         return candidate
     }
 
-    /** "1 bookmark" / "4 bookmarks" — the plural rule the import report uses
-     *  for every section, so the six counts read as one sentence. */
+    /**
+     * How the wallet is described at the passphrase prompt.
+     *
+     * The other two blocks get a count, and a count does not work here: a
+     * wallet is a recovery phrase, imported private keys, or both, and the
+     * user deciding whether to seal this file needs to know which — "0" would
+     * be the wrong answer for a wallet whose whole backup is its phrase.
+     */
+    private fun walletPhraseFor(contents: WalletBackup.Contents): String {
+        val keys = contents.accounts.count { !it.privateKey.isNullOrBlank() }
+        return when {
+            !contents.mnemonic.isNullOrBlank() && keys > 0 ->
+                "the recovery phrase and $keys imported private key(s)"
+            !contents.mnemonic.isNullOrBlank() -> "the recovery phrase"
+            else -> "$keys imported private key(s)"
+        }
+    }
+
     /** The user backed out of the passphrase step — cancel the whole
      *  action quietly but visibly. */
     fun cancelPassphrasePrompt() {

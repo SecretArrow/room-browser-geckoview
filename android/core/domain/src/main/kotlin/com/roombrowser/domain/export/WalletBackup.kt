@@ -264,22 +264,40 @@ object WalletBackup {
     }
 
     /**
-     * Seals [contents] under [passphrase] and returns the file text.
+     * Seals [contents] under [passphrase] and returns the envelope alone.
+     *
+     * This is what a profile export embeds as its `wallet` block: a profile
+     * backup has a format of its own, so the keys ride inside it as ciphertext
+     * rather than as a second file the user has to keep paired with the first.
      *
      * @throws IllegalArgumentException when [contents] holds nothing that
      *   could restore a wallet — see [Contents.isEmpty].
      */
-    fun seal(contents: Contents, header: Header, passphrase: CharArray): String {
+    fun sealBlock(contents: Contents, header: Header, passphrase: CharArray): ProfileBackup.VaultBackup {
         require(passphrase.isNotEmpty()) { "A wallet backup needs a passphrase" }
         require(!contents.isEmpty) {
             "This wallet has no recovery phrase and no imported keys to back up"
         }
-        val sealed = PasswordVaultCrypto.encrypt(document(contents, header), passphrase)
-        return json.encodeToString(
-            KeyFile.serializer(),
-            KeyFile(kind = KIND, vault = ProfileBackup.VaultBackup.from(sealed))
+        return ProfileBackup.VaultBackup.from(
+            PasswordVaultCrypto.encrypt(document(contents, header), passphrase)
         )
     }
+
+    /** Seals [contents] under [passphrase] and returns the standalone file text. */
+    fun seal(contents: Contents, header: Header, passphrase: CharArray): String =
+        json.encodeToString(
+            KeyFile.serializer(),
+            KeyFile(kind = KIND, vault = sealBlock(contents, header, passphrase))
+        )
+
+    /**
+     * Decrypts a block written by [sealBlock].
+     *
+     * @throws com.roombrowser.domain.credentials.VaultAuthException when the
+     *   passphrase is wrong or the ciphertext was tampered with.
+     */
+    fun openBlock(block: ProfileBackup.VaultBackup, passphrase: CharArray): Restored =
+        readPlaintext(PasswordVaultCrypto.decrypt(block.toCipherData(), passphrase))
 
     /**
      * Decrypts a file written by [seal] or by any earlier build.

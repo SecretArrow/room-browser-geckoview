@@ -1945,6 +1945,31 @@ private open class FakeWalletRepository : WalletRepositoryApi {
         return record
     }
 
+    override suspend fun backupContents(
+        profileId: ProfileId,
+        mnemonic: String?
+    ): WalletBackup.Contents {
+        val wallet = wallets[profileId.value]
+        return WalletBackup.Contents(
+            walletLabel = wallet?.label?.takeIf { it.isNotBlank() } ?: "Wallet",
+            createdAt = wallet?.createdAt ?: 0L,
+            mnemonic = mnemonic ?: mnemonics[profileId.value],
+            accounts = accountsOf(profileId).map { record ->
+                WalletBackup.KeyEntry(
+                    chain = record.chainType.displayName,
+                    label = record.label,
+                    address = record.address,
+                    path = record.path,
+                    privateKey = if (record.source == WalletAccountRecord.Source.IMPORTED) {
+                        importedKeys[record.id]
+                    } else {
+                        null
+                    }
+                )
+            }
+        )
+    }
+
     override suspend fun seedInitialAccounts(
         profileId: ProfileId,
         mnemonic: String,

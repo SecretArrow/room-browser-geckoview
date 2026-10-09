@@ -403,39 +403,9 @@ open class WalletEngine(
         // A caller holding the phrase already (the onboarding reveal, where
         // creating a wallet deliberately leaves the session locked) needs no
         // unlock. Everyone else reads it from the vault and therefore does.
-        val phrase = mnemonic ?: run {
-            requireUnlocked()
-            repo.revealMnemonic(profileId)
-        }
-        // Read from the repository rather than from the `accounts` flow: the
-        // flow lags a write by one Room invalidation, and an export taken
-        // right after wallet creation must not describe a wallet with no
-        // accounts in it.
-        val accounts = repo.accounts(profileId).map { record ->
-            WalletBackup.KeyEntry(
-                chain = record.chainType.displayName,
-                label = record.label,
-                address = record.address,
-                path = record.path,
-                // Derived accounts are re-derived from the phrase, so storing
-                // their keys would duplicate the secret for nothing. An
-                // imported key is reproduced by nothing else.
-                privateKey = if (record.source == WalletAccountRecord.Source.IMPORTED) {
-                    withContext(cryptoDispatcher) { repo.revealPrivateKey(record.id) }
-                } else {
-                    null
-                }
-            )
-        }
-        val wallet = repo.wallet(profileId)
-        return WalletBackup.Contents(
-            walletLabel = wallet?.label?.takeIf { it.isNotBlank() } ?: "Wallet",
-            createdAt = wallet?.createdAt ?: 0L,
-            mnemonic = phrase,
-            accounts = accounts
-        )
+        if (mnemonic == null) requireUnlocked()
+        return repo.backupContents(profileId, mnemonic)
     }
-
 
     // ------------------------------------------------------------------
 

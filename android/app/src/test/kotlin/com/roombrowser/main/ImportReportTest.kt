@@ -1,6 +1,7 @@
 package com.roombrowser.main
 
 import com.google.common.truth.Truth.assertThat
+import com.roombrowser.browser.wallet.RestoreReport
 import com.roombrowser.data.repo.ProfileRepositoryImpl
 import com.roombrowser.domain.model.Profile
 import com.roombrowser.domain.model.ProfileId
@@ -22,7 +23,8 @@ class ImportReportTest {
         sitePermissions: Int = 0,
         siteSettings: Int = 0,
         credentials: Int = 0,
-        totp: Int = 0
+        totp: Int = 0,
+        wallet: RestoreReport? = null
     ) = ProfileRepositoryImpl.ImportSummary(
         profile = profile(),
         bookmarks = bookmarks,
@@ -30,7 +32,21 @@ class ImportReportTest {
         sitePermissions = sitePermissions,
         siteSettings = siteSettings,
         credentials = credentials,
-        totp = totp
+        totp = totp,
+        wallet = wallet
+    )
+
+    private fun wallet(
+        phrase: Boolean = false,
+        derived: Int = 0,
+        imported: Int = 0,
+        skipped: List<RestoreReport.SkippedKey> = emptyList()
+    ) = RestoreReport(
+        walletLabel = "Wallet",
+        phraseRestored = phrase,
+        derivedAccountCount = derived,
+        importedAccountCount = imported,
+        skipped = skipped
     )
 
     @Test
@@ -46,12 +62,23 @@ class ImportReportTest {
     }
 
     @Test
-    fun `the vault is asked for only when a vault-backed part is selected`() {
+    fun `the wallet is the one section that opens unticked`() {
+        // Deliberate, and the only exception: every other section costs the user
+        // privacy if the file leaks, the wallet costs them the money.
+        assertThat(ExportSections().wallet).isFalse()
+        assertThat(ExportSections(wallet = true).wallet).isTrue()
+    }
+
+    @Test
+    fun `the vault is asked for only when a sealed block is selected`() {
         assertThat(ExportSections().needsVault).isTrue()
         assertThat(ExportSections(passwords = false).needsVault).isTrue()
         assertThat(ExportSections(totp = false).needsVault).isTrue()
-        // Nothing behind the vault: an export with no prompt at all.
         assertThat(ExportSections(passwords = false, totp = false).needsVault).isFalse()
+        // The wallet is sealed too, so it raises the same prompt on its own.
+        assertThat(
+            ExportSections(passwords = false, totp = false, wallet = true).needsVault
+        ).isTrue()
     }
 
     @Test
@@ -63,6 +90,7 @@ class ImportReportTest {
         assertThat(file.totp).isFalse()
         assertThat(file.sitePermissions).isFalse()
         assertThat(file.siteSettings).isFalse()
+        assertThat(file.wallet).isFalse()
         assertThat(file.passwords).isTrue()
         assertThat(file.needsVault).isTrue()
     }
@@ -103,6 +131,39 @@ class ImportReportTest {
         assertThat(line).doesNotContain("password")
         assertThat(line).doesNotContain("authenticator")
         assertThat(line).doesNotContain("site")
+    }
+
+    @Test
+    fun `the report names what a restored wallet took`() {
+        val line = importedSummaryLine(
+            summary(bookmarks = 1, wallet = wallet(phrase = true, derived = 3, imported = 2))
+        )
+
+        assertThat(line).isEqualTo(
+            "Imported \"Work\" (1 bookmark, 5 wallet accounts, recovery phrase)"
+        )
+    }
+
+    @Test
+    fun `a wallet key the build could not take is named, not counted as restored`() {
+        // The one failure a user must not learn about from a missing balance
+        // later: the file carried a key and the restore left it behind.
+        val line = importedSummaryLine(
+            summary(
+                wallet = wallet(
+                    phrase = true,
+                    derived = 1,
+                    imported = 0,
+                    skipped = listOf(
+                        RestoreReport.SkippedKey("EVM", "Legacy", "not a valid private key")
+                    )
+                )
+            )
+        )
+
+        assertThat(line).contains("1 wallet account")
+        assertThat(line).contains("1 wallet key skipped")
+        assertThat(line).doesNotContain("2 wallet accounts")
     }
 
     @Test

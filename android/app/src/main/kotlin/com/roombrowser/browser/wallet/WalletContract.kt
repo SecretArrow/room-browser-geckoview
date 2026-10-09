@@ -277,6 +277,18 @@ interface WalletRepositoryApi {
     /** Decrypts and returns the mnemonic, or null when absent. UI gates this behind biometrics. */
     suspend fun revealMnemonic(profileId: ProfileId): String?
 
+    /**
+     * Everything a wallet-keys export needs: the phrase, plus every account
+     * with its path and — for imported ones only — its private key.
+     *
+     * [mnemonic] lets a caller that already holds the phrase (the onboarding
+     * reveal) skip the vault read; every other caller passes null. Unlike the
+     * session-guarded [WalletEngineApi.backupContents] this asks for no
+     * binding and no unlock — the caller that needs it most, a profile
+     * export, is not the session that holds the wallet.
+     */
+    suspend fun backupContents(profileId: ProfileId, mnemonic: String?): WalletBackup.Contents
+
     // -- accounts ----------------------------------------------------------
 
     fun observeAccounts(profileId: ProfileId): Flow<List<WalletAccountRecord>>

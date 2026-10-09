@@ -1,6 +1,7 @@
 package com.roombrowser.data.repo
 
 import androidx.room.withTransaction
+import com.roombrowser.browser.wallet.RestoreReport
 import com.roombrowser.data.db.AppDatabase
 import com.roombrowser.data.db.BookmarkEntity
 import com.roombrowser.data.db.NoteEntity
@@ -168,7 +169,13 @@ class ProfileRepositoryImpl(db: AppDatabase) : ProfileStore {
         val sitePermissions: Int,
         val siteSettings: Int,
         val credentials: Int,
-        val totp: Int
+        val totp: Int,
+        /**
+         * What the wallet restore did, or null when the file carried no wallet
+         * block. Carries the per-key skips as well, so a key this build could
+         * not take is named in the report instead of being counted as done.
+         */
+        val wallet: RestoreReport? = null
     )
 
     /**
@@ -203,7 +210,8 @@ class ProfileRepositoryImpl(db: AppDatabase) : ProfileStore {
         siteSettings: List<ProfileBackup.SiteSettingExport>,
         notes: List<ProfileBackup.NoteExport> = emptyList(),
         writeCredentials: suspend () -> Int = { 0 },
-        writeTotp: suspend () -> Int = { 0 }
+        writeTotp: suspend () -> Int = { 0 },
+        writeWallet: suspend () -> RestoreReport? = { null }
     ): ImportSummary = database.withTransaction {
         val pid = profile.id.value
         dao.upsert(profile.toEntity())
@@ -266,6 +274,11 @@ class ProfileRepositoryImpl(db: AppDatabase) : ProfileStore {
         // rows belong to the profile above or to nothing.
         val credentials = writeCredentials()
         val totp = writeTotp()
+        // The wallet last: it is the one block whose rows are keyed by a wallet
+        // that has to exist first, and the one whose failure is worth the most
+        // to roll back. It returns a report rather than a count because a
+        // restore can succeed for most keys and skip the rest.
+        val wallet = writeWallet()
         ImportSummary(
             profile = profile,
             bookmarks = bookmarks.size,
@@ -273,7 +286,8 @@ class ProfileRepositoryImpl(db: AppDatabase) : ProfileStore {
             sitePermissions = sitePermissions.size,
             siteSettings = siteSettings.size,
             credentials = credentials,
-            totp = totp
+            totp = totp,
+            wallet = wallet
         )
     }
 

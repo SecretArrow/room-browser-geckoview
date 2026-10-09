@@ -1209,14 +1209,37 @@ private fun ExportProfileDialog(
                     sections = sections.copy(siteSettings = it)
                 }
                 Spacer(Modifier.height(8.dp))
+                // Unticked, unlike every row above it: the others cost the user
+                // privacy if the file leaks, this one costs them the money.
+                LabeledCheckboxRow("Wallet (recovery phrase and private keys)", sections.wallet) {
+                    sections = sections.copy(wallet = it)
+                }
+                if (sections.wallet) {
+                    Text(
+                        "Ticking this makes the file equal to the wallet: anyone who opens it " +
+                            "with the passphrase can spend the funds. Share this file only with " +
+                            "yourself.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.error
+                    )
+                }
+                Spacer(Modifier.height(8.dp))
                 Text(
-                    if (sections.needsVault) {
-                        "If this profile has saved logins or authenticator accounts, you set " +
-                            "an export passphrase for them in the next step. Cookies, sessions " +
-                            "and history are never exported."
-                    } else {
-                        "Nothing selected lives behind the device vault, so no passphrase is " +
-                            "needed. Cookies, sessions and history are never exported."
+                    when {
+                        sections.wallet && (sections.passwords || sections.totp) ->
+                            "In the next step you set one export passphrase: the saved logins, " +
+                                "the authenticator accounts and the wallet are each sealed under " +
+                                "it. Cookies, sessions and history are never exported."
+                        sections.wallet ->
+                            "In the next step you set the export passphrase the wallet is sealed " +
+                                "under. Cookies, sessions and history are never exported."
+                        sections.passwords || sections.totp ->
+                            "If this profile has saved logins or authenticator accounts, you set " +
+                                "an export passphrase for them in the next step. Cookies, sessions " +
+                                "and history are never exported."
+                        else ->
+                            "Nothing selected lives behind the device vault, so no passphrase is " +
+                                "needed. Cookies, sessions and history are never exported."
                     },
                     style = MaterialTheme.typography.bodyMedium,
                     color = extras.textSecondary
