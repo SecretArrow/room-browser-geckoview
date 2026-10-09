@@ -14,6 +14,7 @@ import androidx.core.content.ContextCompat
 import androidx.fragment.app.FragmentActivity
 import androidx.lifecycle.ViewModelProvider
 import com.roombrowser.browser.BrowserActivity
+import com.roombrowser.domain.oct.OctUri
 import com.roombrowser.security.BiometricGate
 import com.roombrowser.ui.common.RoomBrowserTheme
 import com.roombrowser.main.ui.MainScreen
@@ -80,9 +81,13 @@ class MainActivity : FragmentActivity() {
 
     private fun handleExternalUrl(raw: String) {
         val url = raw.trim()
-        if (url.startsWith("http://") || url.startsWith("https://")) {
-            viewModel.submitExternalUrl(url)
+        val target = when {
+            url.startsWith("http://") || url.startsWith("https://") -> url
+            // A malformed circle is dropped rather than forwarded to be searched.
+            url.startsWith(OctUri.PREFIX) -> OctUri.parse(url)?.raw ?: return
+            else -> return
         }
+        viewModel.submitExternalUrl(target)
     }
 
     /** Requests POST_NOTIFICATIONS once on API 33+ so the agent's background
