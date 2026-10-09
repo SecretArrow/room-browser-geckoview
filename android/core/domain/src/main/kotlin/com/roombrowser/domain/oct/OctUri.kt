@@ -62,6 +62,44 @@ data class OctUri(val circleId: String, val path: String) {
             return canonical.takeIf { it.length <= MAX_PATH_LENGTH }
         }
 
+        /**
+         * [reference] as it is written inside a document whose own path is [base], as a
+         * canonical circle path — or null when it does not name a fetch into this circle.
+         *
+         * This is relative-reference resolution, so unlike [canonicalPath] it has to *collapse*
+         * `..`: inside a document `../x` is an ordinary reference and refusing it would break
+         * well-formed circles. What still fails is `..` that survives collapsing — `%2e%2e`,
+         * which decodes only later — because that is a path climbing out of the document root.
+         */
+        fun resolve(base: String, reference: String): String? {
+            val trimmed = reference.trim()
+            if (trimmed.isEmpty() || trimmed.startsWith("#")) return null
+            val spec = trimmed.substringBeforeQueryOrFragment()
+            if (spec.isEmpty() || spec.startsWith("//")) return null
+            val colon = spec.indexOf(':')
+            val slash = spec.indexOf('/')
+            if (colon >= 0 && (slash < 0 || colon < slash)) return null
+            val merged = if (spec.startsWith("/")) spec else directoryOf(base) + spec
+            return canonicalPath(collapseDotSegments(merged))
+        }
+
+        private fun directoryOf(base: String): String {
+            val at = base.lastIndexOf('/')
+            return if (at < 0) "/" else base.substring(0, at + 1)
+        }
+
+        private fun collapseDotSegments(path: String): String {
+            val kept = ArrayList<String>()
+            path.split('/').forEach { segment ->
+                when (segment) {
+                    "", "." -> Unit
+                    ".." -> if (kept.isNotEmpty()) kept.removeAt(kept.size - 1)
+                    else -> kept.add(segment)
+                }
+            }
+            return if (kept.isEmpty()) "/" else kept.joinToString("/", prefix = "/")
+        }
+
         private fun String.substringBeforeQueryOrFragment(): String {
             val at = indexOfFirst { it == '?' || it == '#' }
             return if (at < 0) this else substring(0, at)
