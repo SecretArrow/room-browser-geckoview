@@ -66,10 +66,11 @@ change belongs in the sibling:
   `windowSoftInputMode` differ.
 - Engine-shaped tests: `BrowserNavigationE2eTest`, `WalletE2eTest`, `ProfileIsolationTest`,
   the `TabsE2eTest` live-engine probe, and `PasskeyPolicyE2eTest` — that last one pins a
-  policy that is deliberately OPPOSITE in the sibling: this edition hides WebAuthn from
-  pages (`security.webauth.webauthn`, set in `GeckoEngineHost.hideWebAuthn`) because a
-  third-party GeckoView app cannot service an assertion, while the WebView edition keeps
-  passkeys working. Never copy it across.
+  WebAuthn policy that exists ONLY here: this edition hides the API from pages
+  (`security.webauth.webauthn`, set in `GeckoEngineHost.hideWebAuthn`) because an assertion
+  cannot be serviced in a third-party GeckoView app, so a sign-in that still offers a passkey
+  hangs forever on a promise nothing ever settles. The sibling has no equivalent pref and no
+  equivalent test, and does not exhibit the hang. Never copy it across.
 - `README.md`, `SECURITY.md` where they name the engine.
 
 **The facade is the boundary.** `android/engine/` exposes app-owned interfaces
