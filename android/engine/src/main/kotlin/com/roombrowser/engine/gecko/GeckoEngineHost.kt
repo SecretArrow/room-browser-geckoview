@@ -262,7 +262,12 @@ internal class GeckoEngineHost : EngineHost {
     private suspend fun awaitPref(result: GeckoResult<Void>) {
         val settled = withTimeoutOrNull(PROXY_APPLY_TIMEOUT_MS) {
             suspendCancellableCoroutine<Unit> { continuation ->
-                result.accept({ continuation.resume(Unit) }, { continuation.resumeWithException(it) })
+                result.accept(
+                    { continuation.resume(Unit) },
+                    // The listener is declared @Nullable, so a failure without a cause is a
+                    // real shape here and still has to settle the continuation.
+                    { error -> continuation.resumeWithException(error ?: IllegalStateException("pref write rejected")) }
+                )
             }
         }
         if (settled == null) Log.w(TAG, "proxy pref not acknowledged before the timeout")
