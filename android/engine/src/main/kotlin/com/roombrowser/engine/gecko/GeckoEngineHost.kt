@@ -15,6 +15,8 @@ import com.roombrowser.engine.EngineSession
 import com.roombrowser.engine.ResourceFilter
 import org.json.JSONArray
 import org.json.JSONObject
+import org.mozilla.geckoview.ExperimentalGeckoViewApi
+import org.mozilla.geckoview.GeckoPreferenceController
 import org.mozilla.geckoview.GeckoResult
 import org.mozilla.geckoview.GeckoRuntime
 import org.mozilla.geckoview.StorageController
@@ -156,12 +158,38 @@ internal class GeckoEngineHost : EngineHost {
         val created = GeckoRuntime.create(app)
         runtime = created
         bound = profileId
+        // Before the bridge and before any session: a page's FIRST script may
+        // feature-detect the passkey API, and the answer must already be final.
+        hideWebAuthn()
         installBridge(created)
         // Applied here, not only from [setActivityDelegate]: the app's call
         // arrives before this runtime exists, and a delegate dropped on that
         // ordering would leave every passkey request failing.
         applyActivityDelegate(created)
         return true
+    }
+
+    /**
+     * Take WebAuthn away from every page.
+     *
+     * This build cannot service an assertion -- the request falls through to
+     * GMS FIDO2, whose failure GeckoView never reports, so the page's promise
+     * never settles and a sign-in offering a passkey spins forever. A site that
+     * can still see `PublicKeyCredential` will not offer its password instead,
+     * so the API has to be gone rather than merely fail. The pref gates that
+     * interface and `navigator.credentials`' `publicKey` overloads together.
+     *
+     * Delete this, and the e2e test pinning it, once an assertion can be
+     * serviced in a third-party app: that needs Google's provider allowlist or
+     * per-site Digital Asset Links, not app code.
+     */
+    @androidx.annotation.OptIn(ExperimentalGeckoViewApi::class)
+    private fun hideWebAuthn() {
+        GeckoPreferenceController.setGeckoPref(
+            WEBAUTHN_PREF,
+            false,
+            GeckoPreferenceController.PREF_BRANCH_USER
+        )
     }
 
     /**
@@ -671,6 +699,9 @@ internal class GeckoEngineHost : EngineHost {
     private companion object {
         /** Matches `browser_specific_settings.gecko.id` in the manifest. */
         const val BRIDGE_ID = "roombridge@roombrowser.com"
+
+        /** WebAuthn's master switch, `[Pref=...]` on the WebIDL interfaces. */
+        const val WEBAUTHN_PREF = "security.webauth.webauthn"
 
         /**
          * The native-app name the BACKGROUND page's port is opened under.
