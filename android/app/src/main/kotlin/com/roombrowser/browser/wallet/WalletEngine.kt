@@ -315,7 +315,7 @@ open class WalletEngine(
         requireNotLocked()
         val mnemonic = Mnemonics.generate()
         repo.createWallet(profileId, label, mnemonic)
-        seedInitialAccounts(profileId, mnemonic, enabledChains)
+        repo.seedInitialAccounts(profileId, mnemonic, enabledChains)
         // The ONE time the plaintext leaves the vault: the caller shows it to
         // the user; nothing else ever stores it outside the repository.
         return mnemonic
@@ -329,7 +329,7 @@ open class WalletEngine(
         }
         val normalized = Mnemonics.normalize(mnemonic)
         repo.createWallet(profileId, label, normalized)
-        seedInitialAccounts(profileId, normalized, enabledChains)
+        repo.seedInitialAccounts(profileId, normalized, enabledChains)
     }
 
     override suspend fun revealMnemonic(): String? {
@@ -436,27 +436,7 @@ open class WalletEngine(
         )
     }
 
-    /** Derives index-0 accounts for every enabled chain from [mnemonic]. */
-    private suspend fun seedInitialAccounts(
-        profileId: ProfileId,
-        mnemonic: String,
-        enabledChains: List<ChainType>
-    ) {
-        if (enabledChains.isEmpty()) return
-        repo.ensureDefaultNetworks(profileId)
-        withContext(cryptoDispatcher) {
-            val seed = Mnemonics.toSeed(Mnemonics.normalize(mnemonic))
-            enabledChains.forEach { chain ->
-                val derived = deriveDerivedAccount(chain, seed, 0)
-                repo.addDerivedAccount(
-                    profileId, chain, derived.first, derived.second, "${chain.displayName} 1"
-                )
-            }
-        }
-    }
 
-    // ------------------------------------------------------------------
-    // Accounts
     // ------------------------------------------------------------------
 
     override suspend fun addDerivedAccount(chainType: ChainType): WalletAccountRecord? {
@@ -466,7 +446,7 @@ open class WalletEngine(
         val index = repo.nextDerivationIndex(profileId, chainType)
         return withContext(cryptoDispatcher) {
             val seed = Mnemonics.toSeed(Mnemonics.normalize(mnemonic))
-            val derived = deriveDerivedAccount(chainType, seed, index)
+            val derived = WalletKeyCodec.deriveAccount(chainType, seed, index, registry)
             repo.addDerivedAccount(
                 profileId, chainType, derived.first, derived.second, "${chainType.displayName} ${index + 1}"
             )
@@ -480,83 +460,16 @@ open class WalletEngine(
     ): WalletAccountRecord? {
         val profileId = requireBound()
         requireUnlocked()
-        val (address, storedKey) = parseImportedKey(chainType, privateKey)
+        val (address, storedKey) = WalletKeyCodec.parse(chainType, privateKey, registry)
         return repo.addImportedAccount(profileId, chainType, address, storedKey, label)
     }
 
     /**
-     * Turns a pasted private key into (address, canonical stored form) using
-     * the chain's own rules.
+     * Restores a wallet from a backup file the user opened. See [WalletEngineApi].
      *
-     * Shared by [importAccount] and [restoreFromBackup] so the two can never
-     * disagree about what a valid key is: a backup written by this app and
-     * typed back in by hand must be accepted or rejected by the same code.
-     * [parseSecp256k1Key]/[parseEd25519Seed] throw
-     * [WalletException.InvalidParams] with the chain's own wording, which is
-     * what a caller reports.
-     */
-    private fun parseImportedKey(chainType: ChainType, privateKey: String): Pair<String, String> {
-        val trimmed = privateKey.trim()
-        return when (chainType) {
-            ChainType.EVM -> {
-                val key = parseSecp256k1Key(trimmed, chainType)
-                registry.evm.addressFromPrivateKey(key) to canonicalSecpKey(key)
-            }
-            ChainType.SOLANA -> {
-                val seed = parseEd25519Seed(trimmed, chainType)
-                val address = Base58.encode(Ed25519.publicKeyFromSeed(seed))
-                address to Base58.encode(seed)
-            }
-            ChainType.APTOS -> {
-                val seed = parseEd25519Seed(trimmed, chainType)
-                val pubkey = Ed25519.publicKeyFromSeed(seed)
-                aptosAddress(pubkey) to Hex.encode(seed)
-            }
-            ChainType.SUI -> {
-                val seed = parseEd25519Seed(trimmed, chainType)
-                val pubkey = Ed25519.publicKeyFromSeed(seed)
-                suiAddress(pubkey) to Hex.encode(seed)
-            }
-            ChainType.COSMOS -> {
-                val key = parseSecp256k1Key(trimmed, chainType)
-                val compressed = Bip32PrivateKey.compressedPublicKeyOf(key)
-                val hrp = cosmosHomeNetwork().bech32Hrp ?: "cosmos"
-                registry.cosmos.bech32Address(compressed, hrp) to canonicalSecpKey(key)
-            }
-            ChainType.BITCOIN -> {
-                val key = parseSecp256k1Key(trimmed, chainType)
-                val compressed = Bip32PrivateKey.compressedPublicKeyOf(key)
-                registry.bitcoin.p2wpkhAddress(compressed, testnet = false) to canonicalSecpKey(key)
-            }
-            ChainType.TRON -> {
-                val key = parseSecp256k1Key(trimmed, chainType)
-                registry.tron.addressFromPrivateKey(key) to canonicalSecpKey(key)
-            }
-            ChainType.OCTRA -> {
-                val seed = parseEd25519Seed(trimmed, chainType)
-                val derived = registry.octra.accountFromSeed(seed)
-                derived.address to Hex.encode(seed)
-            }
-        }
-    }
-
-    /**
-     * Restores a wallet from an opened backup file. See [WalletEngineApi].
-     *
-     * ORDER MATTERS AND IS LOAD-BEARING. The wallet row is written first and
-     * the accounts hang off it, so there is no window where accounts exist
-     * without a wallet to own them. The phrase goes in before any imported
-     * key, so a file that names a chain this build does not know still
-     * restores its derived accounts.
-     *
-     * FAILURE OF ONE KEY IS NOT FAILURE OF THE RESTORE: each imported key is
-     * attempted on its own and a bad one is recorded in
-     * [RestoreReport.skipped]. A restore that aborts on the first unparseable
-     * row would leave a half-built wallet behind AND lose the readable
-     * accounts, which is the worst of both.
-     *
-     * Refuses to run over an existing wallet: this replaces nothing. The
-     * caller deletes first, as a separate confirmed step.
+     * Adds the SESSION guards to [WalletRepositoryApi.restore], which does the
+     * work and carries the rules about ordering, partial failure and refusing
+     * to run over a live wallet.
      */
     override suspend fun restoreFromBackup(
         payload: WalletBackup.Payload,
@@ -564,91 +477,7 @@ open class WalletEngine(
     ): RestoreReport {
         val profileId = requireBound()
         requireNotLocked()
-        if (repo.wallet(profileId) != null) {
-            throw WalletException.InvalidParams(
-                "This profile already has a wallet. Delete it first if you mean to replace it."
-            )
-        }
-        val phrase = payload.mnemonic?.trim()?.takeIf { it.isNotEmpty() }
-        if (phrase != null && !Mnemonics.isValid(phrase)) {
-            throw WalletException.InvalidParams(
-                "The recovery phrase in this file is not a valid BIP39 phrase"
-            )
-        }
-        val label = payload.walletLabel.trim().takeIf { it.isNotEmpty() } ?: "Wallet"
-
-        // A wallet with a phrase gets its index-0 accounts derived exactly as
-        // a freshly imported wallet would; one without is created empty and
-        // filled entirely by the imported keys below.
-        val normalized = phrase?.let { Mnemonics.normalize(it) }
-        repo.createWallet(profileId, label, normalized)
-        if (normalized != null) {
-            seedInitialAccounts(profileId, normalized, enabledChains)
-        }
-
-        // Compare against what is on disk, not against the file: the phrase
-        // just derived a row per enabled chain, and a file that also lists
-        // one of those addresses as an imported key would otherwise create a
-        // second account pointing at the same address.
-        val taken = repo.accounts(profileId)
-            .map { it.chainType to it.address.lowercase() }
-            .toMutableSet()
-        val skipped = mutableListOf<RestoreReport.SkippedKey>()
-        var imported = 0
-        payload.accounts.forEach { entry ->
-            val key = entry.privateKey?.trim()
-            if (key.isNullOrEmpty()) return@forEach  // derived rows carry no key by design
-            val chain = ChainType.fromName(entry.chain)
-                ?: ChainType.entries.firstOrNull {
-                    it.displayName.equals(entry.chain, ignoreCase = true)
-                }
-            if (chain == null) {
-                skipped.add(
-                    RestoreReport.SkippedKey(entry.chain, entry.label, "unknown chain for this build")
-                )
-                return@forEach
-            }
-            val parsed = runCatching { parseImportedKey(chain, key) }
-            val address = parsed.getOrNull()?.first
-            if (address == null) {
-                val reason = parsed.exceptionOrNull()?.message ?: "not a valid private key"
-                skipped.add(RestoreReport.SkippedKey(entry.chain, entry.label, reason))
-                return@forEach
-            }
-            if (!taken.add(chain to address.lowercase())) {
-                // Already restored by the phrase above (or repeated in the
-                // file). Not a failure: the account exists, which is what the
-                // file asked for.
-                return@forEach
-            }
-            runCatching {
-                repo.addImportedAccount(
-                    profileId,
-                    chain,
-                    address,
-                    parsed.getOrThrow().second,
-                    entry.label.takeIf { it.isNotBlank() } ?: "${chain.displayName} (imported)"
-                )
-            }.onSuccess {
-                imported++
-            }.onFailure { failure ->
-                taken.remove(chain to address.lowercase())
-                skipped.add(
-                    RestoreReport.SkippedKey(
-                        entry.chain,
-                        entry.label,
-                        failure.message ?: failure.javaClass.simpleName
-                    )
-                )
-            }
-        }
-        return RestoreReport(
-            walletLabel = label,
-            phraseRestored = normalized != null,
-            derivedAccountCount = if (normalized == null) 0 else enabledChains.size,
-            importedAccountCount = imported,
-            skipped = skipped
-        )
+        return repo.restore(profileId, payload, enabledChains)
     }
 
     override suspend fun renameAccount(accountId: String, label: String) {
@@ -661,37 +490,7 @@ open class WalletEngine(
         repo.removeAccount(accountId)
     }
 
-    /**
-     * Canonical per-chain derivation through the chain's own adapter.
-     * Returns (address, path). Pure CPU — call inside [cryptoDispatcher].
-     */
-    private fun deriveDerivedAccount(
-        chainType: ChainType,
-        seed: ByteArray,
-        index: Int
-    ): Pair<String, String> = when (chainType) {
-        ChainType.EVM -> registry.evm.deriveAccount(seed, index).let { it.address to it.path }
-        ChainType.SOLANA -> registry.solana.deriveAccount(seed, index).let { it.address to it.path }
-        ChainType.APTOS -> registry.aptos.deriveAccount(seed, index).let { it.address to it.path }
-        ChainType.SUI -> registry.sui.deriveAccount(seed, index).let { it.address to it.path }
-        ChainType.COSMOS -> registry.cosmos.deriveAccount(seed, cosmosHomeNetwork(), index)
-            .let { it.address to it.path }
-        ChainType.BITCOIN -> registry.bitcoin.deriveAccount(seed, bitcoinHomeNetwork(), index)
-            .let { it.address to it.path }
-        ChainType.TRON -> registry.tron.deriveAccount(seed, index).let { it.address to it.path }
-        ChainType.OCTRA -> registry.octra.deriveAccount(seed, index).let { it.address to it.path }
-    }
 
-    /** The chain's canonical home network for derivation (Cosmos: coin 118 + hrp). */
-    private fun cosmosHomeNetwork(): NetworkConfig =
-        registry.defaultNetworks(ChainType.COSMOS).first()
-
-    /** Bitcoin mainnet home (coin 0, hrp "bc") for derivation. */
-    private fun bitcoinHomeNetwork(): NetworkConfig =
-        registry.defaultNetworks(ChainType.BITCOIN).first()
-
-    // ------------------------------------------------------------------
-    // Balances
     // ------------------------------------------------------------------
 
     override suspend fun refreshBalances() {
@@ -1962,7 +1761,7 @@ open class WalletEngine(
         }
         val key = repo.revealPrivateKey(account.id)
             ?: throw WalletException.Unauthorized("Account has no stored private key")
-        return parseSecp256k1Key(key, account.chainType)
+        return WalletKeyCodec.secp256k1(key, account.chainType)
     }
 
     /** 32-byte ed25519 seed (Solana/Aptos/Sui) for derived OR imported accounts. */
@@ -1979,7 +1778,7 @@ open class WalletEngine(
         }
         val key = repo.revealPrivateKey(account.id)
             ?: throw WalletException.Unauthorized("Account has no stored private key")
-        return parseEd25519Seed(key, account.chainType)
+        return WalletKeyCodec.ed25519Seed(key, account.chainType)
     }
 
     /**
@@ -2002,38 +1801,10 @@ open class WalletEngine(
         }
         val key = repo.revealPrivateKey(account.id)
             ?: throw WalletException.Unauthorized("Account has no stored private key")
-        return parseEd25519Seed(key, account.chainType)
+        return WalletKeyCodec.ed25519Seed(key, account.chainType)
     }
 
-    private fun parseSecp256k1Key(key: String, chainType: ChainType): BigInteger {
-        val clean = key.removePrefix("0x").removePrefix("0X")
-        val parsed = runCatching { BigInteger(clean, 16) }.getOrNull()
-            ?: throw WalletException.InvalidParams("Invalid ${chainType.displayName} private key")
-        if (parsed.signum() <= 0 || parsed >= Bip32PrivateKey.CURVE_N) {
-            throw WalletException.InvalidParams("${chainType.displayName} private key out of range")
-        }
-        return parsed
-    }
 
-    /** Solana imports are base58; Aptos/Sui SDKs use hex — accept either. */
-    private fun parseEd25519Seed(key: String, chainType: ChainType): ByteArray =
-        Base58.decodeOrNull(key)?.takeIf { it.size == 32 }
-            ?: Hex.decodeOrNull(key)?.takeIf { it.size == 32 }
-            ?: throw WalletException.InvalidParams(
-                "Invalid ${chainType.displayName} private key (expected 32-byte base58 or hex)"
-            )
-
-    /** Stored-key form for secp chains: 64 hex chars, no 0x. */
-    private fun canonicalSecpKey(key: BigInteger): String = key.toString(16).padStart(64, '0')
-
-    private fun aptosAddress(pubkey: ByteArray): String =
-        "0x" + Hex.encode(Hashes.sha3_256(pubkey + byteArrayOf(0x00)))
-
-    private fun suiAddress(pubkey: ByteArray): String =
-        "0x" + Hex.encode(Hashes.blake2b256(byteArrayOf(0x00) + pubkey))
-
-    // ------------------------------------------------------------------
-    // Activity log
     // ------------------------------------------------------------------
 
     private suspend fun recordActivity(

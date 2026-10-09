@@ -2,9 +2,11 @@ package com.roombrowser.data.repo
 
 import com.roombrowser.browser.wallet.DappPermissionRecord
 import com.roombrowser.browser.wallet.NetworkRecord
+import com.roombrowser.browser.wallet.RestoreReport
 import com.roombrowser.browser.wallet.WalletAccountRecord
 import com.roombrowser.browser.wallet.WalletActivityRecord
 import com.roombrowser.browser.wallet.WalletRepositoryApi
+import com.roombrowser.browser.wallet.WalletKeyCodec
 import com.roombrowser.browser.wallet.WalletSummary
 import com.roombrowser.data.db.DappPermissionDao
 import com.roombrowser.data.db.DappPermissionEntity
@@ -17,10 +19,13 @@ import com.roombrowser.data.db.WalletDao
 import com.roombrowser.data.db.WalletEntity
 import com.roombrowser.data.db.WalletNetworkDao
 import com.roombrowser.data.db.WalletNetworkEntity
+import com.roombrowser.domain.export.WalletBackup
 import com.roombrowser.domain.model.ProfileId
 import com.roombrowser.domain.wallet.chains.ChainRegistry
+import com.roombrowser.domain.wallet.crypto.Mnemonics
 import com.roombrowser.domain.wallet.model.ChainType
 import com.roombrowser.domain.wallet.model.NetworkConfig
+import com.roombrowser.domain.wallet.model.WalletException
 import com.roombrowser.security.VaultCryptor
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
@@ -236,6 +241,123 @@ class WalletRepository(
         )
         accountDao.upsert(entity)
         entity.toRecord()
+    }
+
+    /**
+     * Derives and writes the index-0 account for each of [enabledChains].
+     *
+     * Derivation runs on [Dispatchers.Default] and the writes that follow run
+     * one at a time: the CPU work is the expensive half, and keeping the two
+     * apart means a slow disk cannot look like slow crypto.
+     */
+    override suspend fun seedInitialAccounts(
+        profileId: ProfileId,
+        mnemonic: String,
+        enabledChains: List<ChainType>
+    ) {
+        if (enabledChains.isEmpty()) return
+        ensureDefaultNetworks(profileId)
+        val derived = withContext(Dispatchers.Default) {
+            val seed = Mnemonics.toSeed(Mnemonics.normalize(mnemonic))
+            enabledChains.map { chain ->
+                chain to WalletKeyCodec.deriveAccount(chain, seed, 0, registry)
+            }
+        }
+        derived.forEach { (chain, account) ->
+            addDerivedAccount(
+                profileId, chain, account.first, account.second, "${chain.displayName} 1"
+            )
+        }
+    }
+
+    override suspend fun restore(
+        profileId: ProfileId,
+        payload: WalletBackup.Payload,
+        enabledChains: List<ChainType>
+    ): RestoreReport {
+        if (wallet(profileId) != null) {
+            throw WalletException.InvalidParams(
+                "This profile already has a wallet. Delete it first if you mean to replace it."
+            )
+        }
+        val phrase = payload.mnemonic?.trim()?.takeIf { it.isNotEmpty() }
+        if (phrase != null && !Mnemonics.isValid(phrase)) {
+            throw WalletException.InvalidParams(
+                "The recovery phrase in this file is not a valid BIP39 phrase"
+            )
+        }
+        val label = payload.walletLabel.trim().takeIf { it.isNotEmpty() } ?: "Wallet"
+
+        // A wallet with a phrase gets its index-0 accounts derived exactly as
+        // a freshly imported wallet would; one without is created empty and
+        // filled entirely by the imported keys below.
+        val normalized = phrase?.let { Mnemonics.normalize(it) }
+        createWallet(profileId, label, normalized)
+        if (normalized != null) seedInitialAccounts(profileId, normalized, enabledChains)
+
+        // Compare against what is on disk, not against the file: the phrase
+        // just derived a row per enabled chain, and a file that also lists one
+        // of those addresses as an imported key would otherwise create a
+        // second account pointing at the same address.
+        val taken = accounts(profileId)
+            .map { it.chainType to it.address.lowercase() }
+            .toMutableSet()
+        val skipped = mutableListOf<RestoreReport.SkippedKey>()
+        var imported = 0
+        payload.accounts.forEach { entry ->
+            val key = entry.privateKey?.trim()
+            if (key.isNullOrEmpty()) return@forEach  // derived rows carry no key by design
+            val chain = ChainType.fromName(entry.chain)
+                ?: ChainType.entries.firstOrNull {
+                    it.displayName.equals(entry.chain, ignoreCase = true)
+                }
+            if (chain == null) {
+                skipped.add(
+                    RestoreReport.SkippedKey(entry.chain, entry.label, "unknown chain for this build")
+                )
+                return@forEach
+            }
+            val parsed = runCatching { WalletKeyCodec.parse(chain, key, registry) }
+            val address = parsed.getOrNull()?.first
+            if (address == null) {
+                val reason = parsed.exceptionOrNull()?.message ?: "not a valid private key"
+                skipped.add(RestoreReport.SkippedKey(entry.chain, entry.label, reason))
+                return@forEach
+            }
+            if (!taken.add(chain to address.lowercase())) {
+                // Already restored by the phrase above (or repeated in the
+                // file). Not a failure: the account exists, which is what the
+                // file asked for.
+                return@forEach
+            }
+            runCatching {
+                addImportedAccount(
+                    profileId,
+                    chain,
+                    address,
+                    parsed.getOrThrow().second,
+                    entry.label.takeIf { it.isNotBlank() } ?: "${chain.displayName} (imported)"
+                )
+            }.onSuccess {
+                imported++
+            }.onFailure { failure ->
+                taken.remove(chain to address.lowercase())
+                skipped.add(
+                    RestoreReport.SkippedKey(
+                        entry.chain,
+                        entry.label,
+                        failure.message ?: failure.javaClass.simpleName
+                    )
+                )
+            }
+        }
+        return RestoreReport(
+            walletLabel = label,
+            phraseRestored = normalized != null,
+            derivedAccountCount = if (normalized == null) 0 else enabledChains.size,
+            importedAccountCount = imported,
+            skipped = skipped
+        )
     }
 
     /** Renames one account by id. */

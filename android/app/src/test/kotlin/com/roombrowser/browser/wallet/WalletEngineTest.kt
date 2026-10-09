@@ -1945,6 +1945,91 @@ private open class FakeWalletRepository : WalletRepositoryApi {
         return record
     }
 
+    override suspend fun seedInitialAccounts(
+        profileId: ProfileId,
+        mnemonic: String,
+        enabledChains: List<ChainType>
+    ) {
+        if (enabledChains.isEmpty()) return
+        ensureDefaultNetworks(profileId)
+        val seed = Mnemonics.toSeed(Mnemonics.normalize(mnemonic))
+        enabledChains.forEach { chain ->
+            val derived = WalletKeyCodec.deriveAccount(chain, seed, 0, registry)
+            addDerivedAccount(
+                profileId, chain, derived.first, derived.second, "${chain.displayName} 1"
+            )
+        }
+    }
+
+    override suspend fun restore(
+        profileId: ProfileId,
+        payload: WalletBackup.Payload,
+        enabledChains: List<ChainType>
+    ): RestoreReport {
+        if (wallets[profileId.value] != null) {
+            throw WalletException.InvalidParams("This profile already has a wallet")
+        }
+        val phrase = payload.mnemonic?.trim()?.takeIf { it.isNotEmpty() }
+        if (phrase != null && !Mnemonics.isValid(phrase)) {
+            throw WalletException.InvalidParams("Not a valid BIP39 phrase")
+        }
+        val label = payload.walletLabel.trim().takeIf { it.isNotEmpty() } ?: "Wallet"
+        val normalized = phrase?.let { Mnemonics.normalize(it) }
+        createWallet(profileId, label, normalized)
+        if (normalized != null) seedInitialAccounts(profileId, normalized, enabledChains)
+
+        val taken = accountsOf(profileId).map { it.chainType to it.address.lowercase() }.toMutableSet()
+        val skipped = mutableListOf<RestoreReport.SkippedKey>()
+        var imported = 0
+        payload.accounts.forEach { entry ->
+            val key = entry.privateKey?.trim()
+            if (key.isNullOrEmpty()) return@forEach
+            val chain = ChainType.fromName(entry.chain)
+                ?: ChainType.entries.firstOrNull {
+                    it.displayName.equals(entry.chain, ignoreCase = true)
+                }
+            if (chain == null) {
+                skipped.add(
+                    RestoreReport.SkippedKey(entry.chain, entry.label, "unknown chain for this build")
+                )
+                return@forEach
+            }
+            val parsed = runCatching { WalletKeyCodec.parse(chain, key, registry) }
+            val address = parsed.getOrNull()?.first
+            if (address == null) {
+                skipped.add(
+                    RestoreReport.SkippedKey(
+                        entry.chain, entry.label,
+                        parsed.exceptionOrNull()?.message ?: "not a valid private key"
+                    )
+                )
+                return@forEach
+            }
+            if (!taken.add(chain to address.lowercase())) return@forEach
+            runCatching {
+                addImportedAccount(
+                    profileId, chain, address, parsed.getOrThrow().second,
+                    entry.label.takeIf { it.isNotBlank() } ?: "${chain.displayName} (imported)"
+                )
+            }.onSuccess { imported++ }.onFailure { failure ->
+                taken.remove(chain to address.lowercase())
+                skipped.add(
+                    RestoreReport.SkippedKey(
+                        entry.chain, entry.label,
+                        failure.message ?: failure.javaClass.simpleName
+                    )
+                )
+            }
+        }
+        return RestoreReport(
+            walletLabel = label,
+            phraseRestored = normalized != null,
+            derivedAccountCount = if (normalized == null) 0 else enabledChains.size,
+            importedAccountCount = imported,
+            skipped = skipped
+        )
+    }
+
     override suspend fun renameAccount(accountId: String, label: String) {
         accountLists.keys.forEach { key ->
             val list = accountLists.getValue(key)
