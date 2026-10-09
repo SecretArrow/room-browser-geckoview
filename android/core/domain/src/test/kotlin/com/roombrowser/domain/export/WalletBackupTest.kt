@@ -288,6 +288,35 @@ class WalletBackupTest {
     }
 
     @Test
+    fun `the embedded block is the same cipher the standalone file writes`() {
+        // A profile export embeds the wallet through sealBlock; the wallet's own
+        // file goes through seal, which is sealBlock plus a wrapper. Pinned so
+        // the two entry points cannot drift into two different formats.
+        val passphrase = "correct horse battery".toCharArray()
+        val block = WalletBackup.sealBlock(contents(), header(), passphrase)
+
+        val fromFile = WalletBackup.open(
+            WalletBackup.seal(contents(), header(), passphrase), passphrase
+        )
+        val fromBlock = WalletBackup.openBlock(block, passphrase)
+
+        assertThat(fromBlock.payload).isEqualTo(fromFile.payload)
+        assertThat(fromBlock.payload.toContents()).isEqualTo(contents())
+        assertThat(fromBlock.legacy).isFalse()
+    }
+
+    @Test
+    fun `a block with nothing to restore is refused, like the file form`() {
+        assertThrows(IllegalArgumentException::class.java) {
+            WalletBackup.sealBlock(
+                contents(mnemonic = null, accounts = emptyList()),
+                header(),
+                "correct horse battery".toCharArray()
+            )
+        }
+    }
+
+    @Test
     fun `a file older than the data block is marked legacy and keeps its imported keys`() {
         // Exactly what a v1 export decrypted to: the readable document and
         // nothing else. `render` is that shape, so this is the real thing and

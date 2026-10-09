@@ -277,6 +277,18 @@ interface WalletRepositoryApi {
     /** Decrypts and returns the mnemonic, or null when absent. UI gates this behind biometrics. */
     suspend fun revealMnemonic(profileId: ProfileId): String?
 
+    /**
+     * Everything a wallet-keys export needs: the phrase, plus every account
+     * with its path and — for imported ones only — its private key.
+     *
+     * [mnemonic] lets a caller that already holds the phrase (the onboarding
+     * reveal) skip the vault read; every other caller passes null. Unlike the
+     * session-guarded [WalletEngineApi.backupContents] this asks for no
+     * binding and no unlock — the caller that needs it most, a profile
+     * export, is not the session that holds the wallet.
+     */
+    suspend fun backupContents(profileId: ProfileId, mnemonic: String?): WalletBackup.Contents
+
     // -- accounts ----------------------------------------------------------
 
     fun observeAccounts(profileId: ProfileId): Flow<List<WalletAccountRecord>>
@@ -298,6 +310,54 @@ interface WalletRepositoryApi {
         privateKey: String,
         label: String
     ): WalletAccountRecord
+
+    /**
+     * Derives and writes the index-0 account for each of [enabledChains].
+     *
+     * The seed is derived here from [mnemonic] rather than read back from the
+     * wallet row: a caller that has just created the wallet holds the phrase
+     * already, and decrypting it again would be a second trip through the
+     * vault for a value that is right there.
+     */
+    suspend fun seedInitialAccounts(
+        profileId: ProfileId,
+        mnemonic: String,
+        enabledChains: List<ChainType>
+    )
+
+    /**
+     * Writes a whole wallet from an opened backup into [profileId].
+     *
+     * TAKES [profileId] EXPLICITLY AND NEEDS NO SESSION. That is the point of
+     * it living here rather than on the engine: the caller that needs it most
+     * is a profile import, which restores the wallet into a profile that has
+     * never been opened and therefore cannot be bound. The engine's own
+     * [WalletEngineApi.restoreFromBackup] adds the session guards and
+     * delegates here.
+     *
+     * ORDER MATTERS AND IS LOAD-BEARING. The wallet row is written first and
+     * the accounts hang off it, so there is no window where accounts exist
+     * without a wallet to own them. The phrase goes in before any imported
+     * key, so a file that names a chain this build does not know still
+     * restores its derived accounts.
+     *
+     * FAILURE OF ONE KEY IS NOT FAILURE OF THE RESTORE: each imported key is
+     * attempted on its own and a bad one is recorded in
+     * [RestoreReport.skipped]. A restore that aborts on the first unparseable
+     * row would leave a half-built wallet behind AND lose the readable
+     * accounts, which is the worst of both.
+     *
+     * Refuses to run over an existing wallet: this replaces nothing. The
+     * caller deletes first, as a separate confirmed step.
+     *
+     * @throws WalletException.InvalidParams when the file's phrase is not a
+     * valid BIP39 mnemonic, or when a wallet already exists for [profileId].
+     */
+    suspend fun restore(
+        profileId: ProfileId,
+        payload: WalletBackup.Payload,
+        enabledChains: List<ChainType>
+    ): RestoreReport
 
     suspend fun renameAccount(accountId: String, label: String)
 

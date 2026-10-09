@@ -20,7 +20,8 @@ class ProfileBackupTest {
 
     private fun payload(
         vault: ProfileBackup.VaultBackup? = null,
-        totp: ProfileBackup.VaultBackup? = null
+        totp: ProfileBackup.VaultBackup? = null,
+        wallet: ProfileBackup.VaultBackup? = null
     ) =
         ProfileBackup.BackupPayload(
             profile = profile(),
@@ -35,7 +36,8 @@ class ProfileBackupTest {
                 )
             ),
             vault = vault,
-            totp = totp
+            totp = totp,
+            wallet = wallet
         )
 
     /** A real sealed vault + the exact credential JSON that went into it. */
@@ -105,6 +107,64 @@ class ProfileBackupTest {
     }
 
     @Test
+    fun `v4 round trip carries the wallet as its own sealed block`() {
+        val passphrase = "correct horse battery".toCharArray()
+        val (vault, plaintext) = sealedVault()
+        val wallet = WalletBackup.sealBlock(
+            contents = WalletBackup.Contents(
+                walletLabel = "Main",
+                createdAt = 1_759_400_000_000L,
+                mnemonic = "abandon ability able about above absent absorb abstract " +
+                    "absurd abuse access accident",
+                accounts = listOf(
+                    WalletBackup.KeyEntry("EVM", "EVM 1", "0x1111111111111111", "m/44'/60'/0'/0/0")
+                )
+            ),
+            header = WalletBackup.Header("Research", 1_759_400_000_000L),
+            passphrase = passphrase
+        )
+
+        val raw = ProfileBackup.serialize(payload(vault = vault, wallet = wallet))
+        val restored = ProfileBackup.parse(raw) as ProfileBackupResult.Parsed
+
+        assertThat(restored.payload.formatVersion).isEqualTo(4)
+        assertThat(restored.payload.wallet).isEqualTo(wallet)
+        // Three independent ciphertexts under one passphrase: opening the
+        // wallet must not depend on, or reveal, the login vault beside it.
+        assertThat(restored.payload.wallet?.ciphertextB64).isNotEqualTo(vault.ciphertextB64)
+        val opened = WalletBackup.openBlock(restored.payload.wallet!!, passphrase)
+        assertThat(opened.payload.mnemonic).startsWith("abandon ability")
+        assertThat(opened.payload.accounts.single().chain).isEqualTo("EVM")
+        assertThat(
+            PasswordVaultCrypto.decrypt(restored.payload.vault!!.toCipherData(), passphrase)
+        ).isEqualTo(plaintext)
+    }
+
+    @Test
+    fun `a v3 file imports with no wallet block`() {
+        // Exactly what a v3 exporter wrote: no `wallet` key at all. The field
+        // must default to null rather than reject the file — an older backup
+        // is not a corrupt one.
+        val v3 = """
+            {
+              "formatVersion": 3,
+              "profile": {
+                "id": { "value": "11111111-2222-3333-4444-555555555555" },
+                "name": "Research",
+                "createdAt": 1720000000000
+              },
+              "bookmarks": [ { "url": "https://example.com", "title": "Example" } ]
+            }
+        """.trimIndent()
+
+        val restored = ProfileBackup.parse(v3) as ProfileBackupResult.Parsed
+
+        assertThat(restored.payload.wallet).isNull()
+        assertThat(restored.payload.vault).isNull()
+        assertThat(restored.payload.bookmarks.single().title).isEqualTo("Example")
+    }
+
+    @Test
     fun `v1 file without vault or site data still imports`() {
         // Exactly what the v1 exporter wrote: formatVersion 1, profile
         // (ProfileId serializes as {"value": …}), bookmarks — no vault, and
@@ -128,6 +188,7 @@ class ProfileBackupTest {
         assertThat(restored.payload.sitePermissions).isEmpty()
         assertThat(restored.payload.siteSettings).isEmpty()
         assertThat(restored.payload.notes).isEmpty()
+        assertThat(restored.payload.wallet).isNull()
         assertThat(restored.payload.bookmarks.single().url).isEqualTo("https://example.com")
     }
 
@@ -304,5 +365,41 @@ class ProfileBackupTest {
             codec.decodeFromString(ListSerializer(SavedCredential.serializer()), opened)
 
         assertThat(restoredCreds).isEqualTo(creds)
+    }
+
+    @Test
+    fun `a profile export never carries the recovery phrase or a key in the clear`() {
+        val passphrase = "correct horse battery".toCharArray()
+        val phrase = "abandon ability able about above absent absorb abstract " +
+            "absurd abuse access accident"
+        val importedKey = "0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d"
+        val wallet = WalletBackup.sealBlock(
+            contents = WalletBackup.Contents(
+                walletLabel = "Main",
+                createdAt = 1L,
+                mnemonic = phrase,
+                accounts = listOf(
+                    WalletBackup.KeyEntry("EVM", "Legacy", "0xabc", "", privateKey = importedKey)
+                )
+            ),
+            header = WalletBackup.Header("Research", 1L),
+            passphrase = passphrase
+        )
+
+        val raw = ProfileBackup.serialize(payload(vault = sealedVault().first, wallet = wallet))
+
+        // The block is the ONLY place either secret can live, and both are
+        // inside authenticated ciphertext.
+        assertThat(raw).doesNotContain("abandon")
+        assertThat(raw).doesNotContain(importedKey.removePrefix("0x"))
+        assertThat(raw).doesNotContain("\"mnemonic\"")
+        assertThat(raw).doesNotContain("\"privateKey\"")
+        // Sealed rather than absent: the passphrase opens it back to both.
+        val opened = WalletBackup.openBlock(
+            (ProfileBackup.parse(raw) as ProfileBackupResult.Parsed).payload.wallet!!,
+            passphrase
+        )
+        assertThat(opened.payload.mnemonic).isEqualTo(phrase)
+        assertThat(opened.payload.accounts.single().privateKey).isEqualTo(importedKey)
     }
 }

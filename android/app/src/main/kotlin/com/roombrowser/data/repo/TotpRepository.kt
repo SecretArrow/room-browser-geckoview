@@ -211,16 +211,19 @@ class TotpRepository(
      * timestamps, so [at] stamps them all and `last_used_at` is deliberately
      * left null rather than inherited.
      *
+     * @return how many accounts were written, so the caller reports what it
+     *   actually restored rather than what the file claimed.
      * @throws VaultLockedException when 2FA is locked.
      */
     suspend fun importAll(
         profileId: ProfileId,
         entries: List<TotpBackup.Entry>,
         at: Long = System.currentTimeMillis()
-    ) {
+    ): Int {
         requireUnlocked()
-        if (entries.isEmpty()) return
-        withContext(Dispatchers.IO) {
+        if (entries.isEmpty()) return 0
+        return withContext(Dispatchers.IO) {
+            var written = 0
             entries.forEach { entry ->
                 dao.upsert(
                     TotpEntity(
@@ -236,7 +239,9 @@ class TotpRepository(
                         lastUsedAt = null
                     )
                 )
+                written++
             }
+            written
         }
     }
 

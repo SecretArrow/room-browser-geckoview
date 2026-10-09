@@ -303,14 +303,17 @@ class CredentialRepository(
      * so an import can never collide with (or overwrite) existing rows.
      * Timestamps are preserved from the source for import fidelity. Rows
      * whose domain canonicalizes to nothing (corrupt source data) are skipped
-     * rather than aborting the whole import.
+     * rather than aborting the whole import — and are NOT counted in the
+     * return value, so the caller reports what it actually wrote.
      *
+     * @return how many logins were written.
      * @throws VaultLockedException when the vault is locked.
      */
-    suspend fun importAll(profileId: ProfileId, creds: List<SavedCredential>) {
+    suspend fun importAll(profileId: ProfileId, creds: List<SavedCredential>): Int {
         requireUnlocked()
-        if (creds.isEmpty()) return
-        withContext(Dispatchers.IO) {
+        if (creds.isEmpty()) return 0
+        return withContext(Dispatchers.IO) {
+            var written = 0
             creds.forEach { c ->
                 val domain = canonicalDomain(c.domain)
                 if (domain.isEmpty()) return@forEach
@@ -326,7 +329,9 @@ class CredentialRepository(
                         updatedAt = c.updatedAt
                     )
                 )
+                written++
             }
+            written
         }
     }
 

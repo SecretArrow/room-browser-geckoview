@@ -25,21 +25,22 @@ sealed interface ProfileBackupResult {
 }
 
 /**
- * Profile backup / restore — export format v3 (spec section 29).
+ * Profile backup / restore — export format v4 (spec section 29).
  *
- * ## Schema (formatVersion 3)
+ * ## Schema (formatVersion 4)
  *
  * ```
  * {
- *   "formatVersion": 3,
+ *   "formatVersion": 4,
  *   "profile":      { ...full Profile, incl. settings + themeJson... },
  *   "bookmarks":    [ { url, title, folder?, position } ],
  *   "sitePermissions": [ { host, permission, decision } ],
  *   "siteSettings": [ { host, shieldsDisabled?, jsEnabled?, cookiesBlocked?,
  *                        desktopMode?, autoplayBlocked?, popupBlocked? } ],
  *   "notes":        [ { title, body } ],
- *   "vault": { scheme, saltB64, iterations, ivB64, ciphertextB64 } | null,
- *   "totp":  { scheme, saltB64, iterations, ivB64, ciphertextB64 } | null
+ *   "vault":  { scheme, saltB64, iterations, ivB64, ciphertextB64 } | null,
+ *   "totp":   { scheme, saltB64, iterations, ivB64, ciphertextB64 } | null,
+ *   "wallet": { scheme, saltB64, iterations, ivB64, ciphertextB64 } | null
  * }
  * ```
  *
@@ -64,6 +65,14 @@ sealed interface ProfileBackupResult {
  *    (`totp` is null for them); the bump exists so an OLDER build refuses a
  *    v3 file rather than importing it minus the authenticator secrets —
  *    silently dropping authenticator seeds is the unacceptable outcome.
+ *  - **v4**: the file may additionally carry `wallet` — the profile's wallet
+ *    keys (recovery phrase and imported private keys), sealed under the same
+ *    export passphrase as `vault` and `totp`, again as an independent
+ *    ciphertext. v1–v3 files still import (`wallet` is null for them). The
+ *    bump exists for the same reason as v3's, and the stakes are higher: an
+ *    older build that imported this file without the block would restore
+ *    every other section and silently produce a profile whose wallet is
+ *    gone, with the user's money behind it.
  *  - **Future versions** (`formatVersion > [FORMAT_VERSION]`) are rejected
  *    with [ProfileBackupResult.InvalidVersion] — never a partial parse, and
  *    the version's fields are not guessed at.
@@ -73,12 +82,14 @@ sealed interface ProfileBackupResult {
  * ## Never-exported guarantees
  * There is no field for cookies, sessions, cache, IndexedDB, localStorage or
  * browsing history — enforced by construction. Saved passwords exist ONLY
- * inside `vault.ciphertextB64` (authenticated encryption); a plaintext
- * password NEVER appears anywhere in the export JSON.
+ * inside `vault.ciphertextB64`, authenticator seeds only inside
+ * `totp.ciphertextB64` and wallet keys only inside `wallet.ciphertextB64`
+ * (all authenticated encryption); a plaintext password, seed or private key
+ * NEVER appears anywhere in the export JSON.
  */
 object ProfileBackup {
 
-    const val FORMAT_VERSION = 3
+    const val FORMAT_VERSION = 4
 
     @Serializable
     data class BookmarkExport(val url: String, val title: String, val folder: String? = null, val position: Int = 0)
@@ -167,7 +178,19 @@ object ProfileBackup {
          *  sealed and opened by
          *  [com.roombrowser.domain.totp.TotpBackup.sealContents] /
          *  [com.roombrowser.domain.totp.TotpBackup.openContents]. */
-        val totp: VaultBackup? = null
+        val totp: VaultBackup? = null,
+        /** The profile's wallet keys, sealed with the SAME export passphrase
+         *  the other two blocks use and again as an INDEPENDENT ciphertext.
+         *  null = the profile had no wallet, which is also what every v1–v3
+         *  file carries. Content is sealed and opened by
+         *  [com.roombrowser.domain.export.WalletBackup.sealBlock] /
+         *  [com.roombrowser.domain.export.WalletBackup.openBlock].
+         *
+         *  THIS BLOCK IS MONEY, unlike the other two. A file carrying it is
+         *  worth exactly what the wallet holds, so the export UI leaves it
+         *  unticked and says so; anything that puts it in a file without the
+         *  user asking has handed out the wallet. */
+        val wallet: VaultBackup? = null
     ) {
         init {
             require(profile.id.value.isNotBlank())

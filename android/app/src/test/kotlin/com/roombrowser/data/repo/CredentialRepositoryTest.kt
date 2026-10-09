@@ -245,10 +245,11 @@ class CredentialRepositoryTest {
         )
 
         repo.unlock()
-        repo.importAll(profileA, source)
+        val written = repo.importAll(profileA, source)
 
         val rows = fakeDao.rows.values.toList()
         assertThat(rows).hasSize(2)
+        assertThat(written).isEqualTo(2)
         // Fresh UUIDs: neither the shared source id nor each other's.
         assertThat(rows.map { it.id }).containsNoneIn(listOf("same-source-id"))
         assertThat(rows.map { it.id }.toSet()).hasSize(2)
@@ -268,7 +269,7 @@ class CredentialRepositoryTest {
     @Test
     fun `importAll skips rows with unusable domains instead of aborting the batch`() = runTest {
         repo.unlock()
-        repo.importAll(
+        val written = repo.importAll(
             profileA,
             listOf(
                 savedCredential(id = "bad", domain = "   ", password = "x"),
@@ -276,6 +277,9 @@ class CredentialRepositoryTest {
             )
         )
         assertThat(fakeDao.rows.values.map { it.domain }).containsExactly("good.com")
+        // The skipped row is not counted, so the import report can never
+        // promise a login the device does not hold.
+        assertThat(written).isEqualTo(1)
     }
 
     @Test
