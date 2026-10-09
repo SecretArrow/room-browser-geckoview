@@ -7,6 +7,7 @@ import androidx.compose.runtime.setValue
 import com.roombrowser.RoomBrowserApp
 import com.roombrowser.data.db.AgentProviderEntity
 import com.roombrowser.data.db.AiTaskEntity
+import com.roombrowser.data.net.AppHttpClients
 import com.roombrowser.domain.model.Profile
 import com.roombrowser.domain.task.AiTaskPermissions
 import com.roombrowser.domain.task.AiTaskRunConfig
@@ -101,7 +102,7 @@ class AiTaskController(application: Application) {
         } else {
             val key = provider.apiKeyEnc.takeIf { it.isNotBlank() }?.let { KeyStoreCrypto.decrypt(it) }.orEmpty()
             AgentGateways.forProvider(
-                callFactory = OkHttpClient(),
+                callFactory = AppHttpClients.agent(),
                 provider = provider,
                 apiKey = key,
                 appContext = appContext

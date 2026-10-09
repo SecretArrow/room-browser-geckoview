@@ -7,6 +7,7 @@ import androidx.compose.runtime.setValue
 import com.roombrowser.RoomBrowserApp
 import com.roombrowser.data.db.AgentProviderEntity
 import com.roombrowser.data.db.AgentSessionEntity
+import com.roombrowser.data.net.AppHttpClients
 import com.roombrowser.data.repo.AgentSettings
 import com.roombrowser.data.repo.AgentRepository
 import kotlinx.coroutines.CoroutineScope
@@ -40,7 +41,7 @@ class AgentSettingsController(
     // Plain HTTP stack is fine here: this client only lists /models while
     // the user is editing a provider. The agent's real turns keep using the
     // DoH-configured client inside the ':browser' process.
-    private val callFactory: OkHttpClient = OkHttpClient()
+    private val callFactory: OkHttpClient = AppHttpClients.agent()
 
     // ------------------------------------------------------------- UI state
 

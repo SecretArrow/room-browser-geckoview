@@ -159,5 +159,19 @@ class AppGraph(context: Context) {
 
     val filterEngine: FilterEngine by lazy { FilterListLoader.load(appContext) }
 
+    /**
+     * The proxy finder: the bundled catalogue, the sweep that verifies candidates, and
+     * the per-profile decision made at every bind.
+     *
+     * One per process, like the rest of the graph. The engine's page proxy is process-wide,
+     * so a second instance would only be a second cache of the same answer.
+     */
+    val proxyCoordinator: com.roombrowser.data.proxy.ProxyCoordinator by lazy {
+        com.roombrowser.data.proxy.ProxyCoordinator(
+            appState,
+            com.roombrowser.data.proxy.ProxyCatalogue(appContext)
+        )
+    }
+
     val ipConflictDetector: IpConflictDetector by lazy { IpConflictDetector() }
 }
