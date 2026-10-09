@@ -182,6 +182,47 @@ internal fun importedSummaryLine(
 private fun count(n: Int, noun: String): String = if (n == 1) "1 $noun" else "$n ${noun}s"
 
 /**
+ * The chains a wallet backup's PHRASE was derived for, read off the file.
+ *
+ * The derived entries are exactly the ones that carry no private key — a
+ * derived account is re-derived from the phrase, so an export never writes its
+ * key — which makes the file, not the importing device, the authority on which
+ * chains the phrase produced. A wallet restored on a build whose chain list has
+ * since changed still gets its own chains back.
+ *
+ * The name is matched the way the wallet repository matches it: the enum name
+ * first, then the display name, because the file stores the label the user saw.
+ */
+internal fun derivedChainsOf(payload: WalletBackup.Payload): List<ChainType> =
+    payload.accounts
+        .filter { it.privateKey.isNullOrBlank() }
+        .mapNotNull { entry ->
+            ChainType.fromName(entry.chain)
+                ?: ChainType.entries.firstOrNull {
+                    it.displayName.equals(entry.chain, ignoreCase = true)
+                }
+        }
+        .distinct()
+
+/**
+ * How the wallet is described at the export passphrase prompt.
+ *
+ * The other two blocks get a count, and a count does not work here: a wallet is
+ * a recovery phrase, imported private keys, or both, and the user deciding
+ * whether to seal this file needs to know which — "0" would be the wrong answer
+ * for a wallet whose whole backup is its phrase.
+ */
+internal fun walletPhraseFor(contents: WalletBackup.Contents): String {
+    val keys = contents.accounts.count { !it.privateKey.isNullOrBlank() }
+    return when {
+        !contents.mnemonic.isNullOrBlank() && keys > 0 ->
+            "the recovery phrase and $keys imported private key(s)"
+        !contents.mnemonic.isNullOrBlank() -> "the recovery phrase"
+        else -> "$keys imported private key(s)"
+    }
+}
+
+/**
  * Main-process ViewModel: profile CRUD, first-run state, external-link
  * routing ("Open with profile" — never silently opens the wrong profile)
  * and the backup v2 export / import flows.
@@ -1222,30 +1263,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    /**
-     * The chains a backup's PHRASE was derived for, read off the file itself.
-     *
-     * The derived entries are exactly the ones that carry no private key — a
-     * derived account is re-derived from the phrase, so the export never wrote
-     * its key — which makes the file, rather than the importing device, the
-     * authority on which chains the phrase produced. A profile restored on a
-     * build whose chain list has since changed still gets its own chains back.
-     *
-     * The name is matched the way the wallet repository matches it: the enum
-     * name first, then the display name, because the file stores the label the
-     * user saw.
-     */
-    private fun derivedChainsOf(payload: WalletBackup.Payload): List<ChainType> =
-        payload.accounts
-            .filter { it.privateKey.isNullOrBlank() }
-            .mapNotNull { entry ->
-                ChainType.fromName(entry.chain)
-                    ?: ChainType.entries.firstOrNull {
-                        it.displayName.equals(entry.chain, ignoreCase = true)
-                    }
-            }
-            .distinct()
-
     /** "<name>" when free, otherwise "<name> (imported)", "… 2", "… 3" —
      *  the same disambiguation ProfileManager.duplicate uses. */
     private fun uniqueImportName(base: String, existingNames: List<String>, needsSuffix: Boolean): String {
@@ -1259,24 +1276,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             i++
         }
         return candidate
-    }
-
-    /**
-     * How the wallet is described at the passphrase prompt.
-     *
-     * The other two blocks get a count, and a count does not work here: a
-     * wallet is a recovery phrase, imported private keys, or both, and the
-     * user deciding whether to seal this file needs to know which — "0" would
-     * be the wrong answer for a wallet whose whole backup is its phrase.
-     */
-    private fun walletPhraseFor(contents: WalletBackup.Contents): String {
-        val keys = contents.accounts.count { !it.privateKey.isNullOrBlank() }
-        return when {
-            !contents.mnemonic.isNullOrBlank() && keys > 0 ->
-                "the recovery phrase and $keys imported private key(s)"
-            !contents.mnemonic.isNullOrBlank() -> "the recovery phrase"
-            else -> "$keys imported private key(s)"
-        }
     }
 
     /** The user backed out of the passphrase step — cancel the whole

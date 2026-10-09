@@ -3,8 +3,10 @@ package com.roombrowser.main
 import com.google.common.truth.Truth.assertThat
 import com.roombrowser.browser.wallet.RestoreReport
 import com.roombrowser.data.repo.ProfileRepositoryImpl
+import com.roombrowser.domain.export.WalletBackup
 import com.roombrowser.domain.model.Profile
 import com.roombrowser.domain.model.ProfileId
+import com.roombrowser.domain.wallet.model.ChainType
 import org.junit.Test
 
 /**
@@ -164,6 +166,62 @@ class ImportReportTest {
         assertThat(line).contains("1 wallet account")
         assertThat(line).contains("1 wallet key skipped")
         assertThat(line).doesNotContain("2 wallet accounts")
+    }
+
+    @Test
+    fun `a restored phrase is derived for the chains the file names`() {
+        // The file, not the importing build, decides: its derived entries are
+        // exactly the ones carrying no key.
+        val chains = derivedChainsOf(
+            WalletBackup.Payload(
+                walletLabel = "Main",
+                createdAt = 1L,
+                mnemonic = "abandon ability",
+                accounts = listOf(
+                    WalletBackup.KeyEntry("EVM", "EVM 1", "0x1", "m/44'/60'/0'/0/0"),
+                    WalletBackup.KeyEntry("Solana", "Solana 1", "So1", "m/44'/501'/0'/0'"),
+                    // Imported: its chain is restored by the key itself, so it
+                    // must not also drag an index-0 derived account in.
+                    WalletBackup.KeyEntry("Bitcoin", "Legacy", "bc1", "", privateKey = "0xdead"),
+                    WalletBackup.KeyEntry("EVM", "EVM 2", "0x2", "m/44'/60'/0'/0/1")
+                )
+            )
+        )
+
+        assertThat(chains).containsExactly(ChainType.EVM, ChainType.SOLANA)
+    }
+
+    @Test
+    fun `a chain named by its label is recognised, and an unknown one is left out`() {
+        // The file stores the label the user saw ("Solana", not "SOLANA"); a
+        // chain this build no longer knows is dropped rather than guessed at.
+        val chains = derivedChainsOf(
+            WalletBackup.Payload(
+                walletLabel = "Main",
+                createdAt = 1L,
+                accounts = listOf(
+                    WalletBackup.KeyEntry("solana", "Solana 1", "So1", "m/44'/501'/0'/0'"),
+                    WalletBackup.KeyEntry("Dogecoin", "DOGE 1", "D1", "m/44'/3'/0'/0/0")
+                )
+            )
+        )
+
+        assertThat(chains).containsExactly(ChainType.SOLANA)
+    }
+
+    @Test
+    fun `the prompt says which half of a wallet is going into the file`() {
+        // A count would be a lie here: a phrase is not an item, and a wallet
+        // backed up by its phrase alone must not read as "0".
+        val entry = WalletBackup.KeyEntry("EVM", "Legacy", "0x1", "", privateKey = "0xdead")
+        val phraseOnly = WalletBackup.Contents("Main", 1L, "abandon ability", emptyList())
+        val keysOnly = WalletBackup.Contents("Main", 1L, null, listOf(entry, entry))
+        val both = WalletBackup.Contents("Main", 1L, "abandon ability", listOf(entry))
+
+        assertThat(walletPhraseFor(phraseOnly)).isEqualTo("the recovery phrase")
+        assertThat(walletPhraseFor(keysOnly)).isEqualTo("2 imported private key(s)")
+        assertThat(walletPhraseFor(both))
+            .isEqualTo("the recovery phrase and 1 imported private key(s)")
     }
 
     @Test
