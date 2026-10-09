@@ -3,6 +3,7 @@ package com.roombrowser.engine
 import android.content.Context
 import com.roombrowser.domain.model.Profile
 import com.roombrowser.domain.model.ProfileId
+import com.roombrowser.domain.proxy.ProxyScheme
 
 /**
  * One entry in the diagnostics screen's engine list.
@@ -136,6 +137,38 @@ interface EngineHost {
      * owned it is going away and should not be launched into afterwards.
      */
     fun setActivityDelegate(delegate: EngineActivityDelegate?)
+
+    /**
+     * Whether this engine can be pointed at a proxy at all.
+     *
+     * WebView answers from the provider's own feature set and returns false on a device
+     * whose provider predates the override API; GeckoView always answers true. The
+     * settings screen shows the truthful answer rather than a switch that does nothing.
+     */
+    fun proxySupported(): Boolean
+
+    /**
+     * Whether this engine's proxy mechanism can carry [scheme] at all.
+     *
+     * WebView's override speaks HTTP and HTTPS; Necko also speaks SOCKS. A candidate the
+     * engine cannot carry is refused here rather than applied and silently ignored, which
+     * would leave the settings screen claiming a proxy that is not there.
+     */
+    fun proxySupportsScheme(scheme: ProxyScheme): Boolean
+
+    /**
+     * Send this engine's page traffic through [config], or back to the direct network
+     * when it is null.
+     *
+     * Suspends until the engine has ACCEPTED the change, because both mechanisms apply
+     * it asynchronously and a page loaded before that point goes out over the real
+     * address — the one outcome the setting promises not to have.
+     *
+     * Replace, never accumulate: this is called at every profile bind, so a profile with
+     * no proxy clears whatever the previous one left behind. Suspending work is bounded
+     * by the implementation; it must not hang the caller indefinitely.
+     */
+    suspend fun setProxy(config: EngineProxyConfig?)
 
     /**
      * Erase all engine storage for the bound profile.

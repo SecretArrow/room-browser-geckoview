@@ -1,0 +1,44 @@
+{
+  "sources": [
+    {
+      "id": "speedx",
+      "label": "TheSpeedX/PROXY-List",
+      "url": "https://raw.githubusercontent.com/TheSpeedX/PROXY-List/master/http.txt"
+    },
+    {
+      "id": "monosans",
+      "label": "monosans/proxy-list",
+      "url": "https://raw.githubusercontent.com/monosans/proxy-list/main/proxies/http.txt"
+    },
+    {
+      "id": "proxifly",
+      "label": "proxifly/free-proxy-list",
+      "url": "https://raw.githubusercontent.com/proxifly/free-proxy-list/main/proxies/protocols/http/data.txt"
+    },
+    {
+      "id": "shifty",
+      "label": "ShiftyTR/Proxy-List",
+      "url": "https://raw.githubusercontent.com/ShiftyTR/Proxy-List/master/http.txt"
+    },
+    {
+      "id": "rooster",
+      "label": "roosterkid/openproxylist",
+      "url": "https://raw.githubusercontent.com/roosterkid/openproxylist/main/HTTPS_RAW.txt"
+    },
+    {
+      "id": "hideip",
+      "label": "zloi-user/hideip.me",
+      "url": "https://raw.githubusercontent.com/zloi-user/hideip.me/main/http.txt"
+    },
+    {
+      "id": "aliilapro",
+      "label": "ALIILAPRO/Proxy",
+      "url": "https://raw.githubusercontent.com/ALIILAPRO/Proxy/main/http.txt"
+    },
+    {
+      "id": "clarketm",
+      "label": "clarketm/proxy-list",
+      "url": "https://raw.githubusercontent.com/clarketm/proxy-list/master/proxy-list-raw.txt"
+    }
+  ]
+}

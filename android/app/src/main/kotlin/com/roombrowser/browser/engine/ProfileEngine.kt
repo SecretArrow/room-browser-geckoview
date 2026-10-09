@@ -12,11 +12,13 @@ import com.roombrowser.domain.model.ProfileSettings
 import com.roombrowser.domain.model.UserAgents
 import com.roombrowser.domain.model.WebRtcPolicy
 import com.roombrowser.domain.model.claimedScreen
+import com.roombrowser.domain.proxy.ProxyScheme
 import com.roombrowser.engine.BlockedResourceSink
 import com.roombrowser.engine.EngineActivityDelegate
 import com.roombrowser.engine.EngineHost
 import com.roombrowser.engine.EngineOption
 import com.roombrowser.engine.EnginePageScripts
+import com.roombrowser.engine.EngineProxyConfig
 import com.roombrowser.engine.EngineRuntime
 import com.roombrowser.engine.EngineSession
 import com.roombrowser.engine.ResourceFilter
@@ -245,6 +247,34 @@ object ProfileEngine {
             return null
         }
         return DeviceShim.scriptFor(device, screen, webRtc, fingerprint)
+    }
+
+    /**
+     * Whether this edition's engine can be pointed at a proxy at all.
+     *
+     * WebView answers from the installed provider's feature set, so an old provider says
+     * false and the settings screen shows that rather than a switch that does nothing.
+     */
+    fun proxySupported(): Boolean = host.proxySupported()
+
+    /**
+     * Whether this edition's engine can carry [scheme].
+     *
+     * Asked before a candidate is applied, so a SOCKS entry picked on the GeckoView
+     * edition is refused with a message on the WebView one instead of being accepted and
+     * silently ignored.
+     */
+    fun proxySupportsScheme(scheme: ProxyScheme): Boolean = host.proxySupportsScheme(scheme)
+
+    /**
+     * Point the engine's page traffic at [config], or back at the direct network when null.
+     *
+     * Process-wide on both editions, which is why it is called once per bind and not per
+     * session. Suspends until the engine has accepted the change — see [EngineHost.setProxy]
+     * for why that wait is the feature rather than an implementation detail.
+     */
+    suspend fun setProxy(config: EngineProxyConfig?) {
+        host.setProxy(config)
     }
 
     /**

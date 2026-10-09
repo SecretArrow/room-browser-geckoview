@@ -63,6 +63,10 @@ dependencies {
     // `api` because no androidx.webkit type appears in a facade signature.
     implementation(libs.androidx.webkit)
 
+    // setProxy suspends until the engine acknowledges the change; a page loaded
+    // before that point would go out over the real address.
+    implementation(libs.kotlinx.coroutines.android)
+
     testImplementation(libs.junit)
     testImplementation(libs.truth)
 }

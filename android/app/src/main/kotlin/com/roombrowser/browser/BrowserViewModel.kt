@@ -31,6 +31,7 @@ import com.roombrowser.data.db.HistoryEntity
 import com.roombrowser.data.db.SitePermissionEntity
 import com.roombrowser.data.db.SiteSettingEntity
 import com.roombrowser.data.db.TabEntity
+import com.roombrowser.data.proxy.ProxyDecision
 import com.roombrowser.data.repo.BrowserRepository
 import com.roombrowser.data.repo.PendingNetDecision
 import com.roombrowser.data.repo.PermissionKind
@@ -47,16 +48,23 @@ import com.roombrowser.domain.model.PermissionDecision
 import com.roombrowser.domain.model.Profile
 import com.roombrowser.domain.model.ProfileId
 import com.roombrowser.domain.model.ProfileSettings
+import com.roombrowser.domain.proxy.OutboundProxy
+import com.roombrowser.domain.proxy.ProxyCandidate
+import com.roombrowser.domain.proxy.ProxyHealthRules
+import com.roombrowser.domain.proxy.ProxyMode
+import com.roombrowser.domain.proxy.ProxyScope
 import com.roombrowser.domain.theme.BuiltInThemes
 import com.roombrowser.domain.theme.RoomThemeSpec
 import com.roombrowser.domain.theme.ThemeJson
 import com.roombrowser.engine.BlockedResourceSink
+import com.roombrowser.engine.EngineProxyConfig
 import com.roombrowser.engine.EngineSession
 import com.roombrowser.engine.PageErrorKind
 import com.roombrowser.engine.PermissionResponder
 import com.roombrowser.engine.ResourceFilter
 import com.roombrowser.theme.ui.ThemeStudioActivity
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -96,6 +104,9 @@ sealed interface PageEvent {
     data class Finished(val url: String, val title: String, val at: Long) : PageEvent
 }
 
+/** One endpoint the finder verified, as its list shows it. */
+data class FoundProxy(val candidate: ProxyCandidate, val latencyMs: Long)
+
 /** Site-shield snapshot for the current page. */
 data class ShieldsState(
     val host: String = "",
@@ -129,6 +140,15 @@ class BrowserViewModel(
     private val tabManager = TabManager()
     private val dnsMonitor = DnsMonitor()
     val networkIdentity = NetworkIdentity(appState, browserRepo, graph.ipConflictDetector)
+
+    /**
+     * Opens once this profile's proxy (if any) has been handed to the engine.
+     *
+     * Both engines accept a proxy ASYNCHRONOUSLY, so a load that starts before that is
+     * committed goes out over the real address — the one outcome the setting promises not
+     * to have. Every engine-creating path waits here; see [runWhenAttached].
+     */
+    private val proxyGate = CompletableDeferred<Unit>()
 
     /**
      * Per-session dApp bridges (window.ethereum & friends). Weak keys: a
@@ -876,6 +896,9 @@ class BrowserViewModel(
     fun showMessage(message: String) = emitMessage(message)
 
     init {
+        // The proxy gate is opened before anything else can queue a load, and the
+        // resolution behind it is what the first load waits on — so it goes first.
+        viewModelScope.launch(Dispatchers.Main) { applyProfileProxy() }
         // Dispatchers.Main, not the scope's own Main.immediate: the immediate
         // dispatcher runs this body IN PLACE while the constructor is still
         // initializing fields, so initialize() read the properties declared
@@ -883,6 +906,84 @@ class BrowserViewModel(
         // Main always queues, so construction finishes before this starts.
         viewModelScope.launch(Dispatchers.Main) { initialize() }
         observeFlows()
+    }
+
+    /**
+     * Resolve this profile's proxy and hand it to the engine, then open [proxyGate].
+     *
+     * The gate opens in EVERY outcome: a proxy that cannot be applied must leave a working
+     * browser behind, never a wedged one. But the outcomes are told apart for the user
+     * rather than collapsed — "this profile did not ask for a proxy" says nothing, while
+     * "it asked and there is none" has to say so, or a broken finder looks like a setting
+     * that works.
+     */
+    private suspend fun applyProfileProxy() {
+        try {
+            val stored = graph.profileRepo.getProfile(profileId)
+            applyProxyDecision(
+                stored?.let { graph.proxyCoordinator.resolveForBind(it) } ?: ProxyDecision.Direct
+            )
+            stored?.let {
+                applyScopedProxy(it, ProxyScope.AGENT)
+                applyScopedProxy(it, ProxyScope.WALLET)
+            }
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (t: Throwable) {
+            Log.w(PROXY_TAG, "proxy not applied: ${t.javaClass.simpleName}")
+        } finally {
+            proxyGate.complete(Unit)
+        }
+    }
+
+    /**
+     * Install or withdraw one non-page scope's entry.
+     *
+     * These scopes are OkHttp's, not the engine's, so "cannot be carried" is not a case
+     * here: the client either uses the proxy or the platform default. A scope that is off
+     * is actively CLEARED rather than left alone — an entry otherwise outlives the profile
+     * that set it, which on the wallet means the next profile's RPC quietly going through a
+     * stranger.
+     */
+    private suspend fun applyScopedProxy(profile: Profile, scope: ProxyScope) {
+        val candidate =
+            (graph.proxyCoordinator.resolveScope(profile, scope) as? ProxyDecision.Use)?.candidate
+        OutboundProxy.install(scope, candidate)
+    }
+
+    private suspend fun applyProxyDecision(decided: ProxyDecision) {
+        val candidate = (decided as? ProxyDecision.Use)?.candidate?.takeIf { engineCanCarry(it) }
+        if (decided is ProxyDecision.Use && candidate == null) {
+            emitMessage("This engine cannot use a ${decided.candidate.scheme.id.uppercase()} proxy")
+        }
+        ProfileEngine.setProxy(candidate?.let { EngineProxyConfig(it.host, it.port, it.scheme) })
+        if (decided is ProxyDecision.Unavailable) {
+            emitMessage("No working proxy found — loading directly")
+        }
+    }
+
+    private fun engineCanCarry(candidate: ProxyCandidate): Boolean =
+        ProfileEngine.proxySupported() && ProfileEngine.proxySupportsScheme(candidate.scheme)
+
+    /**
+     * Re-apply the proxy after the user changed this profile's proxy settings.
+     *
+     * The engine's page proxy is not a per-session setting, which is why this sits beside
+     * [reconfigureAllWebViews] rather than inside it: the sessions need nothing, the engine
+     * does. A no-op on the load path, so the browser is never left half-switched.
+     *
+     * [override] is the settings the caller just wrote. Passing them means this does not
+     * have to race the write it is re-applying: the screen persists through a separate
+     * coroutine, and reading the row back could otherwise see the previous answer.
+     */
+    fun reapplyProxy(override: ProfileSettings? = null) {
+        viewModelScope.launch(Dispatchers.Main) {
+            val stored = graph.profileRepo.getProfile(profileId) ?: return@launch
+            val profile = override?.let { stored.copy(settings = it) } ?: stored
+            applyProxyDecision(graph.proxyCoordinator.resolveForBind(profile))
+            applyScopedProxy(profile, ProxyScope.AGENT)
+            applyScopedProxy(profile, ProxyScope.WALLET)
+        }
     }
 
     private suspend fun initialize() {
@@ -1537,10 +1638,23 @@ class BrowserViewModel(
      */
     private fun runWhenAttached(session: EngineSession, action: () -> Unit) {
         if (session.view.parent != null) {
-            action()
+            whenProxyReady(action)
         } else {
             pendingEngineActions[session] = action
         }
+    }
+
+    /**
+     * Hold [action] until [proxyGate] has opened.
+     *
+     * This is the load path's half of the proxy promise: the engine has committed to an
+     * endpoint before the first request is made, rather than the setting being applied to
+     * connections that have already gone out over the real address. A browser with the
+     * feature off opens the gate immediately, so nothing here costs an ordinary session
+     * anything.
+     */
+    private fun whenProxyReady(action: () -> Unit) {
+        if (proxyGate.isCompleted) action() else proxyGate.invokeOnCompletion { action() }
     }
 
     /**
@@ -1555,7 +1669,7 @@ class BrowserViewModel(
             // measurement is taken at onPageCommitVisible instead, which is
             // after layout and therefore means something.
             Log.d(NAV_TAG, "vm=$navId deferred engine action fired (attached)")
-            session.view.post(action)
+            whenProxyReady { session.view.post(action) }
         }
     }
 
@@ -2190,6 +2304,81 @@ class BrowserViewModel(
     }
 
     fun profileSettings(): ProfileSettings = profile.settings
+
+    // ---------- Proxy finder ----------
+
+    /**
+     * True while a scan is running, so the button can say so instead of appearing dead.
+     * A scan is tens of connections and takes seconds; the resolution at a bind only ever
+     * runs a slice of it.
+     */
+    var proxyScanning by mutableStateOf(false)
+        private set
+
+    /** Verified endpoints, fastest first. Empty until a scan has found one. */
+    var proxyResults by mutableStateOf<List<FoundProxy>>(emptyList())
+        private set
+
+    /**
+     * Probe the catalogue and keep what answered.
+     *
+     * A candidate only appears here once it has been connected THROUGH and its exit address
+     * differed from this device's own, so the list is evidence rather than a listing.
+     */
+    fun scanProxies() {
+        if (proxyScanning) return
+        proxyScanning = true
+        viewModelScope.launch(Dispatchers.Main) {
+            try {
+                graph.proxyCoordinator.sweep(FINDER_SWEEP_BUDGET_MS)
+                val sweep = graph.proxyCoordinator.state()
+                val health = sweep.byId()
+                proxyResults = graph.proxyCoordinator.ranked()
+                    .mapNotNull { candidate ->
+                        health[candidate.id]
+                            ?.takeIf { ProxyHealthRules.isUsable(it, sweep.directIp) }
+                            ?.let { FoundProxy(candidate, it.latencyMs) }
+                    }
+                    .sortedBy { it.latencyMs }
+                if (proxyResults.isEmpty()) emitMessage("No working proxy found")
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (t: Throwable) {
+                Log.w(PROXY_TAG, "proxy scan failed: ${t.javaClass.simpleName}")
+                emitMessage("Proxy scan failed")
+            } finally {
+                proxyScanning = false
+            }
+        }
+    }
+
+    /**
+     * Pin [candidate] for this profile, or go back to automatic when it is null.
+     *
+     * Pinning stores the endpoint itself and not just its id: the catalogue is regenerated
+     * between releases, and a pin that outlived the row it pointed at would silently become
+     * "no proxy". The id rides along as provenance so the finder can show which entry was
+     * picked.
+     */
+    fun applyProxyChoice(candidate: ProxyCandidate?) {
+        val updated = profileSettings().let {
+            if (candidate == null) {
+                it.copy(proxyMode = ProxyMode.AUTO, proxyHost = null, proxyPort = 0, proxyPinnedId = null)
+            } else {
+                it.copy(
+                    proxyMode = ProxyMode.MANUAL,
+                    proxyHost = candidate.host,
+                    proxyPort = candidate.port,
+                    proxyScheme = candidate.scheme,
+                    proxyPinnedId = candidate.id
+                )
+            }
+        }
+        viewModelScope.launch(Dispatchers.Main) {
+            updateSettings(updated)
+            reapplyProxy(updated)
+        }
+    }
 
     // ---------- Device identity ----------
 
@@ -2888,9 +3077,16 @@ class BrowserViewModel(
          *  e2e forensics). */
         private const val NAV_TAG = "RoomNav"
 
+        /** Proxy bind log tag — the network warning path is not it, so a
+         *  per-test logcat can tell "no proxy applied" from "applied". */
+        private const val PROXY_TAG = "RoomProxy"
+
         /** Live per-tab engine budget — beyond this, oldest background
          *  tabs lose their engine (rebuilt lazily on re-selection). */
         const val MAX_LIVE_WEBVIEWS = 4
+
+        /** A scan the user is watching may take longer than the one a bind waits on. */
+        const val FINDER_SWEEP_BUDGET_MS = 25_000L
 
         const val READER_SCRIPT = """
             (function(){

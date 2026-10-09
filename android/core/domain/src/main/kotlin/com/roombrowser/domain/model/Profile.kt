@@ -1,5 +1,8 @@
 package com.roombrowser.domain.model
 
+import com.roombrowser.domain.proxy.ProxyMode
+import com.roombrowser.domain.proxy.ProxyScheme
+import com.roombrowser.domain.proxy.ProxyScope
 import kotlinx.serialization.Serializable
 
 /**
@@ -206,6 +209,23 @@ data class ProfileSettings(
     // Network protection (profile IP conflict warning)
     val networkProtectionUseGlobal: Boolean = true,
     val networkProtectionEnabled: Boolean = true,
+    // Proxy (this profile)
+    //
+    // [ProxyMode.AUTO] by default, because the master switch is NOT here: turning the
+    // finder on has to make every profile work immediately, including the ones that
+    // already exist, or the setting only applies to profiles created after it. OFF is
+    // the per-profile opt-out.
+    //
+    // The scope list defaults to pages alone: a free proxy is an untrusted middlebox, so
+    // it starts where it hides page content from the operator and not on the traffic that
+    // carries API keys and wallet RPC payloads. AUTO resolves on every bind, so switching
+    // a profile is what re-applies its proxy.
+    val proxyMode: ProxyMode = ProxyMode.AUTO,
+    val proxyHost: String? = null,
+    val proxyPort: Int = 0,
+    val proxyScheme: ProxyScheme = ProxyScheme.HTTP,
+    val proxyScopes: Set<ProxyScope> = ProxyScope.DEFAULT,
+    val proxyPinnedId: String? = null,
     // Downloads
     val downloadSubfolder: String = "RoomBrowser",
     // Autofill
@@ -265,5 +285,8 @@ data class BrowserGlobalSettings(
     val warningBehavior: WarningBehavior = WarningBehavior.ASK_EVERY_TIME,
     val conflictSeverity: ConflictSeverity = ConflictSeverity.INFORMATIONAL,
     val telemetryEnabled: Boolean = false, // OFF by default; no data is collected anyway
-    val diagnosticsEnabled: Boolean = false
+    val diagnosticsEnabled: Boolean = false,
+    // The app-wide master switch for the proxy finder. A profile that opted in still
+    // gets no proxy while this is off, so one control can turn the whole feature off.
+    val proxyEnabled: Boolean = false
 )

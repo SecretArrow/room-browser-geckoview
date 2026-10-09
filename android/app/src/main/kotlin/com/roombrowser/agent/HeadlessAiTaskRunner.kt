@@ -4,6 +4,7 @@ import android.content.Context
 import com.roombrowser.browser.engine.ProfileEngine
 import com.roombrowser.data.db.AgentProviderEntity
 import com.roombrowser.data.db.AiTaskEntity
+import com.roombrowser.data.net.AppHttpClients
 import com.roombrowser.data.repo.permissions
 import com.roombrowser.data.repo.runConfig
 import com.roombrowser.di.AppGraph
@@ -88,7 +89,7 @@ class HeadlessAiTaskRunner(
             ?.let { KeyStoreCrypto.decrypt(it) }
             .orEmpty()
         val gateway = AgentGateways.forProvider(
-            callFactory = OkHttpClient(),
+            callFactory = AppHttpClients.agent(),
             provider = provider,
             apiKey = apiKey,
             appContext = context

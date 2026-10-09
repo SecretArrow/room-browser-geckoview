@@ -1,19 +1,34 @@
 package com.roombrowser.engine.webview
 
 import android.content.Context
+import android.util.Log
 import android.webkit.CookieManager
 import android.webkit.WebStorage
 import android.webkit.WebView
 import android.webkit.WebViewDatabase
+import androidx.webkit.ProxyConfig
+import androidx.webkit.ProxyController
+import androidx.webkit.WebViewFeature
 import com.roombrowser.domain.model.Profile
 import com.roombrowser.domain.model.ProfileId
+import com.roombrowser.domain.proxy.ProxyScheme
 import com.roombrowser.engine.BlockedResourceSink
 import com.roombrowser.engine.EngineActivityDelegate
 import com.roombrowser.engine.EngineHost
 import com.roombrowser.engine.EngineOption
+import com.roombrowser.engine.EngineProxyConfig
 import com.roombrowser.engine.EngineSession
+import com.roombrowser.engine.PROXY_BYPASS_HOSTS
 import com.roombrowser.engine.ResourceFilter
 import java.io.File
+import java.util.concurrent.Executor
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.withTimeoutOrNull
+
+private const val TAG = "RoomProxy"
+
+/** A provider that never calls back must not hold every load behind it. */
+private const val PROXY_APPLY_TIMEOUT_MS = 5_000L
 
 /**
  * The WebView implementation of [EngineHost].
@@ -235,6 +250,64 @@ internal class WebViewEngineHost : EngineHost {
      */
     override fun setActivityDelegate(delegate: EngineActivityDelegate?) {
         // Intentionally empty: see the KDoc above. Not a TODO.
+    }
+
+    /**
+     * `getInstance()` THROWS rather than answering when the provider does not support the
+     * override, so the feature check is what makes the question safe to ask at all.
+     */
+    override fun proxySupported(): Boolean =
+        runCatching { WebViewFeature.isFeatureSupported(WebViewFeature.PROXY_OVERRIDE) }
+            .getOrDefault(false)
+
+    /** HTTP and HTTPS only: the override has no SOCKS rule. */
+    override fun proxySupportsScheme(scheme: ProxyScheme): Boolean =
+        scheme == ProxyScheme.HTTP || scheme == ProxyScheme.HTTPS
+
+    /**
+     * One override, process-wide: it replaces any system proxy for every WebView in the
+     * app, which is why it is applied at the profile bind rather than per session.
+     *
+     * The listener is what makes this awaitable. WebView documents that connections are
+     * not guaranteed to use the new setting immediately, so a load started before the
+     * callback fires goes out over the real address; suspending on it turns "usually in
+     * time" into "not before". The wait is bounded because a provider that never calls
+     * back would otherwise wedge every load behind it.
+     */
+    override suspend fun setProxy(config: EngineProxyConfig?) {
+        if (!proxySupported()) return
+        val controller = runCatching { ProxyController.getInstance() }.getOrNull() ?: return
+        val applied = CompletableDeferred<Unit>()
+        val executor = Executor { it.run() }
+        try {
+            if (config == null) {
+                controller.clearProxyOverride(executor) { applied.complete(Unit) }
+            } else {
+                controller.setProxyOverride(buildProxyConfig(config), executor) { applied.complete(Unit) }
+            }
+        } catch (t: Throwable) {
+            Log.w(TAG, "proxy override refused: ${t.javaClass.simpleName}")
+            return
+        }
+        if (withTimeoutOrNull(PROXY_APPLY_TIMEOUT_MS) { applied.await() } == null) {
+            Log.w(TAG, "proxy override not acknowledged before the timeout")
+        }
+    }
+
+    /**
+     * No `addDirect()`: a DIRECT fallback would quietly serve the real address while the
+     * setting still says a proxy is on, which is the failure mode this feature is supposed
+     * to make impossible. A dead proxy must fail the load.
+     *
+     * `removeImplicitRules()` is deliberately never called — it is what would drop the
+     * implicit loopback bypass. The rules are still added explicitly, because the `oct://`
+     * document is local and that must not rest on an engine default.
+     */
+    private fun buildProxyConfig(config: EngineProxyConfig): ProxyConfig {
+        val builder = ProxyConfig.Builder()
+            .addProxyRule("${config.scheme.id}://${config.host}:${config.port}")
+        PROXY_BYPASS_HOSTS.forEach { builder.addBypassRule(it) }
+        return builder.build()
     }
 
     /**

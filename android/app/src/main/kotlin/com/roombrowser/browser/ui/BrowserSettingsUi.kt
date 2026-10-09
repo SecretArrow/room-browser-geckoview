@@ -32,6 +32,7 @@ import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Key
 import androidx.compose.material.icons.filled.Palette
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.DropdownMenuItem
@@ -62,6 +63,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.roombrowser.BuildConfig
 import com.roombrowser.browser.BrowserViewModel
+import com.roombrowser.browser.FoundProxy
 import com.roombrowser.browser.engine.ProfileEngine
 import com.roombrowser.domain.engine.DnsValidator
 import com.roombrowser.domain.model.BrowserGlobalSettings
@@ -82,6 +84,9 @@ import com.roombrowser.domain.model.TabLayout
 import com.roombrowser.domain.model.WebRtcPolicy
 import com.roombrowser.domain.model.withCustomUserAgent
 import com.roombrowser.domain.model.withUserAgentPreset
+import com.roombrowser.domain.proxy.ProxyCandidate
+import com.roombrowser.domain.proxy.ProxyMode
+import com.roombrowser.domain.proxy.ProxyScope
 import com.roombrowser.ui.common.LocalRoomExtras
 import com.roombrowser.ui.common.RoomCard
 import com.roombrowser.ui.common.SectionHeader
@@ -98,6 +103,115 @@ import kotlin.math.roundToInt
  * host BrowserScreen; the top bars below set explicit zero window insets so
  * nothing double-applies.
  */
+
+/**
+ * One proxy scope's switch.
+ *
+ * PAGES is not special-cased away: it is the scope the master switch turns on, but a user
+ * who wants the agent routed and not their pages is making a coherent choice, and the model
+ * already allows it.
+ */
+@Composable
+private fun ScopeSwitch(
+    title: String,
+    subtitle: String?,
+    scope: ProxyScope,
+    settings: ProfileSettings,
+    update: (ProfileSettings) -> Unit
+) {
+    SettingSwitchRow(
+        title = title,
+        subtitle = subtitle,
+        checked = scope in settings.proxyScopes,
+        onCheckedChange = { on ->
+            update(
+                settings.copy(
+                    proxyScopes = if (on) settings.proxyScopes + scope else settings.proxyScopes - scope
+                )
+            )
+        }
+    )
+}
+
+/**
+ * The finder: scan, then pick.
+ *
+ * Nothing is listed that was not connected through and observed to exit somewhere other
+ * than this device — a listing is not evidence, and the failure this screen exists to
+ * prevent is offering an endpoint that loads every page while hiding nothing.
+ */
+@Composable
+private fun ProxyFinderDialog(
+    results: List<FoundProxy>,
+    scanning: Boolean,
+    pinnedId: String?,
+    onScan: () -> Unit,
+    onPick: (ProxyCandidate) -> Unit,
+    onAutomatic: () -> Unit,
+    onDismiss: () -> Unit
+) {
+    val extras = LocalRoomExtras.current
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Working proxies") },
+        text = {
+            Column(Modifier.heightIn(max = 360.dp).verticalScroll(rememberScrollState())) {
+                Text(
+                    "These were reached through and answered with an address other than " +
+                        "yours. A free proxy is still an untrusted middlebox — anyone " +
+                        "operating it can see which sites you open, and for http, the page.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = extras.textSecondary
+                )
+                Spacer(Modifier.height(12.dp))
+                if (scanning) {
+                    Text("Scanning…", style = MaterialTheme.typography.bodyMedium, color = extras.textPrimary)
+                } else if (results.isEmpty()) {
+                    Text(
+                        "No scan has found a working endpoint yet.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = extras.textSecondary
+                    )
+                }
+                results.forEach { found ->
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { onPick(found.candidate) }
+                            .padding(vertical = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        RadioButton(selected = found.candidate.id == pinnedId, onClick = { onPick(found.candidate) })
+                        Column(Modifier.weight(1f)) {
+                            Text(
+                                "${found.candidate.host}:${found.candidate.port}",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = extras.textPrimary
+                            )
+                            Text(
+                                listOfNotNull(
+                                    found.candidate.scheme.id.uppercase(),
+                                    "${found.latencyMs} ms",
+                                    found.candidate.country
+                                ).joinToString(" · "),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = extras.textSecondary
+                            )
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onScan, enabled = !scanning) {
+                Text(if (results.isEmpty()) "Scan" else "Scan again")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onAutomatic) { Text("Automatic") }
+        }
+    )
+}
 
 /** Shared top bar: themed container, back affordance, zero extra insets. */
 @OptIn(ExperimentalMaterial3Api::class)
@@ -186,6 +300,18 @@ fun BrowserSettingsScreen(viewModel: BrowserViewModel, onClose: () -> Unit) {
                 onCheckedChange = {
                     global = global.copy(showPreviousProfileName = it)
                     scope.launch { viewModel.updateGlobalSettings(global) }
+                }
+            )
+            SettingSwitchRow(
+                title = "Free proxy finder",
+                subtitle = "Run every profile's pages through a verified public proxy. " +
+                    "A free proxy is an untrusted middlebox: it sees which sites you open, " +
+                    "and for http it can read and change the page itself. Off by default.",
+                checked = global.proxyEnabled,
+                onCheckedChange = {
+                    global = global.copy(proxyEnabled = it)
+                    scope.launch { viewModel.updateGlobalSettings(global) }
+                    viewModel.reapplyProxy()
                 }
             )
             SettingSwitchRow(
@@ -404,6 +530,15 @@ fun ProfileSettingsScreen(viewModel: BrowserViewModel, onClose: () -> Unit) {
         settings = new
         scope.launch { viewModel.updateSettings(new) }
     }
+
+    // The engine's page proxy is process-wide, so a change here has to be pushed at the
+    // engine as well as stored — [viewModel.updateSettings] only touches sessions.
+    fun updateProxy(new: ProfileSettings) {
+        update(new)
+        viewModel.reapplyProxy(new)
+    }
+
+    var showFinder by remember { mutableStateOf(false) }
 
     // Device identity. The catalogue is over a thousand entries, so picking
     // one is a full-screen activity of its own: a search field over the whole
@@ -776,6 +911,76 @@ fun ProfileSettingsScreen(viewModel: BrowserViewModel, onClose: () -> Unit) {
                     onCheckedChange = { update(settings.copy(networkProtectionEnabled = it)) }
                 )
             }
+        }
+
+        SectionHeader("Proxy (this profile)")
+        SettingsGroup {
+            SettingSwitchRow(
+                title = "Use a proxy for this profile",
+                subtitle = if (viewModel.globalSettings.proxyEnabled) {
+                    "Re-applied every time this profile is opened"
+                } else {
+                    "The Free proxy finder in Browser Settings is off, so nothing is routed"
+                },
+                checked = settings.proxyMode != ProxyMode.OFF,
+                onCheckedChange = { on ->
+                    updateProxy(settings.copy(proxyMode = if (on) ProxyMode.AUTO else ProxyMode.OFF))
+                }
+            )
+            if (settings.proxyMode != ProxyMode.OFF) {
+                SettingActionRow(
+                    title = "Find a working proxy",
+                    subtitle = "Only endpoints that were connected through, and reported an " +
+                        "address other than this device's, are offered",
+                    value = if (settings.proxyMode == ProxyMode.MANUAL) {
+                        settings.proxyHost?.let { "$it:${settings.proxyPort}" }
+                    } else {
+                        "Automatic"
+                    },
+                    onClick = { showFinder = true }
+                )
+                ScopeSwitch(
+                    title = "Route pages",
+                    subtitle = null,
+                    scope = ProxyScope.PAGES,
+                    settings = settings,
+                    update = ::updateProxy
+                )
+                ScopeSwitch(
+                    title = "Route the AI agent",
+                    subtitle = "The operator would see every model-provider request, its API key included",
+                    scope = ProxyScope.AGENT,
+                    settings = settings,
+                    update = ::updateProxy
+                )
+                ScopeSwitch(
+                    title = "Route wallet RPC",
+                    subtitle = "The operator would see every balance and transaction request",
+                    scope = ProxyScope.WALLET,
+                    settings = settings,
+                    update = ::updateProxy
+                )
+            }
+        }
+        if (showFinder) {
+            LaunchedEffect(Unit) {
+                if (viewModel.proxyResults.isEmpty()) viewModel.scanProxies()
+            }
+            ProxyFinderDialog(
+                results = viewModel.proxyResults,
+                scanning = viewModel.proxyScanning,
+                pinnedId = settings.proxyPinnedId,
+                onScan = { viewModel.scanProxies() },
+                onPick = { candidate ->
+                    viewModel.applyProxyChoice(candidate)
+                    showFinder = false
+                },
+                onAutomatic = {
+                    viewModel.applyProxyChoice(null)
+                    showFinder = false
+                },
+                onDismiss = { showFinder = false }
+            )
         }
 
         SectionHeader("Homepage & Tabs")

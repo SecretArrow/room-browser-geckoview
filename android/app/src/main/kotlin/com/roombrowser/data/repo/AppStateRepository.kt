@@ -5,6 +5,7 @@ import com.roombrowser.data.db.AppStateEntity
 import com.roombrowser.domain.agent.LocalAiTuning
 import com.roombrowser.domain.agent.RetryPolicy
 import com.roombrowser.domain.model.BrowserGlobalSettings
+import com.roombrowser.domain.proxy.ProxySweepState
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.sync.Mutex
@@ -43,6 +44,9 @@ object AppStateKeys {
     const val SESSION_ID = "browser_session_id"
     const val AGENT_SETTINGS = "agent_settings"
     const val LOCAL_AI_SETTINGS = "local_ai_settings"
+
+    /** The last free-proxy sweep's verdict: direct IP, cursor and per-endpoint health. */
+    const val PROXY_SWEEP = "proxy_sweep"
 
     /** Pending profile-network decision (NetworkWarningActivity gate). */
     const val PENDING_NET_DECISION = "net_decision_pending"
@@ -418,6 +422,14 @@ class AppStateRepository(private val dao: AppStateDao) {
 
     suspend fun setIpCache(cache: IpCache) {
         dao.put(AppStateEntity(AppStateKeys.IP_CACHE, json.encodeToString(IpCache.serializer(), cache)))
+    }
+
+    suspend fun proxySweep(): ProxySweepState? = dao.get(AppStateKeys.PROXY_SWEEP)?.let {
+        runCatching { json.decodeFromString(ProxySweepState.serializer(), it) }.getOrNull()
+    }
+
+    suspend fun setProxySweep(state: ProxySweepState) {
+        dao.put(AppStateEntity(AppStateKeys.PROXY_SWEEP, json.encodeToString(ProxySweepState.serializer(), state)))
     }
 
     // ---------- Pending profile-network decision ----------

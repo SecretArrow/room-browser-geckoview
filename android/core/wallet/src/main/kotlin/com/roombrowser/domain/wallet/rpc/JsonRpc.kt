@@ -16,6 +16,8 @@ import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import com.roombrowser.domain.wallet.model.WalletException
+import com.roombrowser.domain.proxy.OutboundProxy
+import com.roombrowser.domain.proxy.ProxyScope
 import java.util.concurrent.TimeUnit
 
 /**
@@ -203,10 +205,17 @@ class JsonRpcClient(
         }
 
     companion object {
+        /**
+         * Every chain's transport is built here, so this one line is the whole of the
+         * wallet's proxy support. It is a SELECTOR rather than a fixed proxy: the app
+         * installs the bound profile's wallet entry at every profile bind, and a client
+         * built before that must still pick it up on its next request.
+         */
         fun defaultClient(): OkHttpClient = OkHttpClient.Builder()
             .connectTimeout(10, TimeUnit.SECONDS)
             .readTimeout(30, TimeUnit.SECONDS)
             .writeTimeout(30, TimeUnit.SECONDS)
+            .proxySelector(OutboundProxy.selector(ProxyScope.WALLET))
             .build()
     }
 }
