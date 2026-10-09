@@ -33,6 +33,10 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.OpenInNew
+import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.IosShare
+import androidx.compose.material.icons.filled.RestartAlt
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.ContentCopy
@@ -46,6 +50,7 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -227,10 +232,21 @@ fun MainScreen(
             TopAppBar(
                 title = { Text("Room Browser") },
                 actions = {
-                    IconButton(
+                    // Labelled, not a bare glyph: importing a profile is the one
+                    // thing on this screen a user arrives looking for by name,
+                    // and an unlabelled restore icon gave them nothing to read.
+                    TextButton(
                         onClick = { showImport = true },
-                        modifier = Modifier.semantics { contentDescription = "Import profile settings" }
-                    ) { Icon(Icons.Filled.SettingsBackupRestore, contentDescription = null) }
+                        modifier = Modifier.semantics { contentDescription = "Import profile" }
+                    ) {
+                        Icon(
+                            Icons.Filled.SettingsBackupRestore,
+                            contentDescription = null,
+                            modifier = Modifier.size(18.dp)
+                        )
+                        Spacer(Modifier.width(6.dp))
+                        Text("Import")
+                    }
                 }
             )
         }
@@ -722,10 +738,12 @@ private fun ProfileCard(
                     DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
                         DropdownMenuItem(
                             text = { Text("Open") },
+                            leadingIcon = { Icon(Icons.Filled.OpenInNew, contentDescription = null) },
                             onClick = { menuOpen = false; onOpen() }
                         )
                         DropdownMenuItem(
                             text = { Text("Edit / Rename") },
+                            leadingIcon = { Icon(Icons.Filled.Edit, contentDescription = null) },
                             onClick = { menuOpen = false; onEdit() }
                         )
                         DropdownMenuItem(
@@ -738,10 +756,15 @@ private fun ProfileCard(
                             leadingIcon = { Icon(Icons.Filled.Lock, contentDescription = null) },
                             onClick = { menuOpen = false; onToggleLock() }
                         )
-                        DropdownMenuItem(
-                            text = { Text("Set as default") },
-                            onClick = { menuOpen = false; onSetDefault() }
-                        )
+                        // Only offered when it would DO something: the row said
+                        // "Set as default" on the profile that already was one.
+                        if (!profile.isDefault) {
+                            DropdownMenuItem(
+                                text = { Text("Set as default") },
+                                leadingIcon = { Icon(Icons.Filled.Star, contentDescription = null) },
+                                onClick = { menuOpen = false; onSetDefault() }
+                            )
+                        }
                         DropdownMenuItem(
                             text = { Text("Theme studio") },
                             leadingIcon = { Icon(Icons.Filled.Palette, contentDescription = null) },
@@ -753,8 +776,12 @@ private fun ProfileCard(
                                 )
                             }
                         )
+                        HorizontalDivider()
+                        // "Export profile", not "Export settings": this file now
+                        // carries a chosen set of sections, not just settings.
                         DropdownMenuItem(
-                            text = { Text("Export settings") },
+                            text = { Text("Export profile…") },
+                            leadingIcon = { Icon(Icons.Filled.IosShare, contentDescription = null) },
                             onClick = { menuOpen = false; onExport() }
                         )
                         DropdownMenuItem(
@@ -765,8 +792,10 @@ private fun ProfileCard(
                             text = { Text("Export passwords…") },
                             onClick = { menuOpen = false; onExportPasswords() }
                         )
+                        HorizontalDivider()
                         DropdownMenuItem(
                             text = { Text("Reset profile data") },
+                            leadingIcon = { Icon(Icons.Filled.RestartAlt, contentDescription = null) },
                             onClick = { menuOpen = false; onReset() }
                         )
                         DropdownMenuItem(

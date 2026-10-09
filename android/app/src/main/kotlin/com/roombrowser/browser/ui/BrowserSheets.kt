@@ -31,14 +31,17 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.ArrowForward
 import androidx.compose.material.icons.filled.AccountBalanceWallet
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.AddToHomeScreen
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.DesktopWindows
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.FindInPage
+import androidx.compose.material.icons.filled.Forum
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Info
+import androidx.compose.material.icons.filled.Key
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.Language
 import androidx.compose.material.icons.filled.Lock
@@ -281,6 +284,7 @@ fun PageActionsSheet(
     onOpenHistory: () -> Unit,
     onOpenNotes: () -> Unit,
     onOpenTwoFactor: () -> Unit,
+    onOpenPasswords: () -> Unit,
     onShowQuickSwitcher: () -> Unit,
     onShowShields: () -> Unit = {}
 ) {
@@ -296,9 +300,20 @@ fun PageActionsSheet(
             SheetAction(Icons.AutoMirrored.Filled.ArrowForward, "Forward") { viewModel.goForward(); onDismiss() }
             SheetAction(Icons.Filled.Add, "New tab") { viewModel.loadUrl("about:home", newTab = true); onDismiss() }
             SheetAction(Icons.Filled.Lock, "New private tab") { viewModel.startPrivateTab(); onDismiss() }
+
+            // The profile's own stores. Notes, 2FA and Passwords are the three
+            // surfaces the vault owns; Bookmarks/Downloads/History are the
+            // libraries the engine fills. They were scattered top and bottom of
+            // this sheet before, with Passwords reachable only from settings.
+            SheetSectionLabel("Your data")
+            SheetAction(Icons.Filled.StarBorder, "Bookmarks") { onOpenBookmarks(); onDismiss() }
+            SheetAction(Icons.Filled.History, "History") { onOpenHistory(); onDismiss() }
+            SheetAction(Icons.Filled.Download, "Downloads") { onOpenDownloads(); onDismiss() }
             SheetAction(Icons.Filled.Description, "Notes") { onOpenNotes() }
             SheetAction(Icons.Filled.Password, "2FA Management") { onOpenTwoFactor() }
-            SheetAction(Icons.Filled.SafetyCheck, "Shields") { onDismiss(); onShowShields() }
+            SheetAction(Icons.Filled.Key, "Passwords") { onOpenPasswords() }
+
+            SheetSectionLabel("This page")
             SheetAction(Icons.Filled.FindInPage, "Find in page") { onShowFindBar() }
             SheetAction(Icons.Filled.Language, "Translate") { onTranslate() }
             SheetAction(Icons.Filled.DesktopWindows, if (viewModel.pageState.desktopMode) "Desktop site: ON" else "Desktop site: OFF") {
@@ -325,13 +340,11 @@ fun PageActionsSheet(
                 }
                 onDismiss()
             }
-            SheetAction(Icons.Filled.Add, "Add to Home screen") {
+            SheetAction(Icons.Filled.AddToHomeScreen, "Add to Home screen") {
                 addShortcutToHomeScreen(context, viewModel)
                 onDismiss()
             }
-            SheetAction(Icons.Filled.StarBorder, "Bookmarks") { onOpenBookmarks(); onDismiss() }
-            SheetAction(Icons.Filled.Download, "Downloads") { onOpenDownloads(); onDismiss() }
-            SheetAction(Icons.Filled.History, "History") { onOpenHistory(); onDismiss() }
+            SheetAction(Icons.Filled.SafetyCheck, "Shields") { onDismiss(); onShowShields() }
 
             SheetSectionLabel("Appearance")
             SheetAction(Icons.Filled.Palette, "Theme studio") {
@@ -349,7 +362,7 @@ fun PageActionsSheet(
             // so the suffix was repeating the section, widening the row and
             // wrapping the label on a narrow screen — for no information.
             SheetAction(Icons.Filled.SmartToy, "AI Agent Settings") { onOpenAgentSettings() }
-            SheetAction(Icons.Filled.History, "AI Agent chats") { onOpenAgentSessions() }
+            SheetAction(Icons.Filled.Forum, "AI Agent chats") { onOpenAgentSessions() }
 
             SheetSectionLabel("Settings")
             SheetAction(Icons.Filled.Settings, "Browser settings") { onOpenSettings() }
