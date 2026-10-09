@@ -21,8 +21,16 @@ object OctCircleDocument {
     /** The most subresources one document may pull in. */
     const val MAX_SUBRESOURCES = 64
 
-    /** Ceiling on everything one document inlines, so a circle cannot exhaust memory. */
-    const val MAX_TOTAL_BYTES = 8 * 1024 * 1024
+    /**
+     * Ceiling on the circle assets one document inlines, so a circle cannot exhaust memory.
+     *
+     * The number is the TIGHTER carrier's, not the looser one. A rendered circle reaches
+     * GeckoView as a single `data:` URI, and that engine refuses one above 2 MiB; base64
+     * costs a third on the way in, so this budget plus the entry document has to land under
+     * roughly 1.5 MB. Budgeting for the smaller carrier keeps one circle rendering the same
+     * in both editions instead of loading in one and erroring in the other.
+     */
+    const val MAX_TOTAL_BYTES = 1 * 1024 * 1024
 
     /** `@import` chains deeper than this are dropped rather than followed. */
     const val MAX_CSS_DEPTH = 4
