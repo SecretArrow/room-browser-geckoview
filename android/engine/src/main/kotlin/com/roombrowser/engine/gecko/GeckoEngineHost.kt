@@ -181,7 +181,9 @@ internal class GeckoEngineHost : EngineHost {
      *
      * Delete this, and the e2e test pinning it, once an assertion can be
      * serviced in a third-party app: that needs Google's provider allowlist or
-     * per-site Digital Asset Links, not app code.
+     * per-site Digital Asset Links, not app code. Then clear the pref too -- the
+     * user branch is persisted into the Gecko profile, so deleting this code
+     * alone leaves passkeys hidden with nothing left to explain why.
      */
     @androidx.annotation.OptIn(ExperimentalGeckoViewApi::class)
     private fun hideWebAuthn() {
