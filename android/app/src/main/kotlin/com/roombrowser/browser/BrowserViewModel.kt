@@ -105,7 +105,7 @@ sealed interface PageEvent {
 }
 
 /** One endpoint the finder verified, as its list shows it. */
-data class FoundProxy(val candidate: ProxyCandidate, val latencyMs: Int)
+data class FoundProxy(val candidate: ProxyCandidate, val latencyMs: Long)
 
 /** Site-shield snapshot for the current page. */
 data class ShieldsState(
