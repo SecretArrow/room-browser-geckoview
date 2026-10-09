@@ -33,4 +33,7 @@ dependencies {
     testImplementation(libs.truth)
     testImplementation(libs.kotlinx.coroutines.test)
     testImplementation(libs.okhttp.mockwebserver)
+    // Sealed-circle envelopes can only be built by the protocol's writer, which the app
+    // does not ship; the domain module exposes it as a test fixture for exactly this.
+    testImplementation(testFixtures(project(":core:domain")))
 }

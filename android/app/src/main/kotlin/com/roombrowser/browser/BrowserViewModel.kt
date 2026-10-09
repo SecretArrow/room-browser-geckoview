@@ -32,7 +32,9 @@ import com.roombrowser.data.db.SitePermissionEntity
 import com.roombrowser.data.db.SiteSettingEntity
 import com.roombrowser.data.db.TabEntity
 import com.roombrowser.data.proxy.ProxyDecision
+import com.roombrowser.data.repo.AppStateCirclePassphraseStore
 import com.roombrowser.data.repo.BrowserRepository
+import com.roombrowser.data.repo.CirclePassphraseStore
 import com.roombrowser.data.repo.PendingNetDecision
 import com.roombrowser.data.repo.PermissionKind
 import com.roombrowser.domain.agent.AgentAppActions
@@ -48,12 +50,17 @@ import com.roombrowser.domain.model.PermissionDecision
 import com.roombrowser.domain.model.Profile
 import com.roombrowser.domain.model.ProfileId
 import com.roombrowser.domain.model.ProfileSettings
+import com.roombrowser.domain.oct.OctUri
 import com.roombrowser.domain.proxy.OutboundProxy
 import com.roombrowser.domain.proxy.ProxyCandidate
 import com.roombrowser.domain.proxy.ProxyHealthRules
 import com.roombrowser.domain.proxy.ProxyMode
 import com.roombrowser.domain.proxy.ProxyScope
 import com.roombrowser.domain.theme.BuiltInThemes
+import com.roombrowser.domain.wallet.chains.octra.OctCircleResolver
+import com.roombrowser.domain.wallet.chains.octra.OctDocument
+import com.roombrowser.domain.wallet.chains.octra.RpcCircleSource
+import com.roombrowser.domain.wallet.model.ChainType
 import com.roombrowser.domain.theme.RoomThemeSpec
 import com.roombrowser.domain.theme.ThemeJson
 import com.roombrowser.engine.BlockedResourceSink
@@ -129,6 +136,17 @@ class BrowserViewModel(
     private val graph = (application as RoomBrowserApp).graph
     private val browserRepo: BrowserRepository = graph.browserRepo
     private val appState = graph.appState
+
+    /** The `oct://` reads go over the wallet's JSON-RPC transport, so they need its node. */
+    private val walletRepo = graph.walletRepo
+    private val octCircles = graph.octCircles
+
+    /**
+     * The remembered sealed-circle passphrase, one per profile. Held in app_state as
+     * ciphertext under a key that belongs to this profile alone, so it is unreadable from
+     * a sibling profile and from a copy of the database.
+     */
+    private val circlePassphrases: CirclePassphraseStore = AppStateCirclePassphraseStore(appState)
 
     var profile by mutableStateOf(Profile(id = profileId, name = "", createdAt = 0))
         private set
@@ -394,6 +412,59 @@ class BrowserViewModel(
     }
 
     /**
+     * A sealed circle waiting for its passphrase, by circle id, or null.
+     *
+     * Unlike every other prompt in this class this one cannot be refused into a
+     * default: the document genuinely cannot be fetched without an answer, so
+     * the resolve is suspended on [circleAnswer] until the user replies or
+     * dismisses, and dismissing is a refusal. It is raised by the resolution
+     * rather than by the engine, which is why it is not an engine callback.
+     */
+    var pendingCirclePassphrase by mutableStateOf<String?>(null)
+        private set
+
+    private var circleAnswer: CompletableDeferred<CharArray?>? = null
+
+    /** Answers the outstanding circle with a passphrase. */
+    fun submitCirclePassphrase(passphrase: String) {
+        val answer = circleAnswer ?: return
+        circleAnswer = null
+        pendingCirclePassphrase = null
+        answer.complete(passphrase.toCharArray())
+    }
+
+    /** Refuses the outstanding circle, which leaves it on the error surface. */
+    fun dismissCirclePassphrase() {
+        val answer = circleAnswer ?: return
+        circleAnswer = null
+        pendingCirclePassphrase = null
+        answer.complete(null)
+    }
+
+    /**
+     * Drops the remembered sealed-circle passphrase. The next sealed circle opened in
+     * this profile asks again; no circle content is cached anywhere for this to have to
+     * invalidate, so that is the whole effect.
+     */
+    fun forgetCirclePassphrase() {
+        viewModelScope.launch { circlePassphrases.forget(profileId) }
+    }
+
+    private suspend fun awaitCirclePassphrase(circleId: String): CharArray? {
+        val answer = CompletableDeferred<CharArray?>()
+        circleAnswer = answer
+        pendingCirclePassphrase = circleId
+        return try {
+            answer.await()
+        } finally {
+            if (circleAnswer === answer) {
+                circleAnswer = null
+                pendingCirclePassphrase = null
+            }
+        }
+    }
+
+    /**
      * The wallet channel's payload is the engine's one-method envelope
      * (`{"method":"request","payload":<page request>}`); the bridge parses the
      * request the page built, so the inner string is what it is handed. The
@@ -457,12 +528,13 @@ class BrowserViewModel(
             if (session !== activeSession) {
                 // A background tab navigating: the URL belongs to ITS row
                 // (title stays as stored — the new document has none yet).
-                persistTab(owner, url)
+                persistTab(owner, UrlIntelligence.settledUrl(url, tabs.firstOrNull { it.id == owner }?.url))
                 return
             }
             lastPageEvent = PageEvent.Started(url, SystemClock.elapsedRealtime())
+            val started = UrlIntelligence.settledUrl(url, pageState.url)
             pageError = null
-            pageState = pageState.copy(url = url, loading = true, progress = 5, isHomepage = false)
+            pageState = pageState.copy(url = started, loading = true, progress = 5, isHomepage = false)
             // A navigation retires the vault offer: the login field it was
             // collected for belonged to the outgoing document. The save
             // prompt deliberately SURVIVES navigation — a form submit is
@@ -501,7 +573,11 @@ class BrowserViewModel(
             } else {
                 tabs.firstOrNull { it.id == owner }?.url ?: ""
             }
-            if (url == "about:blank" &&
+            // A circle's commit IS about:blank, so the substitution has to happen before
+            // the artifact test — otherwise the circle's own finish is the artifact, and
+            // the tab keeps its spinner until something else navigates it.
+            val settled = UrlIntelligence.settledUrl(url, committed)
+            if (settled == "about:blank" &&
                 committed != "about:home" && committed != "about:blank"
             ) {
                 Log.d(NAV_TAG, "vm=$navId dropped stale about:blank finish (committed=$committed)")
@@ -512,26 +588,26 @@ class BrowserViewModel(
                 // row is the only store that outlives the engine) and record
                 // the visit under ITS privacy flag — never the active tab's.
                 Log.d(NAV_TAG, "vm=$navId onPageFinished (background) url=$url title=$title")
-                persistTab(owner, url, title)
+                persistTab(owner, settled, title)
                 if (tabs.firstOrNull { it.id == owner }?.isPrivate != true) {
-                    recordVisit(url, title)
+                    recordVisit(settled, title)
                 }
                 return
             }
             lastPageEvent = PageEvent.Finished(url, title, SystemClock.elapsedRealtime())
             Log.d(NAV_TAG, "vm=$navId onPageFinished url=$url title=$title")
             pageState = pageState.copy(
-                url = url,
+                url = settled,
                 title = title,
                 loading = false,
                 progress = 100,
-                secure = url.startsWith("https://"),
-                isHomepage = url == "about:home" || (url == "about:blank" && title.isBlank())
+                secure = settled.startsWith("https://"),
+                isHomepage = settled == "about:home" || (settled == "about:blank" && title.isBlank())
             )
             // Routed by the engine's OWNER, never by "whatever is active": the
             // two coincide here, but the id comes from the view that fired.
-            persistTab(owner, url, title, touch = true)
-            if (!pageState.isPrivate) recordVisit(url, title)
+            persistTab(owner, settled, title, touch = true)
+            if (!pageState.isPrivate) recordVisit(settled, title)
             captureThumbnail()
             refreshShields()
             refreshStats()
@@ -1192,9 +1268,82 @@ class BrowserViewModel(
                 )
                 pageError = null
                 Log.d(NAV_TAG, "vm=$navId loadUrl same-tab url=$url attached=${session.view.parent != null}")
-                runWhenAttached(session) { session.loadUri(url) }
+                beginLoad(session, url)
             }
         }
+    }
+
+    // ---------- oct:// circles ----------
+
+    /**
+     * Starts [url] on [session], resolving a circle first.
+     *
+     * A circle is fetched, not served: the entry document and everything it references are
+     * read from the node and handed to the engine as one self-contained document, so the
+     * resolution is a network read and has to finish before the load begins. That is why
+     * the engine is never given the address itself.
+     */
+    private suspend fun beginLoad(session: EngineSession, url: String) {
+        val circle = OctUri.parse(url)
+        if (circle == null) {
+            runWhenAttached(session) { session.loadUri(url) }
+            return
+        }
+        loadCircle(session, circle)
+    }
+
+    private suspend fun loadCircle(session: EngineSession, uri: OctUri) {
+        val network = withContext(Dispatchers.IO) {
+            walletRepo.activeNetwork(profileId, ChainType.OCTRA)
+        }
+        if (network == null) {
+            failCircle(uri, "No Octra network is enabled for this profile.")
+            return
+        }
+
+        val source = RpcCircleSource(octCircles, network)
+        val remembered = circlePassphrases.recall(profileId)
+        var offered: CharArray? = null
+
+        suspend fun attempt(known: CharArray?): OctDocument {
+            val resolver = OctCircleResolver(source) { circleId, _ ->
+                (known ?: awaitCirclePassphrase(circleId))?.also { offered = it }
+            }
+            return withContext(Dispatchers.IO) { resolver.resolve(uri) }
+        }
+
+        var document = attempt(remembered)
+        if (document is OctDocument.NeedsPassphrase && remembered != null) {
+            // A circle can be re-sealed under a new passphrase, and a stale remembered
+            // one is indistinguishable from a wrong one. So a refusal that came from the
+            // store drops it and asks, instead of reporting a lockout it could not fix.
+            circlePassphrases.forget(profileId)
+            offered = null
+            document = attempt(null)
+        }
+
+        when (document) {
+            is OctDocument.Rendered -> {
+                val html = document.html
+                // Only once the circle actually opened: a passphrase it refused is not
+                // one to keep, and the reader would then never be asked again.
+                offered?.let { circlePassphrases.remember(profileId, it) }
+                runWhenAttached(session) { session.loadHtml(html) }
+            }
+            is OctDocument.NeedsPassphrase ->
+                failCircle(uri, "The passphrase did not open this circle.")
+            OctDocument.Unavailable ->
+                failCircle(uri, "This node does not have that circle.")
+        }
+    }
+
+    /**
+     * A circle that could not be read leaves the tab on the app's error surface rather
+     * than on the blank document it was about to be handed.
+     */
+    private fun failCircle(uri: OctUri, message: String) {
+        pageState = pageState.copy(url = uri.raw, loading = false, progress = 0, isHomepage = false)
+        pageError = PageError.Generic(uri.raw, message)
     }
 
     fun goBack() { activeSession?.goBack() }
@@ -1314,7 +1463,7 @@ class BrowserViewModel(
             // load fires the moment the user decides.
             networkGate.first { !it }
             Log.d(NAV_TAG, "vm=$navId openNewTab url=$url attached=${session.view.parent != null}")
-            runWhenAttached(session) { session.loadUri(url) }
+            beginLoad(session, url)
         } else {
             // The previous tab keeps its engine alive in its OWN session;
             // the new homepage tab simply has no engine of its own.
@@ -1685,6 +1834,10 @@ class BrowserViewModel(
         // engine is still alive and takes the dialog down with it; leaving it
         // would strand a prompt over a tab that no longer exists.
         if (session === activeSession && pendingHttpAuth != null) dismissHttpAuth()
+        // Same rule for a sealed circle's prompt: the resolve that raised it is suspended
+        // on the answer, so tearing the engine down has to settle it or the coroutine
+        // waits on a tab nobody can see any more.
+        if (session === activeSession && pendingCirclePassphrase != null) dismissCirclePassphrase()
         if (attachedSession === session) attachedSession = null
         // The dApp bridge must go FIRST, while the engine is still intact.
         // A WeakHashMap entry is not enough to release it: an in-flight relay

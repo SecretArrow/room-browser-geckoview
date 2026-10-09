@@ -13,6 +13,7 @@ import com.roombrowser.domain.model.ProfileId
 import com.roombrowser.domain.model.ProfileSettings
 import com.roombrowser.domain.profile.CopyOptions
 import com.roombrowser.domain.profile.ProfileStore
+import com.roombrowser.security.OctCircleKeyCrypto
 import com.roombrowser.security.TotpKeyCrypto
 import com.roombrowser.security.VaultCrypto
 import com.roombrowser.security.WalletKeyCrypto
@@ -111,6 +112,10 @@ class ProfileRepositoryImpl(db: AppDatabase) : ProfileStore {
             totpDao.deleteAllForProfile(id.value)
             TotpKeyCrypto.deleteKey(id)
             WalletKeyCrypto.deleteKey(id)
+            // Same fail-closed rule for the remembered oct:// passphrase: the
+            // ciphertext lives in app_state and only its own key can read it,
+            // so dropping the key is what makes the row inert.
+            OctCircleKeyCrypto.deleteKey(id)
         }
     }
 

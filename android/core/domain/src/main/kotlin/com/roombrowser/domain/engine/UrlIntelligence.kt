@@ -25,6 +25,9 @@ object UrlIntelligence {
     private val LOCALHOST = Regex("^(localhost|127\\.0\\.0\\.1|\\[::1\\])(:\\d+)?(/.*)?$", RegexOption.IGNORE_CASE)
     private val WHITESPACE = Regex("\\s")
 
+    /** The engine's report for a document it was handed rather than sent to fetch. */
+    private const val BLANK = "about:blank"
+
     /**
      * Classify raw omnibox input.
      * Supports: full URLs, bare hosts, IPv4/IPv6 literals, localhost,
@@ -143,4 +146,18 @@ object UrlIntelligence {
         if (t.isEmpty() || WHITESPACE.containsMatchIn(t)) return false
         return classify(t).first is Input.Web
     }
+
+    /**
+     * The address a tab is really showing, when the engine reports only the blank
+     * document it was handed.
+     *
+     * An `oct://` circle is rendered from bytes rather than fetched, so the engine commits
+     * `about:blank` for it -- deliberately, because a document with no host is one the
+     * privileged bridges decline to answer. The tab's own model nevertheless holds the
+     * address the user typed, and that is what the omnibox has to show and what a
+     * back/forward entry has to name. Everything else is reported as the engine said it,
+     * so a genuine blank navigation is still a blank navigation.
+     */
+    fun settledUrl(reported: String, model: String?): String =
+        if (reported == BLANK && model != null && OctUri.parse(model) != null) model else reported
 }

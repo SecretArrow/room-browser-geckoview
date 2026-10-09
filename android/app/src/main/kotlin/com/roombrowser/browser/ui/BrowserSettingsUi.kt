@@ -983,6 +983,16 @@ fun ProfileSettingsScreen(viewModel: BrowserViewModel, onClose: () -> Unit) {
             )
         }
 
+        SectionHeader("Octra circles")
+        SettingsGroup {
+            SettingActionRow(
+                title = "Forget the sealed-circle passphrase",
+                subtitle = "Opened sealed circles are not remembered either way; this only " +
+                    "drops the passphrase, so the next one asks again",
+                onClick = { viewModel.forgetCirclePassphrase() }
+            )
+        }
+
         SectionHeader("Homepage & Tabs")
         SettingsGroup {
             SettingSwitchRow(title = "Show homepage", checked = settings.homepageEnabled, onCheckedChange = { update(settings.copy(homepageEnabled = it)) })
