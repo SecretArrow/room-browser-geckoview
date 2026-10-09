@@ -252,7 +252,7 @@ class TwoFactorE2eTest {
     }.getOrNull()?.let { runCatching { it.visibleBounds.top }.getOrNull() }
 
     /**
-     * Notes / 2FA Management / Shields tops, read in ONE pass so a scroll
+     * Notes / 2FA Management / Passwords tops, read in ONE pass so a scroll
      * between reads cannot shift them apart. Rows below the fold are not in
      * the a11y tree, so a small drag brings them in before the comparison.
      */
@@ -260,9 +260,9 @@ class TwoFactorE2eTest {
         repeat(8) {
             val notes = sheetRowTop("Notes")
             val twoFactor = sheetRowTop("2FA Management")
-            val shields = sheetRowTop("Shields")
-            if (notes != null && twoFactor != null && shields != null) {
-                return Triple(notes, twoFactor, shields)
+            val passwords = sheetRowTop("Passwords")
+            if (notes != null && twoFactor != null && passwords != null) {
+                return Triple(notes, twoFactor, passwords)
             }
             dragUpQuarter()
         }
@@ -436,24 +436,24 @@ class TwoFactorE2eTest {
     // ---------- The contract ------------------------------------------------
 
     @Test
-    fun two_factor_row_sits_between_notes_and_shields_in_the_page_actions_sheet() {
+    fun two_factor_row_sits_between_notes_and_passwords_in_the_page_actions_sheet() {
         E2eDeterminism.suppressOrganicNetworkWarnings()
         assertTrue("Engine must come up on a fresh profile", bootstrapFreshEngine())
         assertTrue("The Page Actions sheet must open\n${uiTree()}", openPageActionsSheet())
 
         val order = rowOrderInSheet()
         assertTrue(
-            "Notes, 2FA Management and Shields must all be visible in the sheet\n${uiTree()}",
+            "Notes, 2FA Management and Passwords must all be visible in the sheet\n${uiTree()}",
             order != null
         )
-        val (notesTop, twoFactorTop, shieldsTop) = order!!
+        val (notesTop, twoFactorTop, passwordsTop) = order!!
         assertTrue(
             "The 2FA Management row must sit below Notes (tops: $notesTop / $twoFactorTop)\n${uiTree()}",
             notesTop < twoFactorTop
         )
         assertTrue(
-            "The 2FA Management row must sit above Shields (tops: $twoFactorTop / $shieldsTop)\n${uiTree()}",
-            twoFactorTop < shieldsTop
+            "The 2FA Management row must sit above Passwords (tops: $twoFactorTop / $passwordsTop)\n${uiTree()}",
+            twoFactorTop < passwordsTop
         )
     }
 
