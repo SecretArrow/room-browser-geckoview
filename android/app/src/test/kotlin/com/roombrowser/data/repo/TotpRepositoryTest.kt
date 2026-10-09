@@ -278,9 +278,10 @@ class TotpRepositoryTest {
         repo.lock()
 
         repo.unlock()
-        repo.importAll(profileB, listOf(source), at = 5_000L)
+        val written = repo.importAll(profileB, listOf(source), at = 5_000L)
 
         val imported = fakeDao.rows.values.single { it.profileId == profileB.value }
+        assertThat(written).isEqualTo(1)
         assertThat(imported.id).isNotEqualTo(original.id)
         assertThat(imported.secretEnc).isEqualTo("enc:${profileB.safeSuffix}:$secret")
         assertThat(imported.createdAt).isEqualTo(5_000L)

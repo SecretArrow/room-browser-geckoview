@@ -79,6 +79,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.roombrowser.domain.model.Profile
 import com.roombrowser.domain.profile.CopyOptions
+import com.roombrowser.main.ExportSections
 import com.roombrowser.main.MainActivity
 import com.roombrowser.main.MainViewModel
 import com.roombrowser.main.MessageAction
@@ -467,12 +468,12 @@ fun MainScreen(
         ExportProfileDialog(
             profile = target,
             onDismiss = { exportTarget = null },
-            onExport = { includeBookmarks ->
+            onExport = { sections ->
                 exportTarget = null
-                // Saved passwords always ride along — the vault gate,
-                // passphrase step and delivery are driven from the ViewModel
-                // (gate via viewModel.vaultGateRequest below).
-                viewModel.startExport(target, includeBookmarks)
+                // Whatever the selection put behind the device vault — the
+                // vault gate, the passphrase step and delivery are driven from
+                // the ViewModel (gate via viewModel.vaultGateRequest below).
+                viewModel.startExport(target, sections)
             }
         )
     }
@@ -1178,9 +1179,9 @@ private fun formatSize(bytes: Int): String =
 private fun ExportProfileDialog(
     profile: Profile,
     onDismiss: () -> Unit,
-    onExport: (includeBookmarks: Boolean) -> Unit
+    onExport: (ExportSections) -> Unit
 ) {
-    var includeBookmarks by remember { mutableStateOf(true) }
+    var sections by remember { mutableStateOf(ExportSections()) }
     val extras = com.roombrowser.ui.common.LocalRoomExtras.current
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -1188,27 +1189,41 @@ private fun ExportProfileDialog(
         text = {
             // Scrollable, like every other dialog body here: an AlertDialog's
             // height is capped by the window, so in landscape (or at a large
-            // font scale) this fixed-height body simply clipped the checkbox
-            // and the passwords paragraph out of reach.
+            // font scale) this body simply clipped the checkboxes and the
+            // passwords paragraph out of reach.
             Column(
                 Modifier
                     .imePadding()
                     .verticalScroll(rememberScrollState())
             ) {
-                Text("Profile settings, site permissions and site settings are always included.")
+                Text("The profile itself — its settings, theme and name — is always included.")
                 Spacer(Modifier.height(12.dp))
-                LabeledCheckboxRow("Include bookmarks", includeBookmarks) { includeBookmarks = it }
+                LabeledCheckboxRow("Bookmarks", sections.bookmarks) { sections = sections.copy(bookmarks = it) }
+                LabeledCheckboxRow("Notes", sections.notes) { sections = sections.copy(notes = it) }
+                LabeledCheckboxRow("Saved passwords", sections.passwords) { sections = sections.copy(passwords = it) }
+                LabeledCheckboxRow("Authenticator accounts (2FA)", sections.totp) { sections = sections.copy(totp = it) }
+                LabeledCheckboxRow("Site permissions", sections.sitePermissions) {
+                    sections = sections.copy(sitePermissions = it)
+                }
+                LabeledCheckboxRow("Per-site settings", sections.siteSettings) {
+                    sections = sections.copy(siteSettings = it)
+                }
                 Spacer(Modifier.height(8.dp))
                 Text(
-                    "Saved passwords are included too — if the profile has any, you set an " +
-                        "export passphrase for them in the next step. Cookies, sessions and " +
-                        "history are never exported.",
+                    if (sections.needsVault) {
+                        "If this profile has saved logins or authenticator accounts, you set " +
+                            "an export passphrase for them in the next step. Cookies, sessions " +
+                            "and history are never exported."
+                    } else {
+                        "Nothing selected lives behind the device vault, so no passphrase is " +
+                            "needed. Cookies, sessions and history are never exported."
+                    },
                     style = MaterialTheme.typography.bodyMedium,
                     color = extras.textSecondary
                 )
             }
         },
-        confirmButton = { Button(onClick = { onExport(includeBookmarks) }) { Text("Continue") } },
+        confirmButton = { Button(onClick = { onExport(sections) }) { Text("Continue") } },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } }
     )
 }

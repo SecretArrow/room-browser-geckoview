@@ -10,6 +10,7 @@ import androidx.lifecycle.viewModelScope
 import com.roombrowser.RoomBrowserApp
 import com.roombrowser.browser.engine.ProfileEngine
 import com.roombrowser.data.repo.AppStateRepository
+import com.roombrowser.data.repo.ProfileRepositoryImpl
 import com.roombrowser.domain.credentials.PasswordCsv
 import com.roombrowser.domain.credentials.PasswordImportMerge
 import com.roombrowser.domain.credentials.PasswordVaultCrypto
@@ -96,6 +97,62 @@ data class VaultGateRequest(val id: Int)
 data class DeletePrompt(val profile: Profile, val credentialCount: Int?, val totpCount: Int)
 
 /**
+ * Which parts of a profile an export carries. Every flag defaults to true, so
+ * the dialog opens on the complete file.
+ *
+ * The profile's own settings and theme are NOT here: they are the profile, and
+ * a file without them would import as a nameless shell.
+ */
+data class ExportSections(
+    val bookmarks: Boolean = true,
+    val notes: Boolean = true,
+    val passwords: Boolean = true,
+    val totp: Boolean = true,
+    val sitePermissions: Boolean = true,
+    val siteSettings: Boolean = true
+) {
+    /** True when a part that lives behind the device vault was asked for. */
+    val needsVault: Boolean get() = passwords || totp
+
+    /** The selections a passwords-only file implies: nothing but the logins. */
+    companion object {
+        val PASSWORDS_FILE = ExportSections(
+            bookmarks = false,
+            notes = false,
+            totp = false,
+            sitePermissions = false,
+            siteSettings = false
+        )
+    }
+}
+
+/**
+ * The line shown after an import, naming every part that was actually written.
+ *
+ * Every count comes from the writes themselves, not from what the file held —
+ * the credential store drops a login whose domain canonicalizes to nothing, and
+ * a report that promised more than the device now holds is worse than none.
+ * A profile whose sections were all empty still imports its own settings, so
+ * that case says so rather than listing nothing.
+ */
+internal fun importedSummaryLine(
+    summary: ProfileRepositoryImpl.ImportSummary
+): String {
+    val parts = buildList {
+        if (summary.bookmarks > 0) add(count(summary.bookmarks, "bookmark"))
+        if (summary.notes > 0) add(count(summary.notes, "note"))
+        if (summary.credentials > 0) add(count(summary.credentials, "password"))
+        if (summary.totp > 0) add(count(summary.totp, "authenticator account"))
+        if (summary.sitePermissions > 0) add(count(summary.sitePermissions, "site permission"))
+        if (summary.siteSettings > 0) add(count(summary.siteSettings, "per-site setting"))
+    }
+    val details = if (parts.isEmpty()) "settings only" else parts.joinToString(", ")
+    return "Imported \"${summary.profile.name}\" ($details)"
+}
+
+private fun count(n: Int, noun: String): String = if (n == 1) "1 $noun" else "$n ${noun}s"
+
+/**
  * Main-process ViewModel: profile CRUD, first-run state, external-link
  * routing ("Open with profile" — never silently opens the wrong profile)
  * and the backup v2 export / import flows.
@@ -174,7 +231,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     /** [passwordsOnly] exports the passwords file instead of a whole backup. */
     private class ExportDraft(
         val profile: Profile,
-        val includeBookmarks: Boolean,
+        val sections: ExportSections,
         val passwordsOnly: Boolean = false
     )
 
@@ -464,16 +521,22 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private fun vaultUnlocked(): Boolean = graph.credentialRepo.isUnlocked.value
 
     /**
-     * Export step 1 — the dialog confirmed. Saved passwords ALWAYS ride
-     * along, so reading them is gated: if the vault is still locked for this
+     * Export step 1 — the dialog confirmed. Anything the selection put behind
+     * the device vault (saved logins, authenticator accounts) has to be read
+     * first, so that reading is gated: if the vault is still locked for this
      * session, the UI gate runs first ([vaultGateRequest]); on failure the
-     * export aborts with a message and nothing is built.
+     * export aborts with a message and nothing is built. A selection with
+     * neither raises no gate, because there is nothing to unlock for.
      */
-    fun startExport(profile: Profile, includeBookmarks: Boolean) {
-        exportDraft = ExportDraft(profile, includeBookmarks)
+    fun startExport(profile: Profile, sections: ExportSections) {
+        exportDraft = ExportDraft(profile, sections)
         pendingExport = null
         passphrasePrompt = null
         pendingExportNote = null
+        if (!sections.needsVault) {
+            viewModelScope.launch { buildExport(emptyList(), vault = null, totp = null) }
+            return
+        }
         if (vaultUnlocked()) {
             readVaultForExport()
         } else {
@@ -483,21 +546,23 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     /** Export step 2 — the gate passed (or the session was already unlocked):
      *  unlock the repo and read the profile's credentials and authenticator
-     *  accounts. */
+     *  accounts. Only the stores the selection asked for are read at all. */
     private fun readVaultForExport() {
         val draft = exportDraft ?: return
         viewModelScope.launch {
             val outcome = runCatching {
                 // The gate just ran (MainScreen); record it for the session.
                 graph.credentialRepo.unlock()
-                val creds = graph.credentialRepo.exportAll(draft.profile.id)
+                val creds = if (draft.sections.passwords) {
+                    graph.credentialRepo.exportAll(draft.profile.id)
+                } else {
+                    emptyList()
+                }
                 // The authenticator store has its own lock, and the gate that
                 // just ran is the same BiometricGate the 2FA screen opens — the
-                // user-presence proof is already made. A passwords-only file
-                // carries no seeds, so it must not read this store at all.
-                val totp = if (draft.passwordsOnly) {
-                    emptyList()
-                } else {
+                // user-presence proof is already made. An export without the
+                // 2FA section carries no seeds, so it must not read this store.
+                val totp = if (draft.sections.totp) {
                     graph.totpRepo.unlock()
                     graph.totpRepo.exportAll(draft.profile.id).map { entry ->
                         TotpBackup.Entry(
@@ -509,6 +574,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                             period = entry.period
                         )
                     }
+                } else {
+                    emptyList()
                 }
                 creds to totp
             }
@@ -603,9 +670,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    /** Export step 4 — assemble the v3 payload (populated bookmarks /
-     *  permissions / settings / notes, plus whichever sealed blocks exist) and
-     *  stage it for delivery. */
+    /** Export step 4 — assemble the payload from the selected sections (plus
+     *  whichever sealed blocks exist) and stage it for delivery. */
     private suspend fun buildExport(
         creds: List<SavedCredential>,
         vault: ProfileBackup.VaultBackup?,
@@ -614,32 +680,45 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val draft = exportDraft ?: return
         runCatching {
             val id = draft.profile.id
+            val sections = draft.sections
             ProfileBackup.serialize(
                 ProfileBackup.BackupPayload(
                     profile = draft.profile,
-                    bookmarks = if (draft.includeBookmarks) {
+                    bookmarks = if (sections.bookmarks) {
                         graph.browserRepo.bookmarks(id).map {
                             ProfileBackup.BookmarkExport(it.url, it.title, it.folder, it.position)
                         }
                     } else {
                         emptyList()
                     },
-                    sitePermissions = graph.browserRepo.permissions(id).map {
-                        ProfileBackup.SitePermissionExport(it.host, it.permission, it.decision)
+                    sitePermissions = if (sections.sitePermissions) {
+                        graph.browserRepo.permissions(id).map {
+                            ProfileBackup.SitePermissionExport(it.host, it.permission, it.decision)
+                        }
+                    } else {
+                        emptyList()
                     },
-                    siteSettings = graph.browserRepo.allSiteSettings(id).map {
-                        ProfileBackup.SiteSettingExport(
-                            host = it.host,
-                            shieldsDisabled = it.shieldsDisabled,
-                            jsEnabled = it.jsEnabled,
-                            cookiesBlocked = it.cookiesBlocked,
-                            desktopMode = it.desktopMode,
-                            autoplayBlocked = it.autoplayBlocked,
-                            popupBlocked = it.popupBlocked
-                        )
+                    siteSettings = if (sections.siteSettings) {
+                        graph.browserRepo.allSiteSettings(id).map {
+                            ProfileBackup.SiteSettingExport(
+                                host = it.host,
+                                shieldsDisabled = it.shieldsDisabled,
+                                jsEnabled = it.jsEnabled,
+                                cookiesBlocked = it.cookiesBlocked,
+                                desktopMode = it.desktopMode,
+                                autoplayBlocked = it.autoplayBlocked,
+                                popupBlocked = it.popupBlocked
+                            )
+                        }
+                    } else {
+                        emptyList()
                     },
-                    notes = graph.browserRepo.notes(id).map {
-                        ProfileBackup.NoteExport(it.title, it.body)
+                    notes = if (sections.notes) {
+                        graph.browserRepo.notes(id).map {
+                            ProfileBackup.NoteExport(it.title, it.body)
+                        }
+                    } else {
+                        emptyList()
                     },
                     vault = vault,
                     totp = totp
@@ -997,8 +1076,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         // password under THIS device's key for the new profile id
                         // (fresh UUIDs, canonical domains). Skipped entirely when
                         // there is nothing to write, so a vault-less import needs
-                        // no unlock.
-                        if (creds.isNotEmpty()) {
+                        // no unlock. The number it returns is what the summary
+                        // reports — it drops a row with no usable domain.
+                        if (creds.isEmpty()) {
+                            0
+                        } else {
                             graph.credentialRepo.unlock()
                             graph.credentialRepo.importAll(fresh.id, creds)
                         }
@@ -1008,7 +1090,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         // carried are re-encrypted under the new profile's 2FA
                         // key, so an imported profile's codes are readable by
                         // this device alone.
-                        if (totpEntries.isNotEmpty()) {
+                        if (totpEntries.isEmpty()) {
+                            0
+                        } else {
                             graph.totpRepo.unlock()
                             graph.totpRepo.importAll(fresh.id, totpEntries)
                         }
@@ -1017,22 +1101,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 summary
             }.onSuccess { summary ->
                 importPayload = null
-                val details = buildString {
-                    append(if (summary.bookmarks == 1) "1 bookmark" else "${summary.bookmarks} bookmarks")
-                    if (summary.notes > 0) {
-                        append(if (summary.notes == 1) ", 1 note" else ", ${summary.notes} notes")
-                    }
-                    if (creds.isNotEmpty()) {
-                        append(if (creds.size == 1) ", 1 password" else ", ${creds.size} passwords")
-                    }
-                    if (totpEntries.isNotEmpty()) {
-                        append(
-                            if (totpEntries.size == 1) ", 1 authenticator account"
-                            else ", ${totpEntries.size} authenticator accounts"
-                        )
-                    }
-                }
-                message = "Imported \"${summary.profile.name}\" ($details)"
+                message = importedSummaryLine(summary)
             }.onFailure {
                 // Room rolled the transaction back — nothing half-imported.
                 importPayload = null
@@ -1057,6 +1126,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         return candidate
     }
 
+    /** "1 bookmark" / "4 bookmarks" — the plural rule the import report uses
+     *  for every section, so the six counts read as one sentence. */
     /** The user backed out of the passphrase step — cancel the whole
      *  action quietly but visibly. */
     fun cancelPassphrasePrompt() {
@@ -1087,7 +1158,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
      *   export was attempted.
      */
     fun startPasswordExport(profile: Profile, deleteAfter: Boolean = false) {
-        exportDraft = ExportDraft(profile, includeBookmarks = false, passwordsOnly = true)
+        exportDraft = ExportDraft(profile, ExportSections.PASSWORDS_FILE, passwordsOnly = true)
         deleteAfterPasswordExport = if (deleteAfter) profile.id else null
         pendingExport = null
         passphrasePrompt = null

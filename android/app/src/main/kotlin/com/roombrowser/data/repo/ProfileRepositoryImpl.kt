@@ -157,10 +157,19 @@ class ProfileRepositoryImpl(db: AppDatabase) : ProfileStore {
     suspend fun updateTheme(id: ProfileId, themeJson: String) =
         dao.updateTheme(id.value, themeJson)
 
-    /** What a completed import restored — for the confirmation message. The
-     *  credential count is the caller's to add: only it knows how many rows
-     *  its writeCredentials step carried. */
-    data class ImportSummary(val profile: Profile, val bookmarks: Int, val notes: Int)
+    /** What a completed import restored — for the confirmation message. Every
+     *  count is what was WRITTEN, not what the file held: the credential store
+     *  drops a login whose domain canonicalizes to nothing, and a report that
+     *  promised more than the device now holds is worse than no report. */
+    data class ImportSummary(
+        val profile: Profile,
+        val bookmarks: Int,
+        val notes: Int,
+        val sitePermissions: Int,
+        val siteSettings: Int,
+        val credentials: Int,
+        val totp: Int
+    )
 
     /**
      * ONE Room transaction for a whole backup import: profile row + bookmarks
@@ -181,7 +190,8 @@ class ProfileRepositoryImpl(db: AppDatabase) : ProfileStore {
      * suspend DAO layer detects the surrounding transaction via its
      * TransactionElement (which survives context switches) and dispatches each
      * DAO call back onto the transaction thread, so those writes join this
-     * transaction and roll back with it.
+     * transaction and roll back with it. It RETURNS the number of rows it
+     * wrote, which is what the summary reports.
      *
      * [writeTotp] is the 2FA twin of [writeCredentials] and runs under exactly
      * the same rule.
@@ -192,8 +202,8 @@ class ProfileRepositoryImpl(db: AppDatabase) : ProfileStore {
         sitePermissions: List<ProfileBackup.SitePermissionExport>,
         siteSettings: List<ProfileBackup.SiteSettingExport>,
         notes: List<ProfileBackup.NoteExport> = emptyList(),
-        writeCredentials: suspend () -> Unit = {},
-        writeTotp: suspend () -> Unit = {}
+        writeCredentials: suspend () -> Int = { 0 },
+        writeTotp: suspend () -> Int = { 0 }
     ): ImportSummary = database.withTransaction {
         val pid = profile.id.value
         dao.upsert(profile.toEntity())
@@ -251,12 +261,20 @@ class ProfileRepositoryImpl(db: AppDatabase) : ProfileStore {
                 )
             )
         }
-        writeCredentials()
-        // Same transaction, same rule: the authenticator rows belong to the
-        // profile row above or to nothing. TotpRepository.importAll re-encrypts
-        // every seed under the new profile's own key with fresh UUIDs.
-        writeTotp()
-        ImportSummary(profile, bookmarks.size, notes.size)
+        // The logins and then the authenticator accounts, each in its own store
+        // and under the new profile's own key. Same transaction, same rule: the
+        // rows belong to the profile above or to nothing.
+        val credentials = writeCredentials()
+        val totp = writeTotp()
+        ImportSummary(
+            profile = profile,
+            bookmarks = bookmarks.size,
+            notes = notes.size,
+            sitePermissions = sitePermissions.size,
+            siteSettings = siteSettings.size,
+            credentials = credentials,
+            totp = totp
+        )
     }
 
     private fun ProfileEntity.toDomain(): Profile = Profile(
