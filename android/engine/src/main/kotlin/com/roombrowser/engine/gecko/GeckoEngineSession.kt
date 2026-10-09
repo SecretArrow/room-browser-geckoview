@@ -107,6 +107,17 @@ internal class GeckoEngineSession(
     @Volatile
     private var lastStateJson: String? = null
 
+    /**
+     * Whether the document on screen is one the app supplied through
+     * [loadHtml] rather than one the engine fetched.
+     *
+     * Set by [loadHtml] and cleared by [loadUri], and read by [reportedUrl],
+     * which is why it is `@Volatile`: it is written from the command's thread
+     * and read from the engine's own callbacks.
+     */
+    @Volatile
+    private var appSuppliedDocument: Boolean = false
+
     // ---- scripting bridge -------------------------------------------------
 
     /**
@@ -150,7 +161,82 @@ internal class GeckoEngineSession(
         this.listener = listener
     }
 
-    override fun loadUri(uri: String) = runOnMain { session.loadUri(uri) }
+    override fun loadUri(uri: String) = runOnMain {
+        // A real navigation replaces whatever the app last handed us, so the
+        // document on screen is no longer the app-supplied one -- see
+        // [reportedUrl].
+        appSuppliedDocument = false
+        session.loadUri(uri)
+    }
+
+    /**
+     * Render [html] as this session's document, with no origin.
+     *
+     * THE DOCUMENT GOES IN AS A `data:` URI, and the BYTE-ARRAY overload is the
+     * one that does it. `Loader.data(byte[], String)` base64-encodes the bytes
+     * and ORs `LOAD_FLAGS_FORCE_ALLOW_DATA_URI` into the load flags; the
+     * `String` overload does neither -- it is spliced in verbatim, so the `#`
+     * our materializer emits would truncate the document at the first one, and
+     * GeckoView refuses a top-level `data:` navigation without that flag. A
+     * `data:` URI is opaque-origin and hostless, so the document cannot resolve
+     * to a host and the app's privileged bridges -- which read the host out of
+     * the session URL -- decline.
+     *
+     * THE LOAD BYPASSES THE URI DELEGATE, exactly as the substitute load in
+     * [decideNavigation] does. GeckoView runs `onLoadRequest` for the app's own
+     * direct loads unless the flag says otherwise, so a plain load here would
+     * hand the app's navigation policy the whole base64 document as a URL --
+     * megabytes through `UrlIntelligence.classify`, answered with a decision
+     * this method would then have to ignore or obey, neither of which is a
+     * policy. The app issued this load; there is nothing to ask.
+     *
+     * PAGE SCRIPTS REACHING THIS DOCUMENT IS NOT SETTLED. They travel over the
+     * `roombridge` WebExtension's port, so they land only where that extension's
+     * content scripts match; its manifest declares `matches: ["<all_urls>"]` and
+     * `match_about_blank: true`, and whether a top-level opaque `data:` document
+     * is covered by that is not something this code can decide. What does NOT
+     * depend on the answer is the security property: the document is hostless,
+     * so the privileged bridges decline by URL whether or not they were
+     * installed. A circle therefore renders either way, and its content reaches
+     * the vault and the wallet in neither.
+     *
+     * The URL this load produces is the ENTIRE base64 document, so the session
+     * never reports it: [reportedUrl] substitutes `about:blank` while
+     * [appSuppliedDocument] holds, which is the hostless report the shared URL
+     * model already turns back into the tab's own address. `currentUrl` is set
+     * to that report up front as well, so the PREVIOUS page's host does not
+     * linger in the session URL while this load settles.
+     */
+    override fun loadHtml(html: String) = runOnMain {
+        appSuppliedDocument = true
+        currentUrl = BLANK
+        session.load(
+            GeckoSession.Loader()
+                .data(html.toByteArray(Charsets.UTF_8), "text/html")
+                .flags(GeckoSession.LOAD_FLAGS_BYPASS_LOAD_URI_DELEGATE)
+        )
+    }
+
+    /**
+     * The URL to report for the document on screen.
+     *
+     * WHILE [appSuppliedDocument] HOLDS, a `data:` URL is reported as
+     * `about:blank`. That URL is the whole base64 document -- potentially
+     * megabytes -- and reporting it would write it into the tab row, hand it to
+     * every `UrlIntelligence.hostOf` a bridge runs, and put it in the omnibox.
+     * `about:blank` is instead exactly what the shared URL model expects:
+     * `UrlIntelligence.settledUrl` substitutes the tab's own `oct://` address
+     * back when, and only when, the engine reports `about:blank`.
+     *
+     * The test is a scheme PREFIX check, never a parse, because the string it
+     * decides on can be megabytes long. It is gated on the flag on purpose: a
+     * genuine `data:` navigation from ordinary page content, which never sets
+     * the flag, is reported as the engine gave it, and a real URL reported
+     * while the flag holds -- an `https://` the document navigated to -- is
+     * reported truthfully too.
+     */
+    private fun reportedUrl(url: String?): String? =
+        if (appSuppliedDocument && url != null && url.startsWith(DATA_SCHEME)) BLANK else url
 
     override fun reload() = runOnMain { session.reload() }
 
@@ -640,8 +726,13 @@ internal class GeckoEngineSession(
             // sub-frame one. Until the load settles we publish the URL, which
             // matches the WebView edition's behaviour of reporting at
             // navigation start, and the listener decides what to trust.
-            currentUrl = url
-            listener?.onUrlChanged(this@GeckoEngineSession, url, true, hasUserGesture)
+            //
+            // [reportedUrl] is what keeps an app-supplied document's `data:`
+            // URI -- the whole document as base64 -- out of the tab row and the
+            // omnibox; see that member.
+            val reported = reportedUrl(url)
+            currentUrl = reported
+            listener?.onUrlChanged(this@GeckoEngineSession, reported, true, hasUserGesture)
         }
 
         override fun onCanGoBack(session: GeckoSession, canGoBack: Boolean) {
@@ -699,9 +790,12 @@ internal class GeckoEngineSession(
             // instead; the raw GeckoView code survives in the description for
             // the diagnostics screen.
             val kind = pageErrorKind(error)
+            // A failure on an app-supplied document carries that document as
+            // its URI, so the error surface is handed the reported address
+            // rather than the bytes; see [reportedUrl].
             listener?.onPageError(
                 this@GeckoEngineSession,
-                uri,
+                reportedUrl(uri),
                 kind,
                 true,
                 pageErrorCode(error, kind),
@@ -829,7 +923,10 @@ internal class GeckoEngineSession(
 
         override fun onPageStart(session: GeckoSession, url: String) {
             currentProgress = 0
-            listener?.onPageStarted(this@GeckoEngineSession, url)
+            // [reportedUrl] for the same reason as onLocationChange: an
+            // app-supplied document's URL IS the document, and this is the
+            // callback the app's page-state update reads.
+            listener?.onPageStarted(this@GeckoEngineSession, reportedUrl(url) ?: url)
         }
 
         override fun onPageStop(session: GeckoSession, success: Boolean) {
@@ -1270,6 +1367,12 @@ internal class GeckoEngineSession(
          * for why this is bounded rather than unbounded.
          */
         const val MAX_QUEUED_EVALS = 32
+
+        /** What an app-supplied document reports as its address; see [reportedUrl]. */
+        const val BLANK = "about:blank"
+
+        /** The scheme [loadHtml] transports a document under; see [reportedUrl]. */
+        const val DATA_SCHEME = "data:"
     }
 }
 

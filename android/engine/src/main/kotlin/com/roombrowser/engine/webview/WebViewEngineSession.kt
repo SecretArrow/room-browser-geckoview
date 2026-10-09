@@ -195,6 +195,23 @@ internal class WebViewEngineSession(
         if (!closed) runCatching { webView.loadUrl(uri) }
     }
 
+    /**
+     * A null base URL, on purpose: WebView then resolves the document against
+     * `about:blank`, so `getUrl()` carries no host and the privileged bridges
+     * (which read the host out of the session URL) decline. Passing a base URL
+     * here would hand the loaded markup a real origin -- see the interface.
+     *
+     * `historyUrl` is null as well, so the entry lands as `about:blank` rather
+     * than as a synthesised address the user could be offered to share.
+     */
+    override fun loadHtml(html: String) = runOnMain {
+        if (!closed) {
+            runCatching {
+                webView.loadDataWithBaseURL(null, html, "text/html", "UTF-8", null)
+            }
+        }
+    }
+
     override fun reload() = runOnMain { if (!closed) runCatching { webView.reload() } }
 
     override fun stop() = runOnMain { if (!closed) runCatching { webView.stopLoading() } }

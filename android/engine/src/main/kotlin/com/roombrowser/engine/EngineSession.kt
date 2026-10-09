@@ -105,6 +105,35 @@ interface EngineSession {
     /** Navigate to [uri]. The URI must already be classified by the caller. */
     fun loadUri(uri: String)
 
+    /**
+     * Render [html] as this session's document, with **no origin**.
+     *
+     * THE ABSENCE OF A BASE-URL PARAMETER IS THE SECURITY PROPERTY, not an
+     * omission. A document loaded here must not resolve to any host, because
+     * the app's privileged page bridges decide whether to answer by reading
+     * the host out of the session's URL and declining when there is none. A
+     * caller that could name a base URL could name a host, and markup it did
+     * not write -- `oct://` circle content is third-party markup -- would then
+     * be reachable from the vault and the wallet. So this member takes the
+     * document and nothing else, and an implementation must load it in a way
+     * that leaves the session's own URL hostless (WebView: a null base URL;
+     * GeckoView: `about:blank`).
+     *
+     * This is the one place the app supplies document bytes rather than a URI,
+     * and the reason is that there is no URI to supply: a circle is assembled
+     * on the device from assets the node returned, so it has no address the
+     * engine could fetch it from.
+     *
+     * Where the document carries [EnginePageScripts] is the engine's own
+     * question and the two editions answer it differently -- the WebView edition
+     * injects them into the document, GeckoView's scripts arrive over a
+     * WebExtension whose content scripts decide for themselves whether they
+     * match. Neither answer is a correctness requirement here: the document is
+     * hostless either way, so a bridge that was not installed and a bridge that
+     * was and declined are indistinguishable to markup it did not write.
+     */
+    fun loadHtml(html: String)
+
     fun reload()
 
     /** Abandon the in-flight load, keeping the current document. */
