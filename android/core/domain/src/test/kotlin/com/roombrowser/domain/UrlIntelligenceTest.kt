@@ -2,6 +2,7 @@ package com.roombrowser.domain.engine
 
 import com.google.common.truth.Truth.assertThat
 import com.roombrowser.domain.engine.UrlIntelligence.Input
+import com.roombrowser.domain.oct.OctUri
 import org.junit.Test
 
 class UrlIntelligenceTest {
@@ -104,6 +105,28 @@ class UrlIntelligenceTest {
     @Test
     fun `javascript scheme is treated as search`() {
         val (input, _) = UrlIntelligence.classify("javascript:alert(1)")
+        assertThat(input).isInstanceOf(Input.Search::class.java)
+    }
+
+    @Test
+    fun `an oct uri is a circle, not a search query`() {
+        val circle = "oct" + "A".repeat(44)
+        val (input, url) = UrlIntelligence.classify("oct://$circle/post/1")
+        assertThat(input).isEqualTo(Input.Oct(OctUri.parse("oct://$circle/post/1")!!))
+        assertThat(url).isEqualTo("oct://$circle/post/1")
+    }
+
+    @Test
+    fun `a bare oct uri resolves to the circle index`() {
+        val circle = "oct" + "A".repeat(44)
+        val (input, url) = UrlIntelligence.classify("oct://$circle")
+        assertThat(input).isEqualTo(Input.Oct(OctUri(circle, "/index.html")))
+        assertThat(url).isEqualTo("oct://$circle/index.html")
+    }
+
+    @Test
+    fun `an oct uri that names no circle stays a search`() {
+        val (input, _) = UrlIntelligence.classify("oct://not-a-circle")
         assertThat(input).isInstanceOf(Input.Search::class.java)
     }
 

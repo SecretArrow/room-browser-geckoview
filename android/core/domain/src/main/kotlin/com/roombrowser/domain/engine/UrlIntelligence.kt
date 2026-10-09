@@ -1,6 +1,7 @@
 package com.roombrowser.domain.engine
 
 import com.roombrowser.domain.model.SearchEngines
+import com.roombrowser.domain.oct.OctUri
 
 /**
  * Omnibox URL/search intelligence: detects URLs, bare hosts, IP literals,
@@ -13,6 +14,8 @@ object UrlIntelligence {
         /** A web address the WebView can load directly. */
         data class Web(val url: String, val upgradedToHttps: Boolean) : Input
         data class Search(val query: String) : Input
+        /** An Octra Circle. Not a web address: the app resolves and renders it itself. */
+        data class Oct(val circle: OctUri) : Input
     }
 
     private val PROTOCOL = Regex("^[a-zA-Z][a-zA-Z0-9+.-]*:.*$")
@@ -71,6 +74,11 @@ object UrlIntelligence {
             }
             if (lowered.startsWith("https://")) {
                 return Input.Web(raw, upgradedToHttps = false) to raw
+            }
+            // `oct://` before the search fallback: a circle is a page this app fetches
+            // and renders itself. A malformed one is claimed by nobody and stays a search.
+            if (lowered.startsWith(OctUri.PREFIX)) {
+                OctUri.parse(raw)?.let { return Input.Oct(it) to it.raw }
             }
             // about:, data:, blob:, javascript: treated as search to avoid surprises
             return Input.Search(raw) to SearchEngines.buildSearchUrl(searchEngineId, raw)
