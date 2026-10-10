@@ -19,10 +19,13 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.NavigateBefore
+import androidx.compose.material.icons.automirrored.filled.NavigateNext
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material3.BottomSheetDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
@@ -44,6 +47,7 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
+import com.roombrowser.domain.paging.Paging
 import androidx.compose.ui.graphics.RenderEffect as ComposeRenderEffect
 
 /**
@@ -427,5 +431,65 @@ fun GlassBar(
             )
         }
         content()
+    }
+}
+
+/**
+ * The page control under a long list of models.
+ *
+ * Renders NOTHING when everything fits on one page, so a picker with three
+ * ids looks exactly as it did before paging existed. [semanticsPrefix] names
+ * the three nodes the e2e suites drive: `<prefix>_prev`, `<prefix>_next` and
+ * `<prefix>_window`.
+ */
+@Composable
+fun PagingFooter(
+    page: Int,
+    total: Int,
+    onPage: (Int) -> Unit,
+    semanticsPrefix: String,
+    modifier: Modifier = Modifier
+) {
+    val pages = Paging.pageCount(total)
+    if (pages <= 1) return
+    val current = Paging.clampPage(page, total)
+    Row(
+        modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.Center
+    ) {
+        IconButton(
+            onClick = { onPage(current - 1) },
+            enabled = current > 0,
+            modifier = Modifier.semantics { contentDescription = "${semanticsPrefix}_prev" }
+        ) {
+            Icon(
+                Icons.AutoMirrored.Filled.NavigateBefore,
+                contentDescription = "Previous page",
+                modifier = Modifier.size(20.dp)
+            )
+        }
+        Text(
+            "Page ${current + 1} of $pages · ${Paging.windowLabel(current, total)}",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            maxLines = 1,
+            modifier = Modifier
+                .padding(horizontal = 6.dp)
+                .semantics { contentDescription = "${semanticsPrefix}_window" }
+        )
+        IconButton(
+            onClick = { onPage(current + 1) },
+            enabled = current < pages - 1,
+            modifier = Modifier.semantics { contentDescription = "${semanticsPrefix}_next" }
+        ) {
+            Icon(
+                Icons.AutoMirrored.Filled.NavigateNext,
+                contentDescription = "Next page",
+                modifier = Modifier.size(20.dp)
+            )
+        }
     }
 }

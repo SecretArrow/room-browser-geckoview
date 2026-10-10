@@ -2,6 +2,7 @@ package com.roombrowser.data.repo
 
 import com.roombrowser.data.db.AppStateDao
 import com.roombrowser.data.db.AppStateEntity
+import com.roombrowser.domain.agent.ContextPreset
 import com.roombrowser.domain.agent.LocalAiTuning
 import com.roombrowser.domain.agent.RetryPolicy
 import com.roombrowser.domain.model.BrowserGlobalSettings
@@ -166,6 +167,13 @@ data class AgentSettings(
     val defaultContext: String = "",
     /** Whether [defaultContext] is sent. Off until the user turns it on. */
     val useDefaultContext: Boolean = false,
+    /**
+     * Saved contexts for [defaultContext]. They ride in this blob rather than a
+     * table of their own because the context and its presets are written from
+     * one screen, and this blob's single read-modify-write is what keeps saving
+     * a preset from writing a stale copy of the switch back out.
+     */
+    val contextPresets: List<ContextPreset> = emptyList(),
     val systemPromptOverride: String? = null,
     /**
      * Where the user last dragged the floating AI Agent pill, as a FRACTION

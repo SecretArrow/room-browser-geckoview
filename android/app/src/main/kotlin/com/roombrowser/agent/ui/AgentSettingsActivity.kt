@@ -75,8 +75,10 @@ import com.roombrowser.data.db.AgentProviderEntity
 import com.roombrowser.domain.agent.RetryCodes
 import com.roombrowser.domain.agent.RetryPolicy
 import com.roombrowser.domain.agent.RetryStatusCode
+import com.roombrowser.domain.paging.Paging
 import com.roombrowser.ui.common.EmptyState
 import com.roombrowser.ui.common.LocalRoomExtras
+import com.roombrowser.ui.common.PagingFooter
 import com.roombrowser.ui.common.RoomBottomSheetShape
 import com.roombrowser.ui.common.RoomBrowserTheme
 import com.roombrowser.ui.common.RoomSheetHeader
@@ -597,8 +599,9 @@ private val IncludeGreenLightContent = Color(0xFF0A3818)
  * several switches, colour is what answers "what am I actually sending?" at
  * a glance.
  */
+/** Shared with [DefaultContextActivity]: one green "on" look for context switches. */
 @Composable
-private fun ContextSwitchRow(
+internal fun ContextSwitchRow(
     label: String,
     description: String,
     semanticsLabel: String,
@@ -654,6 +657,11 @@ private fun ContextSwitchRow(
  * Blank text makes the switch inert rather than an error: turning it ON with
  * nothing saved opens the editor instead, so the switch can never claim to be
  * sending something it is not.
+ *
+ * THE TEXT IS WRITTEN IN [DefaultContextActivity], not on this screen. An
+ * inline box in a scrolling settings list was the wrong place to write a
+ * paragraph, and two editors meant two places the same standing instruction
+ * could be changed from. This row states what is saved and whether it is sent.
  */
 @Composable
 private fun DefaultContextSection(
@@ -661,10 +669,9 @@ private fun DefaultContextSection(
     onNotice: (String) -> Unit
 ) {
     val saved = controller.settings.defaultContext
-    var editing by remember { mutableStateOf(false) }
-    var draft by remember(saved) { mutableStateOf(saved) }
     val active = controller.settings.useDefaultContext && saved.isNotBlank()
     val extras = LocalRoomExtras.current
+    val context = LocalContext.current
 
     ContextSwitchRow(
         label = "Default context",
@@ -679,8 +686,7 @@ private fun DefaultContextSection(
             if (on && saved.isBlank()) {
                 // Nothing saved to send: open the editor instead of leaving a
                 // switch on over an empty message.
-                draft = ""
-                editing = true
+                DefaultContextActivity.launch(context)
             } else {
                 controller.updateSettings { s -> s.copy(useDefaultContext = on) }
                 onNotice(if (on) "Default context on" else "Default context off")
@@ -688,85 +694,35 @@ private fun DefaultContextSection(
         }
     )
 
-    if (editing) {
-        Column(Modifier.padding(horizontal = 16.dp, vertical = 4.dp)) {
-            OutlinedTextField(
-                value = draft,
-                onValueChange = { draft = it },
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .semantics { contentDescription = "agent_default_context_field" },
-                placeholder = {
-                    Text("e.g. Answer in Indonesian. This profile is for the staging cluster.")
-                },
-                minLines = 3,
-                maxLines = 8
-            )
-            Row {
-                TextButton(onClick = {
-                    val text = draft.trim()
-                    controller.updateSettings { s ->
-                        s.copy(defaultContext = text, useDefaultContext = text.isNotEmpty())
-                    }
-                    editing = false
-                    onNotice(if (text.isEmpty()) "Default context cleared" else "Default context saved")
-                }) { Text("Save and use") }
-                TextButton(onClick = {
-                    draft = saved
-                    editing = false
-                }) { Text("Cancel") }
-                if (saved.isNotBlank()) {
-                    TextButton(onClick = {
-                        controller.updateSettings { s ->
-                            s.copy(defaultContext = "", useDefaultContext = false)
-                        }
-                        draft = ""
-                        editing = false
-                        onNotice("Default context cleared")
-                    }) { Text("Clear") }
-                }
-            }
-        }
-    } else {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(start = 16.dp, end = 16.dp, bottom = 8.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Text(
-                text = when {
-                    saved.isBlank() -> "No default context saved"
-                    active -> "Active: $saved"
-                    else -> "Saved, not sent: $saved"
-                },
-                style = MaterialTheme.typography.bodySmall,
-                color = if (active) {
-                    if (extras.dark) IncludeGreenDarkContent else IncludeGreenLightContent
-                } else {
-                    extras.textSecondary
-                },
-                maxLines = 2,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier
-                    .weight(1f)
-                    .semantics { contentDescription = "agent_default_context_state" }
-            )
-            IconButton(onClick = {
-                draft = saved
-                editing = true
-            }) { Icon(Icons.Filled.Edit, contentDescription = "Edit default context") }
-            if (saved.isNotBlank()) {
-                IconButton(onClick = {
-                    controller.updateSettings { s ->
-                        s.copy(defaultContext = "", useDefaultContext = false)
-                    }
-                    draft = ""
-                    onNotice("Default context cleared")
-                }) { Icon(Icons.Filled.Delete, contentDescription = "Clear default context") }
-            }
-        }
-    }
+    Text(
+        text = when {
+            saved.isBlank() -> "No default context saved"
+            active -> "Active: $saved"
+            else -> "Saved, not sent: $saved"
+        },
+        style = MaterialTheme.typography.bodySmall,
+        color = if (active) {
+            if (extras.dark) IncludeGreenDarkContent else IncludeGreenLightContent
+        } else {
+            extras.textSecondary
+        },
+        maxLines = 2,
+        overflow = TextOverflow.Ellipsis,
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 4.dp)
+            .semantics { contentDescription = "agent_default_context_state" }
+    )
+    SettingActionRow(
+        title = "Edit default context",
+        subtitle = when (controller.settings.contextPresets.size) {
+            0 -> "Write the text here; save presets to re-use one"
+            1 -> "1 preset saved"
+            else -> "${controller.settings.contextPresets.size} presets saved"
+        },
+        leadingIcon = Icons.Filled.Edit,
+        onClick = { DefaultContextActivity.launch(context) }
+    )
 }
 
 @Composable
@@ -904,6 +860,7 @@ private fun DecisionModelDialog(
     var models by remember(provider.id) { mutableStateOf<List<String>>(emptyList()) }
     var loading by remember(provider.id) { mutableStateOf(true) }
     var typed by remember(provider.id) { mutableStateOf("") }
+    var page by remember(provider.id) { mutableStateOf(0) }
 
     LaunchedEffect(provider.id) {
         loading = true
@@ -935,7 +892,7 @@ private fun DecisionModelDialog(
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
-            models.forEach { tag ->
+            Paging.slice(models, page).forEach { tag ->
                 Row(
                     Modifier
                         .fillMaxWidth()
@@ -949,6 +906,12 @@ private fun DecisionModelDialog(
                     Text(tag, style = MaterialTheme.typography.bodyLarge)
                 }
             }
+            PagingFooter(
+                page = page,
+                total = models.size,
+                onPage = { page = it },
+                semanticsPrefix = "decision_model_page"
+            )
             Spacer(Modifier.height(8.dp))
             OutlinedTextField(
                 value = typed,

@@ -72,7 +72,9 @@ import com.roombrowser.agent.AgentSettingsController
 import com.roombrowser.data.db.AgentProviderEntity
 import com.roombrowser.domain.agent.ToolCapableModels
 import com.roombrowser.domain.agent.ToolMode
+import com.roombrowser.domain.paging.Paging
 import com.roombrowser.localai.store.OnDeviceModelStore
+import com.roombrowser.ui.common.PagingFooter
 import com.roombrowser.ui.common.RoomBrowserTheme
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -241,6 +243,10 @@ private fun ProviderEditorRoot(
      * indicator over a request that no longer exists. */
     var models by remember(editing) { mutableStateOf<List<String>>(emptyList()) }
     var modelQuery by rememberSaveable(editing) { mutableStateOf("") }
+    /* Which page of the (possibly filtered) model list is on screen. Not
+     * saved: it is a scroll position, and a restored page number over a
+     * re-fetched list is a page of a list that no longer exists. */
+    var modelPage by remember(editing) { mutableStateOf(0) }
     /* Whether the fetched list is narrowed to models that can call tools. On
      * by default, because a model that cannot act fails silently — it answers
      * in prose and the run ends without doing anything. */
@@ -841,6 +847,12 @@ private fun ProviderEditorRoot(
                 Spacer(Modifier.height(6.dp))
                 val visibleModels = if (modelQuery.isBlank()) pool
                 else pool.filter { it.contains(modelQuery.trim(), ignoreCase = true) }
+                // A new filter starts at the first page; a list that merely
+                // shrank must not leave the view past its new end.
+                LaunchedEffect(modelQuery, toolsOnly) { modelPage = 0 }
+                LaunchedEffect(visibleModels.size) {
+                    modelPage = Paging.clampPage(modelPage, visibleModels.size)
+                }
                 if (visibleModels.isEmpty()) {
                     Text(
                         "No models match “${modelQuery.trim()}” — clear the search to see all ${pool.size}.",
@@ -859,7 +871,7 @@ private fun ProviderEditorRoot(
                         verticalArrangement = Arrangement.spacedBy(4.dp),
                         modifier = Modifier.semantics { contentDescription = "provider_models_list" }
                     ) {
-                        visibleModels.forEach { candidate ->
+                        Paging.slice(visibleModels, modelPage).forEach { candidate ->
                             FilterChip(
                                 selected = candidate == model,
                                 onClick = { model = candidate },
@@ -867,6 +879,12 @@ private fun ProviderEditorRoot(
                             )
                         }
                     }
+                    PagingFooter(
+                        page = modelPage,
+                        total = visibleModels.size,
+                        onPage = { modelPage = it },
+                        semanticsPrefix = "provider_model_page"
+                    )
                 }
             }
             Spacer(Modifier.height(12.dp))

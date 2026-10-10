@@ -139,7 +139,9 @@ import com.roombrowser.browser.BrowserViewModel
 import com.roombrowser.data.db.AgentProviderEntity
 import com.roombrowser.data.repo.AgentMode
 import com.roombrowser.domain.agent.AgentTools
+import com.roombrowser.domain.paging.Paging
 import com.roombrowser.ui.common.LocalRoomExtras
+import com.roombrowser.ui.common.PagingFooter
 import com.roombrowser.ui.common.RoomBottomSheetShape
 import com.roombrowser.ui.common.RoomCardShape
 import kotlinx.coroutines.Dispatchers
@@ -1144,10 +1146,10 @@ private fun AgentComposer(agent: BrowserAgentController, modifier: Modifier = Mo
     var useDefaultContext by remember(agent.settings.useDefaultContext) {
         mutableStateOf(agent.settings.useDefaultContext)
     }
-    var defaultContext by remember(agent.settings.defaultContext) {
-        mutableStateOf(agent.settings.defaultContext)
-    }
-    var editingContext by remember { mutableStateOf(false) }
+    // Read straight from the setting: the editor is now its own activity, so
+    // there is no local copy to keep in step — the write comes back through
+    // the setting and redraws this row.
+    val defaultContext = agent.settings.defaultContext
     val dark = LocalRoomExtras.current.dark
     // Content URIs are not saveable — attachments intentionally reset on
     // process death (they are re-read and sent with the next turn anyway).
@@ -1205,13 +1207,12 @@ private fun AgentComposer(agent: BrowserAgentController, modifier: Modifier = Mo
                         // Tap toggles it. Tapping it while nothing is saved opens
                         // the editor instead, because "on" and "empty" is not a
                         // state worth being able to reach: the switch would turn
-                        // green and change nothing about the requests. Long press
-                        // edits from either state.
+                        // green and change nothing about the requests.
                         FilterChip(
                             selected = useDefaultContext,
                             onClick = {
                                 if (defaultContext.isBlank()) {
-                                    editingContext = true
+                                    DefaultContextActivity.launch(context)
                                 } else {
                                     val next = !useDefaultContext
                                     useDefaultContext = next
@@ -1294,7 +1295,7 @@ private fun AgentComposer(agent: BrowserAgentController, modifier: Modifier = Mo
                         overflow = TextOverflow.Ellipsis,
                         modifier = Modifier
                             .fillMaxWidth()
-                            .clickable { editingContext = true }
+                            .clickable { DefaultContextActivity.launch(context) }
                             .padding(vertical = 4.dp)
                             .semantics { contentDescription = "agent_active_contexts" }
                     )
@@ -1415,89 +1416,6 @@ private fun AgentComposer(agent: BrowserAgentController, modifier: Modifier = Mo
             }
         }
     }
-
-    if (editingContext) {
-        DefaultContextSheet(
-            initial = defaultContext,
-            onDismiss = { editingContext = false },
-            onSave = { text ->
-                defaultContext = text
-                // Saving a non-blank context switches it ON: writing the text
-                // down IS the intent to use it, and leaving the switch off
-                // would make "Save" look like it did nothing. Clearing to
-                // blank switches it off for the same reason in reverse.
-                val enabled = text.isNotBlank()
-                useDefaultContext = enabled
-                agent.updateSettings { it.copy(defaultContext = text, useDefaultContext = enabled) }
-                editingContext = false
-            }
-        )
-    }
-}
-
-/**
- * Edit / replace / clear the standing context.
- *
- * A sheet rather than an AlertDialog because the field is a paragraph: a
- * dialog sized to its content on a phone gives a four-line box, and this is
- * the one place in the panel where the user writes prose. [onClear] is a
- * first-class action rather than "save an empty string", so emptying the
- * context is one deliberate tap instead of a select-all and a delete.
- */
-@Composable
-private fun DefaultContextSheet(
-    initial: String,
-    onDismiss: () -> Unit,
-    onSave: (String) -> Unit
-) {
-    var draft by remember { mutableStateOf(initial) }
-    ModalBottomSheet(onDismissRequest = onDismiss, shape = RoomBottomSheetShape) {
-        Column(
-            Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 20.dp)
-                .padding(bottom = 24.dp)
-        ) {
-            Text("Default context", style = MaterialTheme.typography.titleLarge)
-            Spacer(Modifier.height(6.dp))
-            Text(
-                "Sent with every request until you turn it off — the same " +
-                    "instruction, not a one-off. Use it for how you want answers " +
-                    "(language, format, level of detail) or what you are working on.",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-            Spacer(Modifier.height(16.dp))
-            OutlinedTextField(
-                value = draft,
-                onValueChange = { draft = it },
-                placeholder = { Text("e.g. Answer in Indonesian, be concise, and assume I am on Android.") },
-                minLines = 4,
-                maxLines = 10,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .semantics { contentDescription = "agent_default_context_field" }
-            )
-            Spacer(Modifier.height(16.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                Button(
-                    onClick = { onSave(draft.trim()) },
-                    enabled = draft.isNotBlank(),
-                    modifier = Modifier
-                        .weight(1f)
-                        .heightIn(min = 48.dp)
-                        .semantics { contentDescription = "agent_default_context_save" }
-                ) { Text("Save and use") }
-                OutlinedButton(
-                    onClick = { onSave("") },
-                    enabled = initial.isNotBlank() || draft.isNotBlank(),
-                    modifier = Modifier
-                        .heightIn(min = 48.dp)
-                        .semantics { contentDescription = "agent_default_context_clear" }
-                ) { Text("Clear") }
-            }
-        }
-    }
 }
 
 // ------------------------------------------------------------- attachment IO
@@ -1600,6 +1518,9 @@ fun ModelPickerSheet(agent: BrowserAgentController, onDismiss: () -> Unit) {
     var loading by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
     var manual by remember { mutableStateOf("") }
+    // Reset with the provider: page 4 of one provider's list says nothing
+    // about the next provider's.
+    var modelPage by remember(selected?.id) { mutableStateOf(0) }
 
     LaunchedEffect(selected) {
         val provider = selected ?: return@LaunchedEffect
@@ -1685,7 +1606,7 @@ fun ModelPickerSheet(agent: BrowserAgentController, onDismiss: () -> Unit) {
                             horizontalArrangement = Arrangement.spacedBy(8.dp),
                             verticalArrangement = Arrangement.spacedBy(4.dp)
                         ) {
-                            models.forEach { model ->
+                            Paging.slice(models, modelPage).forEach { model ->
                                 FilterChip(
                                     selected = model == agent.activeModel,
                                     onClick = {
@@ -1696,6 +1617,12 @@ fun ModelPickerSheet(agent: BrowserAgentController, onDismiss: () -> Unit) {
                                 )
                             }
                         }
+                        PagingFooter(
+                            page = modelPage,
+                            total = models.size,
+                            onPage = { modelPage = it },
+                            semanticsPrefix = "agent_model_page"
+                        )
                     }
                     Spacer(Modifier.height(8.dp))
                     Row(verticalAlignment = Alignment.CenterVertically) {
