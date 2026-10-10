@@ -281,14 +281,17 @@ class WhatsMyIpE2eTest {
         )
         assertTrue("The screen must name itself", hasText(screenTitle, 5_000))
 
-        // The identity rows come from the profile's own settings through the
-        // same resolver the engine is configured from. A profile created here
-        // chose no identity, so the engine's own string is what it sends —
-        // and that is the one thing this screen exists to report.
+        // The identity rows resolve through the same settings the engine is
+        // configured from. A profile created here is handed a catalogue handset
+        // by ProfileManager, so the screen must report that, not "Engine default".
         assertTrue("The user-agent row must be present", hasDesc("whatsmyip_user_agent", 5_000))
         assertTrue(
-            "A fresh profile must be reported as sending the engine's own user agent\n${uiTree()}",
-            hasTextWithScroll("Engine default")
+            "A profile created here presents as its catalogue device\n${uiTree()}",
+            hasTextWithScroll("Device profile")
+        )
+        assertTrue(
+            "The engine's own string must be reported as unused\n${uiTree()}",
+            hasTextWithScroll("Not reported - this profile supplies its own")
         )
         assertTrue("The address rows must be present", hasDesc("whatsmyip_ipv4", 5_000))
         assertTrue("The IPv6 row must be present", hasDesc("whatsmyip_ipv6", 5_000))
