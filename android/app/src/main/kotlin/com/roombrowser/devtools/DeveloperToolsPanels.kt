@@ -84,6 +84,17 @@ internal fun devToolsPanelEntries(): List<DevToolsPanelEntry> = listOf(
     DevToolsPanelEntry(DevToolsPanelId.APPLICATION, { it.serves(DevToolsPanelId.APPLICATION) }, { ApplicationPanel(it) }),
     DevToolsPanelEntry(DevToolsPanelId.SECURITY, { it.serves(DevToolsPanelId.SECURITY) }, { SecurityPanel(it) }),
     DevToolsPanelEntry(
+        DevToolsPanelId.ELEMENTS,
+        { it.serves(DevToolsPanelId.ELEMENTS) },
+        { scope ->
+            if (scope.session != null) {
+                ElementsPanel(scope)
+            } else {
+                NeedsEngine("The element tree needs a live page to read.")
+            }
+        }
+    ),
+    DevToolsPanelEntry(
         DevToolsPanelId.AUDIT,
         { it.serves(DevToolsPanelId.AUDIT) },
         { scope ->

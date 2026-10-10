@@ -228,6 +228,30 @@ class InspectorSession(
     }
 
     /**
+     * The document root, and a fresh node registry to address it by.
+     *
+     * A new read here invalidates every node id the panel held, which is why the
+     * generation is carried with it rather than assumed.
+     */
+    suspend fun elementsTree(): ElementsTree? {
+        val raw = rawEval(DeveloperToolsElementsScripts.elementsTreeJs()) ?: return null
+        return decode(raw, ElementsTree.serializer())
+    }
+
+    /** One page of a node's children, by generation and node id. */
+    suspend fun elementChildren(gen: Int, parentId: Int, from: Int): ElementChildren? {
+        val raw = rawEval(DeveloperToolsElementsScripts.elementsChildrenJs(gen, parentId, from))
+            ?: return null
+        return decode(raw, ElementChildren.serializer())
+    }
+
+    /** One node's attributes, box, computed style and text. */
+    suspend fun elementDetail(gen: Int, nodeId: Int): ElementDetail? {
+        val raw = rawEval(DeveloperToolsElementsScripts.elementsNodeJs(gen, nodeId)) ?: return null
+        return decode(raw, ElementDetail.serializer())
+    }
+
+    /**
      * ONE storage value, for a row the user revealed.
      *
      * Read on demand rather than carried in the dump, so a site's stored values
