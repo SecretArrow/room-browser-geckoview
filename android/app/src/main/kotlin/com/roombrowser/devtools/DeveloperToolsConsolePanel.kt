@@ -59,29 +59,39 @@ internal fun ConsolePanel(session: InspectorSession) {
         onDispose { session.stopConsole() }
     }
 
-    val shown = remember(entries, level) {
-        val matching = if (level == null) entries else entries.filter { it.level == level }
-        matching.takeLast(RENDER_MAX)
+    val matching = remember(entries, level) {
+        if (level == null) entries else entries.filter { it.level == level }
     }
+    val shown = remember(matching) { matching.takeLast(RENDER_MAX) }
+    val caption = feedCaption(
+        shown = shown.size,
+        kept = entries.size,
+        cap = session.console.capacity,
+        dropped = session.console.dropped
+    )
 
     SectionHeader("Console") {
-        RoomCopyButton(consoleText(shown), "Console", "Copy these console entries")
+        // The whole feed, not the [RENDER_MAX] rows on screen: the ring is the
+        // bound worth reporting, and a paste that quietly held only the newest
+        // 200 of 2000 would read as a quiet page. The header line carries the
+        // count, the filter and any loss, so the text states its own bound.
+        RoomCopyButton(
+            consoleReport(matching, level, session.console.capacity, session.console.dropped),
+            "Console",
+            "Copy these console entries"
+        )
     }
     Row(
         Modifier.fillMaxWidth().padding(horizontal = 16.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
         Text(
-            feedCaption(
-                shown = shown.size,
-                kept = entries.size,
-                cap = session.console.capacity,
-                dropped = session.console.dropped
-            ),
+            caption,
             style = MaterialTheme.typography.labelSmall,
             color = extras.textSecondary,
             modifier = Modifier.weight(1f)
         )
+        RoomCopyButton(caption, "Console caption", "Copy the console counts")
         IconButton(onClick = { session.clearConsole() }) {
             Icon(Icons.Filled.DeleteSweep, contentDescription = "Clear the console feed", tint = extras.icon)
         }
@@ -161,6 +171,10 @@ private fun ConsoleRow(entry: ConsoleEntry) {
                 )
             }
         }
+        // A console entry is the unit people paste into a report, so it is
+        // copyable on its own: the feed-wide control beside the header would
+        // otherwise make one line cost the whole feed.
+        RoomCopyButton(consoleLine(entry), "Console entry", "Copy this console entry")
     }
 }
 

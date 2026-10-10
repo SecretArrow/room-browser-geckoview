@@ -33,12 +33,13 @@ import org.junit.runner.RunWith
  * scrolls to them. A feed that never receives anything passes every unit test
  * and is still a broken panel.
  *
- * WHY THE PAGE KEEPS RE-REQUESTING. The engine's network sink is armed only
- * once the Network panel composes, so a single fetch at document load can be
- * over before anything is listening. The fixture therefore beats the fetch on an
- * interval, which guarantees a request happens while the panel is open; the
- * panel's own "Ask the page what it loaded" control is driven as well, so the
- * page-timing pull is exercised (and must settle) on the same run.
+ * WHY THE PAGE KEEPS RE-REQUESTING. The engine holds a request that arrives
+ * before the Network panel composes and replays it when the panel opens, so the
+ * document itself is reachable either way. The fixture still beats its fetch on
+ * an interval, because a replayed request proves the buffer and only a request
+ * made WHILE the panel is open proves the live path -- and the panel's own "Ask
+ * the page what it loaded" control is driven as well, so the page-timing pull is
+ * exercised (and must settle) on the same run.
  *
  * The panels render in the SAME activity window (not a modal window), so unlike
  * a permission sheet they do not hide the WebView from UiAutomator -- but the
@@ -160,6 +161,18 @@ class DevToolsConsoleNetworkE2eTest {
         assertTrue(
             "Developer Tools must open from the Page Actions sheet\n${uiTree()}",
             openDeveloperToolsPanel()
+        )
+
+        // The docked slot on this window is ~405dp of body and the CONSOLE feed
+        // renders above this one, so the network rows land at the fold -- and
+        // Compose prunes a clipped-out node from the accessibility tree, which
+        // makes "never rendered" and "rendered one row too low" the same
+        // observation from here. The panel has a real full-screen control for
+        // exactly this, so the test asks it for the room rather than hoping a
+        // synthetic drag scrolls a Compose list.
+        assertTrue(
+            "The panel's own full-screen control must give the network feed room to be read\n${uiTree()}",
+            expandToFullScreen()
         )
 
         // The refresh control is the app's own ask-the-page path. Pressing it
@@ -297,13 +310,16 @@ class DevToolsConsoleNetworkE2eTest {
         val before = visibleTexts()
         repeat(4) { dragUpHalf() }
         val afterDrags = visibleTexts()
-        report.append("injected drags moved the body=").append(before != afterDrags).append('\n')
+        val dragMoved = before != null && afterDrags != null && before != afterDrags
+        report.append("injected drags moved the body=").append(dragMoved).append('\n')
 
         val steps = a11yScrollReport(report)
         report.append("a11y scroll steps total=").append(steps).append('\n')
         val afterA11y = visibleTexts()
-        report.append("console header visible=").append(hasText("Console", 1_000))
-            .append(" network header visible=").append(hasText("Network", 1_000)).append('\n')
+        val a11yMoved = before != null && afterA11y != null && before != afterA11y
+        report.append("a11y scroll moved the body=").append(a11yMoved).append('\n')
+        val feedsOnScreen = hasText("Console", 1_000) && hasText("Network", 1_000)
+        report.append("both feed headers visible=").append(feedsOnScreen).append('\n')
         report.append("before=").append(before).append('\n')
         report.append("afterDrags=").append(afterDrags).append('\n')
         report.append("afterA11y=").append(afterA11y).append('\n')
@@ -316,10 +332,11 @@ class DevToolsConsoleNetworkE2eTest {
             collapsed && restored
         )
         assertTrue(
-            "Something below the fold has to become reachable, or not one of this panel's " +
-                "feeds can ever be asserted: either an injected drag or the accessibility " +
-                "scroll action must move the body.\n" + report,
-            afterDrags != before || afterA11y != before || hasText("Console", 1_000)
+            "The panel's own content has to be reachable: either something below the fold can " +
+                "be reached (an injected drag or the accessibility scroll action moving the " +
+                "body), or both feed sections are on screen without scrolling at all. A failed " +
+                "text probe proves neither, so it counts for neither.\n" + report,
+            dragMoved || a11yMoved || steps > 0 || feedsOnScreen
         )
     }
 
@@ -373,6 +390,19 @@ class DevToolsConsoleNetworkE2eTest {
 
     private fun hasDesc(desc: String, timeoutMs: Long): Boolean =
         device.wait(Until.hasObject(By.desc(desc)), timeoutMs)
+
+    /**
+     * Docks the panel to the whole window through its own control.
+     *
+     * Confirmed by the control flipping to "Dock" rather than by the press
+     * alone: a tap that missed would otherwise read as a layout that simply did
+     * not change.
+     */
+    private fun expandToFullScreen(): Boolean {
+        val node = findDescNow("Full screen") ?: return false
+        if (!clickSmart(node)) return false
+        return hasDesc("Dock", 5_000)
+    }
 
     /** A presence check with no wait at all, for the report's own probes. */
     private fun findDescNow(desc: String): UiObject2? =
@@ -475,20 +505,27 @@ class DevToolsConsoleNetworkE2eTest {
     }
 
     /**
-     * Every text string currently in the active window, deduped and SORTED.
+     * Every text string currently in the active window, deduped and SORTED, or
+     * NULL when the probe itself failed.
      *
      * The empty `textContains` matches any node that has text at all, which is
      * the only selector this UiAutomator version offers for "everything" — the
      * sort is what makes two captures comparable as SETS, so a mere reorder is
      * not mistaken for the body having moved.
+     *
+     * A failure returns null rather than an empty list on purpose. `findObjects`
+     * does throw here (seen after a drag), and an empty list read as "the window
+     * has no text" made `before != afterDrags` TRUE for exactly the wrong
+     * reason: two failed probes compared as a body that moved. Absence of a
+     * reading is not a reading.
      */
-    private fun visibleTexts(): List<String> = try {
+    private fun visibleTexts(): List<String>? = try {
         device.findObjects(By.textContains(""))
             .mapNotNull { it.text }
             .distinct()
             .sorted()
     } catch (_: Exception) {
-        emptyList()
+        null
     }
 
     /**

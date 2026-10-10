@@ -53,34 +53,47 @@ internal fun NetworkPanel(session: InspectorSession) {
         onDispose { session.stopNetwork() }
     }
 
-    val shown = remember(entries, filter, options) {
+    val matching = remember(entries, filter, options) {
         val active = if (filter in options) filter else KIND_ALL
-        val matching = when (active) {
+        when (active) {
             KIND_ALL -> entries
             KIND_PAGE -> entries.filter { it.kind == RESOURCE_KIND }
             else -> entries.filter { it.kind == active }
         }
-        matching.takeLast(RENDER_MAX)
     }
+    val shown = remember(matching) { matching.takeLast(RENDER_MAX) }
+    val activeKind = if (filter in options) filter else KIND_ALL
+    val caption = feedCaption(
+        shown = shown.size,
+        kept = entries.size,
+        cap = session.network.capacity,
+        dropped = session.network.dropped
+    )
 
     SectionHeader("Network") {
-        RoomCopyButton(networkText(shown), "Network", "Copy these network rows")
+        // The whole feed, not the rows on screen: see ConsolePanel.
+        RoomCopyButton(
+            networkReport(
+                matching,
+                if (activeKind == KIND_ALL) null else activeKind,
+                session.network.capacity,
+                session.network.dropped
+            ),
+            "Network",
+            "Copy these network rows"
+        )
     }
     Row(
         Modifier.fillMaxWidth().padding(horizontal = 16.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
         Text(
-            feedCaption(
-                shown = shown.size,
-                kept = entries.size,
-                cap = session.network.capacity,
-                dropped = session.network.dropped
-            ),
+            caption,
             style = MaterialTheme.typography.labelSmall,
             color = extras.textSecondary,
             modifier = Modifier.weight(1f)
         )
+        RoomCopyButton(caption, "Network caption", "Copy the network counts")
         IconButton(onClick = { session.clearNetwork() }) {
             Icon(Icons.Filled.DeleteSweep, contentDescription = "Clear the network feed", tint = extras.icon)
         }
@@ -112,9 +125,31 @@ internal fun NetworkPanel(session: InspectorSession) {
             .horizontalScroll(rememberScrollState())
             .padding(horizontal = 16.dp)
     ) {
-        KindChooser(options, if (filter in options) filter else KIND_ALL) { filter = it }
+        KindChooser(options, activeKind) { filter = it }
     }
 
+    // The result of the pull sits directly under the control that caused it,
+    // rather than below the rows: the answer to "what did that button do" is
+    // read where the button is, and a state line placed after a long list is a
+    // state line nobody sees.
+    PullStateLine(pullState)
+
+    Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp)) {
+        if (entries.isEmpty() && pullState is PullState.Idle) {
+            Text(
+                "Nothing recorded yet. Load something, or tap the refresh icon to ask the " +
+                    "page for the timing of what it has already loaded.",
+                style = MaterialTheme.typography.bodySmall,
+                color = extras.textSecondary
+            )
+        }
+        shown.forEach { entry -> NetworkRow(entry) }
+    }
+
+    // The caption explaining where each row came from is a FOOTNOTE, and it is
+    // last on purpose: on a phone-sized dock it is several lines tall, and
+    // above the rows it pushed every row off the bottom of the panel -- so the
+    // feed the panel exists to show was the one thing out of reach.
     Text(
         "Request lines come from the engine, which sees them even when they fail. " +
             "Sizes and durations come from the page's own timing data, so they cover only " +
@@ -129,19 +164,6 @@ internal fun NetworkPanel(session: InspectorSession) {
         color = extras.textSecondary,
         modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)
     )
-    PullStateLine(pullState)
-
-    Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp)) {
-        if (entries.isEmpty() && pullState is PullState.Idle) {
-            Text(
-                "Nothing recorded yet. Load something, or tap the refresh icon to ask the " +
-                    "page for the timing of what it has already loaded.",
-                style = MaterialTheme.typography.bodySmall,
-                color = extras.textSecondary
-            )
-        }
-        shown.forEach { entry -> NetworkRow(entry) }
-    }
 }
 
 /** What the last page-timing pull did, so a failed one never reads as "the page loaded nothing". */
@@ -236,12 +258,20 @@ private fun NetworkRow(entry: NetworkEntry) {
             entry.documentUrl?.let(::urlHost)?.let { "in $it" }
         )
         if (facts.isNotEmpty()) {
-            Text(
-                facts.joinToString(" · "),
-                style = MaterialTheme.typography.labelSmall,
-                color = extras.textSecondary,
-                modifier = Modifier.padding(start = 120.dp)
-            )
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    facts.joinToString(" · "),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = extras.textSecondary,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f).padding(start = 120.dp)
+                )
+                // One control that copies the WHOLE row -- url, facts and headers
+                // -- because a row pasted into a report without its size and
+                // duration is the half of it a reader needs most.
+                RoomCopyButton(networkRowText(entry), "Request", "Copy this whole request row")
+            }
         }
         (entry.requestHeaders + entry.responseHeaders).forEach { header ->
             Row(verticalAlignment = Alignment.CenterVertically) {
