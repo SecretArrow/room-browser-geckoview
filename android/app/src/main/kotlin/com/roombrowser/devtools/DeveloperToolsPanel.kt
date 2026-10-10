@@ -47,6 +47,7 @@ import com.roombrowser.engine.devtools.DeveloperToolsCapabilities
 import com.roombrowser.engine.devtools.DevToolsCapability
 import com.roombrowser.ui.common.LocalRoomExtras
 import com.roombrowser.ui.common.RoomBottomSheetShape
+import com.roombrowser.ui.common.RoomCopyButton
 import com.roombrowser.ui.common.SectionHeader
 import com.roombrowser.ui.common.StatTile
 
@@ -263,6 +264,53 @@ private fun CapabilityList(capabilities: DeveloperToolsCapabilities) {
                 color = extras.textSecondary
             )
         }
+        // "Cannot, and here is why" is a different answer from "not yet", and
+        // the capability layer keeps them apart by carrying a reason only for
+        // the first -- so the two are listed apart rather than merged into one
+        // list of greyed-out rows.
+        val absent = DevToolsCapability.entries.filterNot { capabilities.has(it) }
+        AbsentCapabilityGroup(
+            title = "Not possible on this engine",
+            rows = absent.filter { capabilities.noteFor(it) != null },
+            capabilities = capabilities
+        )
+        AbsentCapabilityGroup(
+            title = "Not built yet",
+            rows = absent.filter { capabilities.noteFor(it) == null },
+            capabilities = capabilities
+        )
+    }
+}
+
+@Composable
+private fun AbsentCapabilityGroup(
+    title: String,
+    rows: List<DevToolsCapability>,
+    capabilities: DeveloperToolsCapabilities
+) {
+    if (rows.isEmpty()) return
+    val extras = LocalRoomExtras.current
+    Text(
+        title,
+        style = MaterialTheme.typography.labelMedium,
+        color = extras.textSecondary,
+        modifier = Modifier.padding(top = 14.dp, bottom = 4.dp)
+    )
+    rows.forEach { capability ->
+        Column(Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
+            Text(
+                capabilityLabel(capability),
+                style = MaterialTheme.typography.bodySmall,
+                color = extras.textSecondary
+            )
+            Text(
+                // No reason recorded means "not yet", and the capability's own
+                // description then says what is being given up.
+                capabilities.noteFor(capability) ?: capabilityDetail(capability),
+                style = MaterialTheme.typography.labelSmall,
+                color = extras.textSecondary.copy(alpha = 0.75f)
+            )
+        }
     }
 }
 
@@ -276,21 +324,30 @@ private fun PageFacts(
     onRefresh: () -> Unit
 ) {
     val extras = LocalRoomExtras.current
-    SectionHeader("Current page")
+    val shownTitle = overview?.title?.takeIf { it.isNotBlank() } ?: tabTitle.ifBlank { "No title" }
+    val shownUrl = overview?.url ?: tabUrl
+    val wholeBlock = remember(overview, shownUrl, shownTitle) {
+        pageFactsText(overview, shownUrl, shownTitle)
+    }
+    SectionHeader("Current page") {
+        RoomCopyButton(wholeBlock, "Current page", "Copy everything this panel is showing")
+    }
     Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f)) {
                 Text(
-                    overview?.title?.takeIf { it.isNotBlank() } ?: tabTitle.ifBlank { "No title" },
+                    shownTitle,
                     style = MaterialTheme.typography.bodyMedium,
                     color = extras.textPrimary
                 )
                 Text(
-                    overview?.url ?: tabUrl,
+                    shownUrl,
                     style = MaterialTheme.typography.labelSmall,
                     color = extras.textSecondary
                 )
             }
+            RoomCopyButton(shownTitle, "Title", "Copy the page title")
+            RoomCopyButton(shownUrl, "URL", "Copy the page URL")
             IconButton(onClick = onRefresh) {
                 Icon(Icons.Filled.Refresh, contentDescription = "Re-read the page", tint = extras.icon)
             }
@@ -325,19 +382,21 @@ private fun OverviewGrid(overview: PageOverview) {
     val extras = LocalRoomExtras.current
     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
         Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-            overview.nodes?.let { StatTile(it.toString(), "nodes", Modifier.weight(1f)) }
-            overview.scripts?.let { StatTile(it.toString(), "scripts", Modifier.weight(1f)) }
-            overview.frames?.let { StatTile(it.toString(), "frames", Modifier.weight(1f)) }
+            overview.nodes?.let { StatTile(it.toString(), "nodes", Modifier.weight(1f), copyable = true) }
+            overview.scripts?.let { StatTile(it.toString(), "scripts", Modifier.weight(1f), copyable = true) }
+            overview.frames?.let { StatTile(it.toString(), "frames", Modifier.weight(1f), copyable = true) }
         }
         Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-            overview.images?.let { StatTile(it.toString(), "images", Modifier.weight(1f)) }
-            overview.forms?.let { StatTile(it.toString(), "forms", Modifier.weight(1f)) }
-            overview.links?.let { StatTile(it.toString(), "links", Modifier.weight(1f)) }
+            overview.images?.let { StatTile(it.toString(), "images", Modifier.weight(1f), copyable = true) }
+            overview.forms?.let { StatTile(it.toString(), "forms", Modifier.weight(1f), copyable = true) }
+            overview.links?.let { StatTile(it.toString(), "links", Modifier.weight(1f), copyable = true) }
         }
         Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-            overview.viewportWidth?.let { StatTile("$it", "viewport w", Modifier.weight(1f)) }
-            overview.viewportHeight?.let { StatTile("$it", "viewport h", Modifier.weight(1f)) }
-            overview.devicePixelRatio?.let { StatTile(trimNumber(it), "dpr", Modifier.weight(1f)) }
+            overview.viewportWidth?.let { StatTile("$it", "viewport w", Modifier.weight(1f), copyable = true) }
+            overview.viewportHeight?.let { StatTile("$it", "viewport h", Modifier.weight(1f), copyable = true) }
+            overview.devicePixelRatio?.let {
+                StatTile(compactNumber(it), "dpr", Modifier.weight(1f), copyable = true)
+            }
         }
 
         FactRow("Ready state", overview.readyState)
@@ -371,7 +430,10 @@ private fun OverviewGrid(overview: PageOverview) {
 @Composable
 private fun FactRow(label: String, value: String?) {
     val extras = LocalRoomExtras.current
-    Row(Modifier.fillMaxWidth().padding(vertical = 2.dp)) {
+    Row(
+        Modifier.fillMaxWidth().padding(vertical = 4.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
         Text(
             label,
             style = MaterialTheme.typography.labelSmall,
@@ -381,13 +443,17 @@ private fun FactRow(label: String, value: String?) {
         Text(
             value ?: "—",
             style = MaterialTheme.typography.labelSmall,
-            color = extras.textPrimary
+            color = extras.textPrimary,
+            modifier = Modifier.weight(1f)
         )
+        // Only a row that HAS a value is copyable: copying the em dash that
+        // stands for "the engine did not say" would put nothing useful on the
+        // clipboard while looking like it worked.
+        if (value != null) {
+            RoomCopyButton(value, label, "Copy $label")
+        }
     }
 }
-
-private fun trimNumber(value: Double): String =
-    if (value == value.toLong().toDouble()) value.toLong().toString() else value.toString()
 
 private fun capabilityLabel(capability: DevToolsCapability): String = when (capability) {
     DevToolsCapability.PAGE_SCRIPTING -> "Page scripting"
