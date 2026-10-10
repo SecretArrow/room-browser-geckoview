@@ -98,10 +98,12 @@ jobs:
           # versionCode: app/build.gradle.kts derives it from GITHUB_RUN_NUMBER,
           # which is PER WORKFLOW — this one's counter starts near 1, and
           # Android refuses to install a lower versionCode over an installed
-          # app. Take the pipeline's own newest run number plus one: above the
-          # release on the phone, and at most equal to the next AUTO-release.
+          # app. Take the newest COMPLETED ci.yml run plus one. Completed, not
+          # newest: while a release run is in flight its number is the highest
+          # there is, so +1 would stamp this APK one ABOVE the release about to
+          # publish, and that release would then refuse to install over it.
           RUNS=$(gh api \
-            "repos/${{ github.repository }}/actions/workflows/ci.yml/runs?per_page=1" \
+            "repos/${{ github.repository }}/actions/workflows/ci.yml/runs?status=completed&per_page=1" \
             --jq '.workflow_runs[0].run_number' 2>/dev/null || true)
           if [ -n "${RUNS:-}" ]; then
             CODE=$(( RUNS + 1 ))
