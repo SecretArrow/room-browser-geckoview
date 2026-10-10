@@ -12,6 +12,7 @@ import com.roombrowser.domain.engine.FilterEngine
 import com.roombrowser.domain.engine.HttpsUpgradeFallbackPolicy
 import com.roombrowser.domain.engine.UrlIntelligence
 import com.roombrowser.domain.model.Profile
+import com.roombrowser.domain.oct.OctNavigation
 import com.roombrowser.engine.EngineSession
 import com.roombrowser.engine.EngineSessionListener
 import com.roombrowser.engine.HttpAuthResponder
@@ -181,6 +182,8 @@ class RoomSessionListener(
         )
         fun openNewWindow(session: EngineSession, url: String)
         fun openInNewTab(url: String, isPrivate: Boolean)
+        /** A refused `oct://` navigation: the app's own loader opens it. */
+        fun onCircleNavigation(session: EngineSession, url: String)
         fun currentUrl(): String?
         /** TRUE when [session] is the ACTIVE tab's engine. Needed because a
          *  popup request must be refused for a background tab, and this class
@@ -207,6 +210,17 @@ class RoomSessionListener(
         isTopLevel: Boolean,
         hasUserGesture: Boolean
     ): NavigationDecision {
+        // A circle is ours to open, not the engine's; the load is posted so it does not
+        // start inside this callback.
+        when (val oct = OctNavigation.classify(url)) {
+            is OctNavigation.Circle -> {
+                main.post { callbacks.onCircleNavigation(session, oct.uri.raw) }
+                return NavigationDecision.Block
+            }
+            OctNavigation.Malformed -> return NavigationDecision.Block
+            OctNavigation.PassThrough -> Unit
+        }
+
         val host = UrlIntelligence.hostOf(url).orEmpty()
 
         // Malicious-site protection for navigations.
