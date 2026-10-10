@@ -62,7 +62,7 @@ class DevToolsConsoleNetworkE2eTest {
     private val netPath = "/net-$tag"
 
     /** The first thing in the panel body, and so the marker for "the body is here". */
-    private val bodyHeader = "What this edition can inspect"
+    private val bodyHeader = "Console"
 
     /**
      * How long a cleared feed is given to leave the tree. Recomposing off the
@@ -596,12 +596,12 @@ class DevToolsConsoleNetworkE2eTest {
         )
         repeat(12) {
             val row = device.findObjects(By.desc("Developer tools")).firstOrNull()
-            if (row != null && clickSmart(row) && hasText("What this edition can inspect", 8_000)) {
+            if (row != null && clickSmart(row) && hasText(bodyHeader, 8_000)) {
                 return true
             }
             dragUpHalf()
         }
-        return hasText("What this edition can inspect", 3_000)
+        return hasText(bodyHeader, 3_000)
     }
 
     // ---------- Failure diagnostics -----------------------------------------
@@ -613,6 +613,7 @@ class DevToolsConsoleNetworkE2eTest {
             "'Page Actions' sheet" to By.text("Page Actions"),
             "'Developer tools' row" to By.desc("Developer tools"),
             "'What this edition can inspect' header" to By.text("What this edition can inspect"),
+            "console section header" to By.text(bodyHeader),
             "refresh control" to By.desc("Ask the page what it loaded"),
             "console clear control" to By.desc("Clear the console feed"),
             "console log marker" to By.textContains(logMarker),

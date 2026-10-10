@@ -51,7 +51,7 @@ internal fun ConsolePanel(session: InspectorSession) {
     // Reading the revision is what subscribes this panel to the feed: the sink
     // bumps it on the main thread, so there is no timer and no polling.
     val revision = session.consoleRevision
-    val entries = remember(revision) { session.console.snapshot() }
+    val entries = remember(session, revision) { session.console.snapshot() }
     var level by remember(session) { mutableStateOf<String?>(null) }
 
     DisposableEffect(session) {

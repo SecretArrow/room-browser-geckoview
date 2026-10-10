@@ -43,7 +43,7 @@ internal fun NetworkPanel(session: InspectorSession) {
     val scope = rememberCoroutineScope()
 
     val revision = session.networkRevision
-    val entries = remember(revision) { session.network.snapshot() }
+    val entries = remember(session, revision) { session.network.snapshot() }
     val options = remember(entries) { kindOptions(entries) }
     var filter by remember(session) { mutableStateOf(KIND_ALL) }
     var pullState by remember(session) { mutableStateOf<PullState>(PullState.Idle) }

@@ -153,18 +153,12 @@ fun DeveloperToolsHost(
                             .fillMaxWidth()
                             .verticalScroll(rememberScrollState())
                     ) {
-                        SectionHeader("What this edition can inspect")
-                        CapabilityList(capabilities)
-                        Spacer(Modifier.height(12.dp))
-                        PageFacts(
-                            overview = overview,
-                            tabUrl = viewModel.pageState.url,
-                            tabTitle = viewModel.pageState.title,
-                            answered = answered,
-                            hasSession = inspector != null || engineSession != null,
-                            onRefresh = { refreshKey++ }
-                        )
-                        // The live feeds are rendered only for a tab that has an
+                        // The live feeds come FIRST. They are what the panel is
+                        // opened for, and an inventory placed above them pushes
+                        // every feed below the fold of a phone-sized window,
+                        // where nothing the panel measures can reach it.
+                        //
+                        // A feed is rendered only for a tab that has an
                         // inspector AND an engine that declares the source, so a
                         // panel whose requirements are absent is never composed -
                         // not composed empty.
@@ -173,13 +167,24 @@ fun DeveloperToolsHost(
                             capabilities.has(DevToolsCapability.ENGINE_CONSOLE)
                         val networkAvailable = capabilities.has(DevToolsCapability.NETWORK_REQUEST_LINE)
                         if (attached != null && (consoleAvailable || networkAvailable)) {
-                            Spacer(Modifier.height(24.dp))
                             if (consoleAvailable) ConsolePanel(attached)
                             if (networkAvailable) {
                                 Spacer(Modifier.height(16.dp))
                                 NetworkPanel(attached)
                             }
+                            Spacer(Modifier.height(24.dp))
                         }
+                        PageFacts(
+                            overview = overview,
+                            tabUrl = viewModel.pageState.url,
+                            tabTitle = viewModel.pageState.title,
+                            answered = answered,
+                            hasSession = inspector != null || engineSession != null,
+                            onRefresh = { refreshKey++ }
+                        )
+                        Spacer(Modifier.height(12.dp))
+                        SectionHeader("What this edition can inspect")
+                        CapabilityList(capabilities)
                         Spacer(Modifier.height(24.dp))
                     }
                 }
