@@ -5,6 +5,7 @@ import android.content.Intent
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import androidx.test.uiautomator.By
+import androidx.test.uiautomator.BySelector
 import androidx.test.uiautomator.UiDevice
 import androidx.test.uiautomator.UiObject2
 import androidx.test.uiautomator.Until
@@ -57,6 +58,13 @@ class DevToolsConsoleNetworkE2eTest {
     private val logMarker = "room-console-log-$tag"
     private val errorMarker = "room-console-error-$tag"
     private val netPath = "/net-$tag"
+
+    /**
+     * How long a cleared feed is given to leave the tree. Recomposing off the
+     * revision is synchronous, so this is scheduling headroom, not a race the
+     * app is allowed to lose slowly.
+     */
+    private val clearSettleMs = 10_000L
 
     @Before
     fun setUp() {
@@ -178,6 +186,55 @@ class DevToolsConsoleNetworkE2eTest {
         assertTrue(
             "A request the page made must reach the network feed\n${uiTree()}",
             scrollPanelToText(netPath, maxDrags = 24)
+        )
+    }
+
+    /**
+     * The clear control is a revision bump, not a ring mutation.
+     *
+     * The panel caches `remember(consoleRevision) { console.snapshot() }`, so a
+     * clear that only emptied the ring would leave every row it removed on
+     * screen until the next entry arrived — a button that looks broken, and one
+     * that a unit test on the ring cannot catch, because the ring really is
+     * empty. Absence on the DEVICE is the only assertion that pins the fix.
+     */
+    @Test
+    fun clearing_the_console_feed_actually_empties_it() {
+        assertTrue(
+            "A profile must be active before the engine can be cold-started\n${uiTree()}",
+            ensureActiveProfile()
+        )
+        assertTrue(
+            "The fixture page must render before Developer Tools can inspect it\n${uiTree()}",
+            openPage(server.url("/page-$tag").toString())
+        )
+        assertTrue(
+            "Developer Tools must open from the Page Actions sheet\n${uiTree()}",
+            openDeveloperToolsPanel()
+        )
+        // A clear only means something once there is something to clear, so the
+        // feed is proven populated BEFORE the control is pressed.
+        assertTrue(
+            "The feed must be populated before a clear can remove anything\n${uiTree()}",
+            scrollPanelToText(logMarker)
+        )
+
+        val clear = scrollPanelBackToDesc("Clear the console feed")
+        assertTrue(
+            "The console panel's clear control must be reachable\n${uiTree()}",
+            clear != null
+        )
+        assertTrue(
+            "The clear control must be pressable\n${uiTree()}",
+            clickSmart(clear!!)
+        )
+        assertTrue(
+            "Clearing the console feed must remove the rows it cleared\n${uiTree()}",
+            waitUntilAbsent(By.textContains(logMarker), clearSettleMs)
+        )
+        assertTrue(
+            "Clearing must empty the whole feed, not just the first row\n${uiTree()}",
+            waitUntilAbsent(By.textContains(errorMarker), clearSettleMs)
         )
     }
 
@@ -326,6 +383,52 @@ class DevToolsConsoleNetworkE2eTest {
             b.centerY() < device.displayHeight - 20
     } catch (_: Exception) {
         false
+    }
+
+    /**
+     * The reverse of [dragUpHalf], used to come back up to the panel's own
+     * header after reaching a row below the fold.
+     *
+     * Both endpoints stay INSIDE the panel body on purpose: the panel is a
+     * bottom-anchored surface, so a drag starting above its top edge would land
+     * on the sheet's drag handle or its scrim and could dismiss the panel
+     * instead of scrolling it.
+     */
+    private fun dragDownHalf() {
+        device.swipe(
+            device.displayWidth / 2, device.displayHeight / 2,
+            device.displayWidth / 2, device.displayHeight * 9 / 10, 100
+        )
+        device.waitForIdle(600)
+        try { Thread.sleep(200) } catch (_: InterruptedException) { }
+    }
+
+    /** Scrolls back up the panel body until [desc] is worth tapping, checking before each drag. */
+    private fun scrollPanelBackToDesc(desc: String, maxDrags: Int = 24): UiObject2? {
+        repeat(maxDrags) {
+            val node = device.findObjects(By.desc(desc)).firstOrNull()
+            if (node != null && isTappable(node)) return node
+            dragDownHalf()
+        }
+        return device.findObjects(By.desc(desc)).firstOrNull()
+    }
+
+    /**
+     * Waits for [selector] to leave the tree.
+     *
+     * Written as an explicit poll rather than `Until.gone` so the assertion uses
+     * only the UiAutomator surface this suite already proves on device:
+     * androidTest compiles in no job but `e2e`, so a call that does not exist in
+     * the pinned version costs a full cycle to discover.
+     */
+    private fun waitUntilAbsent(selector: BySelector, timeoutMs: Long): Boolean {
+        fun present() = device.findObjects(selector).isNotEmpty()
+        val deadline = System.currentTimeMillis() + timeoutMs
+        while (System.currentTimeMillis() < deadline) {
+            if (!present()) return true
+            try { Thread.sleep(250) } catch (_: InterruptedException) { }
+        }
+        return !present()
     }
 
     /**
