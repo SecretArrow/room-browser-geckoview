@@ -610,7 +610,7 @@ class BrowserViewModel(
                 loading = false,
                 progress = 100,
                 secure = settled.startsWith("https://"),
-                isHomepage = settled == "about:home" || (settled == "about:blank" && title.isBlank())
+                isHomepage = UrlIntelligence.isStartPage(settled, title)
             )
             // Routed by the engine's OWNER, never by "whatever is active": the
             // two coincide here, but the id comes from the view that fired.
@@ -1155,7 +1155,18 @@ class BrowserViewModel(
             // via selectTab (lazily, with a reload) — previously the restored
             // tab showed its URL in the omnibox but never got a live engine,
             // leaving a blank surface until the next navigation.
-            val open = browserRepo.openTabs(profileId)
+            //
+            // A tab the engine last reported on a blank document has no page to come back
+            // to, and the row is the only store that outlives the process: restoring it
+            // as-is puts about:blank in the address bar where the start page belongs. No
+            // engine exists yet here, so this normalizes the model and nothing else.
+            val open = browserRepo.openTabs(profileId).map { tab ->
+                if (UrlIntelligence.isStartPage(tab.url, tab.title)) {
+                    tab.copy(url = "about:home", title = "")
+                } else {
+                    tab
+                }
+            }
             tabManager.restore(open)
             tabs = open
             // The ACTIVE tab is persisted per profile via last_viewed_at
