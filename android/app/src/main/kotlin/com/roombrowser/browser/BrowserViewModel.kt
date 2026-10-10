@@ -1254,7 +1254,14 @@ class BrowserViewModel(
             // SAME-tab return to the start page. newTab=true must NEVER take
             // this branch: it used to reset the CURRENT tab's page state
             // instead of opening a tab — the "New Tab overwrote my tab" bug.
-            pageState = PageState(isPrivate = isPrivate)
+            //
+            // This IS goHome(), and it used to be a copy of it that reset the
+            // page state and nothing else. The tab ROW is then the only store
+            // left naming the page the app just left, and it outlives the
+            // process: the next launch cold-starts the tab on that page, which
+            // is an error surface once its server is gone. Delegating also
+            // keeps the engine from outliving the start page it was left for.
+            goHome()
             return
         }
         viewModelScope.launch {
