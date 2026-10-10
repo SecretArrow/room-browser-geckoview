@@ -365,10 +365,11 @@ private fun PageFacts(
                 color = extras.textSecondary
             )
             answered == false -> Text(
-                "No usable answer came back: either the engine never replied within " +
-                    "${InspectorSession.PROBE_TIMEOUT_MS / 1000} s, or it replied with " +
-                    "something this panel could not read. That is a dropped round trip " +
-                    "between the app and the engine — not an empty page. Tap refresh.",
+                // No cause is named: this branch covers a timeout, an undecodable
+                // reply and a null probe alike, and the clipboard says the same.
+                "${noReadingLine()} Either the reply is still coming or it was not " +
+                    "something this panel can read — the page itself is untouched. " +
+                    "Tap refresh.",
                 style = MaterialTheme.typography.bodySmall,
                 color = extras.textSecondary
             )

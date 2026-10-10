@@ -373,16 +373,11 @@ fun BrowserScreen(
             // is app UI over the live page, and composing above the engine view
             // is also what keeps it out of a page screenshot.
             //
-            // It lives only on the browser route, so it must not survive
-            // leaving it: the F12 chord reaches the view model without knowing
-            // which route is on screen, and a dock raised there would be open
-            // with nothing composed — and would then eat the next Back press on
-            // a sub-screen instead of leaving it.
-            LaunchedEffect(route, viewModel.devtools.isOpen) {
-                if (route != BrowserRoute.Browser && viewModel.devtools.isOpen) {
-                    viewModel.devtools.close()
-                }
-            }
+            // Composed only here, so any other route hides it — deliberately
+            // without closing it: the tab grid is the only way to switch tabs,
+            // and a dock that closed there could never retarget to the tab the
+            // user picked. Nothing is stranded, because the Back handler below
+            // is guarded on this route too.
             if (route == BrowserRoute.Browser && !viewModel.isFullscreen) {
                 com.roombrowser.devtools.DeveloperToolsHost(
                     viewModel = viewModel,

@@ -1,6 +1,16 @@
 package com.roombrowser.devtools
 
 /**
+ * The one sentence the panel and the copied block both use when no reading
+ * arrived. One state, so it is never described two ways, and it names the
+ * bound rather than a cause: the panel cannot tell "still coming" from "came
+ * back unreadable", and a report must not carry a diagnosis we invented.
+ */
+internal fun noReadingLine(): String =
+    "No page reading: the engine did not answer within " +
+        "${InspectorSession.PROBE_TIMEOUT_MS / 1000} s."
+
+/**
  * The "Current page" block as plain text, for pasting into a report.
  *
  * Built from the same values the panel renders and in the same order, so what
@@ -14,7 +24,7 @@ internal fun pageFactsText(overview: PageOverview?, tabUrl: String, tabTitle: St
     lines += title
     lines += overview?.url ?: tabUrl
     if (overview == null) {
-        lines += "No page reading: the engine did not answer."
+        lines += noReadingLine()
         return lines.joinToString("\n")
     }
 

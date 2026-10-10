@@ -108,10 +108,17 @@ class DeveloperToolsManager {
 
     fun inspectorFor(tabId: String?): InspectorSession? = tabId?.let { sessions[it] }
 
+    /**
+     * A tab the surface may be describing has gone. When it is the tab being
+     * described the whole surface closes, because a panel pointed at no tab
+     * composes nothing while still reporting itself open.
+     */
     fun onTabClosed(tabId: String) {
-        sessions.remove(tabId)?.close()
-        attachedEngine.remove(tabId)
-        if (this.tabId == tabId) this.tabId = null
+        if (this.tabId == tabId) {
+            close()
+            return
+        }
+        dropInspector(tabId)
     }
 
     /**
@@ -121,9 +128,17 @@ class DeveloperToolsManager {
      * switch, a crash — and the inspector must not outlive the handle it was
      * built on. Identified by session rather than by tab id because this is
      * reached from the engine-teardown funnel, which does not know the id.
+     *
+     * The surface stays open on purpose: the tab outlives its engine and gets a
+     * fresh inspector on the next composition.
      */
     fun detachEngine(session: EngineSession) {
-        attachedEngine.filterValues { it === session }.keys.toList().forEach { onTabClosed(it) }
+        attachedEngine.filterValues { it === session }.keys.toList().forEach { dropInspector(it) }
+    }
+
+    private fun dropInspector(tabId: String) {
+        sessions.remove(tabId)?.close()
+        attachedEngine.remove(tabId)
     }
 
     /**
@@ -135,8 +150,8 @@ class DeveloperToolsManager {
      * holds a subscription on a dead session forever.
      */
     fun retainTabs(openTabIds: Set<String>) {
-        val gone = sessions.keys.filterNot { it in openTabIds }
-        gone.forEach { onTabClosed(it) }
-        if (tabId != null && tabId !in openTabIds) tabId = null
+        sessions.keys.filterNot { it in openTabIds }.forEach { onTabClosed(it) }
+        val current = tabId
+        if (isOpen && (current == null || current !in openTabIds)) close()
     }
 }
