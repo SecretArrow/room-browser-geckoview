@@ -19,6 +19,7 @@ import com.roombrowser.engine.HttpAuthResponder
 import com.roombrowser.engine.NavigationDecision
 import com.roombrowser.engine.PageErrorKind
 import com.roombrowser.engine.PermissionResponder
+import com.roombrowser.engine.devtools.EngineInspector
 import org.json.JSONObject
 import org.mozilla.geckoview.AllowOrDeny
 import org.mozilla.geckoview.GeckoResult
@@ -673,6 +674,8 @@ internal class GeckoEngineSession(
         // nothing for the caller to do with one.
         runtime.storageController.clearDataForSessionContext(contextId)
     }
+
+    override fun inspector(): EngineInspector = GeckoDevTools.inspector()
 
     override fun close() {
         if (closed) return

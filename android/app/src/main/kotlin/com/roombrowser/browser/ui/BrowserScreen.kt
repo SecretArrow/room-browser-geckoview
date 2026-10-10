@@ -369,6 +369,22 @@ fun BrowserScreen(
                 )
             }
 
+            // Developer Tools docks in the same slot, for the same reasons: it
+            // is app UI over the live page, and composing above the engine view
+            // is also what keeps it out of a page screenshot.
+            //
+            // Composed only here, so any other route hides it — deliberately
+            // without closing it: the tab grid is the only way to switch tabs,
+            // and a dock that closed there could never retarget to the tab the
+            // user picked. Nothing is stranded, because the Back handler below
+            // is guarded on this route too.
+            if (route == BrowserRoute.Browser && !viewModel.isFullscreen) {
+                com.roombrowser.devtools.DeveloperToolsHost(
+                    viewModel = viewModel,
+                    manager = viewModel.devtools
+                )
+            }
+
             // Fullscreen media (HTML5). The ENGINE renders the media inside
             // its own view now — the app is told the state and nothing else —
             // so all that is left here is dropping the chrome and hiding the
@@ -382,8 +398,9 @@ fun BrowserScreen(
     // ------------------------------------------------------------------
     // System Back button — a browser must NEVER die on the first press.
     // Priority (most specific first):
-    //   fullscreen video → reader mode → find-in-page → agent panel →
-    //   sub-screen route → web history → exit confirmation → background.
+    //   fullscreen video → reader mode → find-in-page → developer tools →
+    //   agent panel → sub-screen route → web history → exit confirmation →
+    //   background.
     // ModalBottomSheets/dialogs register their own (later = higher
     // priority) callbacks, so they close themselves before this runs.
     // The web-history branch actually WORKS now: canGoBack is live-tracked
@@ -401,6 +418,12 @@ fun BrowserScreen(
                 viewModel.clearFindInPage()
                 showFindBar = false
             }
+            // Developer Tools docks in the same slot as the agent panel, so it
+            // takes Back first — it is the overlay the user most recently
+            // raised and the one covering the page. Only on the browser route,
+            // where it is actually composed.
+            route == BrowserRoute.Browser && viewModel.devtools.isOpen ->
+                viewModel.devtools.close()
             agentPanelExpanded -> agentPanelExpanded = false
             // Sub-screens whose in-app back returns to their PARENT screen
             // (ProfileSettings / About open from the Settings screen) must
@@ -437,7 +460,8 @@ fun BrowserScreen(
             onOpenTwoFactor = { launchTwoFactor(); showPageActions = false },
             onOpenPasswords = { launchPasswords(); showPageActions = false },
             onShowQuickSwitcher = { showQuickSwitcher = true; showPageActions = false },
-            onShowShields = { showShields = true; showPageActions = false }
+            onShowShields = { showShields = true; showPageActions = false },
+            onOpenDeveloperTools = { viewModel.toggleDeveloperTools(); showPageActions = false }
         )
     }
 

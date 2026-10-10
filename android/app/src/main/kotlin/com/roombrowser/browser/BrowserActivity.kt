@@ -1,8 +1,10 @@
 package com.roombrowser.browser
 
+import android.annotation.SuppressLint
 import android.content.Intent
 import android.os.Bundle
 import android.util.Log
+import android.view.KeyEvent
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.ActivityResultLauncher
@@ -352,6 +354,40 @@ class BrowserActivity : FragmentActivity() {
                     if (showLastSeen) payload.lastSeenAt else 0L
                 )
         )
+    }
+
+    /**
+     * The desktop Developer Tools chord, on an external keyboard or DeX.
+     *
+     * It is intercepted on the ACTIVITY rather than in Compose because the
+     * engine view is a real Android view that takes focus: a Compose
+     * `onPreviewKeyEvent` never sees a key aimed at it, and `dispatchKeyEvent`
+     * sees every key before the view hierarchy does.
+     *
+     * `@SuppressLint("RestrictedApi")`: androidx.core marks its own
+     * `ComponentActivity.dispatchKeyEvent` override restricted because
+     * overriding it without chaining would cut the `OnBackPressedDispatcher`
+     * key path. Every key this override does not claim is handed straight back
+     * to `super`, so that path still runs and the restriction's reason does not
+     * apply here.
+     */
+    @SuppressLint("RestrictedApi")
+    override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        if (event.action == KeyEvent.ACTION_DOWN &&
+            event.repeatCount == 0 &&
+            isDeveloperToolsChord(event)
+        ) {
+            browserViewModel?.toggleDeveloperTools()
+            return true
+        }
+        return super.dispatchKeyEvent(event)
+    }
+
+    /** F12, or Ctrl+Shift+I — the two chords a desktop browser uses. */
+    private fun isDeveloperToolsChord(event: KeyEvent): Boolean = when (event.keyCode) {
+        KeyEvent.KEYCODE_F12 -> true
+        KeyEvent.KEYCODE_I -> event.isCtrlPressed && event.isShiftPressed
+        else -> false
     }
 
     override fun onSaveInstanceState(outState: Bundle) {

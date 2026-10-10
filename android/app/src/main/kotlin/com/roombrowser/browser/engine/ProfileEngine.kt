@@ -22,6 +22,7 @@ import com.roombrowser.engine.EngineProxyConfig
 import com.roombrowser.engine.EngineRuntime
 import com.roombrowser.engine.EngineSession
 import com.roombrowser.engine.ResourceFilter
+import com.roombrowser.engine.devtools.DeveloperToolsCapabilities
 
 /**
  * Profile engine — configures engine sessions for exactly ONE profile per
@@ -82,6 +83,17 @@ object ProfileEngine {
      * has to be asked.
      */
     fun engineName(context: Context): String = host.engineName(context)
+
+    /**
+     * What Developer Tools can actually inspect on THIS edition.
+     *
+     * Never throws: the Tools screen reads it on every open, and an engine
+     * that cannot answer is reported as having nothing rather than taking the
+     * screen down with it.
+     */
+    fun devToolsCapabilities(context: Context): DeveloperToolsCapabilities =
+        runCatching { host.devToolsCapabilities(context) }
+            .getOrDefault(DeveloperToolsCapabilities.NONE)
 
     /**
      * Every engine provider this device offers, current one flagged. Feeds

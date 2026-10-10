@@ -44,8 +44,10 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.roombrowser.domain.paging.Paging
 import androidx.compose.ui.graphics.RenderEffect as ComposeRenderEffect
@@ -289,24 +291,62 @@ private fun mix(a: Color, b: Color, t: Float): Color {
 
 /** Simple horizontal section header. */
 @Composable
-fun SectionHeader(text: String) {
+fun SectionHeader(text: String, trailingContent: (@Composable () -> Unit)? = null) {
     val extras = LocalRoomExtras.current
-    Text(
-        text,
-        style = MaterialTheme.typography.labelMedium,
-        color = extras.primary,
-        modifier = Modifier.padding(start = 20.dp, top = 20.dp, bottom = 4.dp)
-    )
+    // Two branches rather than one Row: this header is used on 50-odd screens,
+    // and a lone Text must keep measuring exactly as it did before.
+    if (trailingContent == null) {
+        Text(
+            text,
+            style = MaterialTheme.typography.labelMedium,
+            color = extras.primary,
+            modifier = Modifier.padding(start = 20.dp, top = 20.dp, bottom = 4.dp)
+        )
+        return
+    }
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(start = 20.dp, top = 12.dp, end = 8.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(
+            text,
+            style = MaterialTheme.typography.labelMedium,
+            color = extras.primary,
+            modifier = Modifier.weight(1f)
+        )
+        trailingContent()
+    }
 }
 
 /** Statistic tile used by the privacy dashboard & homepage. */
 @Composable
-fun StatTile(value: String, label: String, modifier: Modifier = Modifier) {
+fun StatTile(
+    value: String,
+    label: String,
+    modifier: Modifier = Modifier,
+    copyable: Boolean = false
+) {
     val extras = LocalRoomExtras.current
+    val context = LocalContext.current
+    val copied = rememberCopiedFlag(value)
     Column(
         modifier = modifier
             .clip(RoundedCornerShape((extras.radius * 0.7f).dp))
             .background(extras.surfaceAlt.copy(alpha = 0.75f))
+            .let { base ->
+                if (!copyable) {
+                    base
+                } else {
+                    base.clickable {
+                        // Copied with its label: a bare "1931" out of context
+                        // says nothing.
+                        copySensitive(context, label, "$label: $value")
+                        copied.value = true
+                    }
+                }
+            }
             .padding(vertical = 14.dp, horizontal = 8.dp),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
@@ -315,11 +355,28 @@ fun StatTile(value: String, label: String, modifier: Modifier = Modifier) {
             style = MaterialTheme.typography.titleLarge,
             color = extras.textPrimary
         )
-        Text(
-            label,
-            style = MaterialTheme.typography.labelMedium,
-            color = extras.textSecondary
-        )
+        if (copyable) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    label,
+                    style = MaterialTheme.typography.labelMedium,
+                    color = extras.textSecondary,
+                    // One line, always: three tiles share the panel's width, so
+                    // a label that wrapped would make one tile taller than its
+                    // neighbours.
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                Spacer(Modifier.width(3.dp))
+                CopyStateIcon(copied.value, 11.dp, extras.textSecondary)
+            }
+        } else {
+            Text(
+                label,
+                style = MaterialTheme.typography.labelMedium,
+                color = extras.textSecondary
+            )
+        }
     }
 }
 

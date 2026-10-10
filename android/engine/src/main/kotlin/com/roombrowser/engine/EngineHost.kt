@@ -4,6 +4,7 @@ import android.content.Context
 import com.roombrowser.domain.model.Profile
 import com.roombrowser.domain.model.ProfileId
 import com.roombrowser.domain.proxy.ProxyScheme
+import com.roombrowser.engine.devtools.DeveloperToolsCapabilities
 
 /**
  * One entry in the diagnostics screen's engine list.
@@ -227,6 +228,20 @@ interface EngineHost {
      * process-death path and is not a checkpoint.
      */
     fun flush(context: Context)
+
+    /**
+     * What this engine can expose to Developer Tools, and why it cannot expose
+     * the rest.
+     *
+     * Asked of the HOST rather than of a session because the answer is a
+     * property of the engine, not of one tab: the Developer Tools screen must
+     * be able to state what is and is not available before any panel is open.
+     * It may be called before [bind], so an implementation must answer from
+     * static knowledge plus at most a cheap probe, never from a runtime that
+     * may not exist yet.
+     */
+    fun devToolsCapabilities(context: Context): DeveloperToolsCapabilities =
+        DeveloperToolsCapabilities.NONE
 
     /**
      * Release process-wide engine resources. After this the host is unusable;

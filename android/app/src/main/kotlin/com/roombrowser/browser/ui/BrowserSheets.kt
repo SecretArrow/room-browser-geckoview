@@ -33,6 +33,7 @@ import androidx.compose.material.icons.filled.AccountBalanceWallet
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.AddToHomeScreen
 import androidx.compose.material.icons.filled.AutoAwesome
+import androidx.compose.material.icons.filled.Build
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.DesktopWindows
@@ -289,7 +290,8 @@ fun PageActionsSheet(
     onOpenTwoFactor: () -> Unit,
     onOpenPasswords: () -> Unit,
     onShowQuickSwitcher: () -> Unit,
-    onShowShields: () -> Unit = {}
+    onShowShields: () -> Unit = {},
+    onOpenDeveloperTools: () -> Unit = {}
 ) {
     val context = LocalContext.current
     ModalBottomSheet(onDismissRequest = onDismiss, shape = RoomBottomSheetShape) {
@@ -348,6 +350,15 @@ fun PageActionsSheet(
                 onDismiss()
             }
             SheetAction(Icons.Filled.SafetyCheck, "Shields") { onDismiss(); onShowShields() }
+
+            // Developer Tools reads the live engine session, and a private
+            // tab's session is precisely what must not be inspectable — so the
+            // row is absent there rather than disabled, and no inspector is
+            // ever created for one.
+            if (!viewModel.pageState.isPrivate) {
+                SheetSectionLabel("Developer")
+                SheetAction(Icons.Filled.Build, "Developer tools") { onOpenDeveloperTools(); onDismiss() }
+            }
 
             SheetSectionLabel("Appearance")
             SheetAction(Icons.Filled.Palette, "Theme studio") {

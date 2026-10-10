@@ -292,6 +292,14 @@ class BrowserViewModel(
         private set
 
     /**
+     * The Developer Tools surface's state and its per-tab inspectors.
+     *
+     * Held here, not in a composable, because three of its four teardown paths
+     * are tab- and engine-lifecycle events this class already owns.
+     */
+    val devtools = com.roombrowser.devtools.DeveloperToolsManager()
+
+    /**
      * The tab an in-flight agent turn is working on, or null when no turn is
      * running. See [pinTabForAgent] for why it is held here rather than in
      * the controller.
@@ -1608,8 +1616,28 @@ class BrowserViewModel(
         return session
     }
 
+    /**
+     * Opens Developer Tools on the active tab, or closes it if it is already
+     * open. The one entry point, shared by the Page Actions row and by the
+     * F12 / Ctrl+Shift+I chord.
+     *
+     * A private tab is a silent no-op: Developer Tools is not offered there,
+     * and the keyboard must not be a way around that.
+     */
+    fun toggleDeveloperTools() {
+        if (devtools.isOpen) {
+            devtools.close()
+            return
+        }
+        if (pageState.isPrivate) return
+        devtools.open(activeTabId ?: return)
+    }
+
     fun closeTab(id: String) {
         viewModelScope.launch {
+            // The inspector goes before the engine does: it holds a handle to
+            // the session this call is about to destroy.
+            devtools.onTabClosed(id)
             // The private-session clear MUST run before the destroy below.
             // destroyEngineQuiet detaches the engine from the tab manager, and
             // a detached engine is unreachable from privateTabs() — so
@@ -1863,6 +1891,7 @@ class BrowserViewModel(
         // trying to respond into a closed session.
         runCatching { walletBridges.remove(session)?.dispose() }
         vaultBridges.remove(session)
+        devtools.detachEngine(session)
         tabManager.detachEngine(session)
         // close() is the facade's teardown and is idempotent: the adapter
         // stops the load, takes its view out of the hierarchy and destroys it,
@@ -3222,6 +3251,7 @@ class BrowserViewModel(
     override fun onCleared() {
         Log.d(NAV_TAG, "vm=$navId onCleared")
         runCatching { agent.shutdown() }
+        runCatching { devtools.close() }
         // Per-tab engines must not outlive the ViewModel's scope.
         runCatching { destroyAllWebViews() }
         if (::downloadEngine.isInitialized) downloadEngine.shutdown()

@@ -2,6 +2,7 @@ package com.roombrowser.engine
 
 import android.graphics.Bitmap
 import android.view.View
+import com.roombrowser.engine.devtools.EngineInspector
 
 /**
  * Opaque, engine-owned tab restore token.
@@ -280,6 +281,17 @@ interface EngineSession {
      * an empty implementation makes that text false.
      */
     fun clearSessionData()
+
+    /**
+     * The Developer Tools inspection handle for this session.
+     *
+     * Created on first call and reused, so a panel that reopens gets the same
+     * handle and does not stack a second capture sink on the engine. The
+     * default declares no engine-side capability at all, which is the truth for
+     * a session whose engine serves none -- anything observable purely from the
+     * page is asked through [evaluateJs] instead.
+     */
+    fun inspector(): EngineInspector = EngineInspector.NONE
 
     /** Tear the session down. Idempotent: calling it twice must be harmless. */
     fun close()
