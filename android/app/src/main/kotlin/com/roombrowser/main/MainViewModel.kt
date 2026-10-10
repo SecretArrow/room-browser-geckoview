@@ -22,6 +22,7 @@ import com.roombrowser.domain.export.PasswordTransfer
 import com.roombrowser.domain.export.PasswordTransferFormatException
 import com.roombrowser.domain.export.ProfileBackup
 import com.roombrowser.domain.export.ProfileBackupResult
+import com.roombrowser.domain.export.ProfileBundleResult
 import com.roombrowser.domain.export.WalletBackup
 import com.roombrowser.domain.export.WalletBackupFormatException
 import com.roombrowser.domain.model.Profile
@@ -153,28 +154,49 @@ data class ExportSections(
  */
 internal fun importedSummaryLine(
     summary: ProfileRepositoryImpl.ImportSummary
+): String = "Imported \"${summary.profile.name}\" (${summaryDetails(listOf(summary))})"
+
+/** The same report for a whole file: what landed, profile by profile. */
+internal fun importedBundleLine(
+    summaries: List<ProfileRepositoryImpl.ImportSummary>
 ): String {
+    val names = summaries.joinToString(", ") { it.profile.name }
+    val label = if (summaries.size == 1) "1 profile" else "${summaries.size} profiles"
+    return "Imported $label — $names (${summaryDetails(summaries)})"
+}
+
+/**
+ * What a restore actually wrote, section by section, summed over however many
+ * profiles it covered. One wording for the single and the bulk report, so the
+ * two can never describe the same work differently.
+ */
+private fun summaryDetails(
+    summaries: List<ProfileRepositoryImpl.ImportSummary>
+): String {
+    val bookmarks = summaries.sumOf { it.bookmarks }
+    val notes = summaries.sumOf { it.notes }
+    val credentials = summaries.sumOf { it.credentials }
+    val totp = summaries.sumOf { it.totp }
+    val sitePermissions = summaries.sumOf { it.sitePermissions }
+    val siteSettings = summaries.sumOf { it.siteSettings }
+    val wallets = summaries.mapNotNull { it.wallet }
     val parts = buildList {
-        if (summary.bookmarks > 0) add(count(summary.bookmarks, "bookmark"))
-        if (summary.notes > 0) add(count(summary.notes, "note"))
-        if (summary.credentials > 0) add(count(summary.credentials, "password"))
-        if (summary.totp > 0) add(count(summary.totp, "authenticator account"))
-        if (summary.sitePermissions > 0) add(count(summary.sitePermissions, "site permission"))
-        if (summary.siteSettings > 0) add(count(summary.siteSettings, "per-site setting"))
-        summary.wallet?.let { wallet ->
-            val restored = wallet.derivedAccountCount + wallet.importedAccountCount
-            if (restored > 0) add(count(restored, "wallet account"))
-            if (wallet.phraseRestored) add("recovery phrase")
-            // Named rather than absorbed: a key the file carried and this build
-            // could not take is the one thing about a wallet import the user
-            // must not learn from a missing balance later.
-            if (wallet.skipped.isNotEmpty()) {
-                add(count(wallet.skipped.size, "wallet key") + " skipped")
-            }
-        }
+        if (bookmarks > 0) add(count(bookmarks, "bookmark"))
+        if (notes > 0) add(count(notes, "note"))
+        if (credentials > 0) add(count(credentials, "password"))
+        if (totp > 0) add(count(totp, "authenticator account"))
+        if (sitePermissions > 0) add(count(sitePermissions, "site permission"))
+        if (siteSettings > 0) add(count(siteSettings, "per-site setting"))
+        val restored = wallets.sumOf { it.derivedAccountCount + it.importedAccountCount }
+        if (restored > 0) add(count(restored, "wallet account"))
+        if (wallets.any { it.phraseRestored }) add("recovery phrase")
+        // Named rather than absorbed: a key the file carried and this build
+        // could not take is the one thing about a wallet import the user
+        // must not learn from a missing balance later.
+        val skipped = wallets.sumOf { it.skipped.size }
+        if (skipped > 0) add(count(skipped, "wallet key") + " skipped")
     }
-    val details = if (parts.isEmpty()) "settings only" else parts.joinToString(", ")
-    return "Imported \"${summary.profile.name}\" ($details)"
+    return if (parts.isEmpty()) "settings only" else parts.joinToString(", ")
 }
 
 /** "1 bookmark" / "4 bookmarks" — the plural rule the import report uses for
@@ -353,6 +375,45 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     /** A parsed import payload waiting for its file passphrase / gate. */
     private var importPayload: ProfileBackup.BackupPayload? = null
+
+    // ---------- Bulk (several profiles in one file) ----------
+
+    /** A bulk export in flight: the profiles and the sections they share. */
+    private class BundleExportDraft(
+        val profiles: List<Profile>,
+        val sections: ExportSections
+    )
+
+    private var bundleExportDraft: BundleExportDraft? = null
+
+    /**
+     * One profile's plaintext while a bulk export is assembled, and then its
+     * sealed blocks. [sealHold] returns a hold whose three plaintext fields
+     * are empty, so no list of passwords, seeds or keys survives the seal —
+     * the same rule the single-profile holds follow, applied per profile.
+     */
+    private class BundleHold(
+        val profile: Profile,
+        val creds: List<SavedCredential> = emptyList(),
+        val totp: List<TotpBackup.Entry> = emptyList(),
+        val wallet: WalletBackup.Contents? = null,
+        val sealedVault: ProfileBackup.VaultBackup? = null,
+        val sealedTotp: ProfileBackup.VaultBackup? = null,
+        val sealedWallet: ProfileBackup.VaultBackup? = null
+    )
+
+    private var bundleExportHolds: List<BundleHold> = emptyList()
+
+    /** A parsed multi-profile file waiting for its passphrase / gate. */
+    private var importBundle: ProfileBackup.BackupBundle? = null
+
+    /** One profile's opened blocks, on the way into the bulk transaction. */
+    private class BundleOpened(
+        val payload: ProfileBackup.BackupPayload,
+        val creds: List<SavedCredential> = emptyList(),
+        val totp: List<TotpBackup.Entry> = emptyList(),
+        val wallet: WalletBackup.Payload? = null
+    )
 
     private var gateSeq = 0
     private var afterGate: (() -> Unit)? = null
@@ -710,6 +771,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
      *  ciphertexts; the passphrase CharArray is wiped immediately after
      *  use. */
     fun confirmExportPassphrase(passphrase: String) {
+        // A bulk export reaches this dialog by the same route as a single one:
+        // one passphrase prompt, a different set of blocks behind it.
+        if (bundleExportDraft != null) {
+            sealBundleExport(passphrase)
+            return
+        }
         val creds = exportCredentials
         val totpEntries = exportTotp
         val walletContents = exportWallet
@@ -792,57 +859,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     ) {
         val draft = exportDraft ?: return
         runCatching {
-            val id = draft.profile.id
-            val sections = draft.sections
-            ProfileBackup.serialize(
-                ProfileBackup.BackupPayload(
-                    profile = draft.profile,
-                    bookmarks = if (sections.bookmarks) {
-                        graph.browserRepo.bookmarks(id).map {
-                            ProfileBackup.BookmarkExport(it.url, it.title, it.folder, it.position)
-                        }
-                    } else {
-                        emptyList()
-                    },
-                    sitePermissions = if (sections.sitePermissions) {
-                        graph.browserRepo.permissions(id).map {
-                            ProfileBackup.SitePermissionExport(it.host, it.permission, it.decision)
-                        }
-                    } else {
-                        emptyList()
-                    },
-                    siteSettings = if (sections.siteSettings) {
-                        graph.browserRepo.allSiteSettings(id).map {
-                            ProfileBackup.SiteSettingExport(
-                                host = it.host,
-                                shieldsDisabled = it.shieldsDisabled,
-                                jsEnabled = it.jsEnabled,
-                                cookiesBlocked = it.cookiesBlocked,
-                                desktopMode = it.desktopMode,
-                                autoplayBlocked = it.autoplayBlocked,
-                                popupBlocked = it.popupBlocked
-                            )
-                        }
-                    } else {
-                        emptyList()
-                    },
-                    notes = if (sections.notes) {
-                        graph.browserRepo.notes(id).map {
-                            ProfileBackup.NoteExport(it.title, it.body)
-                        }
-                    } else {
-                        emptyList()
-                    },
-                    vault = vault,
-                    totp = totp,
-                    wallet = wallet
-                )
-            )
-        }.onSuccess { json ->
+            payloadFor(draft.profile, draft.sections, vault, totp, wallet)
+        }.onSuccess { payload ->
             exportCredentials = emptyList() // plaintext list dropped for good
             exportTotp = emptyList()        // the seeds with it
             exportWallet = null             // and the phrase with those
             exportDraft = null
+            val json = ProfileBackup.serialize(payload)
             pendingExport = PendingExport(
                 fileName = exportFileName(draft.profile.name),
                 json = json,
@@ -851,6 +874,63 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }.onFailure {
             abortExport(it.message ?: "could not build the export")
         }
+    }
+
+    /**
+     * One profile's payload, honouring the selection. Shared by the
+     * single-profile export and by each entry of a bulk export, so the two
+     * cannot drift into carrying different sections.
+     */
+    private suspend fun payloadFor(
+        profile: Profile,
+        sections: ExportSections,
+        vault: ProfileBackup.VaultBackup?,
+        totp: ProfileBackup.VaultBackup?,
+        wallet: ProfileBackup.VaultBackup?
+    ): ProfileBackup.BackupPayload {
+        val id = profile.id
+        return ProfileBackup.BackupPayload(
+            profile = profile,
+            bookmarks = if (sections.bookmarks) {
+                graph.browserRepo.bookmarks(id).map {
+                    ProfileBackup.BookmarkExport(it.url, it.title, it.folder, it.position)
+                }
+            } else {
+                emptyList()
+            },
+            sitePermissions = if (sections.sitePermissions) {
+                graph.browserRepo.permissions(id).map {
+                    ProfileBackup.SitePermissionExport(it.host, it.permission, it.decision)
+                }
+            } else {
+                emptyList()
+            },
+            siteSettings = if (sections.siteSettings) {
+                graph.browserRepo.allSiteSettings(id).map {
+                    ProfileBackup.SiteSettingExport(
+                        host = it.host,
+                        shieldsDisabled = it.shieldsDisabled,
+                        jsEnabled = it.jsEnabled,
+                        cookiesBlocked = it.cookiesBlocked,
+                        desktopMode = it.desktopMode,
+                        autoplayBlocked = it.autoplayBlocked,
+                        popupBlocked = it.popupBlocked
+                    )
+                }
+            } else {
+                emptyList()
+            },
+            notes = if (sections.notes) {
+                graph.browserRepo.notes(id).map {
+                    ProfileBackup.NoteExport(it.title, it.body)
+                }
+            } else {
+                emptyList()
+            },
+            vault = vault,
+            totp = totp,
+            wallet = wallet
+        )
     }
 
     /**
@@ -924,7 +1004,201 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    /** What to say when [fileName] reached the disk or the share sheet. */
+    // ---------- Bulk export: several profiles in one file ----------
+
+    /**
+     * Export step 1 for a bulk export. Same gate as [startExport], asked once
+     * for the whole set: the session gate is not per profile, and asking it
+     * three times to read three profiles would be theatre.
+     */
+    fun startBundleExport(profiles: List<Profile>, sections: ExportSections) {
+        if (profiles.isEmpty()) return
+        bundleExportDraft = BundleExportDraft(profiles, sections)
+        exportDraft = null
+        pendingExport = null
+        passphrasePrompt = null
+        pendingExportNote = null
+        if (!sections.needsVault) {
+            viewModelScope.launch {
+                buildBundleExport(profiles.map { BundleHold(it) })
+            }
+            return
+        }
+        if (vaultUnlocked()) {
+            readVaultForBundleExport()
+        } else {
+            requestVaultGate { readVaultForBundleExport() }
+        }
+    }
+
+    /** Export step 2 for a bulk export — read every selected profile's stores
+     *  for the sections that were asked for, then ask for the one passphrase
+     *  the whole file is sealed under. */
+    private fun readVaultForBundleExport() {
+        val draft = bundleExportDraft ?: return
+        viewModelScope.launch {
+            val outcome = runCatching {
+                graph.credentialRepo.unlock()
+                draft.profiles.map { profile ->
+                    BundleHold(
+                        profile = profile,
+                        creds = if (draft.sections.passwords) {
+                            graph.credentialRepo.exportAll(profile.id)
+                        } else {
+                            emptyList()
+                        },
+                        totp = if (draft.sections.totp) {
+                            graph.totpRepo.unlock()
+                            graph.totpRepo.exportAll(profile.id).map { entry ->
+                                TotpBackup.Entry(
+                                    issuer = entry.issuer,
+                                    account = entry.account,
+                                    secret = entry.secret,
+                                    algorithm = entry.algorithm,
+                                    digits = entry.digits,
+                                    period = entry.period
+                                )
+                            }
+                        } else {
+                            emptyList()
+                        },
+                        wallet = if (draft.sections.wallet) {
+                            graph.walletRepo.backupContents(profile.id, null)
+                                .takeIf { !it.isEmpty }
+                        } else {
+                            null
+                        }
+                    )
+                }
+            }
+            outcome.onSuccess { holds ->
+                bundleExportHolds = holds
+                val sealed = holds.count { it.creds.isNotEmpty() || it.totp.isNotEmpty() || it.wallet != null }
+                if (sealed == 0) {
+                    // Nothing in any of them needs a passphrase, so none is
+                    // asked for: a prompt here would guard nothing.
+                    buildBundleExport(holds)
+                    return@onSuccess
+                }
+                passphrasePrompt = PassphrasePrompt(
+                    forExport = true,
+                    profileName = bundleLabel(holds.size),
+                    credentialCount = holds.sumOf { it.creds.size },
+                    totpCount = holds.sumOf { it.totp.size },
+                    walletPhrase = null,
+                    id = ++promptSeq
+                )
+            }.onFailure {
+                abortExport(it.message ?: "could not read the profiles' saved data")
+            }
+        }
+    }
+
+    /** Export step 3 for a bulk export — seal each profile's blocks under the
+     *  one passphrase, then assemble the container. */
+    private fun sealBundleExport(passphrase: String) {
+        val holds = bundleExportHolds
+        val draft = bundleExportDraft
+        if (draft == null) return
+        viewModelScope.launch {
+            val outcome = runCatching {
+                val chars = passphrase.toCharArray()
+                withContext(Dispatchers.Default) {
+                    try {
+                        holds.map { hold -> sealHold(hold, chars) }
+                    } finally {
+                        PasswordVaultCrypto.wipe(chars)
+                    }
+                }
+            }
+            passphrasePrompt = null
+            outcome
+                .onSuccess { sealed -> buildBundleExport(sealed) }
+                .onFailure {
+                    abortExport(it.message ?: "could not seal the profiles' saved data")
+                }
+        }
+    }
+
+    /** One profile's three blocks, sealed under the shared passphrase, each as
+     *  its own ciphertext — the same rule the single-profile path follows.
+     *  The returned hold carries no plaintext. */
+    private fun sealHold(hold: BundleHold, chars: CharArray): BundleHold {
+        if (hold.creds.isEmpty() && hold.totp.isEmpty() && hold.wallet == null) {
+            return BundleHold(hold.profile)
+        }
+        return BundleHold(
+            profile = hold.profile,
+            sealedVault = if (hold.creds.isEmpty()) {
+                null
+            } else {
+                ProfileBackup.VaultBackup.from(
+                    PasswordVaultCrypto.encrypt(
+                        credentialsJson.encodeToString(
+                            ListSerializer(SavedCredential.serializer()), hold.creds
+                        ),
+                        chars
+                    )
+                )
+            },
+            sealedTotp = if (hold.totp.isEmpty()) {
+                null
+            } else {
+                TotpBackup.sealContents(
+                    contents = TotpBackup.Contents(hold.totp),
+                    header = TotpBackup.Header(
+                        profileLabel = hold.profile.name,
+                        exportedAt = System.currentTimeMillis()
+                    ),
+                    passphrase = chars
+                )
+            },
+            sealedWallet = hold.wallet?.let { contents ->
+                WalletBackup.sealBlock(
+                    contents = contents,
+                    header = WalletBackup.Header(
+                        profileLabel = hold.profile.name,
+                        exportedAt = System.currentTimeMillis()
+                    ),
+                    passphrase = chars
+                )
+            }
+        )
+    }
+
+    /** Export step 4 for a bulk export — build every payload and stage the
+     *  container for delivery. */
+    private suspend fun buildBundleExport(holds: List<BundleHold>) {
+        val draft = bundleExportDraft ?: return
+        runCatching {
+            val payloads = holds.map { hold ->
+                payloadFor(
+                    hold.profile, draft.sections,
+                    hold.sealedVault, hold.sealedTotp, hold.sealedWallet
+                )
+            }
+            ProfileBackup.serializeBundle(ProfileBackup.BackupBundle(profiles = payloads))
+        }.onSuccess { json ->
+            bundleExportHolds = emptyList()
+            bundleExportDraft = null
+            pendingExport = PendingExport(
+                fileName = bundleFileName(holds.size),
+                json = json,
+                sizeBytes = json.toByteArray(Charsets.UTF_8).size
+            )
+        }.onFailure {
+            abortExport(it.message ?: "could not build the export")
+        }
+    }
+
+    /** "3 profiles" — used for the prompt title and the file name. */
+    private fun bundleLabel(count: Int): String =
+        if (count == 1) "1 profile" else "$count profiles"
+
+    private fun bundleFileName(count: Int): String =
+        "room-browser-profiles-${count}-${System.currentTimeMillis()}.json"
+
+
     private fun exportDeliveredMessage(fileName: String): String = buildString {
         append("Exported \"")
         append(fileName)
@@ -983,6 +1257,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         exportCredentials = emptyList()
         exportTotp = emptyList()
         exportWallet = null
+        bundleExportDraft = null
+        bundleExportHolds = emptyList()
         passphrasePrompt = null
         pendingExport = null
         // A cancel or a failure is exactly the case where the pending delete
@@ -1007,7 +1283,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             runCatching {
                 withContext(Dispatchers.IO) {
-                    readCapped(uri, MAX_IMPORT_BYTES, "a profile backup")
+                    // The bulk ceiling: which of the two caps actually applies
+                    // is decided by [importProfile] once the text is in hand and
+                    // the file's kind is known.
+                    readCapped(uri, MAX_BUNDLE_IMPORT_BYTES, "a profile backup")
                 }
             }.onSuccess { importProfile(it) }
                 .onFailure {
@@ -1021,6 +1300,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
      * dialog BEFORE a single row is written.
      */
     fun importProfile(text: String) {
+        if (ProfileBackup.isBundle(text)) {
+            importBundleText(text)
+            return
+        }
         if (text.length > MAX_IMPORT_BYTES) {
             // The paste path has no picker in front of it, so the cap has to be
             // here too — a paste of a huge file is the same crash the capped
@@ -1061,6 +1344,213 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     /**
+     * Import step 1 for a MULTI-profile file. Same contract as the single
+     * path: one verdict, and a rejection writes nothing.
+     */
+    private fun importBundleText(text: String) {
+        if (text.length > MAX_BUNDLE_IMPORT_BYTES) {
+            importError = "That file is too large to be a Room Browser multi-profile export. " +
+                "Nothing was imported."
+            return
+        }
+        when (val parsed = ProfileBackup.parseBundle(text)) {
+            is ProfileBundleResult.Malformed ->
+                importError = "Not a valid Room Browser multi-profile export " +
+                    "(${parsed.detail}). Nothing was imported."
+            is ProfileBundleResult.InvalidVersion ->
+                importError =
+                    "That file holds a profile written in format v${parsed.found}, newer than " +
+                        "this app supports (v${parsed.maxSupported}). Update the app and try " +
+                        "again. Nothing was imported."
+            is ProfileBundleResult.Parsed -> {
+                importBundle = parsed.bundle
+                val count = parsed.bundle.profiles.size
+                if (parsed.bundle.profiles.none { it.hasSealedBlock() }) {
+                    finalizeBundleImport(parsed.bundle.profiles.map { BundleOpened(it) })
+                } else {
+                    // One passphrase covered the whole file on the way out, so
+                    // one prompt opens all of it on the way back in.
+                    passphrasePrompt = PassphrasePrompt(
+                        forExport = false,
+                        profileName = bundleLabel(count),
+                        credentialCount = 0,
+                        id = ++promptSeq,
+                        titleOverride = "Passphrase for ${bundleLabel(count)}",
+                        bodyOverride = "This file's profiles were sealed together under one " +
+                            "passphrase. Enter it once to restore all of them."
+                    )
+                }
+            }
+        }
+    }
+
+    /**
+     * Import step 2 for a multi-profile file: open every entry's sealed blocks
+     * with the one passphrase.
+     *
+     * Nothing is written until EVERY entry has opened — the decrypt round for
+     * the whole file happens under one [Dispatchers.Default] hop, and any
+     * failure abandons the lot. A bulk restore that opened four profiles and
+     * then hit a damaged fifth would otherwise have to either commit a partial
+     * list or throw away work the user already paid a passphrase for; refusing
+     * up front is the only answer that keeps "all or nothing" true.
+     */
+    private fun confirmBundleImportPassphrase(passphrase: String) {
+        val bundle = importBundle ?: return
+        viewModelScope.launch {
+            val chars = passphrase.toCharArray()
+            val opened = try {
+                withContext(Dispatchers.Default) {
+                    try {
+                        bundle.profiles.map { openBundleEntry(it, chars) }
+                    } finally {
+                        PasswordVaultCrypto.wipe(chars)
+                    }
+                }
+            } catch (e: VaultAuthException) {
+                // Wrong passphrase — the same retry-in-place contract as the
+                // single-profile dialog, fresh id and all.
+                passphrasePrompt = passphrasePrompt?.copy(
+                    error = "Wrong passphrase — try again",
+                    id = ++promptSeq
+                )
+                return@launch
+            } catch (e: VaultFormatException) {
+                abandonBundleImport("A sealed block in that file is corrupt.")
+                return@launch
+            } catch (e: TotpBackupFormatException) {
+                abandonBundleImport("The file's authenticator accounts are damaged.")
+                return@launch
+            } catch (e: WalletBackupFormatException) {
+                abandonBundleImport("The file's wallet keys are damaged.")
+                return@launch
+            } catch (e: SerializationException) {
+                abandonBundleImport("The file's password vault is unreadable.")
+                return@launch
+            }
+            passphrasePrompt = null
+            // Same gate, same rule as the single-profile path: writing into the
+            // device vault is gated like reading it, and the wallet is
+            // deliberately outside the condition (its rows are keyed by the new
+            // profile's own key, not by the credential vault).
+            val touchesVault = opened.any { it.creds.isNotEmpty() || it.totp.isNotEmpty() }
+            if (touchesVault && !vaultUnlocked()) {
+                requestVaultGate { finalizeBundleImport(opened) }
+            } else {
+                finalizeBundleImport(opened)
+            }
+        }
+    }
+
+    /** One entry's three blocks, opened. The credential array is decoded here
+     *  so a malformed one aborts the batch before the gate, not after it. */
+    private fun openBundleEntry(
+        entry: ProfileBackup.BackupPayload,
+        chars: CharArray
+    ): BundleOpened {
+        val credBlob = entry.vault?.let { PasswordVaultCrypto.decrypt(it.toCipherData(), chars) }
+        val creds = if (credBlob == null) {
+            emptyList()
+        } else {
+            credentialsJson.decodeFromString(
+                ListSerializer(SavedCredential.serializer()), credBlob
+            )
+        }
+        return BundleOpened(
+            payload = entry,
+            creds = creds,
+            totp = entry.totp?.let { TotpBackup.openContents(it, chars).entries } ?: emptyList(),
+            wallet = entry.wallet?.let { WalletBackup.openBlock(it, chars).payload }
+        )
+    }
+
+    private fun abandonBundleImport(reason: String) {
+        passphrasePrompt = null
+        importBundle = null
+        importError = "$reason Nothing was imported."
+    }
+
+    /**
+     * Import final step for a multi-profile file — ONE Room transaction over
+     * every entry (see [ProfileRepositoryImpl.importBundle]): either the whole
+     * file lands or none of it does.
+     *
+     * Naming is the one thing the single path cannot do per entry: two profiles
+     * in the same file may share a name, and [uniqueImportName] only knows the
+     * names that already existed when the batch started. So `taken` grows as
+     * the batch is named, and the second "Work" lands as "Work (imported)" just
+     * as if the first had been there all along.
+     */
+    private fun finalizeBundleImport(opened: List<BundleOpened>) {
+        if (opened.isEmpty()) return
+        viewModelScope.launch {
+            runCatching {
+                val existing = profileManager.profiles()
+                val now = System.currentTimeMillis()
+                val taken = existing.map { it.name }.toMutableList()
+                val entries = opened.mapIndexed { index, item ->
+                    val name = uniqueImportName(
+                        base = item.payload.profile.name,
+                        existingNames = taken,
+                        needsSuffix = existing.any { it.id == item.payload.profile.id }
+                    )
+                    taken += name
+                    val fresh = item.payload.profile.copy(
+                        id = ProfileId.new(),
+                        name = name,
+                        isLocked = false,
+                        // Default only if the list was empty AND this is the
+                        // first entry: a batch must not leave two defaults.
+                        isDefault = existing.isEmpty() && index == 0,
+                        createdAt = now,
+                        lastActiveAt = now
+                    )
+                    ProfileRepositoryImpl.BundleProfileImport(                        profile = fresh,
+                        bookmarks = item.payload.bookmarks,
+                        sitePermissions = item.payload.sitePermissions,
+                        siteSettings = item.payload.siteSettings,
+                        notes = item.payload.notes,
+                        writeCredentials = {
+                            if (item.creds.isEmpty()) {
+                                0
+                            } else {
+                                graph.credentialRepo.unlock()
+                                graph.credentialRepo.importAll(fresh.id, item.creds)
+                            }
+                        },
+                        writeTotp = {
+                            if (item.totp.isEmpty()) {
+                                0
+                            } else {
+                                graph.totpRepo.unlock()
+                                graph.totpRepo.importAll(fresh.id, item.totp)
+                            }
+                        },
+                        writeWallet = {
+                            item.wallet?.let { backup ->
+                                graph.walletRepo.restore(
+                                    profileId = fresh.id,
+                                    payload = backup,
+                                    enabledChains = derivedChainsOf(backup)
+                                )
+                            }
+                        }
+                    )
+                }
+                repo.importBundle(entries)
+            }.onSuccess { summaries ->
+                importBundle = null
+                message = importedBundleLine(summaries)
+            }.onFailure {
+                importBundle = null
+                importError =
+                    "Import failed — ${it.message ?: "the import was rolled back"}. " +
+                        "Nothing was imported."
+            }
+        }
+    }
+
+    /**
      * Import step 2 (a file with a sealed block) — the file's passphrase:
      * decrypt the password vault, the authenticator block and the wallet, or
      * stay in the dialog for a retry. Wrong passphrase NEVER writes anything;
@@ -1073,6 +1563,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         // dialog stays untouched by the passwords flow.
         if (passwordImport != null) {
             confirmPasswordImportPassphrase(passphrase)
+            return
+        }
+        if (importBundle != null) {
+            confirmBundleImportPassphrase(passphrase)
             return
         }
         val payload = importPayload
@@ -1285,6 +1779,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         passphrasePrompt = null
         dropExportState()
         importPayload = null
+        // A multi-profile file is abandoned by the same action, and holds
+        // nothing worth keeping: it is decrypted text that was never applied.
+        importBundle = null
         // The passwords import rides this same dialog, so it is abandoned by
         // this same action. The file is not held on to: a passphrase the user
         // backed out of is not a passphrase to keep waiting for.
@@ -1650,6 +2147,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         if (!success) {
             dropExportState()
             importPayload = null
+            importBundle = null
             // A gate that could not run is not a reason to forget the file:
             // but the file cannot be READ without the vault either, so the
             // import is abandoned and can be started again from the menu.
@@ -1722,3 +2220,20 @@ private const val MAX_PASSWORD_FILE_BYTES = 8 * 1024 * 1024
  * picker in front of it at all.
  */
 private const val MAX_IMPORT_BYTES = 16 * 1024 * 1024
+
+/**
+ * The cap for a file holding SEVERAL profiles. A container is bounded by
+ * `MAX_BUNDLE_PROFILES` entries rather than by one profile's worth of bytes,
+ * so the single-profile number would reject a legitimate file of a few
+ * dressed-up profiles. Twice it covers a realistic container several times
+ * over while staying far below what a heap can hold — and it is still a
+ * ceiling, not a promise: the paste path and the picker both read under it.
+ * The single-profile cap still governs a single-profile file; [importProfile]
+ * picks the ceiling by kind.
+ */
+private const val MAX_BUNDLE_IMPORT_BYTES = 2 * MAX_IMPORT_BYTES
+
+/** Does this entry carry anything sealed, i.e. does the file need a passphrase
+ *  before anything can be written? */
+private fun ProfileBackup.BackupPayload.hasSealedBlock(): Boolean =
+    vault != null || totp != null || wallet != null

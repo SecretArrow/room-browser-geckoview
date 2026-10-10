@@ -230,4 +230,79 @@ class ImportReportTest {
         // report says what came across rather than listing nothing at all.
         assertThat(importedSummaryLine(summary())).isEqualTo("Imported \"Work\" (settings only)")
     }
+
+    // -------------------------------------------------------- bulk report
+
+    private fun named(
+        name: String,
+        bookmarks: Int = 0,
+        credentials: Int = 0
+    ) = ProfileRepositoryImpl.ImportSummary(
+        profile = profile(name),
+        bookmarks = bookmarks,
+        notes = 0,
+        sitePermissions = 0,
+        siteSettings = 0,
+        credentials = credentials,
+        totp = 0,
+        wallet = null
+    )
+
+    @Test
+    fun `a batch report names every profile and sums the sections`() {
+        val line = importedBundleLine(
+            listOf(
+                named("Work", bookmarks = 1, credentials = 2),
+                named("Home", bookmarks = 2)
+            )
+        )
+
+        assertThat(line).isEqualTo("Imported 2 profiles — Work, Home (3 bookmarks, 2 passwords)")
+    }
+
+    @Test
+    fun `a batch of one still reads as a sentence`() {
+        // A container may legitimately hold a single profile, and "1 profiles"
+        // is the kind of thing a user reads as a bug in the app.
+        assertThat(importedBundleLine(listOf(named("Work"))))
+            .isEqualTo("Imported 1 profile — Work (settings only)")
+    }
+
+    @Test
+    fun `the batch report sums wallets across profiles, skips included`() {
+        val line = importedBundleLine(
+            listOf(
+                ProfileRepositoryImpl.ImportSummary(
+                    profile = profile("Work"),
+                    bookmarks = 0,
+                    notes = 0,
+                    sitePermissions = 0,
+                    siteSettings = 0,
+                    credentials = 0,
+                    totp = 0,
+                    wallet = wallet(phrase = true, derived = 2)
+                ),
+                ProfileRepositoryImpl.ImportSummary(
+                    profile = profile("Home"),
+                    bookmarks = 0,
+                    notes = 0,
+                    sitePermissions = 0,
+                    siteSettings = 0,
+                    credentials = 0,
+                    totp = 0,
+                    wallet = wallet(
+                        imported = 1,
+                        skipped = listOf(RestoreReport.SkippedKey("BTC", "Legacy", "unknown chain"))
+                    )
+                )
+            )
+        )
+
+        // Every key the file carried is accounted for: three restored, one
+        // named as skipped, and the phrase reported once rather than twice.
+        assertThat(line).contains("3 wallet accounts")
+        assertThat(line).contains("1 wallet key skipped")
+        assertThat(line).contains("recovery phrase")
+        assertThat(line).startsWith("Imported 2 profiles — Work, Home (")
+    }
 }

@@ -184,6 +184,22 @@ class ProfileRepositoryImpl(db: AppDatabase) : ProfileStore {
     )
 
     /**
+     * One profile's worth of a bulk restore. The closures are the same ones
+     * [importBackup] takes and run under the same rule: they join the outer
+     * transaction, and each writes under the profile carried here.
+     */
+    class BundleProfileImport(
+        val profile: Profile,
+        val bookmarks: List<ProfileBackup.BookmarkExport> = emptyList(),
+        val sitePermissions: List<ProfileBackup.SitePermissionExport> = emptyList(),
+        val siteSettings: List<ProfileBackup.SiteSettingExport> = emptyList(),
+        val notes: List<ProfileBackup.NoteExport> = emptyList(),
+        val writeCredentials: suspend () -> Int = { 0 },
+        val writeTotp: suspend () -> Int = { 0 },
+        val writeWallet: suspend () -> RestoreReport? = { null }
+    )
+
+    /**
      * ONE Room transaction for a whole backup import: profile row + bookmarks
      * + site permissions + site settings + (via [writeCredentials]) the
      * re-encrypted saved logins. Any exception from any write propagates and
@@ -218,6 +234,53 @@ class ProfileRepositoryImpl(db: AppDatabase) : ProfileStore {
         writeTotp: suspend () -> Int = { 0 },
         writeWallet: suspend () -> RestoreReport? = { null }
     ): ImportSummary = database.withTransaction {
+        writeBackup(
+            profile, bookmarks, sitePermissions, siteSettings, notes,
+            writeCredentials, writeTotp, writeWallet
+        )
+    }
+
+    /**
+     * Restore SEVERAL profiles in ONE Room transaction: either every profile
+     * in the file lands, or none does. Same rule as [importBackup] and for the
+     * same reason — a bulk restore that committed four of five profiles and
+     * then failed would leave a list that looks complete and is not.
+     *
+     * Each entry carries its own already-minted identity (see
+     * [importBackup]'s contract) and its own write closures, so each profile's
+     * passwords and seeds are re-encrypted under ITS OWN new key on the way in.
+     */
+    suspend fun importBundle(entries: List<BundleProfileImport>): List<ImportSummary> =
+        database.withTransaction {
+            entries.map { entry ->
+                writeBackup(
+                    entry.profile,
+                    entry.bookmarks,
+                    entry.sitePermissions,
+                    entry.siteSettings,
+                    entry.notes,
+                    entry.writeCredentials,
+                    entry.writeTotp,
+                    entry.writeWallet
+                )
+            }
+        }
+
+    /**
+     * The body of [importBackup]. It assumes the caller already holds the
+     * transaction, which is what makes one bulk restore one commit.
+     */
+    @Suppress("LongParameterList")
+    private suspend fun writeBackup(
+        profile: Profile,
+        bookmarks: List<ProfileBackup.BookmarkExport>,
+        sitePermissions: List<ProfileBackup.SitePermissionExport>,
+        siteSettings: List<ProfileBackup.SiteSettingExport>,
+        notes: List<ProfileBackup.NoteExport>,
+        writeCredentials: suspend () -> Int,
+        writeTotp: suspend () -> Int,
+        writeWallet: suspend () -> RestoreReport?
+    ): ImportSummary {
         val pid = profile.id.value
         dao.upsert(profile.toEntity())
         val now = System.currentTimeMillis()
@@ -284,7 +347,7 @@ class ProfileRepositoryImpl(db: AppDatabase) : ProfileStore {
         // to roll back. It returns a report rather than a count because a
         // restore can succeed for most keys and skip the rest.
         val wallet = writeWallet()
-        ImportSummary(
+        return ImportSummary(
             profile = profile,
             bookmarks = bookmarks.size,
             notes = notes.size,
