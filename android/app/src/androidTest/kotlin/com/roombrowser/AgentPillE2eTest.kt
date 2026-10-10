@@ -451,6 +451,27 @@ class AgentPillE2eTest {
         return presetRowVisible(name)
     }
 
+    /**
+     * Scrolls [desc] back into the editor's semantics tree.
+     *
+     * Compose stops reporting a node that is scrolled out of the viewport, so
+     * `findObject` returning null there means "out of view", not "not on the
+     * screen" — and a click or a tap into empty bounds silently goes nowhere.
+     * The screen is therefore paged in BOTH directions until the node is back.
+     */
+    private fun scrollToField(desc: String, timeoutMs: Long): Boolean {
+        repeat(4) {
+            if (device.hasObject(By.desc(desc))) return true
+            dragDownQuarter()
+        }
+        val deadline = System.currentTimeMillis() + timeoutMs
+        while (System.currentTimeMillis() < deadline) {
+            if (device.hasObject(By.desc(desc))) return true
+            dragUpQuarter()
+        }
+        return device.hasObject(By.desc(desc))
+    }
+
     /** Every text on screen, for a failure message that shows what was there. */
     private fun uiDump(): String = runCatching {
         device.findObjects(By.textContains("")).mapNotNull { it.text }.distinct().take(60)
@@ -834,12 +855,28 @@ class AgentPillE2eTest {
             "The preset must offer an Edit action",
             clickDescScrolled("agent_context_preset_edit_$name", 8_000)
         )
-        // The name field sits at the top of the screen, above the list the
-        // previous steps left in view.
-        dragDownQuarter()
-        dragDownQuarter()
+        // Edit mode is asserted before anything is typed: two blind drags used to
+        // be the only thing between the tap and the rename, so a tap that landed
+        // nowhere and a field that would not take text read identically.
         assertTrue(
-            "The preset-name field must accept the new name",
+            "Edit must put the editor in edit mode (the save button becomes Update preset); " +
+                "cancel button shown=${device.hasObject(By.desc("agent_context_preset_cancel"))}\n" +
+                uiDump(),
+            scrollToField("agent_context_preset_save", 8_000) &&
+                waitUntil(5_000) {
+                    device.hasObject(By.text("Update preset")) ||
+                        device.hasObject(By.desc("agent_context_preset_cancel"))
+                }
+        )
+        // The name field is composed at the top, above the list the previous steps
+        // left in view — and Compose stops reporting a node once it leaves the
+        // viewport, so it has to be scrolled BACK INTO the tree, not clicked blind.
+        assertTrue(
+            "The name field must still be reachable after an edit was started\n${uiDump()}",
+            scrollToField("agent_context_preset_name", 10_000)
+        )
+        assertTrue(
+            "The preset-name field must accept the new name\n${uiDump()}",
             typeIntoField("agent_context_preset_name", renamed)
         )
         assertTrue(
