@@ -70,6 +70,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -95,12 +96,14 @@ import com.roombrowser.domain.agent.OllamaModelPreset
 import com.roombrowser.domain.agent.OllamaModelPresets
 import com.roombrowser.domain.agent.OllamaPresetTier
 import com.roombrowser.domain.agent.OllamaRegistry
+import com.roombrowser.domain.paging.Paging
 import com.roombrowser.localai.engine.LlamaEngine
 import com.roombrowser.localai.store.OnDeviceDownloadController
 import com.roombrowser.localai.store.OnDeviceDownloadEntry
 import com.roombrowser.localai.store.OnDeviceModel
 import com.roombrowser.localai.store.OnDeviceModelStore
 import com.roombrowser.ui.common.EmptyState
+import com.roombrowser.ui.common.PagingFooter
 import com.roombrowser.ui.common.RoomBrowserTheme
 import com.roombrowser.ui.common.RoomCard
 import com.roombrowser.ui.common.SectionHeader
@@ -240,6 +243,7 @@ private fun LocalAiRoot(
     val snackbarHostState = remember { SnackbarHostState() }
     var notice by remember { mutableStateOf<String?>(null) }
     var confirmDelete by remember { mutableStateOf<String?>(null) }
+    var installedPage by remember { mutableIntStateOf(0) }
 
     LaunchedEffect(notice) {
         notice?.let {
@@ -421,7 +425,7 @@ private fun LocalAiRoot(
                         subtitle = "Install one from the catalog below — or import a previous setup."
                     )
                 } else {
-                    controller.installed.forEach { model ->
+                    Paging.slice(controller.installed, installedPage).forEach { model ->
                         InstalledModelRow(
                             model = model,
                             onUseInChat = {
@@ -430,6 +434,12 @@ private fun LocalAiRoot(
                             onDelete = { confirmDelete = model.name }
                         )
                     }
+                    PagingFooter(
+                        page = installedPage,
+                        total = controller.installed.size,
+                        onPage = { installedPage = it },
+                        semanticsPrefix = "localai_installed_page"
+                    )
                 }
             }
 
@@ -640,6 +650,7 @@ private fun OnDeviceEngineSection(
     // (import / delete) and whenever a download settles.
     var modelsRefresh by remember { mutableStateOf(0) }
     var models by remember { mutableStateOf<List<OnDeviceModel>>(emptyList()) }
+    var modelsPage by remember { mutableIntStateOf(0) }
     LaunchedEffect(modelsRefresh) {
         models = withContext(Dispatchers.IO) { store.list() }
     }
@@ -895,7 +906,7 @@ private fun OnDeviceEngineSection(
                 subtitle = "Import a .gguf file or download one below."
             )
         } else {
-            models.forEach { model ->
+            Paging.slice(models, modelsPage).forEach { model ->
                 OnDeviceModelRow(
                     model = model,
                     trying = tryingId == model.id,
@@ -908,6 +919,12 @@ private fun OnDeviceEngineSection(
                     }
                 )
             }
+            PagingFooter(
+                page = modelsPage,
+                total = models.size,
+                onPage = { modelsPage = it },
+                semanticsPrefix = "localengine_models_page"
+            )
         }
     }
 

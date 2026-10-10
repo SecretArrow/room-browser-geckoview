@@ -76,7 +76,9 @@ import com.roombrowser.domain.task.AiTaskPermissions
 import com.roombrowser.domain.task.AiTaskRunConfig
 import com.roombrowser.domain.task.ScheduleKind
 import com.roombrowser.domain.task.TaskSchedule
+import com.roombrowser.domain.paging.Paging
 import com.roombrowser.domain.task.needsVisibleBrowser
+import com.roombrowser.ui.common.PagingFooter
 import com.roombrowser.ui.common.RoomBrowserTheme
 import java.time.DayOfWeek
 import java.time.ZoneId
@@ -192,6 +194,10 @@ private fun TaskEditorRoot(
     var modelsLoading by remember { mutableStateOf(false) }
     var modelsError by remember { mutableStateOf<String?>(null) }
     var modelsRefresh by remember { mutableIntStateOf(0) }
+    /* Which page of the provider's model list is on screen. Reset whenever the
+     * provider changes: a page number is only meaningful for the list it was
+     * turned to. */
+    var modelsPage by remember { mutableIntStateOf(0) }
     var modeName by rememberSaveable(editing) {
         mutableStateOf((editing?.runConfig?.executionMode ?: AiTaskExecutionMode.HEADLESS).name)
     }
@@ -212,6 +218,10 @@ private fun TaskEditorRoot(
         .map { it.trim() }
         .filter { it.isNotEmpty() }
         .distinct()
+
+    LaunchedEffect(selectedProvider?.id, modelsRefresh, knownModels.size) {
+        modelsPage = Paging.clampPage(modelsPage, knownModels.size)
+    }
 
     // The provider's own list, read when the choice changes (and on demand),
     // never on every keystroke.
@@ -466,7 +476,7 @@ private fun TaskEditorRoot(
                         label = { Text("Auto") },
                         modifier = Modifier.semantics { contentDescription = "ai_task_model_auto" }
                     )
-                    knownModels.forEach { candidate ->
+                    Paging.slice(knownModels, modelsPage).forEach { candidate ->
                         FilterChip(
                             selected = modelText == candidate,
                             onClick = { modelText = candidate },
@@ -477,6 +487,12 @@ private fun TaskEditorRoot(
                         )
                     }
                 }
+                PagingFooter(
+                    page = modelsPage,
+                    total = knownModels.size,
+                    onPage = { modelsPage = it },
+                    semanticsPrefix = "ai_task_model_page"
+                )
                 modelsError?.let {
                     Spacer(Modifier.height(4.dp))
                     Text(

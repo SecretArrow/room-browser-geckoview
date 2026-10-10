@@ -75,8 +75,10 @@ import com.roombrowser.data.db.AgentProviderEntity
 import com.roombrowser.domain.agent.RetryCodes
 import com.roombrowser.domain.agent.RetryPolicy
 import com.roombrowser.domain.agent.RetryStatusCode
+import com.roombrowser.domain.paging.Paging
 import com.roombrowser.ui.common.EmptyState
 import com.roombrowser.ui.common.LocalRoomExtras
+import com.roombrowser.ui.common.PagingFooter
 import com.roombrowser.ui.common.RoomBottomSheetShape
 import com.roombrowser.ui.common.RoomBrowserTheme
 import com.roombrowser.ui.common.RoomSheetHeader
@@ -858,6 +860,7 @@ private fun DecisionModelDialog(
     var models by remember(provider.id) { mutableStateOf<List<String>>(emptyList()) }
     var loading by remember(provider.id) { mutableStateOf(true) }
     var typed by remember(provider.id) { mutableStateOf("") }
+    var page by remember(provider.id) { mutableStateOf(0) }
 
     LaunchedEffect(provider.id) {
         loading = true
@@ -889,7 +892,7 @@ private fun DecisionModelDialog(
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
-            models.forEach { tag ->
+            Paging.slice(models, page).forEach { tag ->
                 Row(
                     Modifier
                         .fillMaxWidth()
@@ -903,6 +906,12 @@ private fun DecisionModelDialog(
                     Text(tag, style = MaterialTheme.typography.bodyLarge)
                 }
             }
+            PagingFooter(
+                page = page,
+                total = models.size,
+                onPage = { page = it },
+                semanticsPrefix = "decision_model_page"
+            )
             Spacer(Modifier.height(8.dp))
             OutlinedTextField(
                 value = typed,

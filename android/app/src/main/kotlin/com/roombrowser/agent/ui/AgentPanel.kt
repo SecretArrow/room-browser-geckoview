@@ -139,7 +139,9 @@ import com.roombrowser.browser.BrowserViewModel
 import com.roombrowser.data.db.AgentProviderEntity
 import com.roombrowser.data.repo.AgentMode
 import com.roombrowser.domain.agent.AgentTools
+import com.roombrowser.domain.paging.Paging
 import com.roombrowser.ui.common.LocalRoomExtras
+import com.roombrowser.ui.common.PagingFooter
 import com.roombrowser.ui.common.RoomBottomSheetShape
 import com.roombrowser.ui.common.RoomCardShape
 import kotlinx.coroutines.Dispatchers
@@ -1516,6 +1518,9 @@ fun ModelPickerSheet(agent: BrowserAgentController, onDismiss: () -> Unit) {
     var loading by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
     var manual by remember { mutableStateOf("") }
+    // Reset with the provider: page 4 of one provider's list says nothing
+    // about the next provider's.
+    var modelPage by remember(selected?.id) { mutableStateOf(0) }
 
     LaunchedEffect(selected) {
         val provider = selected ?: return@LaunchedEffect
@@ -1601,7 +1606,7 @@ fun ModelPickerSheet(agent: BrowserAgentController, onDismiss: () -> Unit) {
                             horizontalArrangement = Arrangement.spacedBy(8.dp),
                             verticalArrangement = Arrangement.spacedBy(4.dp)
                         ) {
-                            models.forEach { model ->
+                            Paging.slice(models, modelPage).forEach { model ->
                                 FilterChip(
                                     selected = model == agent.activeModel,
                                     onClick = {
@@ -1612,6 +1617,12 @@ fun ModelPickerSheet(agent: BrowserAgentController, onDismiss: () -> Unit) {
                                 )
                             }
                         }
+                        PagingFooter(
+                            page = modelPage,
+                            total = models.size,
+                            onPage = { modelPage = it },
+                            semanticsPrefix = "agent_model_page"
+                        )
                     }
                     Spacer(Modifier.height(8.dp))
                     Row(verticalAlignment = Alignment.CenterVertically) {
