@@ -126,6 +126,15 @@ class WhatsMyIpE2eTest {
         return false
     }
 
+    /** The screen is taller than the emulator, so a desc below the fold needs the drag. */
+    private fun hasDescWithScroll(desc: String, attempts: Int = 12): Boolean {
+        for (i in 1..attempts) {
+            if (hasDesc(desc, 1_500)) return true
+            dragUpQuarter()
+        }
+        return false
+    }
+
     private fun engineUiUp(timeoutMs: Long): Boolean {
         val deadline = System.currentTimeMillis() + timeoutMs
         while (System.currentTimeMillis() < deadline) {
@@ -284,7 +293,7 @@ class WhatsMyIpE2eTest {
         // The identity rows resolve through the same settings the engine is
         // configured from. A profile created here is handed a catalogue handset
         // by ProfileManager, so the screen must report that, not "Engine default".
-        assertTrue("The user-agent row must be present", hasDesc("whatsmyip_user_agent", 5_000))
+        assertTrue("The user-agent row must be present", hasDescWithScroll("whatsmyip_user_agent"))
         assertTrue(
             "A profile created here presents as its catalogue device\n${uiTree()}",
             hasTextWithScroll("Device profile")
@@ -293,9 +302,9 @@ class WhatsMyIpE2eTest {
             "The engine's own string must be reported as unused\n${uiTree()}",
             hasTextWithScroll("Not reported - this profile supplies its own")
         )
-        assertTrue("The address rows must be present", hasDesc("whatsmyip_ipv4", 5_000))
-        assertTrue("The IPv6 row must be present", hasDesc("whatsmyip_ipv6", 5_000))
-        assertTrue("The proxy route must be reported", hasDesc("whatsmyip_proxy", 5_000))
+        assertTrue("The address rows must be present", hasDescWithScroll("whatsmyip_ipv4"))
+        assertTrue("The IPv6 row must be present", hasDescWithScroll("whatsmyip_ipv6"))
+        assertTrue("The proxy route must be reported", hasDescWithScroll("whatsmyip_proxy"))
 
         assertTrue("The screen must close", clickDesc("Close", 5_000))
         assertTrue("Closing must return to the engine\n${uiTree()}", engineUiUp(20_000))
