@@ -1,5 +1,6 @@
 package com.roombrowser.browser
 
+import android.annotation.SuppressLint
 import android.content.Intent
 import android.os.Bundle
 import android.util.Log
@@ -362,7 +363,15 @@ class BrowserActivity : FragmentActivity() {
      * engine view is a real Android view that takes focus: a Compose
      * `onPreviewKeyEvent` never sees a key aimed at it, and `dispatchKeyEvent`
      * sees every key before the view hierarchy does.
+     *
+     * `@SuppressLint("RestrictedApi")`: androidx.core marks its own
+     * `ComponentActivity.dispatchKeyEvent` override restricted because
+     * overriding it without chaining would cut the `OnBackPressedDispatcher`
+     * key path. Every key this override does not claim is handed straight back
+     * to `super`, so that path still runs and the restriction's reason does not
+     * apply here.
      */
+    @SuppressLint("RestrictedApi")
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
         if (event.action == KeyEvent.ACTION_DOWN &&
             event.repeatCount == 0 &&
