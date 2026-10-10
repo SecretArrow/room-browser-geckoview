@@ -773,6 +773,8 @@ internal class GeckoEngineHost : EngineHost {
      * a synchronous flush, a runtime restart -- would invent work that the
      * engine does not need.
      */
+    override fun devToolsCapabilities(context: Context) = GeckoDevTools.CAPABILITIES
+
     override fun flush(context: Context) {
         // Intentionally empty: see the KDoc above.
     }
