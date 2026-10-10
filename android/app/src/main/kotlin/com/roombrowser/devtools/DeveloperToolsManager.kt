@@ -83,10 +83,18 @@ class DeveloperToolsManager {
      * The inspector for [tabId], created on first ask and rebuilt if the tab's
      * engine is a different object than the one the inspector was built on.
      * Null when the tab has no live engine yet.
+     *
+     * A null [session] is NOT the tab closing — it is the start page, or an
+     * engine being rebuilt under a live tab — so it must not go through
+     * [onTabClosed]: that would clear [tabId] for the very tab the surface is
+     * pointed at, and since nothing but [open]/[focus] ever restores it the
+     * panel would vanish while still reporting itself open. The tab keeps its
+     * (closed) inspector and the surface renders "no engine session yet".
      */
     fun attach(tabId: String, session: EngineSession?): InspectorSession? {
         if (session == null) {
-            onTabClosed(tabId)
+            sessions.remove(tabId)?.close()
+            attachedEngine.remove(tabId)
             return null
         }
         val existing = sessions[tabId]

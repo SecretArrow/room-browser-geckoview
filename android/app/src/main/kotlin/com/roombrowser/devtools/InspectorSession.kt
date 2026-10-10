@@ -4,6 +4,7 @@ import com.roombrowser.engine.EngineSession
 import com.roombrowser.engine.devtools.DeveloperToolsCapabilities
 import com.roombrowser.engine.devtools.EngineInspector
 import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.builtins.serializer
 import kotlinx.serialization.json.Json
 import kotlin.coroutines.resume
@@ -37,16 +38,24 @@ class InspectorSession(
     val capabilities: DeveloperToolsCapabilities get() = inspector.capabilities
 
     /**
-     * Runs [script] in the page and returns its raw result, or `null` if the
-     * engine never answered.
+     * Runs [script] in the page and returns its raw result, or `null` if no
+     * answer arrived.
      *
      * `null` is the ONLY failure signal, deliberately: the console and network
      * panels must be able to say "the engine did not answer" rather than
      * render an empty list, and an engine that drops the call (GeckoView's
      * eval queue is bounded and drops on overflow) is exactly the case where
      * an empty list would be a lie.
+     *
+     * Bounded by [PROBE_TIMEOUT_MS] because the engine can also simply never
+     * call back — a port that never connects leaves the callback outstanding
+     * forever — and a promise that never settles has to surface as something
+     * other than "still reading", or the panel reports progress it is not
+     * making. The callback may still fire after the timeout; the continuation
+     * is no longer active, so the late value is dropped rather than delivered
+     * twice.
      */
-    suspend fun rawEval(script: String): String? =
+    suspend fun rawEval(script: String): String? = withTimeoutOrNull(PROBE_TIMEOUT_MS) {
         suspendCancellableCoroutine { continuation ->
             try {
                 session.evaluateJs(script) { value ->
@@ -56,6 +65,7 @@ class InspectorSession(
                 if (continuation.isActive) continuation.resume(null)
             }
         }
+    }
 
     /** Runs the app-authored page overview probe. Null when the engine did not answer or the reply did not decode. */
     suspend fun pageOverview(): PageOverview? {
@@ -77,4 +87,9 @@ class InspectorSession(
             jsResult
         }
     }.getOrDefault(jsResult)
+
+    companion object {
+        /** How long one page probe may take before it is reported as unanswered. */
+        const val PROBE_TIMEOUT_MS = 10_000L
+    }
 }

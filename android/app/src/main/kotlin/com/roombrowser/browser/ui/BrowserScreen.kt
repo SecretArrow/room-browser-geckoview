@@ -372,6 +372,17 @@ fun BrowserScreen(
             // Developer Tools docks in the same slot, for the same reasons: it
             // is app UI over the live page, and composing above the engine view
             // is also what keeps it out of a page screenshot.
+            //
+            // It lives only on the browser route, so it must not survive
+            // leaving it: the F12 chord reaches the view model without knowing
+            // which route is on screen, and a dock raised there would be open
+            // with nothing composed — and would then eat the next Back press on
+            // a sub-screen instead of leaving it.
+            LaunchedEffect(route, viewModel.devtools.isOpen) {
+                if (route != BrowserRoute.Browser && viewModel.devtools.isOpen) {
+                    viewModel.devtools.close()
+                }
+            }
             if (route == BrowserRoute.Browser && !viewModel.isFullscreen) {
                 com.roombrowser.devtools.DeveloperToolsHost(
                     viewModel = viewModel,
@@ -414,8 +425,10 @@ fun BrowserScreen(
             }
             // Developer Tools docks in the same slot as the agent panel, so it
             // takes Back first — it is the overlay the user most recently
-            // raised and the one covering the page.
-            viewModel.devtools.isOpen -> viewModel.devtools.close()
+            // raised and the one covering the page. Only on the browser route,
+            // where it is actually composed.
+            route == BrowserRoute.Browser && viewModel.devtools.isOpen ->
+                viewModel.devtools.close()
             agentPanelExpanded -> agentPanelExpanded = false
             // Sub-screens whose in-app back returns to their PARENT screen
             // (ProfileSettings / About open from the Settings screen) must

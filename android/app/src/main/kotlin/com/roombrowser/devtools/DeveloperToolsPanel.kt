@@ -92,6 +92,12 @@ fun DeveloperToolsHost(
     var refreshKey by remember(tabId) { mutableIntStateOf(0) }
 
     LaunchedEffect(tabId, engineSession, refreshKey) {
+        // `manager.tabId` is corrected by the focus effect above, which runs
+        // after this composition, so the frame that straddles a tab switch
+        // holds the OLD tab with the NEW session. Attaching there would key an
+        // inspector to the wrong tab and then build a second one for the right
+        // one; skip it, and re-run once focus lands.
+        if (tabId != viewModel.activeTabId) return@LaunchedEffect
         val attached = manager.attach(tabId, engineSession)
         inspector = attached
         if (attached == null) {
@@ -127,7 +133,11 @@ fun DeveloperToolsHost(
             tonalElevation = 3.dp,
             shadowElevation = 16.dp
         ) {
-            Column(Modifier.fillMaxSize()) {
+            // fillMaxWidth, NOT fillMaxSize: MINIMIZED is wrapContentHeight, and
+            // a fillMaxSize child reports the whole window back to it, making
+            // "minimize" the tallest of the three docks. The docked and
+            // fullscreen docks set a tight height the weighted body still fills.
+            Column(Modifier.fillMaxWidth()) {
                 DeveloperToolsHeader(
                     engineName = engineName,
                     dock = manager.dock,
@@ -298,8 +308,10 @@ private fun PageFacts(
                 color = extras.textSecondary
             )
             answered == false -> Text(
-                "The engine accepted the probe but never answered. That is a dropped round " +
-                    "trip between the app and the engine — not an empty page. Tap refresh.",
+                "No usable answer came back: either the engine never replied within " +
+                    "${InspectorSession.PROBE_TIMEOUT_MS / 1000} s, or it replied with " +
+                    "something this panel could not read. That is a dropped round trip " +
+                    "between the app and the engine — not an empty page. Tap refresh.",
                 style = MaterialTheme.typography.bodySmall,
                 color = extras.textSecondary
             )
