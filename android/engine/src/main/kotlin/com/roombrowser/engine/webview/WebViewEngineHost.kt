@@ -3,6 +3,7 @@ package com.roombrowser.engine.webview
 import android.content.Context
 import android.util.Log
 import android.webkit.CookieManager
+import android.webkit.WebSettings
 import android.webkit.WebStorage
 import android.webkit.WebView
 import android.webkit.WebViewDatabase
@@ -11,6 +12,7 @@ import androidx.webkit.ProxyController
 import androidx.webkit.WebViewFeature
 import com.roombrowser.domain.model.Profile
 import com.roombrowser.domain.model.ProfileId
+import com.roombrowser.domain.model.UserAgents
 import com.roombrowser.domain.proxy.ProxyScheme
 import com.roombrowser.engine.BlockedResourceSink
 import com.roombrowser.engine.EngineActivityDelegate
@@ -67,6 +69,14 @@ internal class WebViewEngineHost : EngineHost {
      */
     @Volatile
     private var bound: ProfileId? = null
+
+    /**
+     * The stock UA with WebView's two self-announcing tokens removed -- the same
+     * string, through the same helper, that a DEFAULT-mode profile sends.
+     */
+    override fun defaultUserAgent(context: Context): String? = runCatching {
+        UserAgents.webViewNeutralUserAgent(WebSettings.getDefaultUserAgent(context))
+    }.getOrNull()
 
     /**
      * WebView package name + version for the diagnostics screen.
