@@ -36,9 +36,13 @@ import kotlin.math.roundToInt
  *      and a fraction written outside 0..1 must still land inside the
  *      viewport (the clamping in AgentPillPosition.offsetPx).
  *
- *  (B) The "Default context" standing instruction. Turning it on while its
- *      text is blank must not arm anything (the chip opens the editor
- *      instead), and a non-blank context must still be on after a restart.
+ *  (B) The "Default context" standing instruction. Its editor is its OWN
+ *      ACTIVITY (DefaultContextActivity) — reached from the panel's chip and
+ *      from AI Agent settings — so the text has a whole screen to be written
+ *      on. Turning the switch on while the text is blank must not arm
+ *      anything (the panel's chip opens that editor instead), a non-blank
+ *      context must still be on after a restart, and the presets saved
+ *      beside it must re-apply, rename in place and delete.
  *
  * Harness: the same shape as AgentSettingsE2eTest — the page-menu route into
  * the agent panel, the shell-tap click helpers, the stability-gated engine
@@ -370,22 +374,59 @@ class AgentPillE2eTest {
 
     // ------------------------------------------------------- default context
 
-    private fun contextSheetOpen(): Boolean =
+    private fun contextEditorOpen(): Boolean =
         runCatching { device.findObjects(By.desc("agent_default_context_field")).isNotEmpty() }
             .getOrDefault(false)
 
+    /** Opens the editor the way AI Agent settings does, without the panel. */
+    private fun launchContextEditor() {
+        targetContext.startActivity(
+            Intent()
+                .setClassName(
+                    targetContext.packageName,
+                    "com.roombrowser.agent.ui.DefaultContextActivity"
+                )
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        )
+        device.waitForIdle(1_500)
+    }
+
     /**
-     * Types [text] into the DefaultContextSheet's field. The field is a
-     * Compose OutlinedTextField, so this is the proven typeIntoField shape:
-     * tap to focus, clear, type through the shell, VERIFY with a global text
-     * search (the field renders its content on an inner text node).
+     * Leaves the editor. Back is pressed once per window it has to close — the
+     * IME first when a field is focused, then the activity — and the exit is
+     * VERIFIED rather than assumed, because a Back that only dismissed the
+     * keyboard would leave the next step looking at the wrong screen.
      */
-    private fun typeIntoContextSheet(text: String): Boolean {
+    private fun closeContextEditor(): Boolean {
+        for (attempt in 1..3) {
+            if (!contextEditorOpen()) return true
+            device.pressBack()
+            device.waitForIdle(800)
+        }
+        return waitGoneDesc("agent_default_context_field", 2_000)
+    }
+
+    /**
+     * Types [text] into the field carrying [desc]. Both fields are Compose
+     * OutlinedTextFields, so this is the proven typeIntoField shape: tap to
+     * focus, clear, type through the shell, VERIFY with a global text search
+     * (the field renders its content on an inner text node).
+     *
+     * A field below the fold is scrolled in first: its `visibleBounds` is
+     * empty there, and the shell tap would land on whatever is on screen
+     * instead of the field.
+     */
+    private fun typeIntoField(desc: String, text: String): Boolean {
         for (round in 1..3) {
             hideImeIfNeeded()
-            val field = device.wait(Until.findObject(By.desc("agent_default_context_field")), 3_000)
-                ?: return false
-            clickCenter(field)
+            var field = device.wait(Until.findObject(By.desc(desc)), 3_000) ?: return false
+            for (scroll in 1..4) {
+                val onScreen = runCatching { field.visibleBounds.height() > 0 }.getOrDefault(false)
+                if (onScreen) break
+                dragUpQuarter()
+                field = device.wait(Until.findObject(By.desc(desc)), 2_000) ?: return false
+            }
+            clickSmart(field)
             device.executeShellCommand("input keyevent KEYCODE_MOVE_END")
             device.clearFocusedField()
             device.waitForIdle(400)
@@ -555,7 +596,8 @@ class AgentPillE2eTest {
                 agentButtonXFrac = null,
                 agentButtonYFrac = null,
                 defaultContext = "",
-                useDefaultContext = false
+                useDefaultContext = false,
+                contextPresets = emptyList()
             )
         }
         relaunchEngine()
@@ -571,13 +613,13 @@ class AgentPillE2eTest {
             "Tapping the chip with blank text must open the editor, not arm the toggle",
             hasDesc("agent_default_context_field", 8_000)
         )
-        // The sheet is its own window and hides everything behind it, so
-        // only the sheet's own contents can be asserted while it is open.
+        // The editor is its own window and hides everything behind it, so only
+        // its own contents can be asserted while it is open.
         val save = device.findObjects(By.desc("agent_default_context_save")).firstOrNull()
         assertTrue("The editor must offer a Save action", save != null)
         // The refusal is asserted as BEHAVIOUR, not as `save.isEnabled`. The
         // button really is disabled while blank — `enabled = draft.isNotBlank()`
-        // in DefaultContextSheet — but reading that flag back through
+        // in DefaultContextActivity — but reading that flag back through
         // UiAutomator is not reliable: Compose surfaces `enabled = false` as a
         // separate semantics node from the one carrying this content
         // description, so `isEnabled` came back true on a button that cannot be
@@ -585,23 +627,19 @@ class AgentPillE2eTest {
         // than the contract. Pressing Save while blank must leave the toggle
         // off; that is what the name of this test promises, and it holds
         // whether the press is refused by the disabled button or ignored by the
-        // sheet.
-        if (save!!.isEnabled) save.click()
+        // editor.
+        clickSmart(save!!)
         assertTrue(
             "A blank context must not arm the toggle",
             !readAgentSettings().useDefaultContext
         )
-        device.pressBack()
-        assertTrue(
-            "The editor must close on Back",
-            waitGoneDesc("agent_default_context_field", 8_000)
-        )
+        assertTrue("The editor must close on Back", closeContextEditor())
 
         // ---- 2. Write a context and save it ---------------------------------
         val context = "e2e_context_keep"
         var saved = false
         for (attempt in 1..3) {
-            if (!contextSheetOpen()) {
+            if (!contextEditorOpen()) {
                 if (!clickDesc("agent_default_context", 5_000)) {
                     // Back may have collapsed the panel: reopen it and retry.
                     openAgentPanelFromMenu()
@@ -609,13 +647,13 @@ class AgentPillE2eTest {
                 }
                 if (!hasDesc("agent_default_context_field", 8_000)) continue
             }
-            if (!typeIntoContextSheet(context)) {
+            if (!typeIntoField("agent_default_context_field", context)) {
                 hideImeIfNeeded()
                 continue
             }
             hideImeIfNeeded()
-            // Back may have taken the whole sheet if the IME was not up.
-            if (!contextSheetOpen()) continue
+            // Back may have taken the whole editor if the IME was not up.
+            if (!contextEditorOpen()) continue
             val button = device.wait(Until.findObject(By.desc("agent_default_context_save")), 3_000)
                 ?: continue
             clickSmart(button)
@@ -629,6 +667,9 @@ class AgentPillE2eTest {
             }
         }
         assertTrue("Saving a non-blank context must persist it and switch it on", saved)
+        if (!closeContextEditor()) {
+            assertTrue("The editor must close before the panel is used again", false)
+        }
 
         // ---- 3. It survives a process restart, and the composer shows it ----
         relaunchEngine()
@@ -642,5 +683,120 @@ class AgentPillE2eTest {
             "The composer must show the standing context as active",
             hasDesc("agent_active_contexts", 8_000) && textExists(context)
         )
+    }
+
+    /**
+     * (C) The presets saved beside the standing context — the CRUD the editor
+     * exposes. Each step is asserted from the STORED list, because the write
+     * and the read happen in different windows and a screen that merely looks
+     * right proves nothing about what was saved.
+     *
+     * The whole flow runs in the editor activity itself (reached by the same
+     * intent AI Agent settings uses) rather than through the panel: this test
+     * is about what the editor does, and the panel route is already exercised
+     * by (B).
+     */
+    @Test
+    fun a_context_preset_saves_applies_renames_and_deletes() {
+        E2eDeterminism.suppressOrganicNetworkWarnings()
+        bootstrapEngine()
+
+        val tag = System.currentTimeMillis() % 100000
+        val text = "e2e_preset_text_$tag"
+        val name = "e2e_preset_$tag"
+        val renamed = "e2e_preset_renamed_$tag"
+        seedAgentSettings {
+            it.copy(
+                showAgentButton = false,
+                agentButtonXFrac = null,
+                agentButtonYFrac = null,
+                defaultContext = "",
+                useDefaultContext = false,
+                contextPresets = emptyList()
+            )
+        }
+
+        // ---- 1. Save a preset out of the text field -------------------------
+        launchContextEditor()
+        assertTrue("The context editor must open", hasDesc("agent_default_context_field", 15_000))
+        assertTrue(
+            "The editor's text field must accept the context",
+            typeIntoField("agent_default_context_field", text)
+        )
+        assertTrue(
+            "The editor's preset-name field must accept a name",
+            typeIntoField("agent_context_preset_name", name)
+        )
+        assertTrue(
+            "The editor must offer Save as preset",
+            clickDesc("agent_context_preset_save", 5_000)
+        )
+        assertTrue(
+            "Saving a preset must store it under the typed name",
+            waitUntil(8_000) {
+                readAgentSettings().contextPresets.any { it.name == name && it.text == text }
+            }
+        )
+
+        // ---- 2. A fresh editor instance still lists it ----------------------
+        assertTrue("The editor must close on Back", closeContextEditor())
+        launchContextEditor()
+        assertTrue("The context editor must reopen", hasDesc("agent_default_context_field", 15_000))
+        assertTrue(
+            "A saved preset must be listed when the editor is opened again",
+            hasDesc("agent_context_preset_use_$name", 10_000)
+        )
+
+        // ---- 3. One tap applies it -----------------------------------------
+        assertTrue(
+            "The preset row must be applicable",
+            clickDesc("agent_context_preset_use_$name", 5_000)
+        )
+        assertTrue(
+            "Applying a preset must make it the active context",
+            waitUntil(8_000) {
+                val s = readAgentSettings()
+                s.useDefaultContext && s.defaultContext == text
+            }
+        )
+
+        // ---- 4. Editing RENAMES in place; it does not add a second copy -----
+        assertTrue(
+            "The preset must offer an Edit action",
+            clickDesc("agent_context_preset_edit_$name", 5_000)
+        )
+        assertTrue(
+            "The preset-name field must accept the new name",
+            typeIntoField("agent_context_preset_name", renamed)
+        )
+        assertTrue(
+            "The editor must offer Update preset",
+            clickDesc("agent_context_preset_save", 5_000)
+        )
+        assertTrue(
+            "A renamed preset must replace the old one, not add a copy",
+            waitUntil(8_000) {
+                val list = readAgentSettings().contextPresets
+                list.size == 1 && list.first().name == renamed && list.first().text == text
+            }
+        )
+
+        // ---- 5. Delete asks first, then removes it --------------------------
+        assertTrue(
+            "The preset must offer a Delete action",
+            clickDesc("agent_context_preset_delete_$renamed", 5_000)
+        )
+        assertTrue("Deleting must ask first", hasText("Delete preset?", 5_000))
+        assertTrue("The confirmation must be pressable", clickText("Delete", 5_000))
+        assertTrue(
+            "A confirmed delete must remove the preset",
+            waitUntil(8_000) { readAgentSettings().contextPresets.isEmpty() }
+        )
+        assertEquals(
+            "Deleting a preset must not touch the standing context",
+            text,
+            readAgentSettings().defaultContext
+        )
+        assertTrue("The editor must close on Back", closeContextEditor())
     }
 }

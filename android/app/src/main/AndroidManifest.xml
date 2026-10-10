@@ -186,6 +186,16 @@
             android:name=".agent.ui.AgentSessionsActivity"
             android:exported="false"
             android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboard|keyboardHidden|density|uiMode" />
+        <!--
+          The default-context editor — its OWN activity (default process, no
+          WebView), reached from the agent panel's context chip and from AI
+          Agent settings, so a paragraph has a screen to be written on.
+        -->
+        <activity
+            android:name=".agent.ui.DefaultContextActivity"
+            android:exported="false"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboard|keyboardHidden|density|uiMode"
+            android:windowSoftInputMode="adjustResize" />
 
         <!--
           Local AI (Ollama) manager — its OWN activity (default process, no
