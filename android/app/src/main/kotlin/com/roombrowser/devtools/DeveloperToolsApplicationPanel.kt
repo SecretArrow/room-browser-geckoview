@@ -128,24 +128,6 @@ internal fun ApplicationPanel(scope: DevToolsPanelScope) {
     Block(DeveloperToolsStorageText.framesText(frames), "Frames")
 }
 
-/** One section: its header, a copy control, and the block text both draw. */
-@Composable
-private fun Block(body: String, title: String) {
-    val extras = LocalRoomExtras.current
-    SectionHeader(title) {
-        // A section writes its own text once, so what is on screen and what a
-        // copy carries cannot drift apart.
-        RoomCopyButton(body, title, "Copy the $title section")
-    }
-    Text(
-        body,
-        style = MaterialTheme.typography.bodySmall,
-        color = extras.textPrimary,
-        fontFamily = FontFamily.Monospace,
-        modifier = Modifier.padding(horizontal = 20.dp).padding(bottom = 6.dp)
-    )
-}
-
 /**
  * A storage area, with one row per key.
  *

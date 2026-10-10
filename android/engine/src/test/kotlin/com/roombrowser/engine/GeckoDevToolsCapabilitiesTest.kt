@@ -25,8 +25,35 @@ class GeckoDevToolsCapabilitiesTest {
             setOf(
                 DevToolsCapability.PAGE_SCRIPTING,
                 DevToolsCapability.CONSOLE_CAPTURE,
-                DevToolsCapability.NETWORK_REQUEST_LINE
+                DevToolsCapability.NETWORK_REQUEST_LINE,
+                DevToolsCapability.SECURITY_INFO,
+                DevToolsCapability.SECURITY_CERTIFICATE
             )
+        )
+    }
+
+    @Test
+    fun this_edition_declares_the_certificate_the_sibling_cannot() {
+        // The asymmetry that justifies two editions of one panel: GeckoView
+        // hands over the live connection's X509Certificate through
+        // onSecurityChange, and no WebView API does. A set that dropped either
+        // of these would hide a Security panel this build really can fill.
+        assertThat(capabilities.has(DevToolsCapability.SECURITY_INFO)).isTrue()
+        assertThat(capabilities.has(DevToolsCapability.SECURITY_CERTIFICATE)).isTrue()
+    }
+
+    @Test
+    fun the_security_note_names_only_what_the_api_really_omits() {
+        // Spelled out rather than compared to the constant, for the same reason
+        // as the console note above: this text is a claim about the engine, and
+        // a test that reads the constant would agree with a reworded lie. The
+        // three omissions are the ones checked against SecurityInformation --
+        // no TLS version, no cipher suite, and mixed-mode flags that report only
+        // what was loaded or blocked.
+        assertThat(GeckoDevTools.SECURITY_NOTE).isEqualTo(
+            "GeckoView reports the connection's certificate and whether the site is secure, but " +
+                "no TLS version and no cipher suite, and its mixed-content flags report only " +
+                "what it loaded or blocked."
         )
     }
 

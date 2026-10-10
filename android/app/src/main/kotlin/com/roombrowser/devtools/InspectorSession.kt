@@ -203,6 +203,18 @@ class InspectorSession(
     }
 
     /**
+     * What the page can say about its own transport security.
+     *
+     * Synchronous, like the overview: the page answers from what it already
+     * knows, so there is nothing to wait for and no poll. The certificate is NOT
+     * here -- a page cannot read its own -- and comes from [inspector] instead.
+     */
+    suspend fun securityProbe(): SecurityProbe? {
+        val raw = rawEval(DeveloperToolsSecurityScripts.securityProbeJs()) ?: return null
+        return decode(raw, SecurityProbe.serializer())
+    }
+
+    /**
      * ONE storage value, for a row the user revealed.
      *
      * Read on demand rather than carried in the dump, so a site's stored values

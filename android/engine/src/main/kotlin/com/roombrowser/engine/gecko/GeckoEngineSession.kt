@@ -20,6 +20,7 @@ import com.roombrowser.engine.NavigationDecision
 import com.roombrowser.engine.PageErrorKind
 import com.roombrowser.engine.PermissionResponder
 import com.roombrowser.engine.devtools.EngineInspector
+import com.roombrowser.engine.devtools.EngineSecurityInfo
 import org.json.JSONObject
 import org.mozilla.geckoview.AllowOrDeny
 import org.mozilla.geckoview.GeckoResult
@@ -108,6 +109,19 @@ internal class GeckoEngineSession(
     /** The most recent state Gecko flushed, as the serialised form. */
     @Volatile
     private var lastStateJson: String? = null
+
+    /**
+     * The last security state Gecko reported for this session, already turned
+     * into the facade's own shape.
+     *
+     * `@Volatile` because `onSecurityChange` arrives on the UI thread while the
+     * inspector reads it from whichever thread the panel composed on. Null means
+     * the engine has not reported one yet -- a fresh session, or a document it
+     * never got a connection for -- which the panel prints as unread rather than
+     * as insecure.
+     */
+    @Volatile
+    private var securitySnapshot: EngineSecurityInfo? = null
 
     /**
      * Whether the document on screen is one the app supplied through
@@ -687,6 +701,9 @@ internal class GeckoEngineSession(
 
     override fun inspector(): EngineInspector = devToolsInspector
 
+    /** The last security state the engine reported for the document on screen, or null if it has not. */
+    internal val securityState: EngineSecurityInfo? get() = securitySnapshot
+
     /** The one inspection handle for this session; a capture sink belongs to a session, not the engine. */
     internal val devToolsInspector: GeckoInspector by lazy { GeckoDevTools.inspector(this) }
 
@@ -959,6 +976,11 @@ internal class GeckoEngineSession(
 
         override fun onPageStart(session: GeckoSession, url: String) {
             currentProgress = 0
+            // The document is changing, so the previous connection's security
+            // state describes a page that is no longer on screen. Cleared rather
+            // than kept: onSecurityChange refills it once the new connection is
+            // classified, and until then "not reported" is the true answer.
+            securitySnapshot = null
             // [reportedUrl] for the same reason as onLocationChange: an
             // app-supplied document's URL IS the document, and this is the
             // callback the app's page-state update reads.
@@ -980,6 +1002,22 @@ internal class GeckoEngineSession(
             sessionState: GeckoSession.SessionState
         ) {
             lastStateJson = sessionState.toString()
+        }
+
+        /**
+         * The connection's security state, cached for the Security panel.
+         *
+         * GeckoView reports this on every change and holds no readable copy of
+         * its own, so the panel's pull would otherwise have nothing to pull
+         * from. Stored as the facade's [EngineSecurityInfo] rather than as the
+         * Mozilla type, so the conversion lives here with the rest of the
+         * engine's vocabulary and the inspector stays engine-free.
+         */
+        override fun onSecurityChange(
+            session: GeckoSession,
+            securityInfo: GeckoSession.ProgressDelegate.SecurityInformation
+        ) {
+            securitySnapshot = securityInfo.toEngineSecurityInfo()
         }
     }
 
@@ -1414,3 +1452,61 @@ internal class GeckoEngineSession(
 
 /** The serialised form of a Gecko session state, opaque above the facade. */
 internal class GeckoState(val json: String) : EngineState
+
+/**
+ * One of GeckoView's security reports, in the facade's own shape.
+ *
+ * TWO FIELDS ARE DELIBERATELY LEFT NULL. SecurityInformation carries no TLS
+ * version and no cipher suite, so a value filled in here would be this file's
+ * invention rather than the engine's report -- and the Security panel exists to
+ * be believed. `note` explains the gap so two "(not reported)" lines read as a
+ * stated limit rather than as a bug.
+ */
+private fun GeckoSession.ProgressDelegate.SecurityInformation.toEngineSecurityInfo(): EngineSecurityInfo =
+    EngineSecurityInfo(
+        secure = isSecure,
+        host = host.takeIf { it.isNotEmpty() },
+        protocolVersion = null,
+        cipherSuite = null,
+        certificate = certificate?.toEngineCertificate(),
+        mixedContent = mixedContentFlag(mixedModeActive, mixedModePassive),
+        note = GeckoDevTools.SECURITY_NOTE
+    )
+
+/**
+ * Mixed content, as far as this API can be believed.
+ *
+ * The two mixed-mode fields report content the engine LOADED or BLOCKED, which
+ * is not the same question as "was the page free of mixed content" -- there is
+ * no constant here that means "clean". So the answer is true when the engine
+ * named content, and absent when it did not, and never a claim of none that the
+ * engine did not make. The page's own view of its insecure subresources is
+ * printed in the section below this one.
+ */
+private fun mixedContentFlag(active: Int, passive: Int): Boolean? {
+    val named = setOf(
+        GeckoSession.ProgressDelegate.SecurityInformation.CONTENT_LOADED,
+        GeckoSession.ProgressDelegate.SecurityInformation.CONTENT_BLOCKED
+    )
+    return if (active in named || passive in named) true else null
+}
+
+/**
+ * A certificate as the panel prints it.
+ *
+ * `notBefore` and `notAfter` THROW rather than return when the certificate is
+ * expired or not yet valid -- and an expired certificate is exactly what a
+ * security panel gets opened for -- so both are caught here. A fingerprint is
+ * never guessed: SHA-256 over the encoded form, or absent.
+ */
+private fun java.security.cert.X509Certificate.toEngineCertificate(): EngineSecurityInfo.Certificate =
+    EngineSecurityInfo.Certificate(
+        subject = runCatching { subjectX500Principal?.name }.getOrNull(),
+        issuer = runCatching { issuerX500Principal?.name }.getOrNull(),
+        validFromMs = runCatching { notBefore.time }.getOrNull(),
+        validToMs = runCatching { notAfter.time }.getOrNull(),
+        fingerprint = runCatching {
+            val bytes = java.security.MessageDigest.getInstance("SHA-256").digest(encoded)
+            "SHA-256 " + bytes.joinToString(":") { "%02X".format(it.toInt() and 0xFF) }
+        }.getOrNull()
+    )
