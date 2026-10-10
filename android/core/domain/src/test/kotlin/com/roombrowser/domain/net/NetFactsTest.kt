@@ -1,6 +1,7 @@
 package com.roombrowser.domain.net
 
 import com.google.common.truth.Truth.assertThat
+import com.google.common.truth.Truth.assertWithMessage
 import com.roombrowser.domain.model.Devices
 import com.roombrowser.domain.model.ProfileSettings
 import com.roombrowser.domain.model.UaMode
@@ -119,7 +120,7 @@ class NetFactsTest {
                 scheme = ProxyScheme.HTTP,
                 scopes = setOf(ProxyScope.PAGES)
             )
-            assertThat(summary).named(why).contains("nothing is routed")
+            assertWithMessage(why).that(summary).contains("nothing is routed")
         }
     }
 
