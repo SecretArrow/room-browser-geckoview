@@ -1,5 +1,6 @@
 package com.roombrowser.data.proxy
 
+import com.roombrowser.domain.net.ExitIp
 import com.roombrowser.domain.proxy.ProxyCandidate
 import com.roombrowser.domain.proxy.ProxyHealth
 import com.roombrowser.domain.proxy.ProxyHealthRules
@@ -46,7 +47,7 @@ class ProxySweeper {
      * taken twice.
      */
     suspend fun directIp(): String? = withContext(Dispatchers.IO) {
-        EXIT_IP_ENDPOINTS.firstNotNullOfOrNull { url ->
+        ExitIp.ENDPOINTS.firstNotNullOfOrNull { url ->
             fetch(base, url)?.takeIf(ProxyHealthRules::looksLikeIp)
         }
     }
@@ -101,7 +102,7 @@ class ProxySweeper {
         val client = base.newBuilder()
             .proxy(Proxy(type, InetSocketAddress.createUnresolved(candidate.host, candidate.port)))
             .build()
-        EXIT_IP_ENDPOINTS.forEach { url ->
+        ExitIp.ENDPOINTS.forEach { url ->
             val started = System.currentTimeMillis()
             val ip = fetch(client, url) ?: return@forEach
             if (!ProxyHealthRules.looksLikeIp(ip)) return@forEach
@@ -136,11 +137,5 @@ class ProxySweeper {
         const val PROBE_CONCURRENCY = 24
         const val SWEEP_BUDGET_MS = 45_000L
 
-        /** Plain HTTPS endpoints that echo the caller's address. */
-        val EXIT_IP_ENDPOINTS = listOf(
-            "https://api.ipify.org",
-            "https://icanhazip.com",
-            "https://checkip.amazonaws.com"
-        )
     }
 }

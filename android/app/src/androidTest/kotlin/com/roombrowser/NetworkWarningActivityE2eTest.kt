@@ -33,6 +33,8 @@ import org.junit.runner.RunWith
  *   - "Don't Warn Again for This IP" (RESULT_SUPPRESS): releases + clears.
  *   - "Switch Profile" (RESULT_SWITCH): releases and re-opens the quick
  *     switcher on the engine screen.
+ *   - "Refresh IP" re-reads the address and reports whether it still matches
+ *     the warned one; it is never a decision, so the gate stands after it.
  *
  * The test arms the gate directly through the app's own AppStateRepository
  * (same payload armNetworkWarning writes), then relaunches the real engine
@@ -123,6 +125,20 @@ class NetworkWarningActivityE2eTest {
     private fun hasDesc(desc: String, timeoutMs: Long): Boolean =
         device.wait(Until.hasObject(By.desc(desc)), timeoutMs)
 
+    private fun clickDesc(desc: String, timeoutMs: Long): Boolean {
+        val node = device.wait(Until.findObject(By.desc(desc)), timeoutMs) ?: return false
+        return clickSmart(node)
+    }
+
+    /** A decision can sit below the fold on the CI emulator's short screen. */
+    private fun clickTextScrolled(text: String, attempts: Int = 8): Boolean {
+        for (i in 1..attempts) {
+            if (clickText(text, 1_500)) return true
+            dragUpQuarter()
+        }
+        return false
+    }
+
     private fun dragUpQuarter() {
         // Half-screen drag (3/4 → 1/4): the CI emulator's default profile is
         // 320x640 mdpi — deep content lives far below the fold there; the
@@ -197,7 +213,7 @@ class NetworkWarningActivityE2eTest {
         // warning for this fresh profile, clear it so the test's OWN armed
         // state is the only variable (idempotent when no warning shows).
         if (hasText(warningTitle, 3_000)) {
-            clickText("Continue", 3_000)
+            clickTextScrolled("Continue", attempts = 4)
             return engineUiUp(15_000)
         }
         return true
@@ -286,7 +302,7 @@ class NetworkWarningActivityE2eTest {
         assertTrue("'Switch Profile' must be offered", hasText("Switch Profile", 2_000))
         assertTrue("'Don't Warn Again for This IP' must be offered", hasText("Don't Warn Again for This IP", 2_000))
 
-        assertTrue("'Continue' must be clickable", clickText("Continue", 5_000))
+        assertTrue("'Continue' must be clickable", clickTextScrolled("Continue"))
         assertTrue(
             "Continue must release the engine back to the browser surface",
             engineUiUp(15_000)
@@ -310,7 +326,7 @@ class NetworkWarningActivityE2eTest {
         assertTrue("The pending decision must still be persisted after Back", pendingDecisionOrNull() != null)
 
         // Resolve cycle 2 through "Don't Warn Again for This IP".
-        assertTrue("'Don't Warn Again for This IP' must be clickable", clickText("Don't Warn Again for This IP", 5_000))
+        assertTrue("'Don't Warn Again for This IP' must be clickable", clickTextScrolled("Don't Warn Again for This IP"))
         assertTrue("Suppress must release the engine", engineUiUp(15_000))
         assertTrue(
             "Suppress must clear the persisted pending decision",
@@ -321,7 +337,7 @@ class NetworkWarningActivityE2eTest {
         armPendingDecision(profileId)
         relaunchEngine()
         assertTrue("The warning must come up (third cycle)", hasText(warningTitle, 20_000))
-        assertTrue("'Switch Profile' must be clickable", clickText("Switch Profile", 5_000))
+        assertTrue("'Switch Profile' must be clickable", clickTextScrolled("Switch Profile"))
         // The sheet's copy line sits at its top — check it BEFORE scrolling.
         // Polled rather than sampled once: this handoff is an engine release, an
         // activity launch and a sheet animation on top of two cold starts, so a
@@ -344,5 +360,57 @@ class NetworkWarningActivityE2eTest {
         device.pressBack()
         device.waitForIdle(1_000)
         runBlocking { appGraph.appState.clearPendingNetDecision() }
+    }
+
+    /**
+     * "Refresh IP" re-reads the address and says whether it still matches the
+     * warned one; it is NOT a fourth decision.
+     *
+     * What this can pin on the emulator is the contract, not the number: the
+     * probe goes to the internet (or fails), so the assertion is that a
+     * refresh always ENDS in a stated outcome — a reading, or an honest
+     * failure — and that the gate is untouched either way. A green address is
+     * the reading branch, and the emulator's own address can never be the
+     * payload's TEST-NET-3 address, so that branch is always "changed".
+     */
+    @Test
+    fun network_warning_refresh_reports_the_address_without_deciding() {
+        E2eDeterminism.suppressOrganicNetworkWarnings()
+        assertTrue("Engine must come up on a fresh profile", bootstrapFreshEngine())
+        val profileId = activeProfileId()
+
+        armPendingDecision(profileId)
+        relaunchEngine()
+        assertTrue(
+            "The warning must come up over the gated engine\n${uiTree()}",
+            hasText(warningTitle, 20_000)
+        )
+        assertTrue("The warned address must be shown", hasText("Current IP: $ip", 5_000))
+        assertTrue("The refresh action must be offered", hasDesc("net_warning_refresh", 5_000))
+
+        assertTrue("'Refresh IP' must be clickable", clickDesc("net_warning_refresh", 5_000))
+        // A refresh must END in a reading or in an honest failure — never in
+        // silence, and never in a "changed" claim no probe produced.
+        assertTrue(
+            "A refresh must report an outcome\n${uiTree()}",
+            waitUntil(40_000) {
+                hasDesc("net_warning_ip_changed", 300) ||
+                    hasDesc("net_warning_ip_unchanged", 300) ||
+                    hasDesc("net_warning_refresh_failed", 300)
+            }
+        )
+
+        // A refresh is NOT a decision: the gate still stands, and every way
+        // out is still offered.
+        assertTrue("The warning must still stand after a refresh", hasText(warningTitle, 3_000))
+        assertTrue("A refresh must not release the gate", pendingDecisionOrNull() != null)
+        assertTrue("'Continue' must still be offered", hasText("Continue", 2_000))
+
+        assertTrue("'Continue' must be clickable", clickTextScrolled("Continue"))
+        assertTrue("Continue must release the engine", engineUiUp(15_000))
+        assertTrue(
+            "Continue must clear the persisted pending decision",
+            waitUntil(6_000) { pendingDecisionOrNull() == null }
+        )
     }
 }
