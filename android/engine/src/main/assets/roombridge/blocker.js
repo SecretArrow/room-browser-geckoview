@@ -48,11 +48,31 @@
   /**
    * Whether the app is listening for network events.
    *
-   * The webRequest observers below run for EVERY request on the device, so the
-   * gate is what keeps a page nobody is inspecting from posting anything: when
-   * it is false each observer returns after one boolean test.
+   * The webRequest observers below run for EVERY request on the device, so this
+   * is what keeps a page nobody is inspecting from CROSSING THE PORT: while it
+   * is false each observation goes into [netBuffer] instead, which is an array
+   * push in this process and no message at all.
    */
   var netArmed = false;
+
+  /**
+   * The most recent observations, kept while nobody is listening.
+   *
+   * WITHOUT THIS THE PANEL OPENS ON AN EMPTY FEED. The app arms the feed from
+   * `startNetworkCapture`, which runs when the Network panel composes -- and by
+   * then the document the person is looking at has already loaded, so the one
+   * request they most want to see was the one that could never be reported.
+   * Holding the newest [NET_BUFFER_MAX] and flushing them on the next `netStart`
+   * is the same shape as the page-world console patch's own ring buffer, and
+   * for the same reason.
+   *
+   * Bounded, and NOT cleared on a `netStop`: the window between one panel
+   * closing and the next opening is exactly the window this exists to cover, so
+   * the ring keeps rolling and a re-opened panel opens on what happened while it
+   * was shut.
+   */
+  var NET_BUFFER_MAX = 200;
+  var netBuffer = [];
 
   var port = null;
   try {
@@ -70,6 +90,11 @@
       if (!message || typeof message !== "object") return;
       if (message.type === "netStart") {
         netArmed = true;
+        // The flush is synchronous, so no observation can slip in front of a
+        // buffered one and reach the app out of order.
+        var pending = netBuffer;
+        netBuffer = [];
+        for (var i = 0; i < pending.length; i++) sendNet(pending[i]);
         return;
       }
       if (message.type === "netStop") {
@@ -114,14 +139,24 @@
   }
 
   /**
-   * Report one network observation, when anyone is listening.
+   * Report one network observation.
    *
-   * A LOST REPORT IS HARMLESS HERE, unlike a lost block: these are observations
-   * for a panel, and the panel can only be open when `netArmed` is true. These
-   * observers are non-blocking, so their failure cannot affect a request.
+   * Buffered while nobody is listening rather than dropped -- see [netBuffer]
+   * above. These observers are non-blocking, so their failure cannot affect a
+   * request either way.
    */
   function reportNet(payload) {
-    if (!netArmed || !port) return;
+    if (!port) return;
+    if (!netArmed) {
+      netBuffer.push(payload);
+      while (netBuffer.length > NET_BUFFER_MAX) netBuffer.shift();
+      return;
+    }
+    sendNet(payload);
+  }
+
+  /** Post one observation. Split out so the arm-time flush and a live report are one path. */
+  function sendNet(payload) {
     try {
       port.postMessage(payload);
     } catch (e) {

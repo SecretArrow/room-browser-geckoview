@@ -167,6 +167,19 @@ class BlockerScriptsTest {
         }
     }
 
+    @Test
+    fun an_observation_arriving_before_the_arm_is_held_rather_than_dropped() {
+        // The app arms the feed from `startNetworkCapture`, which runs when the
+        // Network panel composes -- and by then the document has already loaded.
+        // Dropping what arrived before that leaves the panel unable to show the
+        // page's own first request, and the symptom is an empty feed rather than
+        // an error. The bound is the other half: an uninspected page must not
+        // grow a buffer without end.
+        assertThat(blockerJs).contains("netBuffer.push(payload)")
+        assertThat(blockerJs).contains("netBuffer.length > NET_BUFFER_MAX")
+        assertThat(blockerJs).contains("pending.length; i++) sendNet(pending[i])")
+    }
+
     /**
      * The text of one `webRequest` registration, from its `addListener(` to its
      * own closing `);`.
