@@ -81,7 +81,7 @@ internal fun NetworkPanel(session: InspectorSession) {
             color = extras.textSecondary,
             modifier = Modifier.weight(1f)
         )
-        IconButton(onClick = { session.network.clear() }) {
+        IconButton(onClick = { session.clearNetwork() }) {
             Icon(Icons.Filled.DeleteSweep, contentDescription = "Clear the network feed", tint = extras.icon)
         }
         IconButton(

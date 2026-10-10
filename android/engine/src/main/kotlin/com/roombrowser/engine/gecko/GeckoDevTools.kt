@@ -21,8 +21,7 @@ internal object GeckoDevTools {
         capabilities = setOf(
             DevToolsCapability.PAGE_SCRIPTING,
             DevToolsCapability.CONSOLE_CAPTURE,
-            DevToolsCapability.NETWORK_REQUEST_LINE,
-            DevToolsCapability.NETWORK_RESPONSE_HEADERS
+            DevToolsCapability.NETWORK_REQUEST_LINE
         ),
         notes = mapOf(DevToolsCapability.ENGINE_CONSOLE to ENGINE_CONSOLE_NOTE)
     )

@@ -12,8 +12,8 @@ import org.junit.Test
  * explains the ones that carry a note, so a set that over-claims shows a panel
  * that cannot fill, and one that under-claims hides work this build really
  * does. The asymmetry with the WebView edition is deliberate and is asserted
- * here rather than left to drift: `NETWORK_RESPONSE_HEADERS` IS present in this
- * edition (the extension's `onHeadersReceived`) and `ENGINE_CONSOLE` is NOT.
+ * here rather than left to drift: `ENGINE_CONSOLE` is present there (the
+ * chrome client's `onConsoleMessage`) and NOT here.
  */
 class GeckoDevToolsCapabilitiesTest {
 
@@ -25,15 +25,20 @@ class GeckoDevToolsCapabilitiesTest {
             setOf(
                 DevToolsCapability.PAGE_SCRIPTING,
                 DevToolsCapability.CONSOLE_CAPTURE,
-                DevToolsCapability.NETWORK_REQUEST_LINE,
-                DevToolsCapability.NETWORK_RESPONSE_HEADERS
+                DevToolsCapability.NETWORK_REQUEST_LINE
             )
         )
     }
 
     @Test
-    fun response_headers_are_present_and_engine_console_is_not() {
-        assertThat(capabilities.has(DevToolsCapability.NETWORK_RESPONSE_HEADERS)).isTrue()
+    fun response_headers_and_engine_console_are_both_absent() {
+        // Response headers were declared here once and were not served. The
+        // observers do not ask for the header blocks, and an unrequested block
+        // arrives as an empty list rather than as an error -- so the panel drew
+        // no header lines while the About screen promised them. A capability is
+        // a claim about what reaches the panel, never about what the API could
+        // be asked for.
+        assertThat(capabilities.has(DevToolsCapability.NETWORK_RESPONSE_HEADERS)).isFalse()
         assertThat(capabilities.has(DevToolsCapability.ENGINE_CONSOLE)).isFalse()
     }
 

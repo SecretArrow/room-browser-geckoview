@@ -82,7 +82,7 @@ internal fun ConsolePanel(session: InspectorSession) {
             color = extras.textSecondary,
             modifier = Modifier.weight(1f)
         )
-        IconButton(onClick = { session.console.clear() }) {
+        IconButton(onClick = { session.clearConsole() }) {
             Icon(Icons.Filled.DeleteSweep, contentDescription = "Clear the console feed", tint = extras.icon)
         }
     }

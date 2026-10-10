@@ -81,6 +81,24 @@ class InspectorSession(
     }
 
     /**
+     * Empties a feed and wakes the panel.
+     *
+     * The clear goes through the session for the same reason the append does:
+     * a panel caches its snapshot against the revision, so emptying the ring
+     * from the panel would leave the rows it just removed on screen until the
+     * next entry arrived -- a clear button that looks broken.
+     */
+    fun clearConsole() {
+        console.clear()
+        consoleRevision++
+    }
+
+    fun clearNetwork() {
+        network.clear()
+        networkRevision++
+    }
+
+    /**
      * Adds the rows a page-timing pull produced and wakes the panel.
      *
      * The revision is bumped here rather than by the panel so there is one

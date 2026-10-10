@@ -130,10 +130,18 @@
   }
 
   /*
-   * The network feed: response status, response headers, completion and
-   * failure. OBSERVERS ONLY -- no "blocking" in the third argument, so none of
-   * them can delay or alter a request, and none of them returns a decision.
-   * The blocking path is onBeforeRequest below and is deliberately separate.
+   * The network feed: response status, completion and failure. OBSERVERS ONLY --
+   * no "blocking" in the third argument, so none of them can delay or alter a
+   * request, and none of them returns a decision. The blocking path is
+   * onBeforeRequest below and is deliberately separate.
+   *
+   * The header blocks are NOT requested. `requestHeaders` is not part of an
+   * onBeforeRequest detail at all, and `responseHeaders` is populated only when
+   * the listener asks for it at registration -- which would put header
+   * marshalling on every request of a listener registered browser-wide, for a
+   * panel that is usually shut. So these observers report what arrives
+   * unrequested, and the app declares no header capability for this edition
+   * rather than drawing rows that would always be empty.
    */
 
   browser.webRequest.onHeadersReceived.addListener(
@@ -144,7 +152,6 @@
         url: details.url,
         method: details.method || null,
         statusCode: details.statusCode,
-        responseHeaders: details.responseHeaders || [],
         documentUrl: details.documentUrl || null,
         timeStamp: details.timeStamp
       });
@@ -268,7 +275,6 @@
         requestId: details.requestId,
         url: details.url,
         method: details.method || null,
-        requestHeaders: details.requestHeaders || [],
         documentUrl: details.documentUrl || null,
         isForMainFrame: details.type === "main_frame",
         resourceType: details.type || null,
