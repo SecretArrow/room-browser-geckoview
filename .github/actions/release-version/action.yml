@@ -1,11 +1,13 @@
 name: Release version
 description: >
-  The v1.0.x this edition is publishing. Taken as the higher of this repo's own
-  tags and the SIBLING edition's tags, plus one, so the two editions stop
-  drifting apart: whichever repo is ahead sets the number for both, and a
-  release pushed to both repos in the same session gives both the same tag. A
-  `v*` tag push is used as-is -- an explicitly cut tag is a decision, not an
-  input to this rule.
+  The v1.0.x this edition is publishing, kept in step with the SIBLING edition.
+  When the sibling is already ahead, its newest number is reused rather than
+  passed over -- the number after it would be the drift this whole step exists
+  to remove -- and when the two are level this edition moves to the next
+  number. So whoever releases first leads that round, the other catches up to
+  the same number, and a paired release ends with both editions saying v1.0.N
+  for the same N. A `v*` tag push is used as-is: an explicitly cut tag is a
+  decision, not an input to this rule.
 
 inputs:
   peer-repo:
@@ -51,10 +53,18 @@ runs:
           [ -n "$PEER" ] || echo "::warning::could not read tags from ${{ inputs.peer-repo }}; using this repo's own tags only"
           OWN=$(( 10#${OWN:-0} ))
           PEER=$(( 10#${PEER:-0} ))
+          # The next number only when the two editions are level. While the
+          # sibling is ahead, its number IS the next one -- taking the one after
+          # it is what made a paired release end at N+1 for the second edition
+          # and N for the first, forever a number apart. Reusing it is safe
+          # because both editions always carry the same feature set, and the two
+          # tags live in different repos pointing at their own commits.
           if [ "$PEER" -gt "$OWN" ]; then
-            echo "the sibling edition is ahead: $PEER > $OWN"
+            echo "sibling edition is ahead ($PEER > $OWN); publishing $PEER"
+            NEXT=$PEER
+          else
+            NEXT=$(( OWN + 1 ))
           fi
-          NEXT=$(( (OWN > PEER ? OWN : PEER) + 1 ))
           TAG="v1.0.$NEXT"
           echo "name=Room Browser $TAG (main)" >> "$GITHUB_OUTPUT"
         fi

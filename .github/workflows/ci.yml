@@ -881,9 +881,10 @@ jobs:
   # ROOMBROWSER_KEYSTORE_B64 secret, builds, and refuses to publish unless
   # apksigner confirms a non-debug signature on every APK. Desktop: windows
   # zip + linux deb/tar.gz (downloaded from the desktop matrix jobs of this
-  # same run). Version numbering continues from the highest existing v1.0.x
-  # tag of EITHER edition — this repo's tags and its sibling's — so the two
-  # apps publish the same version number instead of drifting apart.
+  # same run). Version numbering follows the highest v1.0.x tag of EITHER
+  # edition — this repo's tags and its sibling's — and REUSES the sibling's
+  # number when it is already ahead, so a round of releases leaves both
+  # editions on the same version instead of a number apart.
   # ---------------------------------------------------------------------
   release:
     name: Auto-release (Android + Desktop)
