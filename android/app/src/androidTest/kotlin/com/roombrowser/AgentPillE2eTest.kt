@@ -201,6 +201,27 @@ class AgentPillE2eTest {
         return clickSmart(node)
     }
 
+    /**
+     * [clickDesc] for a node that may start below the fold.
+     *
+     * A composed row that is scrolled out of view still carries its content
+     * description, so `findObject` returns it — but its `visibleBounds` is
+     * empty and `click()` on it goes nowhere, which reads as "the row is not
+     * clickable" when the row was simply never on screen. The node is
+     * scrolled into view before the click, and only clicked once it is.
+     */
+    private fun clickDescScrolled(desc: String, timeoutMs: Long): Boolean {
+        val deadline = System.currentTimeMillis() + timeoutMs
+        while (System.currentTimeMillis() < deadline) {
+            val node = device.findObject(By.desc(desc))
+            val onScreen = runCatching { (node?.visibleBounds?.height() ?: 0) > 0 }
+                .getOrDefault(false)
+            if (node != null && onScreen) return clickSmart(node)
+            dragUpQuarter()
+        }
+        return false
+    }
+
     /** SLOW drag (100 steps, no fling) that scrolls ~half the screen — the
      *  proven deterministic scroll for the CI emulator's small profile. */
     private fun dragUpQuarter() {
@@ -404,6 +425,46 @@ class AgentPillE2eTest {
             device.waitForIdle(800)
         }
         return waitGoneDesc("agent_default_context_field", 2_000)
+    }
+
+    /** True while the preset row for [name] is actually ON SCREEN. */
+    private fun presetRowVisible(name: String): Boolean = runCatching {
+        val height = device.findObject(By.desc("agent_context_preset_use_$name"))
+            ?.visibleBounds?.height() ?: 0
+        height > 0
+    }.getOrDefault(false)
+
+    /**
+     * Scrolls the preset list in until the row for [name] is on screen.
+     *
+     * The list sits below the two fields and the buttons the editor opens on,
+     * so the row starts out of view. It is composed there — reaching it by
+     * scrolling is what makes this an assertion about the editor rather than
+     * about where the editor happens to be scrolled to.
+     */
+    private fun scrollToPresetRow(name: String, timeoutMs: Long): Boolean {
+        val deadline = System.currentTimeMillis() + timeoutMs
+        while (System.currentTimeMillis() < deadline) {
+            if (presetRowVisible(name)) return true
+            dragUpQuarter()
+        }
+        return presetRowVisible(name)
+    }
+
+    /** Every text on screen, for a failure message that shows what was there. */
+    private fun uiDump(): String = runCatching {
+        device.findObjects(By.textContains("")).mapNotNull { it.text }.distinct().take(60)
+            .joinToString(" | ")
+    }.getOrDefault("<no dump>")
+
+    /** SLOW drag the other way, back to the top of a long editor screen. */
+    private fun dragDownQuarter() {
+        device.swipe(
+            device.displayWidth / 2, device.displayHeight / 4,
+            device.displayWidth / 2, device.displayHeight * 3 / 4, 100
+        )
+        device.waitForIdle(800)
+        try { Thread.sleep(300) } catch (_: InterruptedException) { }
     }
 
     /**
@@ -742,15 +803,23 @@ class AgentPillE2eTest {
         assertTrue("The editor must close on Back", closeContextEditor())
         launchContextEditor()
         assertTrue("The context editor must reopen", hasDesc("agent_default_context_field", 15_000))
-        assertTrue(
-            "A saved preset must be listed when the editor is opened again",
-            hasDesc("agent_context_preset_use_$name", 10_000)
-        )
+        if (!scrollToPresetRow(name, 10_000)) {
+            // The message carries what the screen DID show: a stored list that
+            // is empty, an editor that says so, and an editor that shows
+            // neither are three different defects.
+            val stored = readAgentSettings().contextPresets.joinToString(",") { it.name }
+            assertTrue(
+                "A saved preset must be listed when the editor is opened again; " +
+                    "stored=[$stored]; empty state shown=${textExists("No presets saved yet")}\n" +
+                    uiDump(),
+                false
+            )
+        }
 
         // ---- 3. One tap applies it -----------------------------------------
         assertTrue(
             "The preset row must be applicable",
-            clickDesc("agent_context_preset_use_$name", 5_000)
+            clickDescScrolled("agent_context_preset_use_$name", 8_000)
         )
         assertTrue(
             "Applying a preset must make it the active context",
@@ -763,15 +832,19 @@ class AgentPillE2eTest {
         // ---- 4. Editing RENAMES in place; it does not add a second copy -----
         assertTrue(
             "The preset must offer an Edit action",
-            clickDesc("agent_context_preset_edit_$name", 5_000)
+            clickDescScrolled("agent_context_preset_edit_$name", 8_000)
         )
+        // The name field sits at the top of the screen, above the list the
+        // previous steps left in view.
+        dragDownQuarter()
+        dragDownQuarter()
         assertTrue(
             "The preset-name field must accept the new name",
             typeIntoField("agent_context_preset_name", renamed)
         )
         assertTrue(
             "The editor must offer Update preset",
-            clickDesc("agent_context_preset_save", 5_000)
+            clickDescScrolled("agent_context_preset_save", 8_000)
         )
         assertTrue(
             "A renamed preset must replace the old one, not add a copy",
@@ -784,7 +857,7 @@ class AgentPillE2eTest {
         // ---- 5. Delete asks first, then removes it --------------------------
         assertTrue(
             "The preset must offer a Delete action",
-            clickDesc("agent_context_preset_delete_$renamed", 5_000)
+            clickDescScrolled("agent_context_preset_delete_$renamed", 8_000)
         )
         assertTrue("Deleting must ask first", hasText("Delete preset?", 5_000))
         assertTrue("The confirmation must be pressable", clickText("Delete", 5_000))
