@@ -53,7 +53,7 @@ object SystemFacts {
         val lp = runCatching { network?.let { cm?.getLinkProperties(it) } }.getOrNull()
         val vpn = caps?.hasTransport(NetworkCapabilities.TRANSPORT_VPN) == true
         return ConnectionFacts(
-            transport = transportLabel(context, caps, vpn),
+            transport = transportLabel(caps, vpn),
             metered = caps?.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_METERED) == false,
             vpn = vpn,
             localAddresses = runCatching {
@@ -76,48 +76,20 @@ object SystemFacts {
         )
     }
 
-    private fun transportLabel(
-        context: Context,
-        caps: NetworkCapabilities?,
-        vpn: Boolean
-    ): String {
+    private fun transportLabel(caps: NetworkCapabilities?, vpn: Boolean): String {
         if (caps == null) return "No active network"
         val base = when {
             caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) -> "Wi-Fi"
-            caps.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) ->
-                "Cellular" + cellularGeneration(context).let { if (it == null) "" else " ($it)" }
+            // No generation here: the radio's type needs READ_PHONE_STATE, which
+            // this app does not hold and will not ask a browser user for. Naming
+            // the transport is the whole of the honest answer.
+            caps.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) -> "Cellular"
             caps.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET) -> "Ethernet"
             caps.hasTransport(NetworkCapabilities.TRANSPORT_BLUETOOTH) -> "Bluetooth"
             else -> "Other"
         }
         return if (vpn) "VPN over $base" else base
     }
-
-    /**
-     * The generation the radio reports, or null when the platform will not say.
-     *
-     * `dataNetworkType` is gated behind READ_PHONE_STATE on several Android
-     * versions and this app holds no telephony permission, so the honest answer
-     * there is "Cellular" with no generation rather than a guess.
-     */
-    private fun cellularGeneration(context: Context): String? = runCatching {
-        when (context.getSystemService(TelephonyManager::class.java)?.dataNetworkType) {
-            TelephonyManager.NETWORK_TYPE_NR -> "5G"
-            TelephonyManager.NETWORK_TYPE_LTE -> "LTE"
-            TelephonyManager.NETWORK_TYPE_HSPAP,
-            TelephonyManager.NETWORK_TYPE_HSPA,
-            TelephonyManager.NETWORK_TYPE_HSDPA,
-            TelephonyManager.NETWORK_TYPE_HSUPA -> "HSPA"
-            TelephonyManager.NETWORK_TYPE_UMTS -> "3G"
-            TelephonyManager.NETWORK_TYPE_EDGE,
-            TelephonyManager.NETWORK_TYPE_GPRS -> "2G"
-            TelephonyManager.NETWORK_TYPE_CDMA,
-            TelephonyManager.NETWORK_TYPE_EVDO_0,
-            TelephonyManager.NETWORK_TYPE_EVDO_A,
-            TelephonyManager.NETWORK_TYPE_EVDO_B -> "CDMA"
-            else -> null
-        }
-    }.getOrNull()
 
     fun device(context: Context): DeviceFacts {
         val metrics = context.resources.displayMetrics
