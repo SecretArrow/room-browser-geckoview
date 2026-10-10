@@ -804,6 +804,22 @@ class BrowserViewModel(
             viewModelScope.launch { openNewTab(url, isPrivate = false) }
         }
 
+        /** A circle click. The tab's model URL is set here because the engine reports only
+         *  the blank document it is handed — without it the omnibox keeps the old address. */
+        override fun onCircleNavigation(session: EngineSession, url: String) {
+            if (session === activeSession) {
+                pageState = pageState.copy(
+                    url = url,
+                    title = "",
+                    loading = true,
+                    progress = 5,
+                    isHomepage = false
+                )
+                pageError = null
+            }
+            viewModelScope.launch { beginLoad(session, url) }
+        }
+
         /**
          * One upward message from a page-world bridge. The channel vocabulary
          * is the app's (the facade fixes none), and the payload is
