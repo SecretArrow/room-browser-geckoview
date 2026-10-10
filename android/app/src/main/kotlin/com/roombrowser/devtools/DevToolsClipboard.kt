@@ -71,6 +71,40 @@ internal fun pageFactsText(overview: PageOverview?, tabUrl: String, tabTitle: St
 
 private fun presence(value: Boolean?): String? = value?.let { if (it) "present" else "not reported" }
 
+/**
+ * The console feed as plain text, for a bug report.
+ *
+ * The engine's own messages are tagged, because "the page logged this" and "the
+ * engine complained about this" are different findings and a report that merged
+ * them would send the reader to the wrong place.
+ */
+internal fun consoleText(entries: List<ConsoleEntry>): String =
+    entries.joinToString("\n") { entry ->
+        val tag = if (entry.fromEngine) "engine" else "page"
+        val at = entry.source?.let { source ->
+            if (entry.line != null && entry.line > 0) " ($source:${entry.line})" else " ($source)"
+        } ?: ""
+        "[${entry.level}/$tag]$at ${entry.text}"
+    }
+
+/** The network feed as plain text, with the header values redaction left alone. */
+internal fun networkText(entries: List<NetworkEntry>): String {
+    val lines = mutableListOf<String>()
+    for (entry in entries) {
+        val head = listOfNotNull(
+            entry.kind,
+            entry.method,
+            entry.status?.toString() ?: "status unknown",
+            entry.url
+        ).joinToString(" ")
+        lines += if (entry.sizesHidden) "$head  [sizes hidden: no Timing-Allow-Origin]" else head
+        entry.documentUrl?.let { lines += "    in $it" }
+        entry.requestHeaders.forEach { lines += "    > ${it.name}: ${it.value}" }
+        entry.responseHeaders.forEach { lines += "    < ${it.name}: ${it.value}" }
+    }
+    return lines.joinToString("\n")
+}
+
 /** Trims a whole double to its integer form, so 2.0 reads as "2". */
 internal fun compactNumber(value: Double): String =
     if (value == value.toLong().toDouble()) value.toLong().toString() else value.toString()

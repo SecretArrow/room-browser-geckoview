@@ -57,6 +57,10 @@
       // Stringified, not the object: an object does not survive the world
       // boundary (see the PRIMITIVE-ONLY note in main.js).
       window.postMessage({ __roomScripts: JSON.stringify(message) }, "*");
+    } else if (message.type === "consoleStart") {
+      window.postMessage({ __roomConsoleStart: 1 }, "*");
+    } else if (message.type === "consoleStop") {
+      window.postMessage({ __roomConsoleStop: 1 }, "*");
     }
   });
 
@@ -92,6 +96,13 @@
         channel: data.channel,
         payload: data.payload
       });
+      return;
+    }
+
+    if (data.__roomConsoleFromPage === 1) {
+      // The entry is already a JSON string, so it crosses this boundary and
+      // the port unchanged.
+      port.postMessage({ type: "console", entry: String(data.entry) });
     }
   });
 })();

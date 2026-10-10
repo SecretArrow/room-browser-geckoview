@@ -26,6 +26,71 @@
   if (window.__roomBridgeInstalled) return;
   window.__roomBridgeInstalled = true;
 
+  /*
+   * ===================== the console patch =====================
+   *
+   * Installed at document start in EVERY frame, always: the ring buffer is
+   * what makes a log written before the DevTools panel opened still visible.
+   * Forwarding is gated on `consoleArmed`, so a page nobody is inspecting
+   * produces no port traffic at all.
+   */
+
+  /** Bounded, oldest dropped: an uninspected page must not grow a buffer forever. */
+  var CONSOLE_BUFFER_MAX = 200;
+  var consoleBuffer = [];
+  var consoleArmed = false;
+
+  function formatConsoleArg(value) {
+    try {
+      if (typeof value === "string") return value;
+      if (value === null) return "null";
+      if (typeof value === "object") return JSON.stringify(value);
+      return String(value);
+    } catch (e) {
+      return "[unserialisable]";
+    }
+  }
+
+  function recordConsole(level, parts) {
+    var entry = {
+      level: level,
+      text: parts.map(formatConsoleArg).join(" ").slice(0, 4000),
+      source: location.href,
+      line: 0,
+      ts: Date.now()
+    };
+    consoleBuffer.push(entry);
+    if (consoleBuffer.length > CONSOLE_BUFFER_MAX) consoleBuffer.shift();
+    if (consoleArmed) sendConsole(entry);
+  }
+
+  // A JSON string, not the object: an object does not survive the world
+  // boundary (see the PRIMITIVE-ONLY note at the top).
+  function sendConsole(entry) {
+    window.postMessage({ __roomConsole: 1, entry: JSON.stringify(entry) }, "*");
+  }
+
+  (function installConsole() {
+    ["log", "info", "warn", "error", "debug"].forEach(function (level) {
+      var original = console[level];
+      if (!original) return;
+      console[level] = function () {
+        // Recording is best-effort: a failure here must never stop the page's
+        // own console call from happening.
+        try { recordConsole(level, Array.prototype.slice.call(arguments)); } catch (e) {}
+        return original.apply(console, arguments);
+      };
+    });
+    window.addEventListener("error", function (event) {
+      recordConsole("error", [
+        String(event.message || "error") + " @ " + (event.filename || "") + ":" + (event.lineno || 0)
+      ]);
+    });
+    window.addEventListener("unhandledrejection", function (event) {
+      recordConsole("error", ["Unhandled rejection: " + String(event.reason)]);
+    });
+  })();
+
   /**
    * Evaluate in the page world.
    *
@@ -173,6 +238,20 @@
         if (scripts.vault) evaluate(scripts.vault);
         if (scripts.wallet) evaluate(scripts.wallet);
       }
+      return;
+    }
+
+    if (data.__roomConsoleStart) {
+      consoleArmed = true;
+      // Flush what happened before the panel opened, then empty the buffer so
+      // the same entry is never delivered twice.
+      consoleBuffer.forEach(sendConsole);
+      consoleBuffer.length = 0;
+      return;
+    }
+
+    if (data.__roomConsoleStop) {
+      consoleArmed = false;
     }
   });
 
@@ -187,6 +266,15 @@
     if (event.source !== window) return;
     var data = event.data;
     if (!data || typeof data !== "object") return;
+
+    if (data.__roomConsole === 1) {
+      window.postMessage(
+        { __roomConsoleFromPage: 1, entry: String(data.entry) },
+        "*"
+      );
+      return;
+    }
+
     if (data.__roomToIso !== 1) return;
     window.postMessage(
       {

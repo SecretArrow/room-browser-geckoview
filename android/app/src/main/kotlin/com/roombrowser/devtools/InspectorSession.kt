@@ -3,8 +3,12 @@ package com.roombrowser.devtools
 import com.roombrowser.engine.EngineSession
 import com.roombrowser.engine.devtools.DeveloperToolsCapabilities
 import com.roombrowser.engine.devtools.EngineInspector
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.setValue
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withTimeoutOrNull
+import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.builtins.serializer
 import kotlinx.serialization.json.Json
 import kotlin.coroutines.resume
@@ -36,6 +40,71 @@ class InspectorSession(
     val inspector: EngineInspector = session.inspector()
 
     val capabilities: DeveloperToolsCapabilities get() = inspector.capabilities
+
+    /**
+     * The two live feeds. Both are bounded here rather than in the panels, so
+     * there is one cap per feed and [close] frees them on every teardown path.
+     */
+    val console = DeveloperToolsRing<ConsoleEntry>(CONSOLE_CAP)
+    val network = DeveloperToolsRing<NetworkEntry>(NETWORK_CAP)
+
+    /**
+     * Bumped when a feed appends. The panels read a snapshot and recompose off
+     * this counter instead of polling, so a panel that is not open costs
+     * nothing and one that is open redraws exactly when there is something new.
+     */
+    var consoleRevision by mutableIntStateOf(0)
+        private set
+    var networkRevision by mutableIntStateOf(0)
+        private set
+
+    fun startConsole() {
+        inspector.startConsoleCapture { message ->
+            console.add(message.toEntry())
+            consoleRevision++
+        }
+    }
+
+    fun stopConsole() {
+        runCatching { inspector.stopConsoleCapture() }
+    }
+
+    fun startNetwork() {
+        inspector.startNetworkCapture { signal ->
+            network.add(signal.toEntry())
+            networkRevision++
+        }
+    }
+
+    fun stopNetwork() {
+        runCatching { inspector.stopNetworkCapture() }
+    }
+
+    /**
+     * Adds the rows a page-timing pull produced and wakes the panel.
+     *
+     * The revision is bumped here rather than by the panel so there is one
+     * writer for the feed and the counter cannot drift from it.
+     */
+    fun addResourceTimings(timings: List<ResourceTiming>) {
+        if (timings.isEmpty()) return
+        timings.forEach { network.add(it.toEntry()) }
+        networkRevision++
+    }
+
+    /**
+     * The page's own view of what it loaded, for the timing and size the engine
+     * does not report. Null when the page did not answer or the reply did not
+     * decode — the panel says so rather than showing an empty list.
+     */
+    suspend fun resourceTimings(): List<ResourceTiming>? {
+        val raw = rawEval(DeveloperToolsScripts.networkProbeJs()) ?: return null
+        val text = unquote(raw)
+        if (text.isBlank() || text == "null" || text == "undefined") return null
+        return runCatching {
+            json.decodeFromString(ListSerializer(ResourceTiming.serializer()), text)
+        }.getOrNull()
+    }
 
     /**
      * Runs [script] in the page and returns its raw result, or `null` if no
@@ -77,6 +146,8 @@ class InspectorSession(
 
     fun close() {
         runCatching { inspector.close() }
+        console.clear()
+        network.clear()
     }
 
     /** The engine returns string results JSON-encoded — undo that, and leave a non-string result alone. */
@@ -91,5 +162,9 @@ class InspectorSession(
     companion object {
         /** How long one page probe may take before it is reported as unanswered. */
         const val PROBE_TIMEOUT_MS = 10_000L
+
+        /** Entries kept per feed. Shown in the panel, so the number is a promise. */
+        const val CONSOLE_CAP = 2_000
+        const val NETWORK_CAP = 2_000
     }
 }

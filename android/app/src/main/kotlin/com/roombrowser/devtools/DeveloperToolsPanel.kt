@@ -164,6 +164,22 @@ fun DeveloperToolsHost(
                             hasSession = inspector != null || engineSession != null,
                             onRefresh = { refreshKey++ }
                         )
+                        // The live feeds are rendered only for a tab that has an
+                        // inspector AND an engine that declares the source, so a
+                        // panel whose requirements are absent is never composed -
+                        // not composed empty.
+                        val attached = inspector
+                        val consoleAvailable = capabilities.has(DevToolsCapability.CONSOLE_CAPTURE) ||
+                            capabilities.has(DevToolsCapability.ENGINE_CONSOLE)
+                        val networkAvailable = capabilities.has(DevToolsCapability.NETWORK_REQUEST_LINE)
+                        if (attached != null && (consoleAvailable || networkAvailable)) {
+                            Spacer(Modifier.height(24.dp))
+                            if (consoleAvailable) ConsolePanel(attached)
+                            if (networkAvailable) {
+                                Spacer(Modifier.height(16.dp))
+                                NetworkPanel(attached)
+                            }
+                        }
                         Spacer(Modifier.height(24.dp))
                     }
                 }

@@ -45,6 +45,15 @@
    */
   var filter = null;
 
+  /**
+   * Whether the app is listening for network events.
+   *
+   * The webRequest observers below run for EVERY request on the device, so the
+   * gate is what keeps a page nobody is inspecting from posting anything: when
+   * it is false each observer returns after one boolean test.
+   */
+  var netArmed = false;
+
   var port = null;
   try {
     port = browser.runtime.connectNative(NATIVE_APP);
@@ -59,6 +68,14 @@
   if (port) {
     port.onMessage.addListener(function (message) {
       if (!message || typeof message !== "object") return;
+      if (message.type === "netStart") {
+        netArmed = true;
+        return;
+      }
+      if (message.type === "netStop") {
+        netArmed = false;
+        return;
+      }
       if (message.type !== "filter") return;
       filter = {
         ads: new Set(message.adHosts || []),
@@ -95,6 +112,72 @@
       console.error("[roomblock] could not report a block: " + e);
     }
   }
+
+  /**
+   * Report one network observation, when anyone is listening.
+   *
+   * A LOST REPORT IS HARMLESS HERE, unlike a lost block: these are observations
+   * for a panel, and the panel can only be open when `netArmed` is true. These
+   * observers are non-blocking, so their failure cannot affect a request.
+   */
+  function reportNet(payload) {
+    if (!netArmed || !port) return;
+    try {
+      port.postMessage(payload);
+    } catch (e) {
+      console.error("[roomblock] could not report a network event: " + e);
+    }
+  }
+
+  /*
+   * The network feed: response status, response headers, completion and
+   * failure. OBSERVERS ONLY -- no "blocking" in the third argument, so none of
+   * them can delay or alter a request, and none of them returns a decision.
+   * The blocking path is onBeforeRequest below and is deliberately separate.
+   */
+
+  browser.webRequest.onHeadersReceived.addListener(
+    function (details) {
+      reportNet({
+        type: "netResponse",
+        requestId: details.requestId,
+        url: details.url,
+        method: details.method || null,
+        statusCode: details.statusCode,
+        responseHeaders: details.responseHeaders || [],
+        documentUrl: details.documentUrl || null,
+        timeStamp: details.timeStamp
+      });
+    },
+    { urls: ["<all_urls>"] }
+  );
+
+  browser.webRequest.onCompleted.addListener(
+    function (details) {
+      reportNet({
+        type: "netCompleted",
+        requestId: details.requestId,
+        url: details.url,
+        documentUrl: details.documentUrl || null,
+        timeStamp: details.timeStamp
+      });
+    },
+    { urls: ["<all_urls>"] }
+  );
+
+  browser.webRequest.onErrorOccurred.addListener(
+    function (details) {
+      reportNet({
+        type: "netError",
+        requestId: details.requestId,
+        url: details.url,
+        error: details.error || null,
+        documentUrl: details.documentUrl || null,
+        timeStamp: details.timeStamp
+      });
+    },
+    { urls: ["<all_urls>"] }
+  );
 
   /** Host of a URL, lowercased, or null when there is none. */
   function hostOf(url) {
@@ -177,6 +260,21 @@
 
   browser.webRequest.onBeforeRequest.addListener(
     function (details) {
+      // Reported BEFORE any early return, so a blocked request and an allowed
+      // one are both visible. The RETURN VALUE below is untouched -- this call
+      // is a side effect and never contributes to the block decision.
+      reportNet({
+        type: "netRequest",
+        requestId: details.requestId,
+        url: details.url,
+        method: details.method || null,
+        requestHeaders: details.requestHeaders || [],
+        documentUrl: details.documentUrl || null,
+        isForMainFrame: details.type === "main_frame",
+        resourceType: details.type || null,
+        timeStamp: details.timeStamp
+      });
+
       if (!filter) return {};
       // The main frame is a NAVIGATION and belongs to the app's navigation
       // policy (`onNavigationRequest`: malicious-site refusal, HTTPS upgrade),
