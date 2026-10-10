@@ -347,7 +347,7 @@ class ProfileRepositoryImpl(db: AppDatabase) : ProfileStore {
         // to roll back. It returns a report rather than a count because a
         // restore can succeed for most keys and skip the rest.
         val wallet = writeWallet()
-        ImportSummary(
+        return ImportSummary(
             profile = profile,
             bookmarks = bookmarks.size,
             notes = notes.size,
