@@ -1,0 +1,73 @@
+name: Release version
+description: >
+  The v1.0.x this edition is publishing, kept in step with the SIBLING edition.
+  When the sibling is already ahead, its newest number is reused rather than
+  passed over -- the number after it would be the drift this whole step exists
+  to remove -- and when the two are level this edition moves to the next
+  number. So whoever releases first leads that round, the other catches up to
+  the same number, and a paired release ends with both editions saying v1.0.N
+  for the same N. A `v*` tag push is used as-is: an explicitly cut tag is a
+  decision, not an input to this rule.
+
+inputs:
+  peer-repo:
+    description: "owner/name of the sibling edition, e.g. SecretArrow/room-browser"
+    required: true
+
+outputs:
+  tag:
+    description: "the tag, e.g. v1.0.144"
+    value: ${{ steps.compute.outputs.tag }}
+  version:
+    description: "the tag without its v -- the versionName the build stamps"
+    value: ${{ steps.compute.outputs.version }}
+  name:
+    description: "the release's display name"
+    value: ${{ steps.compute.outputs.name }}
+
+runs:
+  using: composite
+  steps:
+    - name: Compute
+      id: compute
+      shell: bash
+      run: |
+        set -euo pipefail
+        if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+          TAG="$GITHUB_REF_NAME"
+          echo "name=Room Browser $TAG" >> "$GITHUB_OUTPUT"
+        else
+          git fetch --tags -f origin
+          OWN=$(git tag --list 'v1.0.*' | sed 's/^v1\.0\.//' | sort -n | tail -1)
+          # The sibling's newest tag, read over anonymous git rather than the
+          # REST API: both repos are public, so it needs no token, and the git
+          # protocol is not subject to the API's per-IP rate limit -- which a
+          # shared runner IP exhausts. Failure is not fatal: a release that
+          # cannot see its sibling continues from its own tags, which is what
+          # this step did before the two editions were kept in step.
+          PEER=$(git ls-remote --tags \
+                   "https://github.com/${{ inputs.peer-repo }}.git" \
+                   'refs/tags/v1.0.*' 2>/dev/null \
+                 | sed 's#.*refs/tags/v1\.0\.##' | sed 's/\^{}//' \
+                 | sort -n | tail -1 || true)
+          [ -n "$PEER" ] || echo "::warning::could not read tags from ${{ inputs.peer-repo }}; using this repo's own tags only"
+          OWN=$(( 10#${OWN:-0} ))
+          PEER=$(( 10#${PEER:-0} ))
+          # The next number only when the two editions are level. While the
+          # sibling is ahead, its number IS the next one -- taking the one after
+          # it is what made a paired release end at N+1 for the second edition
+          # and N for the first, forever a number apart. Reusing it is safe
+          # because both editions always carry the same feature set, and the two
+          # tags live in different repos pointing at their own commits.
+          if [ "$PEER" -gt "$OWN" ]; then
+            echo "sibling edition is ahead ($PEER > $OWN); publishing $PEER"
+            NEXT=$PEER
+          else
+            NEXT=$(( OWN + 1 ))
+          fi
+          TAG="v1.0.$NEXT"
+          echo "name=Room Browser $TAG (main)" >> "$GITHUB_OUTPUT"
+        fi
+        echo "tag=$TAG"         >> "$GITHUB_OUTPUT"
+        echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
+        echo "computed version: ${TAG#v}"

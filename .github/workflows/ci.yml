@@ -68,6 +68,33 @@ env:
 
 jobs:
   # ---------------------------------------------------------------------
+  # RELEASE VERSION: exercises `.github/actions/release-version` on every
+  # run, including pull_request and dispatch. The `release` job is the only
+  # other caller and it never runs on a pull request, so without this job a
+  # broken version step would first fail on a real release — after the two
+  # Android gates had already passed. Seconds to run, and nothing `needs:` it,
+  # so it costs the pipeline no wall-clock.
+  # ---------------------------------------------------------------------
+  version:
+    name: Release version (parity with the sibling edition)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Compute the version this pipeline would publish
+        id: v
+        uses: ./.github/actions/release-version
+        with:
+          peer-repo: SecretArrow/room-browser
+
+      - name: Report it
+        run: |
+          echo "### Would publish ${{ steps.v.outputs.tag }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "versionName \`${{ steps.v.outputs.version }}\`" >> "$GITHUB_STEP_SUMMARY"
+
+  # ---------------------------------------------------------------------
   # AUTO-FIX: runs lintFix CONCURRENTLY with every other job; if it
   # auto-corrects anything, the fixes are committed & pushed (PAT_TOKEN
   # re-triggers a clean pipeline run that validates the fixed tree).
@@ -689,20 +716,14 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v7
 
+      # The number is shared with the sibling edition (see the action): the
+      # desktop artifact stamped 1.0.144 must be the same release the Android
+      # APKs of this pipeline carry.
       - name: Compute version
         id: ver
-        shell: bash
-        run: |
-          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
-            V="${GITHUB_REF_NAME#v}"
-          else
-            git fetch --tags -f origin
-            LATEST=$(git tag --list 'v1.0.*' | sed 's/^v1\.0\.//' | sort -n | tail -1)
-            NEXT=$(( ${LATEST:-0} + 1 ))
-            V="1.0.$NEXT"
-          fi
-          echo "version=$V" >> "$GITHUB_OUTPUT"
-          echo "computed version: $V"
+        uses: ./.github/actions/release-version
+        with:
+          peer-repo: SecretArrow/room-browser
 
       - name: Fetch WebView2 SDK (official NuGet package)
         shell: pwsh
@@ -822,19 +843,13 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev
 
+      # The same number as the Windows job and the Android release — see the
+      # action for why it is read from both editions.
       - name: Compute version
         id: ver
-        run: |
-          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
-            V="${GITHUB_REF_NAME#v}"
-          else
-            git fetch --tags -f origin
-            LATEST=$(git tag --list 'v1.0.*' | sed 's/^v1\.0\.//' | sort -n | tail -1)
-            NEXT=$(( ${LATEST:-0} + 1 ))
-            V="1.0.$NEXT"
-          fi
-          echo "version=$V" >> "$GITHUB_OUTPUT"
-          echo "computed version: $V"
+        uses: ./.github/actions/release-version
+        with:
+          peer-repo: SecretArrow/room-browser
 
       - name: Configure + build (gcc, C11) + run core unit tests
         run: |
@@ -866,8 +881,10 @@ jobs:
   # ROOMBROWSER_KEYSTORE_B64 secret, builds, and refuses to publish unless
   # apksigner confirms a non-debug signature on every APK. Desktop: windows
   # zip + linux deb/tar.gz (downloaded from the desktop matrix jobs of this
-  # same run). Version numbering continues from the highest existing v1.0.x
-  # tag (the repo moved, run numbers restarted).
+  # same run). Version numbering follows the highest v1.0.x tag of EITHER
+  # edition — this repo's tags and its sibling's — and REUSES the sibling's
+  # number when it is already ahead, so a round of releases leaves both
+  # editions on the same version instead of a number apart.
   # ---------------------------------------------------------------------
   release:
     name: Auto-release (Android + Desktop)
@@ -946,29 +963,22 @@ jobs:
       - name: Cache Gradle
         uses: gradle/actions/setup-gradle@v5
 
+      # Whatever path cut this release, it is a STABLE release. The
+      # tag-vs-main branch used to also emit `prerelease`, and main always
+      # emitted `true` — so v1.0.98 through v1.0.102 were published as
+      # pre-releases although nothing about them was less finished than a
+      # tag-pushed build: same keystore, same gates, same APKs. Only the
+      # display name still records which path cut it.
+      #
+      # The number itself comes from the shared action, which reads the sibling
+      # edition's tags too — that is what keeps `com.roombrowser` and
+      # `com.roombrowser.gecko` publishing the SAME version instead of drifting
+      # a release or two apart.
       - name: Compute release tag
         id: tag
-        run: |
-          # Whatever path cut this release, it is a STABLE release. The
-          # tag-vs-main branch used to also emit `prerelease`, and main always
-          # emitted `true` — so v1.0.98 through v1.0.102 were published as
-          # pre-releases although nothing about them was less finished than a
-          # tag-pushed build: same keystore, same gates, same APKs. Only the
-          # display name still records which path cut it.
-          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
-            TAG="${GITHUB_REF_NAME}"
-            echo "name=Room Browser ${GITHUB_REF_NAME}"    >> "$GITHUB_OUTPUT"
-          else
-            git fetch --tags -f origin
-            LATEST=$(git tag --list 'v1.0.*' | sed 's/^v1\.0\.//' | sort -n | tail -1)
-            NEXT=$(( ${LATEST:-0} + 1 ))
-            TAG="v1.0.$NEXT"
-            echo "name=Room Browser $TAG (main)"           >> "$GITHUB_OUTPUT"
-          fi
-          echo "tag=$TAG"              >> "$GITHUB_OUTPUT"
-          # The versionName the build stamps into the manifest and into the APK
-          # filename: the tag without its "v" (v1.0.95 -> 1.0.95).
-          echo "version=${TAG#v}"      >> "$GITHUB_OUTPUT"
+        uses: ./.github/actions/release-version
+        with:
+          peer-repo: SecretArrow/room-browser
 
       - name: Decode the release keystore
         env:
