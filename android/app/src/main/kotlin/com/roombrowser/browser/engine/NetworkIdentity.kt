@@ -1,5 +1,6 @@
 package com.roombrowser.browser.engine
 
+import com.roombrowser.data.net.fetchExitIp
 import com.roombrowser.data.repo.AppStateRepository
 import com.roombrowser.data.repo.BrowserRepository
 import com.roombrowser.data.repo.IpCache
@@ -7,18 +8,15 @@ import com.roombrowser.domain.engine.IpAssociation
 import com.roombrowser.domain.engine.IpConflictDetector
 import com.roombrowser.domain.model.Profile
 import com.roombrowser.domain.model.WarningBehavior
-import kotlinx.coroutines.Dispatchers
+import com.roombrowser.domain.net.ExitIp
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
-import okhttp3.Request
-import java.util.concurrent.TimeUnit
 
 /**
- * Network identity: fetches the observed public IP (privacy-respecting,
- * configurable endpoints), caches results with a cooldown, and runs the
- * profile IP conflict check (spec sections 6 / 74).
+ * Network identity: fetches the observed public IP (privacy-respecting
+ * endpoints, shared with the proxy sweep through [ExitIp]), caches results
+ * with a cooldown, and runs the profile IP conflict check (spec 6 / 74).
  *
  * The public IP is fetched ONLY when network protection or network
  * diagnostics are enabled. All IP data stays in local Room storage —
@@ -29,13 +27,6 @@ class NetworkIdentity(
     private val browserRepo: BrowserRepository,
     private val detector: IpConflictDetector
 ) {
-
-    /** Plain HTTPS endpoints returning the IP in the response body. */
-    private val endpoints = listOf(
-        "https://api.ipify.org",
-        "https://icanhazip.com",
-        "https://checkip.amazonaws.com"
-    )
 
     sealed interface NetState {
         data object Idle : NetState
@@ -72,23 +63,7 @@ class NetworkIdentity(
             return cached.ip
         }
         _netState.value = NetState.Checking
-        val ip = withContext(Dispatchers.IO) {
-            endpoints.firstNotNullOfOrNull { endpoint ->
-                runCatching {
-                    client.newBuilder()
-                        .callTimeout(8, TimeUnit.SECONDS)
-                        .build()
-                        .newCall(Request.Builder().url(endpoint).build())
-                        .execute()
-                        .use { response ->
-                            if (response.isSuccessful) {
-                                response.body?.string()?.trim()
-                                    ?.takeIf { detector.isValidIp(it) }
-                            } else null
-                        }
-                }.getOrNull()
-            }
-        }
+        val ip = fetchExitIp(client, PROBE_TIMEOUT_MS, detector::isValidIp)
         return if (ip != null) {
             appState.setIpCache(IpCache(ip, now))
             _netState.value = NetState.Known(ip)
@@ -214,5 +189,6 @@ class NetworkIdentity(
 
     companion object {
         const val COOLDOWN_MS = 10 * 60 * 1000L // 10 minutes
+        private const val PROBE_TIMEOUT_MS = 8_000L
     }
 }
