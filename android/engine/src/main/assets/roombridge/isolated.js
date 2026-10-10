@@ -54,7 +54,9 @@
     if (message.type === "eval") {
       window.postMessage({ __roomEval: message.id, code: message.code }, "*");
     } else if (message.type === "scripts") {
-      window.postMessage({ __roomScripts: message }, "*");
+      // Stringified, not the object: an object does not survive the world
+      // boundary (see the PRIMITIVE-ONLY note in main.js).
+      window.postMessage({ __roomScripts: JSON.stringify(message) }, "*");
     }
   });
 

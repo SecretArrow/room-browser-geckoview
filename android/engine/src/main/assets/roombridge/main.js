@@ -157,12 +157,22 @@
     }
 
     if (data.__roomScripts) {
-      var scripts = data.__roomScripts;
-      // Order matters: the device shim first, so anything the later scripts
-      // read from the environment is already the claimed one.
-      if (scripts.deviceShim) evaluate(scripts.deviceShim);
-      if (scripts.vault) evaluate(scripts.vault);
-      if (scripts.wallet) evaluate(scripts.wallet);
+      // A JSON string -- see the PRIMITIVE-ONLY note at the top. The object
+      // form this used to receive arrived wrapped, so all three properties
+      // below read as undefined and nothing was evaluated.
+      var scripts = null;
+      try {
+        scripts = JSON.parse(data.__roomScripts);
+      } catch (e) {
+        scripts = null;
+      }
+      if (scripts) {
+        // Order matters: the device shim first, so anything the later scripts
+        // read from the environment is already the claimed one.
+        if (scripts.deviceShim) evaluate(scripts.deviceShim);
+        if (scripts.vault) evaluate(scripts.vault);
+        if (scripts.wallet) evaluate(scripts.wallet);
+      }
     }
   });
 

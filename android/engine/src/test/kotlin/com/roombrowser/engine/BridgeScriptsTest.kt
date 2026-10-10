@@ -83,6 +83,28 @@ class BridgeScriptsTest {
     }
 
     @Test
+    fun the_scripts_payload_crosses_the_world_boundary_as_a_primitive() {
+        // The second instance of the class of bug this file is named for, and
+        // the one the owner reported: the isolated half posted the payload as a
+        // structured OBJECT. An object does not survive the page/isolated world
+        // boundary, so the page half's `scripts.vault` read `undefined`,
+        // `RoomVaultScript` was never evaluated, the injected capture script
+        // never called `window.RoomVault.reportCredential`, and a successful
+        // login never offered to save the password -- silently, in both
+        // directions, because the relay and the receiver were both present and
+        // correct. The wallet provider and the device shim rode the same
+        // payload and went missing with it.
+        //
+        // Both halves are asserted together, because asserting one of them is
+        // exactly how the mismatch survived: the producer must stringify and
+        // the consumer must parse. The negative pins the consumer -- reading
+        // the object directly is the silent-no-op form.
+        assertThat(isolatedJs).contains("__roomScripts: JSON.stringify(message)")
+        assertThat(mainJs).contains("JSON.parse(data.__roomScripts)")
+        assertThat(mainJs).doesNotContain("= data.__roomScripts;")
+    }
+
+    @Test
     fun the_port_name_is_the_one_the_host_delegates() {
         // Both files carry a comment saying "must match" the other side. A
         // comment is not a check, and a mismatch here means connectNative
