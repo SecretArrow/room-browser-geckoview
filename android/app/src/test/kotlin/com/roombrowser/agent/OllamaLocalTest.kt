@@ -50,8 +50,8 @@ class OllamaLocalTest {
     @After
     fun tearDown() {
         // Resilient on purpose: the pull-cancellation test leaves MockWebServer's
-        // throttled writer sleeping (30 s chunk period) on a socket the client
-        // already abandoned via call.cancel() — server.shutdown() can then
+        // throttled writer sleeping on a socket the client already abandoned via
+        // call.cancel() — server.shutdown() can then
         // surface the forced interrupt as an IOException. That is harness
         // noise from the intentional stall, not a contract failure (the same
         // pattern the e2e tests use for their fake servers).
@@ -321,28 +321,25 @@ class OllamaLocalTest {
         //   BROKEN watcher  → the read only frees when the next chunk lands
         //                     or the read times out, whichever comes first.
         // Both halves of that pair are now pinned by this test rather than
-        // inherited from app code. The chunk period is 120 s and the client
-        // below is built with a 600 s read timeout, so 120 s is the ONLY way a
-        // broken watcher can escape — and the 40 s window is a clean 3x margin
+        // inherited from app code. The chunk period is 600 s and the client
+        // below is built with a 1200 s read timeout, so the chunk is the ONLY
+        // way a broken watcher can escape — and the 120 s window is a 5x margin
         // under it.
         //
-        // The read timeout used to be OllamaClient's hardcoded 60 s. That put
-        // the broken bound at 60 s, which capped the window at 20 s to hold the
-        // same 3x, and the window hit that cap twice: 4 s flaked on a loaded
-        // 2-core runner (38 tests, parallel forks, GC pauses), then 10 s flaked
-        // with this exact signature (TimeoutCancellation at the await below) on
-        // a run whose app code was byte-identical to a green one. Both times
-        // the remedy was to widen the window, and both times the thing it was
-        // being widened toward was the ceiling. Making the timeout injectable
-        // removes the ceiling: the window doubled and the 3x is unchanged. A
-        // starved runner DELAYS the abort, it does not reorder it, so the wider
-        // window costs no discrimination.
+        // The window has now flaked three times, each time with this exact
+        // signature (TimeoutCancellation at the await below) on app code that
+        // was byte-identical to a green run of the same commit in the sibling
+        // repo. Each widening pulls the chunk period and the read timeout out
+        // with it rather than narrowing the margin: a starved runner DELAYS the
+        // abort, it does not reorder it, so tolerance bought at constant margin
+        // costs no discrimination. The margin is in fact wider than it has ever
+        // been.
         // Response 2: the re-issued (resumed) pull, served completely.
         server.enqueue(
             MockResponse()
                 .setHeader("Content-Type", "application/x-ndjson")
                 .setBody(pullBody)
-                .throttleBody(48, 120, TimeUnit.SECONDS)
+                .throttleBody(48, 600, TimeUnit.SECONDS)
         )
         server.enqueue(
             MockResponse()
@@ -350,7 +347,7 @@ class OllamaLocalTest {
                 .setBody(pullBody)
         )
 
-        val client = OllamaClient(OkHttpClient(), base, readTimeoutSeconds = 600)
+        val client = OllamaClient(OkHttpClient(), base, readTimeoutSeconds = 1200)
         val firstEvent = CompletableDeferred<Unit>()
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
         val pullJob = scope.async {
@@ -358,15 +355,15 @@ class OllamaLocalTest {
         }
 
         // Wait for the first NDJSON line, then PAUSE (cancel the job).
-        // (First throttle chunk is written immediately, so 30 s is generous
+        // (First throttle chunk is written immediately, so 60 s is generous
         // headroom for thread scheduling on a starved runner.)
-        withTimeout(30_000) { firstEvent.await() }
+        withTimeout(60_000) { firstEvent.await() }
         pullJob.cancel()
         // The cancelled pull must return PROMPTLY (the blocked read is aborted
         // via call.cancel()) and surface as a CancellationException — that is
-        // the exact contract LocalAiController.pause() relies on. 40 s is 3x
-        // under the 120 s a broken watcher would need (see the bounds above).
-        val surfaced = withTimeout(40_000) { runCatching { pullJob.await() }.exceptionOrNull() }
+        // the exact contract LocalAiController.pause() relies on. 120 s is 5x
+        // under the 600 s a broken watcher would need (see the bounds above).
+        val surfaced = withTimeout(120_000) { runCatching { pullJob.await() }.exceptionOrNull() }
         assertThat(surfaced).isInstanceOf(CancellationException::class.java)
         assertThat(server.takeRequest().path).isEqualTo("/api/pull")
         scope.cancel()
