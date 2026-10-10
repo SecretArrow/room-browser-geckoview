@@ -17,6 +17,10 @@ data class EngineConsoleMessage(
  * engine that offers only [DevToolsCapability.NETWORK_REQUEST_LINE] leaves
  * [status] and [responseHeaders] null, and the panel renders those as unknown
  * rather than as a zero or an empty map.
+ *
+ * [documentUrl] is the document the request was made for, when the engine
+ * reports it. An engine whose capture is browser-wide rather than per-session
+ * must fill it in: without it a row cannot be told apart from another tab's.
  */
 data class EngineNetworkSignal(
     val kind: Kind,
@@ -27,9 +31,16 @@ data class EngineNetworkSignal(
     val responseHeaders: Map<String, String> = emptyMap(),
     val isForMainFrame: Boolean? = null,
     val resourceType: String? = null,
-    val timestampMs: Long = 0L
+    val timestampMs: Long = 0L,
+    val documentUrl: String? = null
 ) {
-    enum class Kind { REQUEST, RESPONSE, FAILED }
+    /**
+     * Which point of its life a signal describes.
+     *
+     * [COMPLETED] is emitted only by an engine that can watch a request finish;
+     * a signal never invents a completion by reusing [RESPONSE].
+     */
+    enum class Kind { REQUEST, RESPONSE, COMPLETED, FAILED }
 }
 
 /**

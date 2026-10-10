@@ -57,6 +57,7 @@ import java.util.concurrent.atomic.AtomicLong
  */
 internal class GeckoEngineSession(
     override val id: String,
+    internal val host: GeckoEngineHost,
     private val runtime: GeckoRuntime,
     private val context: Context,
     profile: Profile,
@@ -376,6 +377,9 @@ internal class GeckoEngineSession(
             )
             flushQueuedEvals(port)
             flushPageScripts(port)
+            // The port is per-document, so a sink registered before this
+            // document existed must be re-armed here or the feed stays silent.
+            if (devToolsInspector.consoleArmed) sendConsoleControl(armed = true)
         }
     }
 
@@ -402,6 +406,12 @@ internal class GeckoEngineSession(
                         channel,
                         json.optString("payload")
                     )
+                }
+                "console" -> {
+                    // The entry is a JSON string, not an object: an object does
+                    // not survive the page/isolated world boundary (main.js).
+                    val entry = json.optString("entry")
+                    if (entry.isNotEmpty()) devToolsInspector.onConsoleEntry(entry)
                 }
                 else -> {
                     // A `when` with no else dropped these without a word, so a
@@ -675,7 +685,27 @@ internal class GeckoEngineSession(
         runtime.storageController.clearDataForSessionContext(contextId)
     }
 
-    override fun inspector(): EngineInspector = GeckoDevTools.inspector()
+    override fun inspector(): EngineInspector = devToolsInspector
+
+    /** The one inspection handle for this session; a capture sink belongs to a session, not the engine. */
+    internal val devToolsInspector: GeckoInspector by lazy { GeckoDevTools.inspector(this) }
+
+    /**
+     * Tell the page world whether to forward console entries.
+     *
+     * The port is per-document, so this is re-sent from [bridgeDelegate.onConnect]
+     * whenever a sink is registered -- otherwise a navigation would silently
+     * stop the feed.
+     */
+    internal fun sendConsoleControl(armed: Boolean) {
+        val active = port ?: return
+        val message = if (armed) {
+            JSONObject().put("type", "consoleStart")
+        } else {
+            JSONObject().put("type", "consoleStop")
+        }
+        postQuietly(active, message)
+    }
 
     override fun close() {
         if (closed) return
@@ -690,6 +720,9 @@ internal class GeckoEngineSession(
         pendingEval.values.forEach { it(null) }
         pendingEval.clear()
         synchronized(queuedEvals) { queuedEvals.clear() }
+        // Detaches any live sink and drops this session from the host's network
+        // fan-out, so a closed tab cannot keep a feed alive.
+        devToolsInspector.close()
     }
 
     // ---- delegates --------------------------------------------------------

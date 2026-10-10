@@ -22,10 +22,15 @@ interface EngineInspector {
     val capabilities: DeveloperToolsCapabilities
 
     /**
-     * Begin reporting console messages from the engine's own side -- the
-     * messages a page-side patch cannot see, such as a CSP violation the engine
-     * raised. Absent (the default) when [DevToolsCapability.ENGINE_CONSOLE] is
-     * not declared.
+     * Begin reporting console messages.
+     *
+     * The sink carries BOTH origins, told apart by
+     * [EngineConsoleMessage.fromEngine]: what the page's own patch logged, and
+     * what the engine itself reports about the page -- a CSP violation, for
+     * instance, which a page-side patch cannot see. It is therefore present
+     * when EITHER [DevToolsCapability.CONSOLE_CAPTURE] or
+     * [DevToolsCapability.ENGINE_CONSOLE] is declared, and an engine that can
+     * feed only one of the two simply never emits the other.
      *
      * Replacing a previous sink is a requirement, not a convenience: the app
      * re-registers when a panel reopens.

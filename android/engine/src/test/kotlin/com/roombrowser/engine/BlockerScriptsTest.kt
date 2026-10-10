@@ -131,6 +131,75 @@ class BlockerScriptsTest {
     }
 
     @Test
+    fun the_network_observers_run_without_blocking() {
+        // The network feed is observational. A registration carrying
+        // ["blocking"] joins the cancel path, where it can delay a request and
+        // can regress the blocker -- so of the four registrations in this file
+        // exactly one may ask for it, and it is onBeforeRequest. The slices are
+        // what make this precise: the file's header comment also spells
+        // ["blocking"], so a whole-file search cannot answer the question.
+        listOf("onHeadersReceived", "onCompleted", "onErrorOccurred").forEach { observer ->
+            val block = registration(observer)
+            assertThat(block).contains("{ urls: [\"<all_urls>\"] }")
+            assertThat(block).doesNotContain("\"blocking\"")
+        }
+        // The blocking listener still returns its decision unchanged.
+        val blocking = registration("onBeforeRequest")
+        assertThat(blocking).contains("{ cancel: true }")
+        assertThat(blocking).contains("[\"blocking\"]")
+    }
+
+    @Test
+    fun the_network_message_types_are_the_ones_the_other_side_speaks() {
+        // Native -> JS: the host arms and disarms the feed. Without the gate
+        // the observers would post on every request on the device, for a panel
+        // that is not open.
+        listOf("netStart", "netStop").forEach { type ->
+            assertThat(hostKt).contains("\"$type\"")
+            assertThat(blockerJs).contains("message.type === \"$type\"")
+        }
+        // JS -> native: the blocker posts each event, the host must handle all
+        // four. An unhandled type is dropped with a warning, so a rename here
+        // costs the panel its rows rather than failing anything.
+        listOf("netRequest", "netResponse", "netCompleted", "netError").forEach { type ->
+            assertThat(blockerJs).contains("type: \"$type\"")
+            assertThat(hostKt).contains("\"$type\" ->")
+        }
+    }
+
+    @Test
+    fun an_observation_arriving_before_the_arm_is_held_rather_than_dropped() {
+        // The app arms the feed from `startNetworkCapture`, which runs when the
+        // Network panel composes -- and by then the document has already loaded.
+        // Dropping what arrived before that leaves the panel unable to show the
+        // page's own first request, and the symptom is an empty feed rather than
+        // an error. The bound is the other half: an uninspected page must not
+        // grow a buffer without end.
+        assertThat(blockerJs).contains("netBuffer.push(payload)")
+        assertThat(blockerJs).contains("netBuffer.length > NET_BUFFER_MAX")
+        assertThat(blockerJs).contains("pending.length; i++) sendNet(pending[i])")
+    }
+
+    /**
+     * The text of one `webRequest` registration, from its `addListener(` to its
+     * own closing `);`.
+     *
+     * Sliced rather than searched whole because `["blocking"]` appears in this
+     * file's header comment as well as at its one registration: a bare
+     * `doesNotContain` over the file would fail for the comment, and a bare
+     * `contains` would pass for the wrong listener. The slice ends at the first
+     * `\n  );` -- the column-3 closer of a top-level call, which no indented
+     * body statement matches.
+     */
+    private fun registration(observer: String): String {
+        val start = blockerJs.indexOf("browser.webRequest.$observer.addListener(")
+        assertThat(start).isAtLeast(0)
+        val end = blockerJs.indexOf("\n  );", start)
+        assertThat(end).isAtLeast(0)
+        return blockerJs.substring(start, end)
+    }
+
+    @Test
     fun the_matching_mirror_names_the_engine_it_mirrors() {
         // The algorithm is the one thing written twice -- it cannot be shared,
         // because the listener must answer synchronously from another process.

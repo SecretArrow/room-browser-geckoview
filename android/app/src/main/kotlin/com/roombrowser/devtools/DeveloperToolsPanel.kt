@@ -40,6 +40,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.roombrowser.browser.BrowserViewModel
 import com.roombrowser.browser.engine.ProfileEngine
@@ -153,9 +154,27 @@ fun DeveloperToolsHost(
                             .fillMaxWidth()
                             .verticalScroll(rememberScrollState())
                     ) {
-                        SectionHeader("What this edition can inspect")
-                        CapabilityList(capabilities)
-                        Spacer(Modifier.height(12.dp))
+                        // The live feeds come FIRST. They are what the panel is
+                        // opened for, and an inventory placed above them pushes
+                        // every feed below the fold of a phone-sized window,
+                        // where nothing the panel measures can reach it.
+                        //
+                        // A feed is rendered only for a tab that has an
+                        // inspector AND an engine that declares the source, so a
+                        // panel whose requirements are absent is never composed -
+                        // not composed empty.
+                        val attached = inspector
+                        val consoleAvailable = capabilities.has(DevToolsCapability.CONSOLE_CAPTURE) ||
+                            capabilities.has(DevToolsCapability.ENGINE_CONSOLE)
+                        val networkAvailable = capabilities.has(DevToolsCapability.NETWORK_REQUEST_LINE)
+                        if (attached != null && (consoleAvailable || networkAvailable)) {
+                            if (consoleAvailable) ConsolePanel(attached)
+                            if (networkAvailable) {
+                                Spacer(Modifier.height(16.dp))
+                                NetworkPanel(attached)
+                            }
+                            Spacer(Modifier.height(24.dp))
+                        }
                         PageFacts(
                             overview = overview,
                             tabUrl = viewModel.pageState.url,
@@ -164,6 +183,18 @@ fun DeveloperToolsHost(
                             hasSession = inspector != null || engineSession != null,
                             onRefresh = { refreshKey++ }
                         )
+                        Spacer(Modifier.height(12.dp))
+                        SectionHeader("What this edition can inspect") {
+                            // The inventory IS the panel's honesty statement, so a
+                            // report about "why can this build not show me X" has to
+                            // be able to carry it verbatim.
+                            RoomCopyButton(
+                                capabilitiesText(engineName, capabilities),
+                                "Capabilities",
+                                "Copy what this edition can and cannot inspect"
+                            )
+                        }
+                        CapabilityList(capabilities)
                         Spacer(Modifier.height(24.dp))
                     }
                 }
@@ -194,7 +225,21 @@ private fun DeveloperToolsHeader(
                 color = extras.textPrimary
             )
             if (engineName.isNotBlank()) {
-                Text(engineName, style = MaterialTheme.typography.labelSmall, color = extras.textSecondary)
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        engineName,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = extras.textSecondary,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f)
+                    )
+                    // The engine and its version are the first thing a bug report
+                    // needs, so the name itself carries its copy control. It sits
+                    // inside the title column rather than beside the three window
+                    // controls, which would cost the title 48dp of a 320dp screen.
+                    RoomCopyButton(engineName, "Engine", "Copy the engine name and version")
+                }
             }
         }
         IconButton(onClick = onToggleMinimize) {
@@ -409,16 +454,7 @@ private fun OverviewGrid(overview: PageOverview) {
         FactRow("Service worker", overview.serviceWorker)
         FactRow("Manifest", overview.manifest)
         FactRow("Notifications", overview.notificationPermission)
-        FactRow(
-            "Storage",
-            listOfNotNull(
-                overview.localStorage?.let { if (it) "local" else null },
-                overview.sessionStorage?.let { if (it) "session" else null },
-                overview.indexedDb?.let { if (it) "indexeddb" else null },
-                overview.caches?.let { if (it) "cache" else null },
-                overview.storageEstimate?.let { if (it) "quota" else null }
-            ).joinToString(", ").ifBlank { "none reported" }
-        )
+        FactRow("Storage", storageRowValue(overview))
         Text(
             "Counts and flags only: this reports which of these the page has, never what " +
                 "is inside them.",
@@ -456,7 +492,7 @@ private fun FactRow(label: String, value: String?) {
     }
 }
 
-private fun capabilityLabel(capability: DevToolsCapability): String = when (capability) {
+internal fun capabilityLabel(capability: DevToolsCapability): String = when (capability) {
     DevToolsCapability.PAGE_SCRIPTING -> "Page scripting"
     DevToolsCapability.CONSOLE_CAPTURE -> "Console capture"
     DevToolsCapability.ENGINE_CONSOLE -> "Engine console"
@@ -470,7 +506,7 @@ private fun capabilityLabel(capability: DevToolsCapability): String = when (capa
     DevToolsCapability.JS_DEBUGGER -> "JavaScript debugger"
 }
 
-private fun capabilityDetail(capability: DevToolsCapability): String = when (capability) {
+internal fun capabilityDetail(capability: DevToolsCapability): String = when (capability) {
     DevToolsCapability.PAGE_SCRIPTING ->
         "Running a script in the live page and reading its result — what every other panel is built on."
     DevToolsCapability.CONSOLE_CAPTURE -> "Messages the page itself logs."

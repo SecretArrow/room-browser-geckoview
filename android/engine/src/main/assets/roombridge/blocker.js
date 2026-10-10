@@ -45,6 +45,35 @@
    */
   var filter = null;
 
+  /**
+   * Whether the app is listening for network events.
+   *
+   * The webRequest observers below run for EVERY request on the device, so this
+   * is what keeps a page nobody is inspecting from CROSSING THE PORT: while it
+   * is false each observation goes into [netBuffer] instead, which is an array
+   * push in this process and no message at all.
+   */
+  var netArmed = false;
+
+  /**
+   * The most recent observations, kept while nobody is listening.
+   *
+   * WITHOUT THIS THE PANEL OPENS ON AN EMPTY FEED. The app arms the feed from
+   * `startNetworkCapture`, which runs when the Network panel composes -- and by
+   * then the document the person is looking at has already loaded, so the one
+   * request they most want to see was the one that could never be reported.
+   * Holding the newest [NET_BUFFER_MAX] and flushing them on the next `netStart`
+   * is the same shape as the page-world console patch's own ring buffer, and
+   * for the same reason.
+   *
+   * Bounded, and NOT cleared on a `netStop`: the window between one panel
+   * closing and the next opening is exactly the window this exists to cover, so
+   * the ring keeps rolling and a re-opened panel opens on what happened while it
+   * was shut.
+   */
+  var NET_BUFFER_MAX = 200;
+  var netBuffer = [];
+
   var port = null;
   try {
     port = browser.runtime.connectNative(NATIVE_APP);
@@ -59,6 +88,19 @@
   if (port) {
     port.onMessage.addListener(function (message) {
       if (!message || typeof message !== "object") return;
+      if (message.type === "netStart") {
+        netArmed = true;
+        // The flush is synchronous, so no observation can slip in front of a
+        // buffered one and reach the app out of order.
+        var pending = netBuffer;
+        netBuffer = [];
+        for (var i = 0; i < pending.length; i++) sendNet(pending[i]);
+        return;
+      }
+      if (message.type === "netStop") {
+        netArmed = false;
+        return;
+      }
       if (message.type !== "filter") return;
       filter = {
         ads: new Set(message.adHosts || []),
@@ -95,6 +137,89 @@
       console.error("[roomblock] could not report a block: " + e);
     }
   }
+
+  /**
+   * Report one network observation.
+   *
+   * Buffered while nobody is listening rather than dropped -- see [netBuffer]
+   * above. These observers are non-blocking, so their failure cannot affect a
+   * request either way.
+   */
+  function reportNet(payload) {
+    if (!port) return;
+    if (!netArmed) {
+      netBuffer.push(payload);
+      while (netBuffer.length > NET_BUFFER_MAX) netBuffer.shift();
+      return;
+    }
+    sendNet(payload);
+  }
+
+  /** Post one observation. Split out so the arm-time flush and a live report are one path. */
+  function sendNet(payload) {
+    try {
+      port.postMessage(payload);
+    } catch (e) {
+      console.error("[roomblock] could not report a network event: " + e);
+    }
+  }
+
+  /*
+   * The network feed: response status, completion and failure. OBSERVERS ONLY --
+   * no "blocking" in the third argument, so none of them can delay or alter a
+   * request, and none of them returns a decision. The blocking path is
+   * onBeforeRequest below and is deliberately separate.
+   *
+   * The header blocks are NOT requested. `requestHeaders` is not part of an
+   * onBeforeRequest detail at all, and `responseHeaders` is populated only when
+   * the listener asks for it at registration -- which would put header
+   * marshalling on every request of a listener registered browser-wide, for a
+   * panel that is usually shut. So these observers report what arrives
+   * unrequested, and the app declares no header capability for this edition
+   * rather than drawing rows that would always be empty.
+   */
+
+  browser.webRequest.onHeadersReceived.addListener(
+    function (details) {
+      reportNet({
+        type: "netResponse",
+        requestId: details.requestId,
+        url: details.url,
+        method: details.method || null,
+        statusCode: details.statusCode,
+        documentUrl: details.documentUrl || null,
+        timeStamp: details.timeStamp
+      });
+    },
+    { urls: ["<all_urls>"] }
+  );
+
+  browser.webRequest.onCompleted.addListener(
+    function (details) {
+      reportNet({
+        type: "netCompleted",
+        requestId: details.requestId,
+        url: details.url,
+        documentUrl: details.documentUrl || null,
+        timeStamp: details.timeStamp
+      });
+    },
+    { urls: ["<all_urls>"] }
+  );
+
+  browser.webRequest.onErrorOccurred.addListener(
+    function (details) {
+      reportNet({
+        type: "netError",
+        requestId: details.requestId,
+        url: details.url,
+        error: details.error || null,
+        documentUrl: details.documentUrl || null,
+        timeStamp: details.timeStamp
+      });
+    },
+    { urls: ["<all_urls>"] }
+  );
 
   /** Host of a URL, lowercased, or null when there is none. */
   function hostOf(url) {
@@ -177,6 +302,20 @@
 
   browser.webRequest.onBeforeRequest.addListener(
     function (details) {
+      // Reported BEFORE any early return, so a blocked request and an allowed
+      // one are both visible. The RETURN VALUE below is untouched -- this call
+      // is a side effect and never contributes to the block decision.
+      reportNet({
+        type: "netRequest",
+        requestId: details.requestId,
+        url: details.url,
+        method: details.method || null,
+        documentUrl: details.documentUrl || null,
+        isForMainFrame: details.type === "main_frame",
+        resourceType: details.type || null,
+        timeStamp: details.timeStamp
+      });
+
       if (!filter) return {};
       // The main frame is a NAVIGATION and belongs to the app's navigation
       // policy (`onNavigationRequest`: malicious-site refusal, HTTPS upgrade),

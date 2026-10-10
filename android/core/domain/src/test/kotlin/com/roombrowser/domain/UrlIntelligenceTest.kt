@@ -164,4 +164,16 @@ class UrlIntelligenceTest {
         assertThat(UrlIntelligence.settledUrl("about:blank", null)).isEqualTo("about:blank")
         assertThat(UrlIntelligence.settledUrl("about:blank", "oct://not-a-circle")).isEqualTo("about:blank")
     }
+
+    @Test
+    fun `a tab with no page of its own belongs on the start page`() {
+        assertThat(UrlIntelligence.isStartPage("about:home")).isTrue()
+        assertThat(UrlIntelligence.isStartPage("about:blank")).isTrue()
+        // The same non-page, titled by each engine's own convention.
+        assertThat(UrlIntelligence.isStartPage("about:blank", "about:blank")).isTrue()
+        // Negative controls: a titled document and a real page are never the start page.
+        assertThat(UrlIntelligence.isStartPage("about:blank", "My Page")).isFalse()
+        assertThat(UrlIntelligence.isStartPage("https://example.com/")).isFalse()
+        assertThat(UrlIntelligence.isStartPage("oct://AAA/index.html")).isFalse()
+    }
 }
