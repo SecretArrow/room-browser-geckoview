@@ -160,6 +160,7 @@ fun MainScreen(
     var duplicateTarget by remember { mutableStateOf<Profile?>(null) }
     var resetTarget by remember { mutableStateOf<Profile?>(null) }
     var exportTarget by remember { mutableStateOf<Profile?>(null) }
+    var showBulkExport by remember { mutableStateOf(false) }
     var showImport by remember { mutableStateOf(false) }
 
     // ---- Backup v2 delivery / intake (SAF + share) ----
@@ -233,6 +234,15 @@ fun MainScreen(
             TopAppBar(
                 title = { Text("Room Browser") },
                 actions = {
+                    // Icon-only, unlike the labelled Import beside it: the top
+                    // bar already has a title and a word here, and bulk export
+                    // is the rarer of the two actions.
+                    IconButton(
+                        onClick = { showBulkExport = true },
+                        modifier = Modifier.semantics { contentDescription = "Export profiles" }
+                    ) {
+                        Icon(Icons.Filled.IosShare, contentDescription = null)
+                    }
                     // Labelled, not a bare glyph: importing a profile is the one
                     // thing on this screen a user arrives looking for by name,
                     // and an unlabelled restore icon gave them nothing to read.
@@ -490,6 +500,20 @@ fun MainScreen(
                 // vault gate, the passphrase step and delivery are driven from
                 // the ViewModel (gate via viewModel.vaultGateRequest below).
                 viewModel.startExport(target, sections)
+            }
+        )
+    }
+
+    if (showBulkExport) {
+        BulkExportDialog(
+            profiles = profiles,
+            onDismiss = { showBulkExport = false },
+            onExport = { chosen, sections ->
+                showBulkExport = false
+                // Same three steps as the single-profile export, one level up:
+                // the ViewModel gates the vault, asks for the passphrase once
+                // and seals every profile under it.
+                viewModel.startBundleExport(chosen, sections)
             }
         )
     }
@@ -1211,7 +1235,6 @@ private fun ExportProfileDialog(
     onExport: (ExportSections) -> Unit
 ) {
     var sections by remember { mutableStateOf(ExportSections()) }
-    val extras = com.roombrowser.ui.common.LocalRoomExtras.current
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("Export \"${profile.name}\"") },
@@ -1225,57 +1248,152 @@ private fun ExportProfileDialog(
                     .imePadding()
                     .verticalScroll(rememberScrollState())
             ) {
-                Text("The profile itself — its settings, theme and name — is always included.")
-                Spacer(Modifier.height(12.dp))
-                LabeledCheckboxRow("Bookmarks", sections.bookmarks) { sections = sections.copy(bookmarks = it) }
-                LabeledCheckboxRow("Notes", sections.notes) { sections = sections.copy(notes = it) }
-                LabeledCheckboxRow("Saved passwords", sections.passwords) { sections = sections.copy(passwords = it) }
-                LabeledCheckboxRow("Authenticator accounts (2FA)", sections.totp) { sections = sections.copy(totp = it) }
-                LabeledCheckboxRow("Site permissions", sections.sitePermissions) {
-                    sections = sections.copy(sitePermissions = it)
-                }
-                LabeledCheckboxRow("Per-site settings", sections.siteSettings) {
-                    sections = sections.copy(siteSettings = it)
-                }
-                Spacer(Modifier.height(8.dp))
-                // Unticked, unlike every row above it: the others cost the user
-                // privacy if the file leaks, this one costs them the money.
-                LabeledCheckboxRow("Wallet (recovery phrase and private keys)", sections.wallet) {
-                    sections = sections.copy(wallet = it)
-                }
-                if (sections.wallet) {
-                    Text(
-                        "Ticking this makes the file equal to the wallet: anyone who opens it " +
-                            "with the passphrase can spend the funds. Share this file only with " +
-                            "yourself.",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.error
-                    )
-                }
-                Spacer(Modifier.height(8.dp))
-                Text(
-                    when {
-                        sections.wallet && (sections.passwords || sections.totp) ->
-                            "In the next step you set one export passphrase: the saved logins, " +
-                                "the authenticator accounts and the wallet are each sealed under " +
-                                "it. Cookies, sessions and history are never exported."
-                        sections.wallet ->
-                            "In the next step you set the export passphrase the wallet is sealed " +
-                                "under. Cookies, sessions and history are never exported."
-                        sections.passwords || sections.totp ->
-                            "If this profile has saved logins or authenticator accounts, you set " +
-                                "an export passphrase for them in the next step. Cookies, sessions " +
-                                "and history are never exported."
-                        else ->
-                            "Nothing selected lives behind the device vault, so no passphrase is " +
-                                "needed. Cookies, sessions and history are never exported."
-                    },
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = extras.textSecondary
-                )
+                ExportSectionPicker(sections = sections, plural = false) { sections = it }
             }
         },
         confirmButton = { Button(onClick = { onExport(sections) }) { Text("Continue") } },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } }
+    )
+}
+
+/**
+ * The per-section picker, shared by the one-profile and the many-profile
+ * export dialogs: one list, one wallet warning, one closing sentence. Two
+ * entry points that described the same file differently would be worse than
+ * either alone.
+ */
+@Composable
+private fun ExportSectionPicker(
+    sections: ExportSections,
+    plural: Boolean,
+    onChange: (ExportSections) -> Unit
+) {
+    val extras = com.roombrowser.ui.common.LocalRoomExtras.current
+    Text(
+        if (plural) {
+            "The profiles themselves — their settings, themes and names — are always included."
+        } else {
+            "The profile itself — its settings, theme and name — is always included."
+        }
+    )
+    Spacer(Modifier.height(12.dp))
+    LabeledCheckboxRow("Bookmarks", sections.bookmarks) { onChange(sections.copy(bookmarks = it)) }
+    LabeledCheckboxRow("Notes", sections.notes) { onChange(sections.copy(notes = it)) }
+    LabeledCheckboxRow("Saved passwords", sections.passwords) { onChange(sections.copy(passwords = it)) }
+    LabeledCheckboxRow("Authenticator accounts (2FA)", sections.totp) {
+        onChange(sections.copy(totp = it))
+    }
+    LabeledCheckboxRow("Site permissions", sections.sitePermissions) {
+        onChange(sections.copy(sitePermissions = it))
+    }
+    LabeledCheckboxRow("Per-site settings", sections.siteSettings) {
+        onChange(sections.copy(siteSettings = it))
+    }
+    Spacer(Modifier.height(8.dp))
+    // Unticked, unlike every row above it: the others cost the user
+    // privacy if the file leaks, this one costs them the money.
+    LabeledCheckboxRow("Wallet (recovery phrase and private keys)", sections.wallet) {
+        onChange(sections.copy(wallet = it))
+    }
+    if (sections.wallet) {
+        Text(
+            if (plural) {
+                "Ticking this makes the file equal to those wallets: anyone who opens it with " +
+                    "the passphrase can spend the funds. Share this file only with yourself."
+            } else {
+                "Ticking this makes the file equal to the wallet: anyone who opens it with the " +
+                    "passphrase can spend the funds. Share this file only with yourself."
+            },
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.error
+        )
+    }
+    Spacer(Modifier.height(8.dp))
+    Text(
+        when {
+            sections.wallet && (sections.passwords || sections.totp) ->
+                "In the next step you set one export passphrase: the saved logins, " +
+                    "the authenticator accounts and the wallet are each sealed under " +
+                    "it. Cookies, sessions and history are never exported."
+            sections.wallet ->
+                "In the next step you set the export passphrase the wallet is sealed " +
+                    "under. Cookies, sessions and history are never exported."
+            sections.passwords || sections.totp ->
+                "If this profile has saved logins or authenticator accounts, you set " +
+                    "an export passphrase for them in the next step. Cookies, sessions " +
+                    "and history are never exported."
+            else ->
+                "Nothing selected lives behind the device vault, so no passphrase is " +
+                    "needed. Cookies, sessions and history are never exported."
+        },
+        style = MaterialTheme.typography.bodyMedium,
+        color = extras.textSecondary
+    )
+}
+
+/**
+ * Export SEVERAL profiles into ONE file. The section picker is the same list
+ * the single-profile dialog offers; what this dialog adds is the profile
+ * selection, and the fact that one passphrase will seal everything in the
+ * file that needs sealing.
+ */
+@Composable
+private fun BulkExportDialog(
+    profiles: List<Profile>,
+    onDismiss: () -> Unit,
+    onExport: (List<Profile>, ExportSections) -> Unit
+) {
+    var sections by remember { mutableStateOf(ExportSections()) }
+    // All ticked: this entry point exists to export several, and unticking is
+    // the exception rather than the intent.
+    var selected by remember { mutableStateOf(profiles.map { it.id.value }.toSet()) }
+    val chosen = profiles.filter { it.id.value in selected }
+    val allChosen = chosen.size == profiles.size
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Text(
+                if (profiles.size == 1) "Export 1 profile" else "Export ${profiles.size} profiles"
+            )
+        },
+        text = {
+            Column(
+                Modifier
+                    .imePadding()
+                    .verticalScroll(rememberScrollState())
+            ) {
+                Text(
+                    "Every ticked profile goes into ONE file, and one import restores all of " +
+                        "them at once."
+                )
+                Spacer(Modifier.height(12.dp))
+                TextButton(
+                    onClick = {
+                        selected = if (allChosen) emptySet() else profiles.map { it.id.value }.toSet()
+                    }
+                ) {
+                    Text(if (allChosen) "Select none" else "Select all")
+                }
+                profiles.forEach { profile ->
+                    LabeledCheckboxRow(profile.name, profile.id.value in selected) { on ->
+                        selected = if (on) {
+                            selected + profile.id.value
+                        } else {
+                            selected - profile.id.value
+                        }
+                    }
+                }
+                Spacer(Modifier.height(12.dp))
+                HorizontalDivider()
+                Spacer(Modifier.height(12.dp))
+                ExportSectionPicker(sections = sections, plural = true) { sections = it }
+            }
+        },
+        confirmButton = {
+            Button(onClick = { onExport(chosen, sections) }, enabled = chosen.isNotEmpty()) {
+                Text("Continue with ${chosen.size}")
+            }
+        },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } }
     )
 }

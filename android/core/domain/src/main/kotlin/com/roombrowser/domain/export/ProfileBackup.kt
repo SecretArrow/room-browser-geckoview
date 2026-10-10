@@ -5,6 +5,7 @@ import com.roombrowser.domain.model.Profile
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.SerializationException
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonObject
 
 /**
  * The single verdict on an import candidate: one valid outcome, or one clear
@@ -22,6 +23,20 @@ sealed interface ProfileBackupResult {
     /** Not a Room Browser export at all (bad JSON, missing profile, blank
      *  id, unusable version number). [detail] is safe to show the user. */
     data class Malformed(val detail: String) : ProfileBackupResult
+}
+
+/**
+ * The verdict on a multi-profile file. Same shape and same rule as
+ * [ProfileBackupResult]: [Parsed] carries every profile in the file or the
+ * call answers with exactly one rejection, so a five-profile file can never
+ * restore three of them and call it a success.
+ */
+sealed interface ProfileBundleResult {
+    data class Parsed(val bundle: ProfileBackup.BackupBundle) : ProfileBundleResult
+
+    data class InvalidVersion(val found: Int, val maxSupported: Int) : ProfileBundleResult
+
+    data class Malformed(val detail: String) : ProfileBundleResult
 }
 
 /**
@@ -79,6 +94,20 @@ sealed interface ProfileBackupResult {
  *  - Unknown keys inside a SUPPORTED version are ignored (forward tolerance
  *    within a version).
  *
+ * ## Multi-profile files
+ * A backup of SEVERAL profiles at once is the same payloads in a container:
+ *
+ * ```
+ * { "bundleVersion": 1, "profiles": [ { ...BackupPayload... }, ... ] }
+ * ```
+ *
+ * The container has its own version, deliberately separate from
+ * `formatVersion`: each entry keeps the single-profile number it was written
+ * with, so a bundle of v4 profiles stays readable by the same checks that
+ * govern one profile, and a change to the container never renumbers them.
+ * [isBundle] tells the two file kinds apart on the top-level `profiles` key —
+ * never on the version number, which both kinds carry.
+ *
  * ## Never-exported guarantees
  * There is no field for cookies, sessions, cache, IndexedDB, localStorage or
  * browsing history — enforced by construction. Saved passwords exist ONLY
@@ -90,6 +119,15 @@ sealed interface ProfileBackupResult {
 object ProfileBackup {
 
     const val FORMAT_VERSION = 4
+
+    /** The multi-profile container's own version, independent of
+     *  [FORMAT_VERSION] — see the "Multi-profile files" contract above. */
+    const val BUNDLE_VERSION = 1
+
+    /** A ceiling on how many entries one file may carry. Not a product limit:
+     *  it is the bound on what a hostile or corrupt file can make this app
+     *  decode, restore and hold in memory at once. */
+    const val MAX_BUNDLE_PROFILES = 64
 
     @Serializable
     data class BookmarkExport(val url: String, val title: String, val folder: String? = null, val position: Int = 0)
@@ -197,6 +235,21 @@ object ProfileBackup {
         }
     }
 
+    /**
+     * Several profiles in one file. Each entry is a verbatim [BackupPayload],
+     * so every per-profile guarantee above holds unchanged; this type adds
+     * only the container.
+     */
+    @Serializable
+    data class BackupBundle(
+        val bundleVersion: Int = BUNDLE_VERSION,
+        val profiles: List<BackupPayload> = emptyList()
+    ) {
+        init {
+            require(profiles.isNotEmpty()) { "a bundle carries at least one profile" }
+        }
+    }
+
     private val json = Json {
         prettyPrint = true
         ignoreUnknownKeys = true
@@ -204,6 +257,67 @@ object ProfileBackup {
     }
 
     fun serialize(payload: BackupPayload): String = json.encodeToString(BackupPayload.serializer(), payload)
+
+    fun serializeBundle(bundle: BackupBundle): String =
+        json.encodeToString(BackupBundle.serializer(), bundle)
+
+    /**
+     * Does this text hold SEVERAL profiles rather than one? Read from the
+     * top-level `profiles` key: a single payload has no such key, and the two
+     * kinds share a version number's shape, so the version cannot tell them
+     * apart. Text that is not JSON at all answers false and is then rejected
+     * by [parse], which has the better message for it.
+     */
+    fun isBundle(text: String): Boolean = runCatching {
+        (json.parseToJsonElement(text) as? JsonObject)?.containsKey("profiles") == true
+    }.getOrDefault(false)
+
+    /**
+     * Validate + decode a multi-profile file. The same rule as [parse]: one
+     * fully decoded bundle, or one rejection. A single unusable entry rejects
+     * the whole file — a bulk restore that quietly skipped a profile would
+     * leave the user believing they had restored it.
+     */
+    fun parseBundle(text: String): ProfileBundleResult {
+        if (text.isBlank()) {
+            return ProfileBundleResult.Malformed("the file is empty")
+        }
+        val bundle = try {
+            json.decodeFromString(BackupBundle.serializer(), text)
+        } catch (e: SerializationException) {
+            return ProfileBundleResult.Malformed(
+                e.message?.lineSequence()?.firstOrNull()
+                    ?: "not a Room Browser multi-profile export"
+            )
+        } catch (e: IllegalArgumentException) {
+            return ProfileBundleResult.Malformed(e.message ?: "the profile data is not valid")
+        }
+        if (bundle.bundleVersion > BUNDLE_VERSION) {
+            return ProfileBundleResult.InvalidVersion(bundle.bundleVersion, BUNDLE_VERSION)
+        }
+        if (bundle.bundleVersion < 1) {
+            return ProfileBundleResult.Malformed(
+                "bundleVersion must be at least 1, found ${bundle.bundleVersion}"
+            )
+        }
+        if (bundle.profiles.size > MAX_BUNDLE_PROFILES) {
+            return ProfileBundleResult.Malformed(
+                "that file holds ${bundle.profiles.size} profiles; the most this app " +
+                    "restores at once is $MAX_BUNDLE_PROFILES"
+            )
+        }
+        bundle.profiles.forEach { entry ->
+            if (entry.formatVersion > FORMAT_VERSION) {
+                return ProfileBundleResult.InvalidVersion(entry.formatVersion, FORMAT_VERSION)
+            }
+            if (entry.formatVersion < 1) {
+                return ProfileBundleResult.Malformed(
+                    "formatVersion must be at least 1, found ${entry.formatVersion}"
+                )
+            }
+        }
+        return ProfileBundleResult.Parsed(bundle)
+    }
 
     /**
      * Validate + decode an export file. This is the ONLY import door: it
