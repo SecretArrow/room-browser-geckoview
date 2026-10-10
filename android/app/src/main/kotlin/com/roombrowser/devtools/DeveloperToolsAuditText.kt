@@ -66,7 +66,7 @@ internal object DeveloperToolsAuditText {
                 else -> null
             }
         ),
-        AuditRow("character encoding", AuditVerdict.INFO, orAbsent(probe.charset)),
+        declared("character encoding", probe.charset, "the engine sniffs it from the response"),
         declaration(
             "viewport", probe.viewport,
             when {
@@ -182,8 +182,6 @@ internal object DeveloperToolsAuditText {
         AuditRow(name, AuditVerdict.INFO, "$value ms")
     }
 
-    private fun orAbsent(value: String?): String =
-        if (value.isNullOrBlank()) "(not reported)" else value
 }
 
 /** What the audit found, on a four-value scale that has no numbers on it. */
