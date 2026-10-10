@@ -583,8 +583,10 @@ internal class GeckoEngineHost : EngineHost {
      * An inspector armed or disarmed its network sink.
      *
      * The `netStart`/`netStop` gate lives on the extension, so it is driven
-     * from here: the blocker posts nothing while nobody is listening. The port
-     * may not exist yet, in which case [blockerDelegate.onConnect] re-sends it.
+     * from here: while nobody is listening the blocker holds its observations in
+     * its own bounded ring -- sent on the next `netStart`, which is what puts the
+     * document a panel was opened on into that panel. The port may not exist yet,
+     * in which case [blockerDelegate.onConnect] re-sends it.
      */
     internal fun onNetworkCaptureChanged(inspector: GeckoInspector, armed: Boolean) {
         if (armed) networkInspectors.add(inspector) else networkInspectors.remove(inspector)
