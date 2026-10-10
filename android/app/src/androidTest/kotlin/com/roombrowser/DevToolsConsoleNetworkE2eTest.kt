@@ -45,6 +45,11 @@ import org.junit.runner.RunWith
  * a permission sheet they do not hide the WebView from UiAutomator -- but the
  * Page Actions sheet that opens them IS modal, so it is asserted before
  * anything else, exactly as this suite's other sheet tests do.
+ *
+ * WHY EVERY TEST PICKS ITS PANEL. The surface shows one panel at a time, chosen
+ * from a strip of chips, so "the Developer tools row opened something" is no
+ * longer the same claim as "the Console panel is composed". Each test selects
+ * its own panel and waits for a control only that panel draws.
  */
 @RunWith(AndroidJUnit4::class)
 class DevToolsConsoleNetworkE2eTest {
@@ -62,8 +67,31 @@ class DevToolsConsoleNetworkE2eTest {
     private val errorMarker = "room-console-error-$tag"
     private val netPath = "/net-$tag"
 
-    /** The first thing in the panel body, and so the marker for "the body is here". */
-    private val bodyHeader = "Console"
+    /**
+     * The strip chip's announcement, and so the marker for "the surface is open
+     * and its body is drawn". The strip is inside the same minimized check as
+     * the body, so it disappears with it.
+     */
+    private val consoleChip = "Console panel"
+
+    /**
+     * Only the Console panel draws this, so it is the marker for "the Console
+     * panel COMPOSED" as opposed to "the strip is on screen". A bare
+     * `By.text("Console")` would match the chip and say nothing.
+     */
+    private val consoleBody = "Clear the console feed"
+
+    /** Only the Network panel draws this. */
+    private val networkBody = "Ask the page what it loaded"
+
+    private val networkChip = "Network panel"
+
+    /**
+     * The one chip every engine has: the Overview panel requires no capability
+     * at all, so this is the marker for "the surface opened", independent of
+     * which panels the engine under test happens to serve.
+     */
+    private val overviewChip = "Overview panel"
 
     /**
      * How long a cleared feed is given to leave the tree. Recomposing off the
@@ -134,7 +162,7 @@ class DevToolsConsoleNetworkE2eTest {
         )
         assertTrue(
             "Developer Tools must open from the Page Actions sheet\n${uiTree()}",
-            openDeveloperToolsPanel()
+            openDeveloperToolsPanel(consoleChip, consoleBody)
         )
         // The feed rows sit far below the panel header, so a marker is found by
         // scrolling the panel body, never by a bare first lookup.
@@ -160,16 +188,17 @@ class DevToolsConsoleNetworkE2eTest {
         )
         assertTrue(
             "Developer Tools must open from the Page Actions sheet\n${uiTree()}",
-            openDeveloperToolsPanel()
+            openDeveloperToolsPanel(networkChip, networkBody)
         )
 
-        // The docked slot on this window is ~405dp of body and the CONSOLE feed
-        // renders above this one, so the network rows land at the fold -- and
-        // Compose prunes a clipped-out node from the accessibility tree, which
-        // makes "never rendered" and "rendered one row too low" the same
-        // observation from here. The panel has a real full-screen control for
-        // exactly this, so the test asks it for the room rather than hoping a
-        // synthetic drag scrolls a Compose list.
+        // The panel shows one section at a time now, so the network rows no
+        // longer sit below the console feed -- but the docked slot is still
+        // ~405dp of body against a feed that grows with every request the page
+        // makes, and Compose prunes a clipped-out node from the accessibility
+        // tree. That makes "never rendered" and "rendered one row too low" the
+        // same observation from here. The panel has a real full-screen control
+        // for exactly this, so the test asks it for the room rather than hoping
+        // a synthetic drag scrolls a Compose list.
         assertTrue(
             "The panel's own full-screen control must give the network feed room to be read\n${uiTree()}",
             expandToFullScreen()
@@ -178,7 +207,7 @@ class DevToolsConsoleNetworkE2eTest {
         // The refresh control is the app's own ask-the-page path. Pressing it
         // must land, produce a pull state and leave the panel standing; none of
         // that touches the page's own document.
-        val refresh = findDescScrolling("Ask the page what it loaded")
+        val refresh = findDescScrolling(networkBody)
         assertTrue(
             "The network panel's 'Ask the page what it loaded' control must be reachable\n${uiTree()}",
             refresh != null
@@ -228,7 +257,7 @@ class DevToolsConsoleNetworkE2eTest {
         )
         assertTrue(
             "Developer Tools must open from the Page Actions sheet\n${uiTree()}",
-            openDeveloperToolsPanel()
+            openDeveloperToolsPanel(consoleChip, consoleBody)
         )
         // A clear only means something once there is something to clear, so the
         // feed is proven populated BEFORE the control is pressed.
@@ -289,7 +318,7 @@ class DevToolsConsoleNetworkE2eTest {
         )
         assertTrue(
             "Developer Tools must open from the Page Actions sheet\n${uiTree()}",
-            openDeveloperToolsPanel()
+            openDeveloperToolsPanel(consoleChip, consoleBody)
         )
 
         val report = StringBuilder()
@@ -301,11 +330,19 @@ class DevToolsConsoleNetworkE2eTest {
         report.append("close control bounds=")
             .append(findDescNow("Close developer tools")?.visibleBounds).append('\n')
         val collapsed = minimize != null && clickSmart(minimize) &&
-            waitUntilAbsent(By.text(bodyHeader), 8_000)
+            waitUntilAbsent(By.desc(consoleChip), 8_000)
         report.append("minimize collapsed the body=").append(collapsed).append('\n')
-        val restored = collapsed && findDescNow("Restore")?.let { clickSmart(it) } == true &&
-            hasText(bodyHeader, 8_000)
+        val restore = findDescNow("Restore")
+        val restored = collapsed && restore != null && clickSmart(restore) &&
+            hasDesc(consoleChip, 8_000)
         report.append("restore brought it back=").append(restored).append('\n')
+
+        // Asked BEFORE the drags, because a body that has been scrolled away is
+        // a different question from a body that was never there.
+        val bodyOnScreen = hasDesc(consoleBody, 1_000)
+        val chipsOnScreen = hasDesc(consoleChip, 1_000) && hasDesc(networkChip, 1_000)
+        report.append("selected panel body on screen=").append(bodyOnScreen).append('\n')
+        report.append("both panel chips on screen=").append(chipsOnScreen).append('\n')
 
         val before = visibleTexts()
         repeat(4) { dragUpHalf() }
@@ -318,8 +355,6 @@ class DevToolsConsoleNetworkE2eTest {
         val afterA11y = visibleTexts()
         val a11yMoved = before != null && afterA11y != null && before != afterA11y
         report.append("a11y scroll moved the body=").append(a11yMoved).append('\n')
-        val feedsOnScreen = hasText("Console", 1_000) && hasText("Network", 1_000)
-        report.append("both feed headers visible=").append(feedsOnScreen).append('\n')
         report.append("before=").append(before).append('\n')
         report.append("afterDrags=").append(afterDrags).append('\n')
         report.append("afterA11y=").append(afterA11y).append('\n')
@@ -334,9 +369,9 @@ class DevToolsConsoleNetworkE2eTest {
         assertTrue(
             "The panel's own content has to be reachable: either something below the fold can " +
                 "be reached (an injected drag or the accessibility scroll action moving the " +
-                "body), or both feed sections are on screen without scrolling at all. A failed " +
-                "text probe proves neither, so it counts for neither.\n" + report,
-            dragMoved || a11yMoved || steps > 0 || feedsOnScreen
+                "body), or the selected panel's own controls are on screen without scrolling at " +
+                "all. A failed text probe proves neither, so it counts for neither.\n" + report,
+            dragMoved || a11yMoved || bodyOnScreen
         )
     }
 
@@ -611,11 +646,13 @@ class DevToolsConsoleNetworkE2eTest {
     }
 
     /**
-     * Opens the Page Actions sheet and clicks the Developer tools row, scrolling
-     * the sheet for it. The sheet is asserted first: it is a modal window, and
-     * UiAutomator only returns nodes from the active window.
+     * Opens the Page Actions sheet, clicks the Developer tools row, and selects
+     * the panel named by [chip], waiting for the control only that panel draws.
+     *
+     * The sheet is asserted first: it is a modal window, and UiAutomator only
+     * returns nodes from the active window.
      */
-    private fun openDeveloperToolsPanel(): Boolean {
+    private fun openDeveloperToolsPanel(chip: String, body: String): Boolean {
         // A panel left open by an earlier test method would cover the chrome it
         // is opened from, so it is closed first rather than assumed away.
         device.findObjects(By.desc("Close developer tools")).firstOrNull()?.let {
@@ -633,12 +670,63 @@ class DevToolsConsoleNetworkE2eTest {
         )
         repeat(12) {
             val row = device.findObjects(By.desc("Developer tools")).firstOrNull()
-            if (row != null && clickSmart(row) && hasText(bodyHeader, 8_000)) {
-                return true
+            if (row != null && clickSmart(row) && hasDesc(overviewChip, 8_000)) {
+                return selectPanel(chip, body)
             }
             dragUpHalf()
         }
-        return hasText(bodyHeader, 3_000)
+        return false
+    }
+
+    /**
+     * Taps a strip chip and waits for that panel's own body to compose.
+     *
+     * Both halves are needed. The chip proves the press landed on the strip; the
+     * body proves the registry composed the panel rather than the strip merely
+     * drawing a chip for it.
+     */
+    private fun selectPanel(chip: String, body: String): Boolean {
+        val node = scrollStripToDesc(chip) ?: return false
+        if (!clickSmart(node)) return false
+        return hasDesc(body, 10_000)
+    }
+
+    /**
+     * Brings a strip chip into view, checking before each swipe.
+     *
+     * The strip scrolls horizontally and has to: four chips only just fit in a
+     * 320dp window, and the panel set grows from here. A chip pushed off the
+     * right edge is clipped, and a clipped node is one this suite must not tap
+     * by its stale bounds.
+     */
+    private fun scrollStripToDesc(desc: String, maxSwipes: Int = 6): UiObject2? {
+        repeat(maxSwipes) {
+            val node = device.findObjects(By.desc(desc)).firstOrNull()
+            if (node != null && isTappable(node)) return node
+            stripLeft()
+        }
+        return device.findObjects(By.desc(desc)).firstOrNull()
+    }
+
+    /**
+     * Where the strip sits: just under the header row.
+     *
+     * Anchored on the header's own minimize control rather than on a fraction of
+     * the window, because the dock height changes with the window and the header
+     * is a node this suite can actually find.
+     */
+    private fun stripY(): Int {
+        val header = findDescNow("Minimize") ?: return device.displayHeight * 39 / 100
+        return runCatching { header.visibleBounds.bottom + 20 }
+            .getOrDefault(device.displayHeight * 39 / 100)
+    }
+
+    /** Drags the strip towards the left, which reveals the chips to its right. */
+    private fun stripLeft() {
+        val y = stripY()
+        device.swipe(device.displayWidth - 24, y, 24, y, 100)
+        device.waitForIdle(600)
+        try { Thread.sleep(200) } catch (_: InterruptedException) { }
     }
 
     // ---------- Failure diagnostics -----------------------------------------
@@ -650,9 +738,11 @@ class DevToolsConsoleNetworkE2eTest {
             "'Page Actions' sheet" to By.text("Page Actions"),
             "'Developer tools' row" to By.desc("Developer tools"),
             "'What this edition can inspect' header" to By.text("What this edition can inspect"),
-            "console section header" to By.text(bodyHeader),
-            "refresh control" to By.desc("Ask the page what it loaded"),
-            "console clear control" to By.desc("Clear the console feed"),
+            "overview panel chip" to By.desc(overviewChip),
+            "console panel chip" to By.desc(consoleChip),
+            "network panel chip" to By.desc(networkChip),
+            "console panel body" to By.desc(consoleBody),
+            "network panel body" to By.desc(networkBody),
             "console log marker" to By.textContains(logMarker),
             "console error marker" to By.textContains(errorMarker),
             "requested path" to By.textContains(netPath)

@@ -148,59 +148,80 @@ fun DeveloperToolsHost(
                     onClose = { manager.close() }
                 )
                 if (manager.dock != DevToolsDock.MINIMIZED) {
+                    // The strip is outside the scroll on purpose: it is how a
+                    // reader leaves a panel, so it must not be something they
+                    // have to scroll back to the top to find.
+                    val entries = remember(capabilities) { availablePanels(capabilities) }
+                    LaunchedEffect(entries) {
+                        // A panel the engine cannot serve stays selected across
+                        // an engine change unless it is corrected here, and a
+                        // selected id with no entry under it is a blank body.
+                        if (entries.none { it.id == manager.panel }) {
+                            entries.firstOrNull()?.let { manager.selectPanel(it.id) }
+                        }
+                    }
+                    val current = entries.firstOrNull { it.id == manager.panel }
+                    DevToolsPanelStrip(entries, current?.id) { manager.selectPanel(it) }
                     Column(
                         Modifier
                             .weight(1f)
                             .fillMaxWidth()
                             .verticalScroll(rememberScrollState())
                     ) {
-                        // The live feeds come FIRST. They are what the panel is
-                        // opened for, and an inventory placed above them pushes
-                        // every feed below the fold of a phone-sized window,
-                        // where nothing the panel measures can reach it.
-                        //
-                        // A feed is rendered only for a tab that has an
-                        // inspector AND an engine that declares the source, so a
-                        // panel whose requirements are absent is never composed -
-                        // not composed empty.
-                        val attached = inspector
-                        val consoleAvailable = capabilities.has(DevToolsCapability.CONSOLE_CAPTURE) ||
-                            capabilities.has(DevToolsCapability.ENGINE_CONSOLE)
-                        val networkAvailable = capabilities.has(DevToolsCapability.NETWORK_REQUEST_LINE)
-                        if (attached != null && (consoleAvailable || networkAvailable)) {
-                            if (consoleAvailable) ConsolePanel(attached)
-                            if (networkAvailable) {
-                                Spacer(Modifier.height(16.dp))
-                                NetworkPanel(attached)
-                            }
-                            Spacer(Modifier.height(24.dp))
-                        }
-                        PageFacts(
-                            overview = overview,
+                        val scope = DevToolsPanelScope(
+                            session = inspector,
+                            engineName = engineName,
+                            capabilities = capabilities,
                             tabUrl = viewModel.pageState.url,
                             tabTitle = viewModel.pageState.title,
+                            overview = overview,
                             answered = answered,
-                            hasSession = inspector != null || engineSession != null,
+                            hasEngine = inspector != null || engineSession != null,
                             onRefresh = { refreshKey++ }
                         )
-                        Spacer(Modifier.height(12.dp))
-                        SectionHeader("What this edition can inspect") {
-                            // The inventory IS the panel's honesty statement, so a
-                            // report about "why can this build not show me X" has to
-                            // be able to carry it verbatim.
-                            RoomCopyButton(
-                                capabilitiesText(engineName, capabilities),
-                                "Capabilities",
-                                "Copy what this edition can and cannot inspect"
-                            )
-                        }
-                        CapabilityList(capabilities)
+                        // One panel at a time, chosen from the strip. Nothing
+                        // outside the registry is reachable, so a panel cannot
+                        // be shown by a state the capability layer would refuse.
+                        current?.content?.invoke(scope)
                         Spacer(Modifier.height(24.dp))
                     }
                 }
             }
         }
     }
+}
+
+/**
+ * The Overview panel: the page as this build can describe it, plus the
+ * inventory of what this build can inspect.
+ *
+ * It is the strip's always-present entry, so it is where a reader lands when a
+ * panel they were reading is gone -- and it is therefore also where "why is
+ * there no certificate view" is answered, in the same place, without a second
+ * screen to find.
+ */
+@Composable
+internal fun OverviewPanel(scope: DevToolsPanelScope) {
+    PageFacts(
+        overview = scope.overview,
+        tabUrl = scope.tabUrl,
+        tabTitle = scope.tabTitle,
+        answered = scope.answered,
+        hasSession = scope.hasEngine,
+        onRefresh = scope.onRefresh
+    )
+    Spacer(Modifier.height(12.dp))
+    SectionHeader("What this edition can inspect") {
+        // The inventory IS the panel's honesty statement, so a report about
+        // "why can this build not show me X" has to be able to carry it
+        // verbatim.
+        RoomCopyButton(
+            capabilitiesText(scope.engineName, scope.capabilities),
+            "Capabilities",
+            "Copy what this edition can and cannot inspect"
+        )
+    }
+    CapabilityList(scope.capabilities)
 }
 
 @Composable
@@ -263,7 +284,7 @@ private fun DeveloperToolsHeader(
 }
 
 @Composable
-private fun CapabilityList(capabilities: DeveloperToolsCapabilities) {
+internal fun CapabilityList(capabilities: DeveloperToolsCapabilities) {
     val extras = LocalRoomExtras.current
     Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp)) {
         Text(
@@ -328,7 +349,7 @@ private fun CapabilityList(capabilities: DeveloperToolsCapabilities) {
 }
 
 @Composable
-private fun AbsentCapabilityGroup(
+internal fun AbsentCapabilityGroup(
     title: String,
     rows: List<DevToolsCapability>,
     capabilities: DeveloperToolsCapabilities
@@ -360,7 +381,7 @@ private fun AbsentCapabilityGroup(
 }
 
 @Composable
-private fun PageFacts(
+internal fun PageFacts(
     overview: PageOverview?,
     tabUrl: String,
     tabTitle: String,
@@ -424,7 +445,7 @@ private fun PageFacts(
 }
 
 @Composable
-private fun OverviewGrid(overview: PageOverview) {
+internal fun OverviewGrid(overview: PageOverview) {
     val extras = LocalRoomExtras.current
     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
         Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -465,7 +486,7 @@ private fun OverviewGrid(overview: PageOverview) {
 }
 
 @Composable
-private fun FactRow(label: String, value: String?) {
+internal fun FactRow(label: String, value: String?) {
     val extras = LocalRoomExtras.current
     Row(
         Modifier.fillMaxWidth().padding(vertical = 4.dp),

@@ -107,4 +107,57 @@ class DeveloperToolsContractTest {
         assertThat(runBlocking { session.events.firstOrNull() }).isNull()
         session.close()
     }
+
+    @Test
+    fun an_engine_that_serves_nothing_still_has_the_overview() {
+        // The single deliberate exception: the Overview panel reports the page
+        // and this very capability set, so it depends on no engine at all. If
+        // this ever stops being true, the panel whose job is to explain the gaps
+        // is the one that disappears with them.
+        assertThat(DeveloperToolsCapabilities.NONE.serves(DevToolsPanelId.OVERVIEW)).isTrue()
+        assertThat(DeveloperToolsCapabilities.NONE.servedPanels()).containsExactly(DevToolsPanelId.OVERVIEW)
+    }
+
+    @Test
+    fun the_console_is_served_by_either_of_its_two_sources() {
+        val pageSide = DeveloperToolsCapabilities(setOf(DevToolsCapability.CONSOLE_CAPTURE))
+        val engineSide = DeveloperToolsCapabilities(setOf(DevToolsCapability.ENGINE_CONSOLE))
+        assertThat(pageSide.serves(DevToolsPanelId.CONSOLE)).isTrue()
+        assertThat(engineSide.serves(DevToolsPanelId.CONSOLE)).isTrue()
+        assertThat(DeveloperToolsCapabilities.NONE.serves(DevToolsPanelId.CONSOLE)).isFalse()
+    }
+
+    @Test
+    fun a_panel_whose_capability_is_absent_is_not_served() {
+        val scriptOnly = DeveloperToolsCapabilities(setOf(DevToolsCapability.PAGE_SCRIPTING))
+        // Page scripting alone is enough for the panels built on probe scripts.
+        assertThat(scriptOnly.serves(DevToolsPanelId.APPLICATION)).isTrue()
+        // It is not enough for the two that need a signal the page cannot give.
+        assertThat(scriptOnly.serves(DevToolsPanelId.NETWORK)).isFalse()
+        assertThat(scriptOnly.serves(DevToolsPanelId.SECURITY)).isFalse()
+        // Nor for anything that needs the engine's own debugging protocol.
+        assertThat(scriptOnly.serves(DevToolsPanelId.SOURCES)).isFalse()
+        assertThat(scriptOnly.serves(DevToolsPanelId.MEMORY)).isFalse()
+        // This set is the panel IDS the capability unlocks, which is a longer
+        // list than the panels that have been BUILT -- Elements, Audit,
+        // Recorder and Performance are classified here before their panels
+        // exist, so that landing one is an entry in the registry and not also a
+        // change to this table.
+        assertThat(scriptOnly.servedPanels()).containsExactly(
+            DevToolsPanelId.OVERVIEW,
+            DevToolsPanelId.APPLICATION,
+            DevToolsPanelId.ELEMENTS,
+            DevToolsPanelId.AUDIT,
+            DevToolsPanelId.RECORDER,
+            DevToolsPanelId.PERFORMANCE
+        )
+    }
+
+    @Test
+    fun every_panel_id_has_an_answer() {
+        // Exhaustive by construction: a new panel id must be classified here
+        // rather than silently defaulting to hidden.
+        val served = DeveloperToolsCapabilities(allCapabilities).servedPanels()
+        assertThat(served).containsExactlyElementsIn(DevToolsPanelId.entries)
+    }
 }

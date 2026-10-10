@@ -1,6 +1,7 @@
 package com.roombrowser.devtools
 
 import com.google.common.truth.Truth.assertThat
+import com.roombrowser.engine.devtools.DevToolsPanelId
 import org.junit.Test
 
 /**
@@ -90,5 +91,25 @@ class DeveloperToolsManagerTest {
         manager.toggleFullscreen()
         assertThat(manager.dock).isEqualTo(DevToolsDock.DOCKED)
         assertThat(manager.isOpen).isTrue()
+    }
+
+    @Test
+    fun the_panel_starts_on_the_overview() {
+        assertThat(DeveloperToolsManager().panel).isEqualTo(DevToolsPanelId.OVERVIEW)
+    }
+
+    @Test
+    fun the_selected_panel_survives_closing_and_reopening_the_surface() {
+        // Closing the surface for a moment and coming back is the common case
+        // (open the console, close it to see the page), so the selection is not
+        // reset with the dock. Which panels are SERVED is not this class's
+        // question -- a selection it cannot serve is clamped at render time.
+        val manager = DeveloperToolsManager()
+        manager.open("A")
+        manager.selectPanel(DevToolsPanelId.NETWORK)
+        manager.close()
+        manager.open("B")
+        assertThat(manager.panel).isEqualTo(DevToolsPanelId.NETWORK)
+        assertThat(manager.tabId).isEqualTo("B")
     }
 }

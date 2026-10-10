@@ -4,6 +4,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import com.roombrowser.engine.EngineSession
+import com.roombrowser.engine.devtools.DevToolsPanelId
 
 /** How the Developer Tools surface occupies the window. */
 enum class DevToolsDock { CLOSED, DOCKED, FULLSCREEN, MINIMIZED }
@@ -35,10 +36,25 @@ class DeveloperToolsManager {
     var tabId: String? by mutableStateOf(null)
         private set
 
+    /**
+     * Which panel the strip is showing.
+     *
+     * It survives closing and reopening on purpose: a reader who was reading the
+     * Network panel and closed the surface for a moment expects it back, and the
+     * selection is clamped to what the engine serves at render time rather than
+     * reset here, because this class does not know the capabilities.
+     */
+    var panel: DevToolsPanelId by mutableStateOf(DevToolsPanelId.OVERVIEW)
+        private set
+
     private val attachedEngine = mutableMapOf<String, EngineSession>()
     private val sessions = mutableMapOf<String, InspectorSession>()
 
     val isOpen: Boolean get() = dock != DevToolsDock.CLOSED
+
+    fun selectPanel(id: DevToolsPanelId) {
+        panel = id
+    }
 
     fun open(tabId: String) {
         if (dock == DevToolsDock.CLOSED) dock = DevToolsDock.DOCKED
