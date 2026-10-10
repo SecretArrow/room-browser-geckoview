@@ -514,7 +514,14 @@ class AgentPillE2eTest {
             device.waitForIdle(400)
             device.executeShellCommand("input text $text")
             device.waitForIdle(1_000)
-            if (device.wait(Until.hasObject(By.textContains(text)), 2_000)) return true
+            if (device.wait(Until.hasObject(By.textContains(text)), 2_000)) {
+                // The tap above opened the soft keyboard, and it stays open: it prunes
+                // every node it covers out of the accessibility tree, AND the shared
+                // drag starts at 3/4 height -- inside the keyboard -- so it scrolls
+                // nothing. Closed here, where it was opened, so no caller inherits it.
+                hideImeIfNeeded()
+                return true
+            }
         }
         return false
     }
@@ -880,8 +887,9 @@ class AgentPillE2eTest {
             typeIntoField("agent_context_preset_name", renamed)
         )
         assertTrue(
-            "The editor must offer Update preset",
-            clickDescScrolled("agent_context_preset_save", 8_000)
+            "The editor must offer Update preset\n${uiDump()}",
+            scrollToField("agent_context_preset_save", 8_000) &&
+                clickDescScrolled("agent_context_preset_save", 6_000)
         )
         assertTrue(
             "A renamed preset must replace the old one, not add a copy",
