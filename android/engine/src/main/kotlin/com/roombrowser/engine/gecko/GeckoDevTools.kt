@@ -5,6 +5,7 @@ import com.roombrowser.engine.devtools.DevToolsCapability
 import com.roombrowser.engine.devtools.EngineConsoleMessage
 import com.roombrowser.engine.devtools.EngineInspector
 import com.roombrowser.engine.devtools.EngineNetworkSignal
+import com.roombrowser.engine.devtools.EngineSecurityInfo
 import org.json.JSONObject
 
 /**
@@ -21,7 +22,12 @@ internal object GeckoDevTools {
         capabilities = setOf(
             DevToolsCapability.PAGE_SCRIPTING,
             DevToolsCapability.CONSOLE_CAPTURE,
-            DevToolsCapability.NETWORK_REQUEST_LINE
+            DevToolsCapability.NETWORK_REQUEST_LINE,
+            // GeckoSession.ProgressDelegate.onSecurityChange hands over the live
+            // connection's X509Certificate, which is the whole reason the
+            // Security panel is worth having on this edition.
+            DevToolsCapability.SECURITY_INFO,
+            DevToolsCapability.SECURITY_CERTIFICATE
         ),
         notes = mapOf(DevToolsCapability.ENGINE_CONSOLE to ENGINE_CONSOLE_NOTE)
     )
@@ -36,6 +42,21 @@ internal object GeckoDevTools {
             "there is no ConsoleDelegate, and GeckoRuntimeSettings.consoleOutput(true) only " +
             "writes engine messages to logcat under the tag GeckoConsole at a fixed level, " +
             "with no way to read them in the app."
+
+    /**
+     * What the Security panel says this engine does and does not hand over.
+     *
+     * Three claims, each checked against the API rather than against what would
+     * look good: SecurityInformation carries the certificate, the host, the
+     * origin and `isSecure`, and carries NO TLS version and NO cipher suite; and
+     * its two mixed-mode fields report content the engine loaded or blocked,
+     * which is not the same question as "was the page free of mixed content".
+     * Saying so is what stops two "(not reported)" lines from reading as a bug.
+     */
+    const val SECURITY_NOTE: String =
+        "GeckoView reports the connection's certificate and whether the site is secure, but " +
+            "no TLS version and no cipher suite, and its mixed-content flags report only what " +
+            "it loaded or blocked."
 
     /** A fresh handle per session: a capture sink belongs to one session, not to the engine. */
     fun inspector(session: GeckoEngineSession): GeckoInspector = GeckoInspector(session)
@@ -92,6 +113,16 @@ internal class GeckoInspector(private val session: GeckoEngineSession) : EngineI
     internal fun onNetworkSignal(signal: EngineNetworkSignal) {
         networkSink?.invoke(signal)
     }
+
+    /**
+     * The connection's state, as the session's progress delegate last saw it.
+     *
+     * There is nothing to ask the engine for: GeckoView reports security only
+     * through the callback and keeps no readable copy, so this reads the cache
+     * that callback fills. Null is "the engine has not reported one for the
+     * document on screen", which is a real state after a navigation.
+     */
+    override suspend fun securityInfo(): EngineSecurityInfo? = session.securityState
 
     override fun close() {
         val wasArmed = networkSink != null

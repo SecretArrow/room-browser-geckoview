@@ -17,10 +17,13 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import com.roombrowser.engine.devtools.DeveloperToolsCapabilities
 import com.roombrowser.engine.devtools.DevToolsPanelId
 import com.roombrowser.ui.common.LocalRoomExtras
+import com.roombrowser.ui.common.RoomCopyButton
+import com.roombrowser.ui.common.SectionHeader
 
 /**
  * What one panel is handed when it composes.
@@ -81,6 +84,7 @@ internal class DevToolsPanelEntry(
 internal fun devToolsPanelEntries(): List<DevToolsPanelEntry> = listOf(
     DevToolsPanelEntry(DevToolsPanelId.OVERVIEW, { it.serves(DevToolsPanelId.OVERVIEW) }, { OverviewPanel(it) }),
     DevToolsPanelEntry(DevToolsPanelId.APPLICATION, { it.serves(DevToolsPanelId.APPLICATION) }, { ApplicationPanel(it) }),
+    DevToolsPanelEntry(DevToolsPanelId.SECURITY, { it.serves(DevToolsPanelId.SECURITY) }, { SecurityPanel(it) }),
     DevToolsPanelEntry(
         DevToolsPanelId.CONSOLE,
         { it.serves(DevToolsPanelId.CONSOLE) },
@@ -172,5 +176,26 @@ internal fun NeedsEngine(what: String) {
         style = MaterialTheme.typography.bodySmall,
         color = extras.textSecondary,
         modifier = Modifier.padding(horizontal = 20.dp, vertical = 8.dp)
+    )
+}
+
+/**
+ * One report section: its header, a copy control, and the text both draw.
+ *
+ * [body] is written once and handed to both, so what is on screen and what a
+ * copy carries cannot drift apart.
+ */
+@Composable
+internal fun Block(body: String, title: String) {
+    val extras = LocalRoomExtras.current
+    SectionHeader(title) {
+        RoomCopyButton(body, title, "Copy the $title section")
+    }
+    Text(
+        body,
+        style = MaterialTheme.typography.bodySmall,
+        color = extras.textPrimary,
+        fontFamily = FontFamily.Monospace,
+        modifier = Modifier.padding(horizontal = 20.dp).padding(bottom = 6.dp)
     )
 }
