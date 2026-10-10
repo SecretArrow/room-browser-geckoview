@@ -117,6 +117,24 @@ class PasswordsE2eTest {
         return clickSmart(node)
     }
 
+    private fun imeShown(): Boolean = try {
+        // No shell pipe: `executeShellCommand` hands the whole string to the
+        // process, so a `| grep` never runs — it just becomes extra arguments.
+        device.executeShellCommand("dumpsys input_method")
+            .lineSequence()
+            .any { it.contains("mInputShown=true") }
+    } catch (_: Exception) {
+        false
+    }
+
+    /** The keyboard covers the 3/4 mark, so a live one eats every dragUpQuarter. */
+    private fun hideImeIfNeeded() {
+        if (imeShown()) {
+            device.pressBack()
+            device.waitForIdle(600)
+        }
+    }
+
     private fun dragUpQuarter() {
         // Half-screen drag (3/4 → 1/4): the CI emulator's default profile is
         // 320x640 mdpi — the Passwords row (Autofill section) sits ~3400px
@@ -223,6 +241,7 @@ class PasswordsE2eTest {
         clickCenter(field!!)
         device.executeShellCommand("input text $profileName")
         device.waitForIdle(1_000)
+        hideImeIfNeeded()
         val cancel = device.findObjects(By.text("Cancel")).minByOrNull { it.visibleBounds.top }
         val confirm = device.findObjects(By.text("Create Profile"))
             .filter { c ->
