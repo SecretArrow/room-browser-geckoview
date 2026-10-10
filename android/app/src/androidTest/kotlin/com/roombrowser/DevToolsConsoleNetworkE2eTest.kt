@@ -72,6 +72,9 @@ class DevToolsConsoleNetworkE2eTest {
      */
     private val clearSettleMs = 10_000L
 
+    /** Where tearDown leaves the browser, so the next suite starts on it too. */
+    private val homePage = "about:home"
+
     @Before
     fun setUp() {
         E2eDeterminism.suppressOrganicNetworkWarnings()
@@ -98,6 +101,12 @@ class DevToolsConsoleNetworkE2eTest {
 
     @After
     fun tearDown() {
+        // Return the browser to about:home BEFORE the server goes away. Every
+        // page this suite opened lives on in the profile as a persisted tab, so
+        // the next class would cold-start on the last of them -- a fixture URL
+        // whose server this method is about to stop, which lands it on an error
+        // surface instead of a homepage.
+        runCatching { launchEngine(homePage) }
         runCatching { server.shutdown() }
     }
 
