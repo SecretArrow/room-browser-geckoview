@@ -8,8 +8,9 @@ import okhttp3.Request
 import java.util.concurrent.TimeUnit
 
 /**
- * The direct exit-address probe: ask each of [ExitIp.ENDPOINTS] in turn and
- * return the first body [isValid] accepts.
+ * The direct exit-address probe: ask each of [endpoints] in turn and return the
+ * first body [isValid] accepts. [endpoints] defaults to the IPv4 list; the
+ * diagnostics screen passes [ExitIp.IPV6_ENDPOINTS] to ask the other question.
  *
  * It deliberately never carries a proxy. This reading is the measurement a
  * proxy is judged against, so asking for it through a proxy would confirm the
@@ -23,9 +24,10 @@ import java.util.concurrent.TimeUnit
 suspend fun fetchExitIp(
     client: OkHttpClient,
     timeoutMs: Long,
-    isValid: (String) -> Boolean
+    isValid: (String) -> Boolean,
+    endpoints: List<String> = ExitIp.ENDPOINTS
 ): String? = withContext(Dispatchers.IO) {
-    ExitIp.ENDPOINTS.firstNotNullOfOrNull { endpoint ->
+    endpoints.firstNotNullOfOrNull { endpoint ->
         runCatching {
             client.newBuilder()
                 .callTimeout(timeoutMs, TimeUnit.MILLISECONDS)

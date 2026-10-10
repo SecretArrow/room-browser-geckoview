@@ -233,6 +233,20 @@
             android:windowSoftInputMode="adjustResize" />
 
         <!--
+          "What's My IP" — the diagnostics screen, in the ':browser' process
+          because one of the things it reports is the engine's OWN user agent,
+          and GeckoView can only answer that from a process whose runtime is
+          up. The engine is also the only thing that knows it: reconstructing
+          the string here would be a second answer that drifts from the one a
+          site actually sees.
+        -->
+        <activity
+            android:name=".browser.ui.WhatsMyIpActivity"
+            android:process=":browser"
+            android:exported="false"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboard|keyboardHidden|density|uiMode" />
+
+        <!--
           Profile Network Warning — a DEDICATED full-screen activity in the
           ':browser' process (it must never be shown as a dismissible dialog):
           while the pending-decision flag stands, browsing is gated and this

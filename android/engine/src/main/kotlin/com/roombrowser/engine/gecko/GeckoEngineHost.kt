@@ -26,6 +26,7 @@ import org.mozilla.geckoview.ExperimentalGeckoViewApi
 import org.mozilla.geckoview.GeckoPreferenceController
 import org.mozilla.geckoview.GeckoResult
 import org.mozilla.geckoview.GeckoRuntime
+import org.mozilla.geckoview.GeckoSession
 import org.mozilla.geckoview.StorageController
 import org.mozilla.geckoview.WebExtension
 import java.io.File
@@ -117,6 +118,17 @@ internal class GeckoEngineHost : EngineHost {
      */
     @Volatile
     private var activityDelegate: EngineActivityDelegate? = null
+
+    /**
+     * GeckoView's own mobile UA, which is what a DEFAULT-mode profile sends:
+     * the session is built with USER_AGENT_MODE_MOBILE and no override.
+     *
+     * Null while the runtime is not up -- the call reaches a GeckoThread that
+     * is not running -- and the screen reports that as unknown rather than
+     * inventing a string.
+     */
+    override fun defaultUserAgent(context: Context): String? =
+        runCatching { GeckoSession.getDefaultUserAgent() }.getOrNull()
 
     override fun engineName(context: Context): String = ENGINE_LABEL
 
