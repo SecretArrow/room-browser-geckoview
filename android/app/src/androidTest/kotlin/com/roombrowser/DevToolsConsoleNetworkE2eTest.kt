@@ -8,6 +8,8 @@ import androidx.test.uiautomator.By
 import androidx.test.uiautomator.BySelector
 import androidx.test.uiautomator.UiDevice
 import androidx.test.uiautomator.UiObject2
+import androidx.test.uiautomator.UiScrollable
+import androidx.test.uiautomator.UiSelector
 import androidx.test.uiautomator.Until
 import kotlinx.coroutines.runBlocking
 import okhttp3.mockwebserver.Dispatcher
@@ -58,6 +60,9 @@ class DevToolsConsoleNetworkE2eTest {
     private val logMarker = "room-console-log-$tag"
     private val errorMarker = "room-console-error-$tag"
     private val netPath = "/net-$tag"
+
+    /** The first thing in the panel body, and so the marker for "the body is here". */
+    private val bodyHeader = "What this edition can inspect"
 
     /**
      * How long a cleared feed is given to leave the tree. Recomposing off the
@@ -238,6 +243,86 @@ class DevToolsConsoleNetworkE2eTest {
         )
     }
 
+    /**
+     * Answers three questions the feed tests cannot, without failing early.
+     *
+     * Every feed assertion in this class looks for something BELOW THE FOLD of
+     * a 320x640 window. Compose prunes a clipped-out node from the
+     * accessibility tree, so from the test's side "the panel never rendered
+     * this" and "the panel rendered it below the fold and the drag did not move
+     * the body" are the SAME observation -- both are count=0. Those are two
+     * different defects in two different files, so this reports the three facts
+     * separately instead of guessing which one is in play:
+     *
+     *   1. Does the panel take touch? The header controls are above the fold in
+     *      every dock and no suite has ever pressed one.
+     *   2. Do the injected drags every feed assertion relies on move the body?
+     *   3. Does the accessibility scroll ACTION move it, which asks the
+     *      scrollable node to scroll instead of injecting a gesture at a
+     *      coordinate?
+     *
+     * The report is printed as well as asserted, so a passing run still records
+     * what it measured.
+     */
+    @Test
+    fun the_devtools_panel_takes_touch_and_its_body_scrolls() {
+        assertTrue(
+            "A profile must be active before the engine can be cold-started\n${uiTree()}",
+            ensureActiveProfile()
+        )
+        assertTrue(
+            "The fixture page must render before Developer Tools can inspect it\n${uiTree()}",
+            openPage(server.url("/page-$tag").toString())
+        )
+        assertTrue(
+            "Developer Tools must open from the Page Actions sheet\n${uiTree()}",
+            openDeveloperToolsPanel()
+        )
+
+        val report = StringBuilder()
+        report.append("display=").append(device.displayWidth).append('x')
+            .append(device.displayHeight).append('\n')
+
+        val minimize = findDescNow("Minimize")
+        report.append("minimize control present=").append(minimize != null).append('\n')
+        report.append("close control bounds=")
+            .append(findDescNow("Close developer tools")?.visibleBounds).append('\n')
+        val collapsed = minimize != null && clickSmart(minimize) &&
+            waitUntilAbsent(By.text(bodyHeader), 8_000)
+        report.append("minimize collapsed the body=").append(collapsed).append('\n')
+        val restored = collapsed && findDescNow("Restore")?.let { clickSmart(it) } == true &&
+            hasText(bodyHeader, 8_000)
+        report.append("restore brought it back=").append(restored).append('\n')
+
+        val before = visibleTexts()
+        repeat(4) { dragUpHalf() }
+        val afterDrags = visibleTexts()
+        report.append("injected drags moved the body=").append(before != afterDrags).append('\n')
+
+        val steps = a11yScrollReport(report)
+        report.append("a11y scroll steps total=").append(steps).append('\n')
+        val afterA11y = visibleTexts()
+        report.append("console header visible=").append(hasText("Console", 1_000))
+            .append(" network header visible=").append(hasText("Network", 1_000)).append('\n')
+        report.append("before=").append(before).append('\n')
+        report.append("afterDrags=").append(afterDrags).append('\n')
+        report.append("afterA11y=").append(afterA11y).append('\n')
+        println(report)
+
+        assertTrue(
+            "The panel must take touch -- minimizing and restoring it is the cheapest proof, " +
+                "and the header is the only part of this panel any suite has ever pressed.\n" +
+                report,
+            collapsed && restored
+        )
+        assertTrue(
+            "Something below the fold has to become reachable, or not one of this panel's " +
+                "feeds can ever be asserted: either an injected drag or the accessibility " +
+                "scroll action must move the body.\n" + report,
+            afterDrags != before || afterA11y != before || hasText("Console", 1_000)
+        )
+    }
+
     // ---------- The state this test needs -----------------------------------
 
     /**
@@ -288,6 +373,10 @@ class DevToolsConsoleNetworkE2eTest {
 
     private fun hasDesc(desc: String, timeoutMs: Long): Boolean =
         device.wait(Until.hasObject(By.desc(desc)), timeoutMs)
+
+    /** A presence check with no wait at all, for the report's own probes. */
+    private fun findDescNow(desc: String): UiObject2? =
+        runCatching { device.findObjects(By.desc(desc)).firstOrNull() }.getOrNull()
 
     private fun clickCenter(node: UiObject2): Boolean = try {
         val b = node.visibleBounds
@@ -383,6 +472,59 @@ class DevToolsConsoleNetworkE2eTest {
             b.centerY() < device.displayHeight - 20
     } catch (_: Exception) {
         false
+    }
+
+    /**
+     * Every text string currently in the active window, deduped and SORTED.
+     *
+     * The empty `textContains` matches any node that has text at all, which is
+     * the only selector this UiAutomator version offers for "everything" — the
+     * sort is what makes two captures comparable as SETS, so a mere reorder is
+     * not mistaken for the body having moved.
+     */
+    private fun visibleTexts(): List<String> = try {
+        device.findObjects(By.textContains(""))
+            .mapNotNull { it.text }
+            .distinct()
+            .sorted()
+    } catch (_: Exception) {
+        emptyList()
+    }
+
+    /**
+     * The accessibility scroll ACTION, not an injected gesture.
+     *
+     * [dragUpHalf] hands a coordinate to the input system and hopes the panel's
+     * scrollable claims it; this asks a scrollable NODE itself to scroll, which
+     * is how UiAutomator is meant to move a Compose list.
+     *
+     * Every scrollable instance is probed in turn and reported separately,
+     * because the live WebView is a scrollable node too: a single "the scroll
+     * worked" would not say WHICH node moved, and scrolling the page instead of
+     * the panel would look identical from here.
+     */
+    private fun a11yScrollReport(report: StringBuilder): Int {
+        var total = 0
+        for (index in 0 until 4) {
+            val scroller = UiScrollable(UiSelector().scrollable(true).instance(index))
+            val first = runCatching { scroller.scrollForward() }
+            if (first.isFailure) {
+                report.append("scrollable[").append(index).append("]: none (")
+                    .append(first.exceptionOrNull()?.javaClass?.simpleName).append(")\n")
+                return total
+            }
+            var taken = if (first.getOrDefault(false)) 1 else 0
+            while (taken in 1 until 8 &&
+                runCatching { scroller.scrollForward() }.getOrDefault(false)
+            ) {
+                taken++
+                device.waitForIdle(400)
+            }
+            report.append("scrollable[").append(index).append("]: took ")
+                .append(taken).append(" steps\n")
+            total += taken
+        }
+        return total
     }
 
     /**
