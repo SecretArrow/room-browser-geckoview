@@ -43,6 +43,21 @@ interface EngineHost {
     fun engineOptions(context: Context): List<EngineOption>
 
     /**
+     * The user agent this engine sends when a profile chooses no identity of its
+     * own -- the string the "What's my IP" screen reports under "engine default".
+     *
+     * The engine is the only thing that knows it, which is why it is asked rather
+     * than reconstructed here: the WebView edition carries the device's engine
+     * version, and a second implementation of that answer would drift from the
+     * version a site actually sees.
+     *
+     * Null when the engine cannot say yet (GeckoView's answer comes from a runtime
+     * that may not be up), and the screen reports that as unknown rather than
+     * inventing a string.
+     */
+    fun defaultUserAgent(context: Context): String?
+
+    /**
      * Bind this process to [profileId]. Must be called before the first
      * session is created.
      *

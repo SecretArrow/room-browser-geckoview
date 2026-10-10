@@ -51,6 +51,7 @@ import androidx.compose.material.icons.filled.Palette
 import androidx.compose.material.icons.filled.Password
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.PictureAsPdf
+import androidx.compose.material.icons.filled.Public
 import androidx.compose.material.icons.filled.QrCodeScanner
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.SafetyCheck
@@ -275,6 +276,7 @@ fun PageActionsSheet(
     onShowQr: () -> Unit,
     onOpenSettings: () -> Unit,
     onOpenProfileSettings: () -> Unit,
+    onOpenWhatsMyIp: () -> Unit,
     onOpenAbout: () -> Unit,
     onOpenAgent: () -> Unit,
     onOpenAiTasks: () -> Unit,
@@ -369,6 +371,7 @@ fun PageActionsSheet(
             SheetAction(Icons.Filled.Settings, "Browser settings") { onOpenSettings() }
             SheetAction(Icons.Filled.Person, "Profile settings") { onOpenProfileSettings() }
             SheetAction(Icons.Filled.SwapHoriz, "Switch profile") { onShowQuickSwitcher(); onDismiss() }
+            SheetAction(Icons.Filled.Public, "What's My IP") { onOpenWhatsMyIp() }
             SheetAction(Icons.Filled.Info, "About Room Browser") { onOpenAbout() }
             Spacer(Modifier.height(24.dp))
         }

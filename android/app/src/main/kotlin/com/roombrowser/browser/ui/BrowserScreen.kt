@@ -257,6 +257,10 @@ fun BrowserScreen(
         NotesActivity.launch(activity, viewModel.profileId.value, viewModel.profile.name)
     }
 
+    fun launchWhatsMyIp() {
+        WhatsMyIpActivity.launch(activity, viewModel.profileId.value)
+    }
+
     fun launchTwoFactor() {
         TwoFactorActivity.launch(activity, viewModel.profileId.value, viewModel.profile.name)
     }
@@ -420,6 +424,7 @@ fun BrowserScreen(
             onShowQr = { showQrDialog = true; showPageActions = false },
             onOpenSettings = { route = BrowserRoute.Settings; showPageActions = false },
             onOpenProfileSettings = { route = BrowserRoute.ProfileSettings; showPageActions = false },
+            onOpenWhatsMyIp = { launchWhatsMyIp(); showPageActions = false },
             onOpenAbout = { route = BrowserRoute.About; showPageActions = false },
             onOpenAgent = { openAgent(); showPageActions = false },
             onOpenAiTasks = { launchAiTasks(); showPageActions = false },

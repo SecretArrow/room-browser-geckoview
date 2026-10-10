@@ -19,4 +19,15 @@ object ExitIp {
         "https://icanhazip.com",
         "https://checkip.amazonaws.com"
     )
+
+    /**
+     * The same question, asked over IPv6 only.
+     *
+     * [ENDPOINTS] answers with the IPv4 address on any dual-stack network, which is
+     * the address a site sees only when the connection actually went out over IPv4.
+     * A separate list is what lets the diagnostics screen report the other half
+     * honestly — and report its ABSENCE, which is a fact about the network and not a
+     * failure of the probe.
+     */
+    val IPV6_ENDPOINTS = listOf("https://api6.ipify.org")
 }
