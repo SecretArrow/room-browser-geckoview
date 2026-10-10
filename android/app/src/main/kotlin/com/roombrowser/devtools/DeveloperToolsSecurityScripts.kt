@@ -82,7 +82,7 @@ internal object DeveloperToolsSecurityScripts {
  * a broken probe and a safe page.
  */
 @Serializable
-internal data class SecurityProbe(
+data class SecurityProbe(
     val protocol: String? = null,
     val isSecureContext: Boolean? = null,
     val cspMeta: String? = null,
