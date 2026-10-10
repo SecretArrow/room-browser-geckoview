@@ -72,11 +72,9 @@ internal class DevToolsPanelEntry(
 /**
  * The panels this build ships, in strip order.
  *
- * This list is the panels that have been BUILT, which is a shorter list than the
- * panels this engine could serve -- see `servedPanels()`. PR 4 adds Elements,
- * Security and Audit here; PR 5 adds Sources only if the protocol spike proves a
- * session; PR 6 adds the Recorder. Nothing outside this list is reachable, so
- * adding a panel is one entry plus its content.
+ * This list is the panels that have been BUILT, which is shorter than the panels
+ * this engine could serve -- see `servedPanels()`. Nothing outside this list is
+ * reachable, so adding a panel is one entry plus its content.
  *
  * The order is not the enum's: Overview first (it is where a reader lands) and
  * then the built panels, with the ones a reader opens most often earliest.
@@ -85,6 +83,17 @@ internal fun devToolsPanelEntries(): List<DevToolsPanelEntry> = listOf(
     DevToolsPanelEntry(DevToolsPanelId.OVERVIEW, { it.serves(DevToolsPanelId.OVERVIEW) }, { OverviewPanel(it) }),
     DevToolsPanelEntry(DevToolsPanelId.APPLICATION, { it.serves(DevToolsPanelId.APPLICATION) }, { ApplicationPanel(it) }),
     DevToolsPanelEntry(DevToolsPanelId.SECURITY, { it.serves(DevToolsPanelId.SECURITY) }, { SecurityPanel(it) }),
+    DevToolsPanelEntry(
+        DevToolsPanelId.AUDIT,
+        { it.serves(DevToolsPanelId.AUDIT) },
+        { scope ->
+            if (scope.session != null) {
+                AuditPanel(scope)
+            } else {
+                NeedsEngine("The audit needs a live page to read.")
+            }
+        }
+    ),
     DevToolsPanelEntry(
         DevToolsPanelId.CONSOLE,
         { it.serves(DevToolsPanelId.CONSOLE) },

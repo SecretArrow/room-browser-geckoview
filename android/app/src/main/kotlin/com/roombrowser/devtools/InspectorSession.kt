@@ -215,6 +215,19 @@ class InspectorSession(
     }
 
     /**
+     * What the page can observe about itself, for the Audit panel.
+     *
+     * Synchronous, like the overview and the security probe: everything here is
+     * a fact the page already holds, so there is nothing to wait for and no poll
+     * -- and no PerformanceObserver is installed, because installing one would
+     * change the page being measured.
+     */
+    suspend fun auditProbe(): AuditProbe? {
+        val raw = rawEval(DeveloperToolsAuditScripts.auditProbeJs()) ?: return null
+        return decode(raw, AuditProbe.serializer())
+    }
+
+    /**
      * ONE storage value, for a row the user revealed.
      *
      * Read on demand rather than carried in the dump, so a site's stored values
