@@ -11,6 +11,7 @@ import androidx.test.uiautomator.UiObject2
 import androidx.test.uiautomator.UiScrollable
 import androidx.test.uiautomator.UiSelector
 import androidx.test.uiautomator.Until
+import com.roombrowser.domain.model.ProfileId
 import kotlinx.coroutines.runBlocking
 import okhttp3.mockwebserver.Dispatcher
 import okhttp3.mockwebserver.MockResponse
@@ -101,13 +102,56 @@ class DevToolsConsoleNetworkE2eTest {
 
     @After
     fun tearDown() {
-        // Return the browser to about:home BEFORE the server goes away. Every
-        // page this suite opened lives on in the profile as a persisted tab, so
-        // the next class would cold-start on the last of them -- a fixture URL
-        // whose server this method is about to stop, which lands it on an error
-        // surface instead of a homepage.
+        // Return the browser to about:home BEFORE the server goes away: every page
+        // this suite opened lives on in the profile as a persisted tab, and the next
+        // class cold-starts on the one that was viewed last.
         runCatching { launchEngine(homePage) }
+        runCatching { awaitHomeTab() }
+        runCatching { closeFixtureTabs() }
         runCatching { server.shutdown() }
+    }
+
+    /**
+     * Waits for the launch above to reach the profile.
+     *
+     * A request is not a result: the next class starts its activity with CLEAR_TASK,
+     * which destroys this one, so a home tab still unwritten when this returns is a
+     * launch that never happened -- and what is then left for that class is a fixture
+     * URL on the server this method is about to stop.
+     */
+    private fun awaitHomeTab() {
+        val graph = (targetContext.applicationContext as RoomBrowserApp).graph
+        repeat(30) {
+            val onHome = runBlocking {
+                val profileId = graph.appState.activeProfileIdSnapshot() ?: return@runBlocking false
+                graph.browserRepo.openTabs(ProfileId(profileId)).any { it.url == homePage }
+            }
+            if (onHome) return
+            device.waitForIdle(500)
+        }
+    }
+
+    /**
+     * Deletes the tabs this suite opened.
+     *
+     * They point at the MockWebServer this method's caller is about to stop, and a tab
+     * left open on a dead server is what the next class would then restore. Retried,
+     * because a page that finishes loading while the close is in flight rewrites its
+     * own row.
+     */
+    private fun closeFixtureTabs() {
+        val graph = (targetContext.applicationContext as RoomBrowserApp).graph
+        val base = server.url("/").toString()
+        repeat(10) {
+            val left = runBlocking {
+                val profileId = graph.appState.activeProfileIdSnapshot() ?: return@runBlocking 0
+                val stale = graph.browserRepo.openTabs(ProfileId(profileId)).filter { it.url.startsWith(base) }
+                stale.forEach { graph.browserRepo.closeTab(it.id) }
+                stale.size
+            }
+            if (left == 0) return
+            Thread.sleep(500)
+        }
     }
 
     /** The fixture page: two console calls, then a fetch that keeps repeating. */
