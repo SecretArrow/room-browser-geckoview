@@ -183,10 +183,18 @@ class DevToolsAuditTextTest {
     @Test
     fun every_verdict_label_is_padded_to_one_column_width() {
         // The labels are different lengths, so a reader scans the column only if
-        // they all end at the same place.
-        val labels = rows(healthy).values.map { it.line().substringBefore("  ") }
-        assertThat(labels.map { it.length }.toSet()).hasSize(1)
-        assertThat(labels.map { it.trim() }).contains("pass")
+        // they all end at the same place. The width is derived from the labels
+        // themselves rather than restated as a number, because a literal here
+        // would pass while the column it describes was ragged.
+        val width = AuditVerdict.values().maxOf { it.label.length }
+        val markers = rows(healthy).values.map { it.line().take(width) }
+        assertThat(markers.map { it.length }.toSet()).hasSize(1)
+        assertThat(markers.map { it.trim() }).contains("pass")
+        // Right-justified, not merely padded: the label must be the tail of the
+        // column, and it must be the verdict's own label and no other.
+        rows(healthy).values.forEach { row ->
+            assertThat(row.line().take(width).trim()).isEqualTo(row.verdict.label)
+        }
     }
 
     @Test
