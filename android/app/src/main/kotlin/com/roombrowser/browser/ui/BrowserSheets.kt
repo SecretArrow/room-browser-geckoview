@@ -93,6 +93,7 @@ import androidx.compose.ui.viewinterop.AndroidView
 import com.roombrowser.browser.BrowserViewModel
 import com.roombrowser.domain.model.LanguagePresets
 import com.roombrowser.domain.model.ProfileId
+import com.roombrowser.domain.translate.PageTranslate
 import com.roombrowser.qr.QrCodeGenerator
 import com.roombrowser.ui.common.GlassBar
 import com.roombrowser.ui.common.LocalRoomExtras
@@ -770,22 +771,26 @@ fun FindInPageBar(
 @Composable
 fun TranslateDialog(viewModel: BrowserViewModel, onDismiss: () -> Unit) {
     var target by remember { mutableStateOf(viewModel.profileSettings().translateTargetLanguage) }
-    // The field used to be spliced straight into the Translate URL, so an
-    // unknown code, an empty one, or anything containing a URL metacharacter
-    // went to Google verbatim. LanguagePresets.isSupported is the same
-    // validator the settings picker uses: it accepts a curated preset or any
-    // well-formed BCP-47-ish tag, and rejects blank and malformed input —
-    // its own charset (alphanumerics and hyphens) is what makes the URL safe,
-    // and the code is percent-encoded below as well so a future loosening of
-    // that regex cannot turn this into parameter injection.
+    val pageUrl = viewModel.pageState.url
+    // Read at composition: the new tab must inherit the CURRENT tab's privacy,
+    // or a private page's address is written into a persisted normal tab.
+    val isPrivate = viewModel.pageState.isPrivate
+    // PageTranslate owns both the validity rule and the URL, so the button's
+    // enabled state and the URL can never disagree. The field is validated by
+    // the same LanguagePresets check the settings picker uses.
     val code = target.trim()
     val valid = LanguagePresets.isSupported(code)
+    val translatable = PageTranslate.isTranslatable(pageUrl)
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("Translate this page?") },
         text = {
             Column {
                 Text("Uses Google Translate's web wrapper. Some sites may not work.")
+                if (!translatable) {
+                    Spacer(Modifier.height(8.dp))
+                    Text("This page has no address a translator can open. Load a web page first.")
+                }
                 Spacer(Modifier.height(8.dp))
                 OutlinedTextField(
                     value = target,
@@ -803,16 +808,10 @@ fun TranslateDialog(viewModel: BrowserViewModel, onDismiss: () -> Unit) {
         },
         confirmButton = {
             Button(
-                enabled = valid,
+                enabled = valid && translatable,
                 onClick = {
-                    val url = viewModel.pageState.url
-                    if (url != "about:home") {
-                        val encoded = java.net.URLEncoder.encode(url, "UTF-8")
-                        val tl = java.net.URLEncoder.encode(code, "UTF-8")
-                        viewModel.loadUrl(
-                            "https://translate.google.com/translate?sl=auto&tl=$tl&u=$encoded",
-                            newTab = true
-                        )
+                    PageTranslate.urlFor(pageUrl, code)?.let { url ->
+                        viewModel.loadUrl(url, newTab = true, isPrivate = isPrivate)
                     }
                     onDismiss()
                 }
