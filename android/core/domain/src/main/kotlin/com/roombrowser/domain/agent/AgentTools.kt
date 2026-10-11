@@ -316,7 +316,15 @@ object PageSnapshotFormatter {
     const val MAX_TEXT_CHARS = 6000
     const val MAX_ELEMENTS = 120
 
-    fun format(s: PageSnapshotDto): String = buildString {
+    /**
+     * Every page snapshot the model sees goes through the untrusted fence and
+     * the redactor, here rather than at each call site, so a new caller cannot
+     * forget either.
+     */
+    fun format(s: PageSnapshotDto): String =
+        UntrustedContent.wrap(SecretRedaction.redact(render(s)), "the page")
+
+    private fun render(s: PageSnapshotDto): String = buildString {
         appendLine("URL: ${s.url}")
         appendLine("TITLE: ${s.title.ifBlank { "(untitled)" }}")
         appendLine("SCROLL: ${s.scrollY}/${s.maxScrollY}")
