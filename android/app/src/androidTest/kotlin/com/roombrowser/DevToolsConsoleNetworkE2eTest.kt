@@ -785,67 +785,25 @@ class DevToolsConsoleNetworkE2eTest {
      * drawing a chip for it.
      */
     private fun selectPanel(chip: String, body: String): Boolean {
-        val node = scrollStripToDesc(chip) ?: return false
+        val node = stripChip(chip) ?: return false
         if (!clickSmart(node)) return false
         return hasDesc(body, 10_000)
     }
 
     /**
-     * Brings a strip chip into view, checking before each swipe.
+     * The chip for [desc], if any part of it is on screen.
      *
-     * The strip scrolls horizontally and has to: four chips only just fit in a
-     * 320dp window, and the panel set grows from here. A chip pushed off the
-     * right edge is clipped, and a clipped node is one this suite must not tap
-     * by its stale bounds.
+     * The strip is wider than a phone window, so a chip can be clipped -- and
+     * `visibleBounds` is clipped with it, so the centre [clickSmart] taps is a
+     * point that is really there. A chip scrolled wholly off the strip is not in
+     * the tree at all, and no drag this suite can inject brings it back: a dozen
+     * logged swipes on the strip moved it not at all. That is why
+     * `devToolsPanelEntries` keeps the panels this suite opens inside the first
+     * four chips.
      */
-    private fun scrollStripToDesc(desc: String, maxSwipes: Int = 12): UiObject2? {
-        repeat(maxSwipes) {
-            val node = device.findObjects(By.desc(desc)).firstOrNull()
-            if (node != null && isFullyVisible(node)) return node
-            stripLeft()
-        }
-        return device.findObjects(By.desc(desc)).firstOrNull()
-    }
-
-    /**
-     * Whether a chip is wholly inside the window.
-     *
-     * The strip scrolls horizontally and there are more chips than fit, so a
-     * chip that answers a lookup can still be half off an edge -- and a tap at
-     * the centre of a clipped node lands on whatever is beside it.
-     */
-    private fun isFullyVisible(node: UiObject2): Boolean = try {
-        val b = node.visibleBounds
-        b.width() > 0 && b.left >= 0 && b.right <= device.displayWidth &&
-            b.centerY() > device.displayHeight / 4 &&
-            b.centerY() < device.displayHeight - 20
-    } catch (_: Exception) { false }
-
-    /**
-     * Where the strip sits: just under the header row.
-     *
-     * Anchored on the header's own minimize control rather than on a fraction of
-     * the window, because the dock height changes with the window and the header
-     * is a node this suite can actually find.
-     */
-    private fun stripY(): Int {
-        val header = findDescNow("Minimize") ?: return device.displayHeight * 39 / 100
-        return runCatching { header.visibleBounds.bottom + 20 }
-            .getOrDefault(device.displayHeight * 39 / 100)
-    }
-
-    /**
-     * Drags the strip towards the left, which reveals the chips to its right.
-     *
-     * Half a window per step rather than nearly a whole one: a chip is narrower
-     * than the jump, so a bigger step can carry one from off the right edge to
-     * off the left edge without ever being wholly on screen.
-     */
-    private fun stripLeft() {
-        val y = stripY()
-        device.swipe(device.displayWidth - 24, y, device.displayWidth / 2, y, 40)
-        device.waitForIdle(400)
-        try { Thread.sleep(150) } catch (_: InterruptedException) { }
+    private fun stripChip(desc: String): UiObject2? {
+        val node = device.findObjects(By.desc(desc)).firstOrNull() ?: return null
+        return if (isTappable(node)) node else null
     }
 
     // ---------- Failure diagnostics -----------------------------------------
@@ -873,7 +831,18 @@ class DevToolsConsoleNetworkE2eTest {
         val texts = runCatching {
             device.findObjects(By.textContains("")).mapNotNull { it.text }.distinct().take(80)
         }.getOrDefault(emptyList())
-        sb.append("VISIBLE TEXTS: ").append(texts)
+        sb.append("VISIBLE TEXTS: ").append(texts).append('\n')
+        // The strip is wider than the window, so a chip this suite cannot reach may
+        // still answer a lookup -- or may not be in the tree at all. Its x-range is
+        // what tells those apart, and the window width is the other half of that.
+        val chips = runCatching {
+            device.findObjects(By.descContains(" panel")).joinToString(" ") { node ->
+                val b = runCatching { node.visibleBounds }.getOrNull()
+                "${node.contentDescription}[${b?.left},${b?.right}]"
+            }
+        }.getOrDefault("probe failed")
+        sb.append("STRIP CHIPS (window width ").append(device.displayWidth).append("): ")
+            .append(chips)
         sb.toString().take(8000)
     } catch (t: Throwable) {
         "probe dump failed: $t"

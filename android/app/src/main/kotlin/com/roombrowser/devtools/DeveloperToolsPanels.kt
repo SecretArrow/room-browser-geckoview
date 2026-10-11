@@ -78,11 +78,24 @@ internal class DevToolsPanelEntry(
  *
  * The order is not the enum's: Overview first (it is where a reader lands) and
  * then the built panels, with the ones a reader opens most often earliest.
+ *
+ * Console and Network stay third and fourth on purpose: the strip holds about
+ * four chips at phone width, and the e2e suite can only tap a chip that is
+ * partly on screen -- a panel pushed past the fourth is one no test can open.
  */
 internal fun devToolsPanelEntries(): List<DevToolsPanelEntry> = listOf(
     DevToolsPanelEntry(DevToolsPanelId.OVERVIEW, { it.serves(DevToolsPanelId.OVERVIEW) }, { OverviewPanel(it) }),
     DevToolsPanelEntry(DevToolsPanelId.APPLICATION, { it.serves(DevToolsPanelId.APPLICATION) }, { ApplicationPanel(it) }),
-    DevToolsPanelEntry(DevToolsPanelId.SECURITY, { it.serves(DevToolsPanelId.SECURITY) }, { SecurityPanel(it) }),
+    DevToolsPanelEntry(
+        DevToolsPanelId.CONSOLE,
+        { it.serves(DevToolsPanelId.CONSOLE) },
+        { scope -> scope.session?.let { ConsolePanel(it) } ?: NeedsEngine("The console needs a live page to read.") }
+    ),
+    DevToolsPanelEntry(
+        DevToolsPanelId.NETWORK,
+        { it.serves(DevToolsPanelId.NETWORK) },
+        { scope -> scope.session?.let { NetworkPanel(it) } ?: NeedsEngine("The network feed needs a live page to read.") }
+    ),
     DevToolsPanelEntry(
         DevToolsPanelId.ELEMENTS,
         { it.serves(DevToolsPanelId.ELEMENTS) },
@@ -94,6 +107,7 @@ internal fun devToolsPanelEntries(): List<DevToolsPanelEntry> = listOf(
             }
         }
     ),
+    DevToolsPanelEntry(DevToolsPanelId.SECURITY, { it.serves(DevToolsPanelId.SECURITY) }, { SecurityPanel(it) }),
     DevToolsPanelEntry(
         DevToolsPanelId.AUDIT,
         { it.serves(DevToolsPanelId.AUDIT) },
@@ -104,16 +118,6 @@ internal fun devToolsPanelEntries(): List<DevToolsPanelEntry> = listOf(
                 NeedsEngine("The audit needs a live page to read.")
             }
         }
-    ),
-    DevToolsPanelEntry(
-        DevToolsPanelId.CONSOLE,
-        { it.serves(DevToolsPanelId.CONSOLE) },
-        { scope -> scope.session?.let { ConsolePanel(it) } ?: NeedsEngine("The console needs a live page to read.") }
-    ),
-    DevToolsPanelEntry(
-        DevToolsPanelId.NETWORK,
-        { it.serves(DevToolsPanelId.NETWORK) },
-        { scope -> scope.session?.let { NetworkPanel(it) } ?: NeedsEngine("The network feed needs a live page to read.") }
     )
 )
 
