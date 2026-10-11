@@ -85,9 +85,10 @@ Research   →  1b7d…uuid  →  own cookie jar / storage / history
 - **Developer Tools** — a docked inspector over the live page, opened from the
   Page Actions menu (or **F12** / **Ctrl+Shift+I** on an external keyboard).
   It states up front, per edition, exactly what its engine can and cannot
-  inspect — every absence carries a reason, and "this engine cannot" is kept
-  apart from "not built yet" — with a **"What this cannot do, and why"** page
-  carrying the same statement per edition plus the limits that hold on both.
+  inspect — "this engine cannot" (carrying the engine's own reason) is kept
+  apart from "not built yet" (carrying only what the capability would be) —
+  with a **"What this cannot do, and why"** page carrying the same statement
+  per edition plus the limits that hold on both.
   What is served is honest and live: a **Console** feed (the page's own
   `console.*`, `onerror` and `unhandledrejection` — GeckoView exposes no engine
   console callback, so this is the page's own output only) and a **Network**
