@@ -1,11 +1,11 @@
 package com.roombrowser.domain.task
 
 import com.google.common.truth.Truth.assertThat
+import kotlinx.serialization.json.Json
+import org.junit.Test
 import java.time.DayOfWeek
 import java.time.Instant
 import java.time.ZoneId
-import kotlinx.serialization.json.Json
-import org.junit.Test
 
 class ScheduleMathTest {
 

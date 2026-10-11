@@ -2,8 +2,8 @@ package com.roombrowser.domain.wallet
 
 import com.google.common.truth.Truth.assertThat
 import com.roombrowser.domain.wallet.model.AmountFormat
-import java.math.BigInteger
 import org.junit.Test
+import java.math.BigInteger
 
 /**
  * The wallet's one amount formatter: at most seven digits after the decimal

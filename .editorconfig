@@ -49,6 +49,21 @@ ktlint_standard_string-template-indent = disabled
 #   function-naming (568)           flags @Composable PascalCase functions.
 #   blank-line-before-declaration   the codebase opens class bodies and groups
 #   (231)                           declarations with blank lines on purpose.
+#
+# The second group is a different reason: these four cannot be auto-corrected,
+# so a blocking gate would demand hand-reformatting. The rule the gate follows
+# is that every failure is clearable with one `ktlintFormat` run.
+#
+#   try-catch-finally-spacing (425) expands the deliberate one-line interrupt
+#                                   guard `try { Thread.sleep(250) } catch
+#                                   (_: InterruptedException) { }` used
+#                                   throughout the instrumented tests.
+#   filename (4)                    wants files renamed after their class;
+#                                   renaming buys nothing and costs blame.
+#   property-naming (2)             wants top-level vals in SCREAMING_SNAKE,
+#                                   which would rename public API.
+#   value-parameter-comment (3)     wants inline parameter comments moved to
+#                                   their own line; nothing can move them.
 # ---------------------------------------------------------------------------
 ktlint_standard_indent = disabled
 ktlint_standard_argument-list-wrapping = disabled
@@ -71,3 +86,7 @@ ktlint_standard_no-consecutive-comments = disabled
 ktlint_standard_no-empty-first-line-in-class-body = disabled
 ktlint_standard_function-naming = disabled
 ktlint_standard_blank-line-before-declaration = disabled
+ktlint_standard_try-catch-finally-spacing = disabled
+ktlint_standard_filename = disabled
+ktlint_standard_property-naming = disabled
+ktlint_standard_value-parameter-comment = disabled

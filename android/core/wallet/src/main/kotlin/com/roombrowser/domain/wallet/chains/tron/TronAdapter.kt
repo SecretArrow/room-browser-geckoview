@@ -14,7 +14,6 @@ import com.roombrowser.domain.wallet.model.WalletException
 import com.roombrowser.domain.wallet.rpc.JsonRpcClient
 import com.roombrowser.domain.wallet.rpc.RpcEndpointChain
 import com.roombrowser.domain.wallet.wire.ProtoReader
-import com.roombrowser.domain.wallet.wire.ProtoWriter
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
@@ -192,8 +191,7 @@ class TronAdapter(private val rpc: JsonRpcClient = JsonRpcClient()) : Derivation
     }
 
     /** Best-effort parse of raw_data for display. */
-    fun parseRaw(rawBytes: ByteArray): ParsedTronTransaction {
-        return try {
+    fun parseRaw(rawBytes: ByteArray): ParsedTronTransaction = try {
             val rawFields = ProtoReader(rawBytes).all()
             var owner: String? = null
             var to: String? = null
@@ -232,7 +230,6 @@ class TronAdapter(private val rpc: JsonRpcClient = JsonRpcClient()) : Derivation
         } catch (_: IllegalArgumentException) {
             ParsedTronTransaction("", null, null, null, null, null, understood = false)
         }
-    }
 
     private fun hexToAddressSafe(hex: String): String? = try {
         hexToAddress(hex)

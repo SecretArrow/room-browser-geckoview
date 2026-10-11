@@ -14,7 +14,6 @@ import com.roombrowser.domain.wallet.rpc.JsonRpcClient
 import com.roombrowser.domain.wallet.rpc.RpcEndpointChain
 import com.roombrowser.domain.wallet.wire.ProtoReader
 import com.roombrowser.domain.wallet.wire.ProtoWriter
-import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject

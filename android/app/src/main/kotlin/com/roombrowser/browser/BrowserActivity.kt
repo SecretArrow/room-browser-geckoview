@@ -160,9 +160,7 @@ class BrowserActivity : FragmentActivity() {
 
         val factory = object : ViewModelProvider.Factory {
             @Suppress("UNCHECKED_CAST")
-            override fun <T : androidx.lifecycle.ViewModel> create(modelClass: Class<T>): T {
-                return BrowserViewModel(application, profileId) as T
-            }
+            override fun <T : androidx.lifecycle.ViewModel> create(modelClass: Class<T>): T = BrowserViewModel(application, profileId) as T
         }
         val viewModel = ViewModelProvider(this, factory)[BrowserViewModel::class.java]
         browserViewModel = viewModel
@@ -570,9 +568,7 @@ class BrowserActivity : FragmentActivity() {
     private fun browserFactory(profileId: ProfileId): ViewModelProvider.Factory =
         object : ViewModelProvider.Factory {
             @Suppress("UNCHECKED_CAST")
-            override fun <T : androidx.lifecycle.ViewModel> create(modelClass: Class<T>): T {
-                return BrowserViewModel(application, profileId) as T
-            }
+            override fun <T : androidx.lifecycle.ViewModel> create(modelClass: Class<T>): T = BrowserViewModel(application, profileId) as T
         }
 
     companion object {

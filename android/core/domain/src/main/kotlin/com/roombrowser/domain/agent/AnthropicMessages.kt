@@ -9,7 +9,6 @@ import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.intOrNull
-import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
@@ -91,7 +90,7 @@ object AnthropicMessages {
         while (i < messages.size) {
             val m = messages[i]
             when (m.role) {
-                "system" -> i++   // lifted to the top-level field by buildRequest
+                "system" -> i++ // lifted to the top-level field by buildRequest
 
                 "tool" -> {
                     // Collect the whole run of results answering one turn into
@@ -208,7 +207,7 @@ object AnthropicMessages {
     /** Parses a NON-streaming `POST /messages` response into the app's model. */
     fun parseResponse(body: String): ChatMessage {
         val root = runCatching { AgentJson.parseToJsonElement(body.trim()).jsonObject }
-            .getOrElse { return ChatMessage(role = "assistant") }   // null content, like an empty parsed message
+            .getOrElse { return ChatMessage(role = "assistant") } // null content, like an empty parsed message
         return messageOf(root["content"] as? JsonArray)
     }
 
@@ -323,7 +322,7 @@ object AnthropicMessages {
                     emptyList()
                 }
 
-                else -> emptyList()   // message_start / content_block_stop / ping
+                else -> emptyList() // message_start / content_block_stop / ping
             }
         }
 

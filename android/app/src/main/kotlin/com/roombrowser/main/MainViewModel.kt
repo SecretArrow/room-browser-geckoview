@@ -861,8 +861,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             payloadFor(draft.profile, draft.sections, vault, totp, wallet)
         }.onSuccess { payload ->
             exportCredentials = emptyList() // plaintext list dropped for good
-            exportTotp = emptyList()        // the seeds with it
-            exportWallet = null             // and the phrase with those
+            exportTotp = emptyList() // the seeds with it
+            exportWallet = null // and the phrase with those
             exportDraft = null
             val json = ProfileBackup.serialize(payload)
             pendingExport = PendingExport(
@@ -1195,8 +1195,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         if (count == 1) "1 profile" else "$count profiles"
 
     private fun bundleFileName(count: Int): String =
-        "room-browser-profiles-${count}-${System.currentTimeMillis()}.json"
-
+        "room-browser-profiles-$count-${System.currentTimeMillis()}.json"
 
     private fun exportDeliveredMessage(fileName: String): String = buildString {
         append("Exported \"")
@@ -1504,7 +1503,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         createdAt = now,
                         lastActiveAt = now
                     )
-                    ProfileRepositoryImpl.BundleProfileImport(                        profile = fresh,
+                    ProfileRepositoryImpl.BundleProfileImport(profile = fresh,
                         bookmarks = item.payload.bookmarks,
                         sitePermissions = item.payload.sitePermissions,
                         siteSettings = item.payload.siteSettings,

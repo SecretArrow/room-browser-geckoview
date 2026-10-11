@@ -26,6 +26,7 @@ sealed interface BridgeCall {
     val id: String
     val chainType: ChainType
     val method: String
+
     /** Raw params element as the page sent it (JsonNull when absent). */
     val params: JsonElement
 }

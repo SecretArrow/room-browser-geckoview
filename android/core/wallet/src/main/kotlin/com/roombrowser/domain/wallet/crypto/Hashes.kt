@@ -1,11 +1,11 @@
 package com.roombrowser.domain.wallet.crypto
 
+import org.bouncycastle.crypto.digests.Blake2bDigest
 import org.bouncycastle.crypto.digests.KeccakDigest
 import org.bouncycastle.crypto.digests.RIPEMD160Digest
 import org.bouncycastle.crypto.digests.SHA256Digest
 import org.bouncycastle.crypto.digests.SHA3Digest
 import org.bouncycastle.crypto.digests.SHA512Digest
-import org.bouncycastle.crypto.digests.Blake2bDigest
 import org.bouncycastle.crypto.macs.HMac
 import org.bouncycastle.crypto.params.KeyParameter
 

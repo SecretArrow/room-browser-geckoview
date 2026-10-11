@@ -55,11 +55,11 @@ data class RoomExtras(
     val selection: Color,
     val onButton: Color,
     // Shape / effect tokens
-    val radius: Int,          // dp
-    val transparency: Int,    // 0..90 %
-    val blur: Int,            // 0..100 (glass intensity)
-    val surfaceAlpha: Float,  // derived from transparency
-    val blurRadiusPx: Float,  // derived from blur
+    val radius: Int, // dp
+    val transparency: Int, // 0..90 %
+    val blur: Int, // 0..100 (glass intensity)
+    val surfaceAlpha: Float, // derived from transparency
+    val blurRadiusPx: Float, // derived from blur
     val dark: Boolean,
     val gradientStyle: GradientStyle,
     val gradientDirection: GradientDirection,

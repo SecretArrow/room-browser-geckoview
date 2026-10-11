@@ -3,10 +3,10 @@ package com.roombrowser.domain.export
 import com.google.common.truth.Truth.assertThat
 import com.roombrowser.domain.credentials.VaultAuthException
 import org.junit.After
+import org.junit.Assert.assertThrows
 import org.junit.Before
 import org.junit.Test
 import java.util.TimeZone
-import org.junit.Assert.assertThrows
 
 /**
  * JVM tests for the wallet-keys export.

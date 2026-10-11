@@ -27,7 +27,11 @@ class ProfileModelTest {
     @Test
     fun `blank profile id rejected`() {
         var thrown = false
-        try { ProfileId("") } catch (e: IllegalArgumentException) { thrown = true }
+        try {
+            ProfileId("")
+        } catch (e: IllegalArgumentException) {
+            thrown = true
+        }
         assertThat(thrown).isTrue()
     }
 

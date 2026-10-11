@@ -4,10 +4,10 @@ import com.google.common.truth.Truth.assertThat
 import com.roombrowser.domain.task.ScheduleKind
 import com.roombrowser.domain.task.ScheduleMath
 import com.roombrowser.domain.task.TaskSchedule
+import org.junit.Test
 import java.time.DayOfWeek
 import java.time.Instant
 import java.time.ZoneId
-import org.junit.Test
 
 /**
  * The worker's arithmetic, pinned in the fast `quality` job.

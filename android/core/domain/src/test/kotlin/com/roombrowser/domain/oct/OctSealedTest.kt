@@ -1,8 +1,8 @@
 package com.roombrowser.domain.oct
 
 import com.google.common.truth.Truth.assertThat
-import java.nio.charset.StandardCharsets
 import org.junit.Test
+import java.nio.charset.StandardCharsets
 
 class OctSealedTest {
 

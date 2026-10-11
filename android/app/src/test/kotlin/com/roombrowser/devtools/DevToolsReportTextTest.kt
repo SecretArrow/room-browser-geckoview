@@ -1,8 +1,8 @@
 package com.roombrowser.devtools
 
 import com.google.common.truth.Truth.assertThat
-import com.roombrowser.engine.devtools.DeveloperToolsCapabilities
 import com.roombrowser.engine.devtools.DevToolsCapability
+import com.roombrowser.engine.devtools.DeveloperToolsCapabilities
 import org.junit.Test
 
 /**

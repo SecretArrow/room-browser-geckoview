@@ -166,7 +166,7 @@ class AnthropicAgentGateway(
                 if (!currentCoroutineContext().isActive) throw CancellationException("agent stream cancelled")
                 val line = reader.readLine() ?: break
                 val payload = sse.feed(line) ?: continue
-                if (payload == "[DONE]") break   // not sent by Anthropic; harmless if it is
+                if (payload == "[DONE]") break // not sent by Anthropic; harmless if it is
                 decoder.feed(payload).forEach { events(it) }
             }
         } catch (ce: CancellationException) {

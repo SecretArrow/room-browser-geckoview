@@ -22,8 +22,6 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
-import androidx.compose.foundation.lazy.grid.items as gridItems
-import androidx.compose.foundation.lazy.items as listItems
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -83,6 +81,8 @@ import com.roombrowser.ui.common.RoomCardShape
 import com.roombrowser.ui.common.RoomSheetHeader
 import com.roombrowser.ui.common.SectionHeader
 import com.roombrowser.ui.common.StatTile
+import androidx.compose.foundation.lazy.grid.items as gridItems
+import androidx.compose.foundation.lazy.items as listItems
 
 /**
  * Library screens (Tabs / Bookmarks / History / Downloads / Privacy

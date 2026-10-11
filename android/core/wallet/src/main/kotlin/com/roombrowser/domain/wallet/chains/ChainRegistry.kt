@@ -4,8 +4,8 @@ import com.roombrowser.domain.wallet.chains.aptos.AptosAdapter
 import com.roombrowser.domain.wallet.chains.bitcoin.BitcoinAdapter
 import com.roombrowser.domain.wallet.chains.cosmos.CosmosAdapter
 import com.roombrowser.domain.wallet.chains.evm.ChainlistClient
-import com.roombrowser.domain.wallet.chains.evm.EvmNetworkSnapshot
 import com.roombrowser.domain.wallet.chains.evm.EvmAdapter
+import com.roombrowser.domain.wallet.chains.evm.EvmNetworkSnapshot
 import com.roombrowser.domain.wallet.chains.octra.OctraAdapter
 import com.roombrowser.domain.wallet.chains.solana.SolanaAdapter
 import com.roombrowser.domain.wallet.chains.sui.SuiAdapter

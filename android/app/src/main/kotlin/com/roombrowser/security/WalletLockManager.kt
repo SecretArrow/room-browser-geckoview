@@ -7,11 +7,11 @@ import com.roombrowser.domain.security.PinLockCrypto
 import com.roombrowser.domain.security.WalletLockPolicy
 import com.roombrowser.domain.security.WalletLockStateMachine
 import com.roombrowser.domain.security.WalletLockStatus
-import java.security.SecureRandom
-import java.util.Base64
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import java.security.SecureRandom
+import java.util.Base64
 
 /** Outcome of one PIN attempt, shaped for the UI. */
 sealed interface PinUnlockResult {

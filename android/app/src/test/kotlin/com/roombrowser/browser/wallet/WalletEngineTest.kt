@@ -19,7 +19,6 @@ import com.roombrowser.domain.wallet.model.NetworkConfig
 import com.roombrowser.domain.wallet.model.WalletException
 import io.mockk.coVerify
 import io.mockk.spyk
-import java.math.BigInteger
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -37,6 +36,7 @@ import kotlinx.coroutines.test.setMain
 import org.junit.After
 import org.junit.Before
 import org.junit.Test
+import java.math.BigInteger
 
 /**
  * JVM unit tests for [WalletEngine] against the FROZEN contract. Deterministic
@@ -71,12 +71,14 @@ class WalletEngineTest {
         const val EVM1 = "0x6Fac4D18c912343BF86fa7049364Dd4E424Ab9C0"
         const val SOL0 = "HAgk14JpMQLgt6rVgv7cBQFJWFto5Dqxi472uT3DKpqk"
         const val APTOS0 = "0x20a09cf089b49c6aaf8269fcf50b5fd3334e2299b75f164d0a5da11513fcf177"
+
         // Canonical Sui path m/44'/784'/0'/0'/0' (the pre-release build put the
         // index on the account level, so this value moved — see SuiAdapter).
         const val SUI0 = "0x5e93a736d04fbb25737aa40bee40171ef79f65fae833749e3c089fe7cc2161f1"
         const val COSMOS0 = "cosmos19rl4cm2hmr8afy4kldpxz3fka4jguq0auqdal4"
         const val BTC0 = "bc1qcr8te4kr609gcawutmrza0j4xv80jy8z306fyu"
         const val TRON0 = "TUEZSdKsoDHQMeZwihtdoBiN46zxhGWYdH"
+
         // Octra has a single derivation identity, not a BIP-32 path.
         const val OCTRA0 = "octCRus1yKzZbQoABuUhWQzcps8KhdqqQWxPzGciLgY698h"
 

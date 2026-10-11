@@ -119,7 +119,10 @@ class TabsE2eTest {
         val deadline = System.currentTimeMillis() + timeoutMs
         while (System.currentTimeMillis() < deadline) {
             if (condition()) return true
-            try { Thread.sleep(250) } catch (_: InterruptedException) { }
+            try {
+                Thread.sleep(250)
+            } catch (_: InterruptedException) {
+                }
         }
         return condition()
     }
@@ -149,7 +152,11 @@ class TabsE2eTest {
         var current: UiObject2? = node
         var hops = 0
         while (current != null && hops < 8) {
-            val clickable = try { current.isClickable } catch (_: Exception) { false }
+            val clickable = try {
+                current.isClickable
+            } catch (_: Exception) {
+                false
+            }
             if (clickable) {
                 val b = runCatching { current.visibleBounds }.getOrNull()
                 if (b != null && b.width() > 0) {
@@ -158,7 +165,11 @@ class TabsE2eTest {
                     return true
                 }
             }
-            current = try { current.parent } catch (_: Exception) { null }
+            current = try {
+                current.parent
+            } catch (_: Exception) {
+                null
+            }
             hops++
         }
         return clickCenter(node)
@@ -186,7 +197,10 @@ class TabsE2eTest {
             device.displayWidth / 2, device.displayHeight / 4, 100
         )
         device.waitForIdle(800)
-        try { Thread.sleep(300) } catch (_: InterruptedException) { }
+        try {
+            Thread.sleep(300)
+        } catch (_: InterruptedException) {
+            }
     }
 
     /** Scroll-aware click (off-screen grid rows are not in the a11y tree). */
@@ -232,7 +246,10 @@ class TabsE2eTest {
         val deadline = System.currentTimeMillis() + timeoutMs
         while (System.currentTimeMillis() < deadline) {
             if (imeShown()) return true
-            try { Thread.sleep(200) } catch (_: InterruptedException) { }
+            try {
+                Thread.sleep(200)
+            } catch (_: InterruptedException) {
+                }
         }
         return imeShown()
     }
@@ -255,10 +272,10 @@ class TabsE2eTest {
      */
     private fun dismissSheetIfAny() {
         val markers = listOf(
-            "Clear site data",              // site controls (shields)
+            "Clear site data", // site controls (shields)
             "Toggle JavaScript for this site",
-            "Page Actions",                 // page-actions sheet header
-            "Switch Profile"                // profile switcher
+            "Page Actions", // page-actions sheet header
+            "Switch Profile" // profile switcher
         )
         repeat(2) {
             val up = markers.any { device.wait(Until.hasObject(By.text(it)), 250) }
@@ -274,7 +291,10 @@ class TabsE2eTest {
             if (device.wait(Until.hasObject(By.descContains("Address bar")), 400)) return true
             if (hasText("Search or type URL", 400)) return true
             if (hasText("Privacy Dashboard", 400)) return true
-            try { Thread.sleep(250) } catch (_: InterruptedException) { }
+            try {
+                Thread.sleep(250)
+            } catch (_: InterruptedException) {
+                }
         }
         return device.wait(Until.hasObject(By.descContains("Address bar")), 500)
     }
@@ -390,7 +410,10 @@ class TabsE2eTest {
             } else {
                 firstSeen = 0L
             }
-            try { Thread.sleep(150) } catch (_: InterruptedException) { }
+            try {
+                Thread.sleep(150)
+            } catch (_: InterruptedException) {
+                }
         }
         return false
     }
@@ -590,9 +613,17 @@ class TabsE2eTest {
         var current: UiObject2? = node
         var hops = 0
         while (current != null && hops < 8) {
-            val clickable = try { current.isClickable } catch (_: Exception) { false }
+            val clickable = try {
+                current.isClickable
+            } catch (_: Exception) {
+                false
+            }
             if (clickable) return current
-            current = try { current.parent } catch (_: Exception) { null }
+            current = try {
+                current.parent
+            } catch (_: Exception) {
+                null
+            }
             hops++
         }
         return null

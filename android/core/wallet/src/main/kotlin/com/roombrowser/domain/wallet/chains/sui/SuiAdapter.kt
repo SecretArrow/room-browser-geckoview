@@ -165,14 +165,14 @@ class SuiAdapter(private val rpc: JsonRpcClient = JsonRpcClient()) : DerivationP
             val pureInputs = mutableListOf<ByteArray>()
             repeat(inputCount) {
                 when (reader.readU8()) {
-                    0 -> pureInputs += reader.readBytes()               // CallArg::Pure
-                    1 -> when (reader.readU8()) {                        // CallArg::Object
-                        0 -> reader.skip(32 + 8 + 32)                    // ImmOrOwnedObject(ObjectRef)
-                        1 -> {                                          // SharedObject
+                    0 -> pureInputs += reader.readBytes() // CallArg::Pure
+                    1 -> when (reader.readU8()) { // CallArg::Object
+                        0 -> reader.skip(32 + 8 + 32) // ImmOrOwnedObject(ObjectRef)
+                        1 -> { // SharedObject
                             reader.skip(32 + 8)
-                            reader.skip(1)                               // mutability enum byte
+                            reader.skip(1) // mutability enum byte
                         }
-                        2 -> reader.skip(32 + 8 + 32)                    // Receiving(ObjectRef)
+                        2 -> reader.skip(32 + 8 + 32) // Receiving(ObjectRef)
                         else -> throw IllegalArgumentException("ObjectArg variant")
                     }
                     else -> throw IllegalArgumentException("CallArg variant")
@@ -183,11 +183,11 @@ class SuiAdapter(private val rpc: JsonRpcClient = JsonRpcClient()) : DerivationP
             repeat(commandCount) {
                 when (val command = reader.readU8()) {
                     0 -> { // MoveCall(ProgrammableMoveCall)
-                        reader.skip(32)                                  // package
+                        reader.skip(32) // package
                         val module = reader.readString()
                         val function = reader.readString()
-                        skipTypeTags(reader)                             // type_arguments
-                        skipArguments(reader)                            // arguments
+                        skipTypeTags(reader) // type_arguments
+                        skipArguments(reader) // arguments
                         summaries += "Move call: $module::$function"
                     }
                     1 -> { // TransferObjects(objects: Vec<Argument>, to: Argument)
@@ -276,8 +276,8 @@ class SuiAdapter(private val rpc: JsonRpcClient = JsonRpcClient()) : DerivationP
     private fun skipTypeTag(reader: BcsReader) {
         when (reader.readU8()) {
             0, 1, 2, 3, 4, 5, 8, 9, 10 -> {} // scalar tags
-            6 -> skipTypeTag(reader)          // vector<T>
-            7 -> {                            // struct { address, module, name, type_params }
+            6 -> skipTypeTag(reader) // vector<T>
+            7 -> { // struct { address, module, name, type_params }
                 reader.skip(32)
                 reader.readString()
                 reader.readString()
@@ -289,8 +289,8 @@ class SuiAdapter(private val rpc: JsonRpcClient = JsonRpcClient()) : DerivationP
 
     private fun skipArgument(reader: BcsReader) {
         when (reader.readU8()) {
-            0 -> {}                           // GasCoin
-            1, 2 -> reader.readUleb128()      // Input(u16) | Result(u16)
+            0 -> {} // GasCoin
+            1, 2 -> reader.readUleb128() // Input(u16) | Result(u16)
             3 -> { reader.readUleb128(); reader.readUleb128() } // NestedResult
             else -> throw IllegalArgumentException("Argument variant")
         }
@@ -364,7 +364,7 @@ class SuiAdapter(private val rpc: JsonRpcClient = JsonRpcClient()) : DerivationP
         val writer = BcsWriter()
             .writeUleb128(2) // 2 inputs
             .writeU8(0).writeBytes(BcsWriter().writeU64(amountMist).bytes()) // Pure(amount)
-            .writeU8(0).writeBytes(toBytes)                                  // Pure(recipient)
+            .writeU8(0).writeBytes(toBytes) // Pure(recipient)
             .writeUleb128(2) // 2 commands
             // SplitCoins: cmd=2, Argument::GasCoin(0), [Argument::Input(0)]
             .writeU8(2).writeU8(0).writeUleb128(1).writeU8(1).writeUleb128(0)
@@ -373,18 +373,18 @@ class SuiAdapter(private val rpc: JsonRpcClient = JsonRpcClient()) : DerivationP
         val kindBytes = writer.bytes()
 
         val txData = BcsWriter()
-            .writeU8(0)                                   // TransactionData::V1
-            .writeU8(0)                                   // kind: ProgrammableTransaction
+            .writeU8(0) // TransactionData::V1
+            .writeU8(0) // kind: ProgrammableTransaction
             .writeRaw(kindBytes)
             .writeRaw(Hex.decode(fromAddress.removePrefix("0x"))) // sender
-            .writeUleb128(1)                              // payment: 1 gas object
+            .writeUleb128(1) // payment: 1 gas object
             .writeRaw(Hex.decode(gasCoin.objectId.removePrefix("0x")))
             .writeU64(gasCoin.version)
             .writeRaw(Hex.decode(gasCoin.digest.removePrefix("0x")))
             .writeRaw(Hex.decode(fromAddress.removePrefix("0x"))) // owner
             .writeU64(gasPrice)
             .writeU64(budget)
-            .writeU8(0)                                   // expiration: None
+            .writeU8(0) // expiration: None
             .bytes()
         val txBytesBase64 = java.util.Base64.getEncoder().encodeToString(txData)
         val signature = signTransaction(seed32, publicKey, txBytesBase64)

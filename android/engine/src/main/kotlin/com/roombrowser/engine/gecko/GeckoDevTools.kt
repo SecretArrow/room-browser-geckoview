@@ -1,18 +1,18 @@
 package com.roombrowser.engine.gecko
 
-import com.roombrowser.engine.devtools.DeveloperToolsCapabilities
 import com.roombrowser.engine.devtools.DevToolsCapability
+import com.roombrowser.engine.devtools.DeveloperToolsCapabilities
 import com.roombrowser.engine.devtools.EngineConsoleMessage
 import com.roombrowser.engine.devtools.EngineCookie
 import com.roombrowser.engine.devtools.EngineInspector
 import com.roombrowser.engine.devtools.EngineNetworkSignal
 import com.roombrowser.engine.devtools.EngineSecurityInfo
 import com.roombrowser.engine.devtools.parseCookieHeader
-import kotlin.coroutines.resume
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withTimeoutOrNull
 import org.json.JSONObject
 import org.json.JSONTokener
+import kotlin.coroutines.resume
 
 /**
  * What the GeckoView edition can serve to Developer Tools, and the per-session

@@ -6,8 +6,8 @@ import com.roombrowser.domain.task.AiTaskPermissions
 import com.roombrowser.domain.task.AiTaskRunConfig
 import com.roombrowser.domain.task.ScheduleKind
 import com.roombrowser.domain.task.TaskSchedule
-import java.time.DayOfWeek
 import org.junit.Test
+import java.time.DayOfWeek
 
 /**
  * The JSON columns are the whole persisted shape of a task's schedule and

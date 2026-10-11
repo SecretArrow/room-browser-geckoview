@@ -71,18 +71,18 @@ import com.roombrowser.data.db.AiTaskEntity
 import com.roombrowser.data.repo.permissions
 import com.roombrowser.data.repo.runConfig
 import com.roombrowser.data.repo.schedule
+import com.roombrowser.domain.paging.Paging
 import com.roombrowser.domain.task.AiTaskExecutionMode
 import com.roombrowser.domain.task.AiTaskPermissions
 import com.roombrowser.domain.task.AiTaskRunConfig
 import com.roombrowser.domain.task.ScheduleKind
 import com.roombrowser.domain.task.TaskSchedule
-import com.roombrowser.domain.paging.Paging
 import com.roombrowser.domain.task.needsVisibleBrowser
 import com.roombrowser.ui.common.PagingFooter
 import com.roombrowser.ui.common.RoomBrowserTheme
+import kotlinx.coroutines.launch
 import java.time.DayOfWeek
 import java.time.ZoneId
-import kotlinx.coroutines.launch
 
 /**
  * Add / edit one scheduled AI task. Its OWN activity, in the default process

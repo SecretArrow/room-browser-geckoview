@@ -146,7 +146,8 @@ class LocalLlamaGatewayTest {
     }
 
     @Test
-    fun `listModels lists gguf ids and fails honestly when empty`() = runTest {        File(dir, "b-model.gguf").writeText("b")
+    fun `listModels lists gguf ids and fails honestly when empty`() = runTest {
+        File(dir, "b-model.gguf").writeText("b")
         File(dir, "a-model.gguf").writeText("a")
         File(dir, "notes.txt").writeText("not a model")
         val gateway = LocalLlamaGateway(FakeEngine()).apply { modelsDirectory = dir }

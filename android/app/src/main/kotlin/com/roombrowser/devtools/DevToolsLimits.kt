@@ -1,7 +1,7 @@
 package com.roombrowser.devtools
 
-import com.roombrowser.engine.devtools.DeveloperToolsCapabilities
 import com.roombrowser.engine.devtools.DevToolsCapability
+import com.roombrowser.engine.devtools.DeveloperToolsCapabilities
 
 /** One "why not" line: what is missing, and the reason the code can give for it. */
 internal data class LimitsRow(val title: String, val detail: String)

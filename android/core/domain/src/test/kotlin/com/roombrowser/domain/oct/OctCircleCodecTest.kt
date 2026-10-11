@@ -1,10 +1,10 @@
 package com.roombrowser.domain.oct
 
 import com.google.common.truth.Truth.assertThat
-import java.util.Base64
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import org.junit.Test
+import java.util.Base64
 
 /**
  * The wire decoding for a circle asset. Each rejection here is a way a third party's

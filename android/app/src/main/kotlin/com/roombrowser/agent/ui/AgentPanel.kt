@@ -49,8 +49,8 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.Add
-import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.ArrowDownward
+import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.AttachFile
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.BookmarkBorder
@@ -117,8 +117,6 @@ import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLifecycleOwner
-import androidx.lifecycle.Lifecycle
-import androidx.lifecycle.LifecycleEventObserver
 import androidx.compose.ui.semantics.CustomAccessibilityAction
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.customActions
@@ -134,6 +132,8 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
 import com.roombrowser.agent.AgentAttachment
 import com.roombrowser.agent.AgentEntry
 import com.roombrowser.agent.ApprovalAnswer
@@ -1533,8 +1533,7 @@ private fun resolveAttachment(context: Context, uri: Uri): AgentAttachment {
  * sequences replaced). Returns `(text, bytesRead)` or null when the stream is
  * empty/unreadable or the file exceeds the byte cap (metadata-only).
  */
-private fun readAttachmentText(resolver: ContentResolver, uri: Uri): Pair<String, Long>? {
-    return runCatching {
+private fun readAttachmentText(resolver: ContentResolver, uri: Uri): Pair<String, Long>? = runCatching {
         resolver.openInputStream(uri)?.use { stream ->
             val limit = ATTACHMENT_MAX_BYTES.toInt() + 1
             val buffer = ByteArray(limit)
@@ -1557,7 +1556,6 @@ private fun readAttachmentText(resolver: ContentResolver, uri: Uri): Pair<String
             }
         }
     }.getOrNull()
-}
 
 // ------------------------------------------------------------------- model picker
 

@@ -1,7 +1,6 @@
 package com.roombrowser.browser.ui
 
 import android.content.pm.PackageManager
-import com.roombrowser.engine.PermissionResponder
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
@@ -40,6 +39,7 @@ import com.roombrowser.browser.BrowserViewModel
 import com.roombrowser.browser.WebPermissions
 import com.roombrowser.data.repo.PermissionKind
 import com.roombrowser.domain.engine.UrlIntelligence
+import com.roombrowser.engine.PermissionResponder
 import com.roombrowser.ui.common.LocalRoomExtras
 import com.roombrowser.ui.common.RoomBottomSheetShape
 import com.roombrowser.ui.common.RoomSheetHeader

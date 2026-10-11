@@ -1,11 +1,11 @@
 package com.roombrowser.domain.proxy
 
 import com.google.common.truth.Truth.assertThat
+import org.junit.After
+import org.junit.Test
 import java.net.Proxy
 import java.net.ProxySelector
 import java.net.URI
-import org.junit.After
-import org.junit.Test
 
 /**
  * The scoped OkHttp selector. What matters here is that a scope with nothing installed

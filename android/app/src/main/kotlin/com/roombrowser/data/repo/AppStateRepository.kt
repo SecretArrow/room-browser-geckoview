@@ -284,8 +284,10 @@ data class AgentSettings(
 enum class AgentMode(val title: String, val blurb: String) {
     /** Acts on the page, asking before each action. */
     ASK("Ask", "Act on the page, asking before every action"),
+
     /** Reads, and answers with the steps instead of taking them. */
     PLAN("Plan", "Read pages and answer with the steps, changing nothing"),
+
     /** Acts without asking. */
     YOLO("YOLO", "Act on the page without being asked");
 

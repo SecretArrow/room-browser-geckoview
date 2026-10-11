@@ -87,8 +87,8 @@ class AnthropicAgentGatewayTest {
         assertThat(recorded.getHeader("Authorization")).isEqualTo("Bearer test-key")
         val sent = recorded.body.readUtf8()
         assertThat(sent).contains("\"max_tokens\":")
-        assertThat(sent).contains("\"system\":")           // lifted out of messages
-        assertThat(sent).contains("\"input_schema\":")     // tools use the anthropic shape
+        assertThat(sent).contains("\"system\":") // lifted out of messages
+        assertThat(sent).contains("\"input_schema\":") // tools use the anthropic shape
     }
 
     @Test
@@ -158,7 +158,7 @@ class AnthropicAgentGatewayTest {
         val texts = mutableListOf<String>()
         val message = gateway.chat(request(), events = { if (it is StreamEvent.Text) texts.add(it.text) })
 
-        assertThat(texts).containsExactly("Hel", "lo!").inOrder()   // emitted once, from OpenAI only
+        assertThat(texts).containsExactly("Hel", "lo!").inOrder() // emitted once, from OpenAI only
         assertThat(message.content).isEqualTo("Hello!")
         assertThat(server.takeRequest().path).isEqualTo("/v1/messages")
         assertThat(server.takeRequest().path).isEqualTo("/v1/chat/completions")

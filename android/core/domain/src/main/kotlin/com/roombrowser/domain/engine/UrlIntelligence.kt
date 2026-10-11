@@ -14,6 +14,7 @@ object UrlIntelligence {
         /** A web address the WebView can load directly. */
         data class Web(val url: String, val upgradedToHttps: Boolean) : Input
         data class Search(val query: String) : Input
+
         /** An Octra Circle. Not a web address: the app resolves and renders it itself. */
         data class Oct(val circle: OctUri) : Input
     }

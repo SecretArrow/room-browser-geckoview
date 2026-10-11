@@ -1,7 +1,7 @@
 package com.roombrowser.domain.proxy
 
-import com.roombrowser.domain.model.ProfileSettings
 import com.google.common.truth.Truth.assertThat
+import com.roombrowser.domain.model.ProfileSettings
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonObject

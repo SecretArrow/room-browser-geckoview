@@ -68,7 +68,6 @@ import com.roombrowser.ui.common.RoomBrowserTheme
 import com.roombrowser.ui.common.RoomCardShape
 import kotlinx.coroutines.launch
 import okhttp3.OkHttpClient
-
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -77,8 +76,10 @@ import java.util.Locale
 enum class NetworkWarningDecision {
     /** Continue with THIS profile (session-acknowledged). */
     CONTINUE,
+
     /** Pick a different profile (re-opens the quick switcher). */
     SWITCH,
+
     /** Never warn again for this IP (persisted suppression). */
     SUPPRESS
 }

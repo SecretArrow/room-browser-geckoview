@@ -7,9 +7,9 @@ import com.roombrowser.data.db.DappPermissionDao
 import com.roombrowser.data.db.DappPermissionEntity
 import com.roombrowser.data.db.WalletAccountDao
 import com.roombrowser.data.db.WalletAccountEntity
+import com.roombrowser.data.db.WalletActiveNetworkEntity
 import com.roombrowser.data.db.WalletActivityDao
 import com.roombrowser.data.db.WalletActivityEntity
-import com.roombrowser.data.db.WalletActiveNetworkEntity
 import com.roombrowser.data.db.WalletDao
 import com.roombrowser.data.db.WalletEntity
 import com.roombrowser.data.db.WalletNetworkDao

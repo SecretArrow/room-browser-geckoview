@@ -11,11 +11,11 @@ import com.roombrowser.data.db.NoteEntity
 import com.roombrowser.data.db.SitePermissionEntity
 import com.roombrowser.data.db.SiteSettingEntity
 import com.roombrowser.data.db.TabEntity
-import kotlinx.coroutines.flow.first
 import com.roombrowser.domain.model.PermissionDecision
 import com.roombrowser.domain.model.ProfileId
 import com.roombrowser.domain.profile.ProfileDirectoryLayout
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.first
 import java.io.File
 import java.util.UUID
 

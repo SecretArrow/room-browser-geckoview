@@ -4,9 +4,9 @@ import com.google.common.truth.Truth.assertThat
 import com.roombrowser.domain.task.ScheduleKind
 import com.roombrowser.domain.task.TaskSchedule
 import com.roombrowser.work.AiTaskSchedulePlanner
+import org.junit.Test
 import java.time.Instant
 import java.time.ZoneId
-import org.junit.Test
 
 /** What the screens promise is what the worker delivers — the two must read the
  *  same schedule, clamped the same way. */

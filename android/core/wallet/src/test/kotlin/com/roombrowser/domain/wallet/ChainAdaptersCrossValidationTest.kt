@@ -15,7 +15,6 @@ import com.roombrowser.domain.wallet.crypto.Mnemonics
 import com.roombrowser.domain.wallet.model.ChainType
 import com.roombrowser.domain.wallet.model.NetworkConfig
 import kotlinx.serialization.json.Json
-import kotlinx.serialization.json.jsonObject
 import org.junit.Test
 import java.math.BigInteger
 

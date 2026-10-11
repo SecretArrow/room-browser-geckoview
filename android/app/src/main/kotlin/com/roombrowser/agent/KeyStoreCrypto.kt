@@ -25,8 +25,7 @@ object KeyStoreCrypto {
     private const val TAG_BITS = 128
 
     @Synchronized
-    private fun masterKey(): SecretKey? {
-        return try {
+    private fun masterKey(): SecretKey? = try {
             val ks = KeyStore.getInstance(PROVIDER).apply { load(null) }
             val existing = (ks.getEntry(MASTER_ALIAS, null) as? KeyStore.SecretKeyEntry)?.secretKey
             if (existing != null) {
@@ -48,7 +47,6 @@ object KeyStoreCrypto {
         } catch (_: Throwable) {
             null
         }
-    }
 
     /** @return base64(iv||ciphertext) or null when encryption is unavailable. */
     fun encrypt(plain: String): String? {

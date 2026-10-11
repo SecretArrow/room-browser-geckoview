@@ -268,7 +268,11 @@ class DevToolsPanelsE2eTest {
         var current: UiObject2? = node
         var hops = 0
         while (current != null && hops < 8) {
-            val clickable = try { current.isClickable } catch (_: Exception) { false }
+            val clickable = try {
+                current.isClickable
+            } catch (_: Exception) {
+                false
+            }
             if (clickable) {
                 val b = runCatching { current.visibleBounds }.getOrNull()
                 if (b != null && b.width() > 0) {
@@ -277,7 +281,11 @@ class DevToolsPanelsE2eTest {
                     return true
                 }
             }
-            current = try { current.parent } catch (_: Exception) { null }
+            current = try {
+                current.parent
+            } catch (_: Exception) {
+                null
+            }
             hops++
         }
         return clickCenter(node)
@@ -302,7 +310,10 @@ class DevToolsPanelsE2eTest {
             device.displayWidth / 2, device.displayHeight * 5 / 8, 40
         )
         device.waitForIdle(400)
-        try { Thread.sleep(150) } catch (_: InterruptedException) { }
+        try {
+            Thread.sleep(150)
+        } catch (_: InterruptedException) {
+            }
     }
 
     /**

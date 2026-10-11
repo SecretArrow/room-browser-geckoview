@@ -260,6 +260,7 @@ class BrowserAgentController(
         private set
     var activeSessionId by mutableStateOf<Long?>(null)
         private set
+
     /**
      * The last turn that did not finish, or null once one completes cleanly.
      * Non-null is what puts the Retry button in the composer; it survives a
@@ -267,6 +268,7 @@ class BrowserAgentController(
      */
     var retryable by mutableStateOf<RetryableTurn?>(null)
         private set
+
     /**
      * The tab whose conversation is on screen, or null while none is
      * resolved yet. Read by the panel to notice that the chat it is showing
@@ -281,6 +283,7 @@ class BrowserAgentController(
         private set
     var settings by mutableStateOf(AgentSettings())
         private set
+
     /**
      * Local AI (Ollama) tuning, live-collected from app_state so /api/chat
      * options (num_ctx/num_gpu/num_thread/keep_alive) track the Local AI
@@ -291,6 +294,7 @@ class BrowserAgentController(
         private set
     var activeModel by mutableStateOf<String?>(null)
         private set
+
     /**
      * The chat is set to AUTO: each turn asks the provider which of its models
      * answers rather than sending [activeModel]. Surfaced so the header says
@@ -298,6 +302,7 @@ class BrowserAgentController(
      */
     var chatModelAuto by mutableStateOf(false)
         private set
+
     /**
      * The chat is set to HEADLESS: each turn drives a hidden page of this
      * profile's own rather than the tab on screen. Surfaced so the panel can
@@ -310,6 +315,7 @@ class BrowserAgentController(
         private set
     var modelsError by mutableStateOf<String?>(null)
         private set
+
     /**
      * Why the turn is not moving right now: the user's own Pause, or a
      * challenge that has been handed to them. [AgentPause.None] while it runs.
@@ -328,6 +334,7 @@ class BrowserAgentController(
 
     /** Cached /models results per provider id. */
     private val modelCache = HashMap<Long, List<String>>()
+
     /** Decrypted API keys — memory only, never persisted. */
     private val apiKeyCache = HashMap<Long, String>()
 
@@ -1416,6 +1423,7 @@ class BrowserAgentController(
             ApprovalAnswer.Allow, ApprovalAnswer.AlwaysAllow -> ActionVerdict.Allow
             ApprovalAnswer.Deny -> ActionVerdict.Deny("the user denied this action, which cannot be undone")
         }
+
     /**
      * The gate every state-changing tool call passes through.
      *

@@ -511,7 +511,11 @@ class DevToolsConsoleNetworkE2eTest {
         var current: UiObject2? = node
         var hops = 0
         while (current != null && hops < 8) {
-            val clickable = try { current.isClickable } catch (_: Exception) { false }
+            val clickable = try {
+                current.isClickable
+            } catch (_: Exception) {
+                false
+            }
             if (clickable) {
                 val b = runCatching { current.visibleBounds }.getOrNull()
                 if (b != null && b.width() > 0) {
@@ -520,7 +524,11 @@ class DevToolsConsoleNetworkE2eTest {
                     return true
                 }
             }
-            current = try { current.parent } catch (_: Exception) { null }
+            current = try {
+                current.parent
+            } catch (_: Exception) {
+                null
+            }
             hops++
         }
         return clickCenter(node)
@@ -550,7 +558,10 @@ class DevToolsConsoleNetworkE2eTest {
             device.displayWidth / 2, device.displayHeight * 5 / 8, 40
         )
         device.waitForIdle(400)
-        try { Thread.sleep(150) } catch (_: InterruptedException) { }
+        try {
+            Thread.sleep(150)
+        } catch (_: InterruptedException) {
+            }
     }
 
     private fun dragUpHalf() {
@@ -559,7 +570,10 @@ class DevToolsConsoleNetworkE2eTest {
             device.displayWidth / 2, device.displayHeight / 4, 100
         )
         device.waitForIdle(600)
-        try { Thread.sleep(200) } catch (_: InterruptedException) { }
+        try {
+            Thread.sleep(200)
+        } catch (_: InterruptedException) {
+            }
     }
 
     /**
@@ -681,7 +695,10 @@ class DevToolsConsoleNetworkE2eTest {
             device.displayWidth / 2, device.displayHeight * 9 / 10, 100
         )
         device.waitForIdle(600)
-        try { Thread.sleep(200) } catch (_: InterruptedException) { }
+        try {
+            Thread.sleep(200)
+        } catch (_: InterruptedException) {
+            }
     }
 
     /** Scrolls back up the panel body until [desc] is worth tapping, checking before each drag. */
@@ -707,7 +724,10 @@ class DevToolsConsoleNetworkE2eTest {
         val deadline = System.currentTimeMillis() + timeoutMs
         while (System.currentTimeMillis() < deadline) {
             if (!present()) return true
-            try { Thread.sleep(250) } catch (_: InterruptedException) { }
+            try {
+                Thread.sleep(250)
+            } catch (_: InterruptedException) {
+                }
         }
         return !present()
     }

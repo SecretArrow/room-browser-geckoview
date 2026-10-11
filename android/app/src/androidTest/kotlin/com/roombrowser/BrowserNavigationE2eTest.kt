@@ -161,7 +161,10 @@ class BrowserNavigationE2eTest {
         val deadline = System.currentTimeMillis() + timeoutMs
         while (System.currentTimeMillis() < deadline) {
             if (condition()) return true
-            try { Thread.sleep(250) } catch (_: InterruptedException) { }
+            try {
+                Thread.sleep(250)
+            } catch (_: InterruptedException) {
+                }
         }
         return condition()
     }
@@ -170,7 +173,10 @@ class BrowserNavigationE2eTest {
         val deadline = System.currentTimeMillis() + timeoutMs
         while (System.currentTimeMillis() < deadline) {
             if (device.findObjects(By.text(text)).isEmpty()) return true
-            try { Thread.sleep(250) } catch (_: InterruptedException) { }
+            try {
+                Thread.sleep(250)
+            } catch (_: InterruptedException) {
+                }
         }
         return device.findObjects(By.text(text)).isEmpty()
     }
@@ -190,7 +196,11 @@ class BrowserNavigationE2eTest {
         var current: UiObject2? = node
         var hops = 0
         while (current != null && hops < 8) {
-            val clickable = try { current.isClickable } catch (_: Exception) { false }
+            val clickable = try {
+                current.isClickable
+            } catch (_: Exception) {
+                false
+            }
             if (clickable) {
                 try {
                     current.click()
@@ -199,7 +209,11 @@ class BrowserNavigationE2eTest {
                 } catch (_: Exception) {
                 }
             }
-            current = try { current.parent } catch (_: Exception) { null }
+            current = try {
+                current.parent
+            } catch (_: Exception) {
+                null
+            }
             hops++
         }
         return clickCenter(node)
@@ -336,7 +350,10 @@ class BrowserNavigationE2eTest {
         while (System.currentTimeMillis() < deadline) {
             if (device.wait(Until.hasObject(By.descContains("Address bar")), 400)) return true
             if (device.wait(Until.hasObject(By.text("Search or type URL")), 400)) return true
-            try { Thread.sleep(250) } catch (_: InterruptedException) { }
+            try {
+                Thread.sleep(250)
+            } catch (_: InterruptedException) {
+                }
         }
         return device.wait(Until.hasObject(By.descContains("Address bar")), 500)
     }

@@ -564,7 +564,7 @@ class AgentDevToolsTools(
             appendLine(labelText(label))
             group.forEach { f ->
                 appendLine("  - ${f.title}")
-                f.evidence.forEach { appendLine("      ${it}") }
+                f.evidence.forEach { appendLine("      $it") }
                 f.relatedElementRef?.let { appendLine("      element [$it]") }
             }
         }

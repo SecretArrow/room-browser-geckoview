@@ -72,7 +72,10 @@ class PasswordsE2eTest {
         val deadline = System.currentTimeMillis() + timeoutMs
         while (System.currentTimeMillis() < deadline) {
             if (condition()) return true
-            try { Thread.sleep(250) } catch (_: InterruptedException) { }
+            try {
+                Thread.sleep(250)
+            } catch (_: InterruptedException) {
+                }
         }
         return condition()
     }
@@ -97,7 +100,11 @@ class PasswordsE2eTest {
         var current: UiObject2? = node
         var hops = 0
         while (current != null && hops < 8) {
-            val clickable = try { current.isClickable } catch (_: Exception) { false }
+            val clickable = try {
+                current.isClickable
+            } catch (_: Exception) {
+                false
+            }
             if (clickable) {
                 val b = runCatching { current.visibleBounds }.getOrNull()
                 if (b != null && b.width() > 0) {
@@ -106,7 +113,11 @@ class PasswordsE2eTest {
                     return true
                 }
             }
-            current = try { current.parent } catch (_: Exception) { null }
+            current = try {
+                current.parent
+            } catch (_: Exception) {
+                null
+            }
             hops++
         }
         return clickCenter(node)
@@ -148,7 +159,10 @@ class PasswordsE2eTest {
             device.displayWidth / 2, device.displayHeight / 4, 100
         )
         device.waitForIdle(800)
-        try { Thread.sleep(300) } catch (_: InterruptedException) { }
+        try {
+            Thread.sleep(300)
+        } catch (_: InterruptedException) {
+            }
     }
 
     /**
@@ -193,7 +207,10 @@ class PasswordsE2eTest {
     private fun rectSettled(node: UiObject2, tries: Int = 6): Boolean {
         var previous = runCatching { node.visibleBounds }.getOrNull() ?: return false
         repeat(tries) {
-            try { Thread.sleep(200) } catch (_: InterruptedException) { }
+            try {
+                Thread.sleep(200)
+            } catch (_: InterruptedException) {
+                }
             val current = runCatching { node.visibleBounds }.getOrNull() ?: return false
             if (current == previous) return true
             previous = current
@@ -207,7 +224,10 @@ class PasswordsE2eTest {
             if (hasDesc("Address bar", 400)) return true
             if (hasText("Search or type URL", 400)) return true
             if (hasText("Privacy Dashboard", 400)) return true
-            try { Thread.sleep(250) } catch (_: InterruptedException) { }
+            try {
+                Thread.sleep(250)
+            } catch (_: InterruptedException) {
+                }
         }
         return hasDesc("Address bar", 500)
     }

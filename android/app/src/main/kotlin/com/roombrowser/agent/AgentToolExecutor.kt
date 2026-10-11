@@ -12,7 +12,6 @@ import com.roombrowser.domain.agent.AgentTools
 import com.roombrowser.domain.agent.ChallengeDetector
 import com.roombrowser.domain.agent.ChallengeHit
 import com.roombrowser.domain.agent.DataTransform
-import com.roombrowser.domain.agent.formatDurationMs
 import com.roombrowser.domain.agent.KeyChord
 import com.roombrowser.domain.agent.PageDigestDto
 import com.roombrowser.domain.agent.PageReadiness
@@ -28,6 +27,7 @@ import com.roombrowser.domain.agent.SiteMemoryTool
 import com.roombrowser.domain.agent.ToolExecutor
 import com.roombrowser.domain.agent.ToolResult
 import com.roombrowser.domain.agent.UntrustedContent
+import com.roombrowser.domain.agent.formatDurationMs
 import com.roombrowser.domain.engine.UrlIntelligence
 import com.roombrowser.domain.oct.OctUri
 import com.roombrowser.engine.EngineSession

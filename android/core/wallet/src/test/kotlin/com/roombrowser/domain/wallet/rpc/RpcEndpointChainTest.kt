@@ -1,13 +1,13 @@
 package com.roombrowser.domain.wallet.rpc
 
 import com.google.common.truth.Truth.assertThat
-import com.roombrowser.domain.wallet.model.NetworkConfig
 import com.roombrowser.domain.wallet.model.ChainType
+import com.roombrowser.domain.wallet.model.NetworkConfig
 import com.roombrowser.domain.wallet.model.WalletException
 import kotlinx.coroutines.runBlocking
+import org.junit.Assert.assertThrows
 import org.junit.Before
 import org.junit.Test
-import org.junit.Assert.assertThrows
 
 /**
  * The failover primitive, tested without a network.

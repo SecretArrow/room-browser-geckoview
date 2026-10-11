@@ -1,23 +1,22 @@
 package com.roombrowser.domain.wallet.rpc
 
+import com.roombrowser.domain.proxy.OutboundProxy
+import com.roombrowser.domain.proxy.ProxyScope
+import com.roombrowser.domain.wallet.model.WalletException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
-import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
-import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
-import com.roombrowser.domain.wallet.model.WalletException
-import com.roombrowser.domain.proxy.OutboundProxy
-import com.roombrowser.domain.proxy.ProxyScope
 import java.util.concurrent.TimeUnit
 
 /**

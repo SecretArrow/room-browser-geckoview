@@ -6,10 +6,10 @@ import androidx.test.platform.app.InstrumentationRegistry
 import com.google.common.truth.Truth.assertThat
 import com.roombrowser.browser.wallet.WalletActivityRecord
 import com.roombrowser.data.db.AppDatabase
-import com.roombrowser.data.db.ProfileEntity
-import com.roombrowser.data.db.TabEntity
 import com.roombrowser.data.db.BookmarkEntity
 import com.roombrowser.data.db.HistoryEntity
+import com.roombrowser.data.db.ProfileEntity
+import com.roombrowser.data.db.TabEntity
 import com.roombrowser.data.repo.BrowserRepository
 import com.roombrowser.data.repo.CredentialRepository
 import com.roombrowser.data.repo.ProfileRepositoryImpl

@@ -1,7 +1,6 @@
 package com.roombrowser.agent.ui
 
 import com.roombrowser.data.db.AiTaskEntity
-import com.roombrowser.data.repo.schedule
 import com.roombrowser.domain.task.AiTaskRunStatus
 import com.roombrowser.domain.task.ScheduleKind
 import com.roombrowser.domain.task.ScheduleMath
