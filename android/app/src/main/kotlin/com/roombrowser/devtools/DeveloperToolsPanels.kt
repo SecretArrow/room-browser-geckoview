@@ -17,10 +17,13 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import com.roombrowser.engine.devtools.DeveloperToolsCapabilities
 import com.roombrowser.engine.devtools.DevToolsPanelId
 import com.roombrowser.ui.common.LocalRoomExtras
+import com.roombrowser.ui.common.RoomCopyButton
+import com.roombrowser.ui.common.SectionHeader
 
 /**
  * What one panel is handed when it composes.
@@ -69,14 +72,16 @@ internal class DevToolsPanelEntry(
 /**
  * The panels this build ships, in strip order.
  *
- * This list is the panels that have been BUILT, which is a shorter list than the
- * panels this engine could serve -- see `servedPanels()`. PR 4 adds Elements,
- * Security and Audit here; PR 5 adds Sources only if the protocol spike proves a
- * session; PR 6 adds the Recorder. Nothing outside this list is reachable, so
- * adding a panel is one entry plus its content.
+ * This list is the panels that have been BUILT, which is shorter than the panels
+ * this engine could serve -- see `servedPanels()`. Nothing outside this list is
+ * reachable, so adding a panel is one entry plus its content.
  *
  * The order is not the enum's: Overview first (it is where a reader lands) and
  * then the built panels, with the ones a reader opens most often earliest.
+ *
+ * Console and Network stay third and fourth on purpose: the strip holds about
+ * four chips at phone width, and the e2e suite can only tap a chip that is
+ * partly on screen -- a panel pushed past the fourth is one no test can open.
  */
 internal fun devToolsPanelEntries(): List<DevToolsPanelEntry> = listOf(
     DevToolsPanelEntry(DevToolsPanelId.OVERVIEW, { it.serves(DevToolsPanelId.OVERVIEW) }, { OverviewPanel(it) }),
@@ -90,6 +95,29 @@ internal fun devToolsPanelEntries(): List<DevToolsPanelEntry> = listOf(
         DevToolsPanelId.NETWORK,
         { it.serves(DevToolsPanelId.NETWORK) },
         { scope -> scope.session?.let { NetworkPanel(it) } ?: NeedsEngine("The network feed needs a live page to read.") }
+    ),
+    DevToolsPanelEntry(
+        DevToolsPanelId.ELEMENTS,
+        { it.serves(DevToolsPanelId.ELEMENTS) },
+        { scope ->
+            if (scope.session != null) {
+                ElementsPanel(scope)
+            } else {
+                NeedsEngine("The element tree needs a live page to read.")
+            }
+        }
+    ),
+    DevToolsPanelEntry(DevToolsPanelId.SECURITY, { it.serves(DevToolsPanelId.SECURITY) }, { SecurityPanel(it) }),
+    DevToolsPanelEntry(
+        DevToolsPanelId.AUDIT,
+        { it.serves(DevToolsPanelId.AUDIT) },
+        { scope ->
+            if (scope.session != null) {
+                AuditPanel(scope)
+            } else {
+                NeedsEngine("The audit needs a live page to read.")
+            }
+        }
     )
 )
 
@@ -172,5 +200,26 @@ internal fun NeedsEngine(what: String) {
         style = MaterialTheme.typography.bodySmall,
         color = extras.textSecondary,
         modifier = Modifier.padding(horizontal = 20.dp, vertical = 8.dp)
+    )
+}
+
+/**
+ * One report section: its header, a copy control, and the text both draw.
+ *
+ * [body] is written once and handed to both, so what is on screen and what a
+ * copy carries cannot drift apart.
+ */
+@Composable
+internal fun Block(body: String, title: String) {
+    val extras = LocalRoomExtras.current
+    SectionHeader(title) {
+        RoomCopyButton(body, title, "Copy the $title section")
+    }
+    Text(
+        body,
+        style = MaterialTheme.typography.bodySmall,
+        color = extras.textPrimary,
+        fontFamily = FontFamily.Monospace,
+        modifier = Modifier.padding(horizontal = 20.dp).padding(bottom = 6.dp)
     )
 }
