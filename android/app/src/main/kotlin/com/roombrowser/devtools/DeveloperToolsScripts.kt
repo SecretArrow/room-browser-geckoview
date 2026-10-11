@@ -70,6 +70,42 @@ internal object DeveloperToolsScripts {
           });
         })()
     """.trimIndent()
+
+    /**
+     * What the page itself knows about the resources it loaded: timing, size,
+     * type and whether the entry is cross-origin.
+     *
+     * This is a PULL, run only when the user asks for it. `getEntriesByType`
+     * already returns the buffered history, so there is no observer to keep
+     * alive and nothing polls the page — which is also what keeps this clear of
+     * the bounded eval queue on GeckoView.
+     */
+    fun networkProbeJs(): String = """
+        (function () {
+          $SAFE
+          var page = __rbSafe(function () { return location.origin; });
+          function sameOrigin(u) {
+            try { return new URL(u).origin === page; } catch (e) { return false; }
+          }
+          var rows = __rbSafe(function () {
+            return performance.getEntriesByType('resource').map(function (r) {
+              return {
+                name: r.name,
+                initiatorType: r.initiatorType || null,
+                startTime: r.startTime,
+                duration: r.duration,
+                transferSize: r.transferSize,
+                encodedBodySize: r.encodedBodySize,
+                decodedBodySize: r.decodedBodySize,
+                responseStatus: (typeof r.responseStatus === 'number' ? r.responseStatus : null),
+                nextHopProtocol: r.nextHopProtocol || null,
+                crossOrigin: !sameOrigin(r.name)
+              };
+            });
+          });
+          return JSON.stringify(rows === null ? [] : rows.slice(-500));
+        })()
+    """.trimIndent()
 }
 
 /** Decoded [DeveloperToolsScripts.pageOverviewJs] output. Nullable throughout: a field the page refused to answer is absent, never zero. */

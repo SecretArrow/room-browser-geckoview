@@ -1,7 +1,7 @@
 {
   "manifest_version": 2,
   "name": "Room Browser Bridge",
-  "version": "1.2",
+  "version": "1.5",
   "browser_specific_settings": {
     "gecko": {
       "id": "roombridge@roombrowser.com"

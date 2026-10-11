@@ -16,6 +16,7 @@ import com.roombrowser.engine.EngineOption
 import com.roombrowser.engine.EngineProxyConfig
 import com.roombrowser.engine.EngineSession
 import com.roombrowser.engine.ResourceFilter
+import com.roombrowser.engine.devtools.EngineNetworkSignal
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 import kotlinx.coroutines.suspendCancellableCoroutine
@@ -30,6 +31,7 @@ import org.mozilla.geckoview.GeckoSession
 import org.mozilla.geckoview.StorageController
 import org.mozilla.geckoview.WebExtension
 import java.io.File
+import java.util.concurrent.CopyOnWriteArraySet
 import java.util.concurrent.CountDownLatch
 
 /**
@@ -107,6 +109,17 @@ internal class GeckoEngineHost : EngineHost {
     /** Where a block the extension cancelled is reported. */
     @Volatile
     private var blockedSink: BlockedResourceSink? = null
+
+    /**
+     * The sessions currently listening for network signals.
+     *
+     * A SET, not one sink. The `roomblock` port is extension-level with no
+     * session behind it, so its feed is engine-wide -- and the app may hold
+     * more than one tab's inspector open at once. One sink would silently
+     * replace another's, so the host fans out to every armed inspector and
+     * lets each one decide whether it has a listener.
+     */
+    private val networkInspectors = CopyOnWriteArraySet<GeckoInspector>()
 
     /**
      * The app's window, or null while the app has offered none.
@@ -497,6 +510,9 @@ internal class GeckoEngineHost : EngineHost {
                 )
             }
             pushFilter(port)
+            // The port reassembles after a background-page restart, so an armed
+            // network listener has to be re-told or the feed stays silent.
+            if (networkInspectors.isNotEmpty()) pushNetworkControl(port)
         }
     }
 
@@ -517,6 +533,10 @@ internal class GeckoEngineHost : EngineHost {
             }
             when (val type = json.optString("type")) {
                 "blocked" -> reportBlocked(json)
+                "netRequest" -> reportNetwork(json, EngineNetworkSignal.Kind.REQUEST)
+                "netResponse" -> reportNetwork(json, EngineNetworkSignal.Kind.RESPONSE)
+                "netCompleted" -> reportNetwork(json, EngineNetworkSignal.Kind.COMPLETED)
+                "netError" -> reportNetwork(json, EngineNetworkSignal.Kind.FAILED)
                 else -> android.util.Log.w(
                     BRIDGE_LOG_TAG,
                     "blocker port message with unknown type=$type"
@@ -557,6 +577,79 @@ internal class GeckoEngineHost : EngineHost {
         // from `shouldInterceptRequest`, so a block is counted identically in
         // both editions.
         blockedSink?.onBlocked(host, category)
+    }
+
+    /**
+     * An inspector armed or disarmed its network sink.
+     *
+     * The `netStart`/`netStop` gate lives on the extension, so it is driven
+     * from here: while nobody is listening the blocker holds its observations in
+     * its own bounded ring -- sent on the next `netStart`, which is what puts the
+     * document a panel was opened on into that panel. The port may not exist yet,
+     * in which case [blockerDelegate.onConnect] re-sends it.
+     */
+    internal fun onNetworkCaptureChanged(inspector: GeckoInspector, armed: Boolean) {
+        if (armed) networkInspectors.add(inspector) else networkInspectors.remove(inspector)
+        val port = blockerPort ?: return
+        postToMain { pushNetworkControl(port) }
+    }
+
+    /** Tell the blocker whether any session is listening. Idempotent. */
+    private fun pushNetworkControl(port: WebExtension.Port) {
+        val type = if (networkInspectors.isEmpty()) "netStop" else "netStart"
+        runCatching { port.postMessage(JSONObject().put("type", type)) }
+    }
+
+    /**
+     * Turn one blocker network event into a signal and hand it to every armed
+     * inspector.
+     *
+     * THERE IS NO SESSION ON THIS PORT. The extension registers the webRequest
+     * listeners, so the details carry no session or tab id this app can use --
+     * the feed is engine-wide, and attributing a request to a tab is left to
+     * the app layer, which has the page's own `documentUrl` to match on.
+     */
+    private fun reportNetwork(json: JSONObject, kind: EngineNetworkSignal.Kind) {
+        val url = json.textOrNull("url")
+        if (url.isNullOrEmpty()) return
+        val signal = EngineNetworkSignal(
+            kind = kind,
+            url = url,
+            method = json.textOrNull("method"),
+            status = if (json.isNull("statusCode")) null else json.optInt("statusCode").takeIf { it > 0 },
+            requestHeaders = headerMap(json.optJSONArray("requestHeaders")),
+            responseHeaders = headerMap(json.optJSONArray("responseHeaders")),
+            isForMainFrame = if (json.isNull("isForMainFrame")) null else json.optBoolean("isForMainFrame"),
+            resourceType = json.textOrNull("resourceType"),
+            timestampMs = json.optLong("timeStamp", 0L),
+            documentUrl = json.textOrNull("documentUrl")
+        )
+        // PortDelegate is @UiThread, so the sinks are invoked on the main
+        // thread without marshalling.
+        networkInspectors.forEach { it.onNetworkSignal(signal) }
+    }
+
+    /**
+     * A string field, or null when it is absent or a JSON null.
+     *
+     * `org.json`'s `optString` renders a JSON null as the literal "null", which
+     * would put a URL or a header named "null" on the panel.
+     */
+    private fun JSONObject.textOrNull(name: String): String? {
+        if (isNull(name)) return null
+        return optString(name).takeIf { it.isNotEmpty() && it != "null" }
+    }
+
+    /** webRequest hands headers over as `[{name, value}]`; the facade wants a map. */
+    private fun headerMap(headers: JSONArray?): Map<String, String> {
+        if (headers == null) return emptyMap()
+        val out = LinkedHashMap<String, String>(headers.length())
+        for (i in 0 until headers.length()) {
+            val header = headers.optJSONObject(i) ?: continue
+            val name = header.textOrNull("name") ?: continue
+            out[name] = header.textOrNull("value") ?: ""
+        }
+        return out
     }
 
     /**
@@ -676,6 +769,7 @@ internal class GeckoEngineHost : EngineHost {
 
         val session = GeckoEngineSession(
             id = sessionId,
+            host = this,
             runtime = active,
             context = context,
             profile = profile,
@@ -787,6 +881,7 @@ internal class GeckoEngineHost : EngineHost {
         blockerPort = null
         resourceFilter = null
         blockedSink = null
+        networkInspectors.clear()
         activityDelegate = null
         synchronized(bridgeWaiters) { bridgeWaiters.clear() }
     }

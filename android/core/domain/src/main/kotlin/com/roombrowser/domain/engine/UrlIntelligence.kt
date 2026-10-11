@@ -28,6 +28,9 @@ object UrlIntelligence {
     /** The engine's report for a document it was handed rather than sent to fetch. */
     private const val BLANK = "about:blank"
 
+    /** The app's own start page. */
+    private const val HOME = "about:home"
+
     /**
      * Classify raw omnibox input.
      * Supports: full URLs, bare hosts, IPv4/IPv6 literals, localhost,
@@ -160,4 +163,13 @@ object UrlIntelligence {
      */
     fun settledUrl(reported: String, model: String?): String =
         if (reported == BLANK && model != null && OctUri.parse(model) != null) model else reported
+
+    /**
+     * True when a URL names no page of its own, so its tab belongs on the start page rather
+     * than on a document. A blank document qualifies when its title is blank or names itself:
+     * WebView titles it `""` and GeckoView titles it `"about:blank"`, and both are the same
+     * non-page. Any other title means a document, so a real page is never a start page.
+     */
+    fun isStartPage(url: String, title: String = ""): Boolean =
+        url == HOME || (url == BLANK && (title.isBlank() || title == BLANK))
 }

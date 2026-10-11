@@ -138,4 +138,41 @@ class BridgeScriptsTest {
             assertThat(sessionKt).contains("\"$type\" ->")
         }
     }
+
+    @Test
+    fun the_console_markers_cross_the_world_boundary() {
+        // page -> relay -> isolated. main.js both PRODUCES the entry marker and
+        // re-labels it for the isolated half, so the producers are matched with
+        // their literal `: 1` value: a listener-only remnant must not satisfy
+        // them, which is the exact class of bug this file is named for.
+        assertThat(mainJs).contains("__roomConsole: 1")
+        assertThat(mainJs).contains("__roomConsoleFromPage: 1")
+        assertThat(isolatedJs).contains("__roomConsoleFromPage")
+
+        // relay -> page: the two control markers. `__roomConsole` is a prefix
+        // of both, so each is asserted by its own full name -- a bare
+        // `contains("__roomConsole")` would pass on either of them alone.
+        listOf("__roomConsoleStart", "__roomConsoleStop").forEach { marker ->
+            assertThat(isolatedJs).contains(marker)
+            assertThat(mainJs).contains(marker)
+        }
+        // The relabeler is gated on the bare marker, which is what distinguishes
+        // a console entry from the page's own wallet/vault traffic.
+        assertThat(mainJs).contains("data.__roomConsole === 1")
+    }
+
+    @Test
+    fun the_console_message_types_are_the_ones_the_other_side_speaks() {
+        // Native -> JS: the session arms and disarms the page-world buffer; the
+        // isolated half routes both down. An unmatched control type leaves the
+        // buffer armed forever or never armed at all.
+        listOf("consoleStart", "consoleStop").forEach { type ->
+            assertThat(sessionKt).contains("\"type\", \"$type\"")
+            assertThat(isolatedJs).contains("type === \"$type\"")
+        }
+        // JS -> native: the isolated half posts the entry, the session must
+        // handle the type or the console panel stays empty with no error.
+        assertThat(isolatedJs).contains("type: \"console\"")
+        assertThat(sessionKt).contains("\"console\" ->")
+    }
 }
