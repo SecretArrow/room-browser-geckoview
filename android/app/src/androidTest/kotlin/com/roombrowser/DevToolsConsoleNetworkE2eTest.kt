@@ -104,6 +104,15 @@ class DevToolsConsoleNetworkE2eTest {
     /** Where tearDown leaves the browser, so the next suite starts on it too. */
     private val homePage = "about:home"
 
+    /**
+     * Which step of the sheet walk failed, for the assertion that follows it.
+     *
+     * A probe dump taken afterwards cannot answer this: the walk dismisses the
+     * sheet on its way through, so the tree at that point shows a closed sheet
+     * and says nothing about where the walk stopped.
+     */
+    private var openTrace: String = ""
+
     @Before
     fun setUp() {
         E2eDeterminism.suppressOrganicNetworkWarnings()
@@ -213,10 +222,7 @@ class DevToolsConsoleNetworkE2eTest {
             "The fixture page must render before Developer Tools can inspect it\n${uiTree()}",
             openPage(server.url("/page-$tag").toString())
         )
-        assertTrue(
-            "Developer Tools must open from the Page Actions sheet\n${uiTree()}",
-            openDeveloperToolsPanel(consoleChip, consoleBody)
-        )
+        assertDevToolsOpened(consoleChip, consoleBody)
         // The feed rows sit far below the panel header, so a marker is found by
         // scrolling the panel body, never by a bare first lookup.
         assertTrue(
@@ -239,10 +245,7 @@ class DevToolsConsoleNetworkE2eTest {
             "The fixture page must render before Developer Tools can inspect it\n${uiTree()}",
             openPage(server.url("/page-$tag").toString())
         )
-        assertTrue(
-            "Developer Tools must open from the Page Actions sheet\n${uiTree()}",
-            openDeveloperToolsPanel(networkChip, networkBody)
-        )
+        assertDevToolsOpened(networkChip, networkBody)
 
         // The panel shows one section at a time now, so the network rows no
         // longer sit below the console feed -- but the docked slot is still
@@ -308,10 +311,7 @@ class DevToolsConsoleNetworkE2eTest {
             "The fixture page must render before Developer Tools can inspect it\n${uiTree()}",
             openPage(server.url("/page-$tag").toString())
         )
-        assertTrue(
-            "Developer Tools must open from the Page Actions sheet\n${uiTree()}",
-            openDeveloperToolsPanel(consoleChip, consoleBody)
-        )
+        assertDevToolsOpened(consoleChip, consoleBody)
         // A clear only means something once there is something to clear, so the
         // feed is proven populated BEFORE the control is pressed.
         assertTrue(
@@ -369,10 +369,7 @@ class DevToolsConsoleNetworkE2eTest {
             "The fixture page must render before Developer Tools can inspect it\n${uiTree()}",
             openPage(server.url("/page-$tag").toString())
         )
-        assertTrue(
-            "Developer Tools must open from the Page Actions sheet\n${uiTree()}",
-            openDeveloperToolsPanel(consoleChip, consoleBody)
-        )
+        assertDevToolsOpened(consoleChip, consoleBody)
 
         val report = StringBuilder()
         report.append("display=").append(device.displayWidth).append('x')
@@ -539,6 +536,23 @@ class DevToolsConsoleNetworkE2eTest {
      * scrollable Column, so this is how a row below the fold is reached; the
      * soft IME is never raised here, so the drag is not swallowed.
      */
+    /**
+     * One small step down the Page Actions sheet.
+     *
+     * A half-screen swipe flings the sheet's column past the row being looked
+     * for and leaves it at the bottom, where the row above the fold is gone
+     * however many times the swipe is repeated. A short, slow drag moves the
+     * list about as far as it travels and stops there.
+     */
+    private fun sheetScrollStep() {
+        device.swipe(
+            device.displayWidth / 2, device.displayHeight * 3 / 4,
+            device.displayWidth / 2, device.displayHeight * 5 / 8, 40
+        )
+        device.waitForIdle(400)
+        try { Thread.sleep(150) } catch (_: InterruptedException) { }
+    }
+
     private fun dragUpHalf() {
         device.swipe(
             device.displayWidth / 2, device.displayHeight * 3 / 4,
@@ -705,7 +719,19 @@ class DevToolsConsoleNetworkE2eTest {
      * The sheet is asserted first: it is a modal window, and UiAutomator only
      * returns nodes from the active window.
      */
+    private fun assertDevToolsOpened(chip: String, body: String) {
+        // The helper runs BEFORE the message is built. Kotlin evaluates the
+        // arguments left to right, so a probe dump written into the message of
+        // the call it is reporting on is taken before the walk has moved.
+        val opened = openDeveloperToolsPanel(chip, body)
+        assertTrue(
+            "Developer Tools must open from the Page Actions sheet — ${openTrace}\n${uiTree()}",
+            opened
+        )
+    }
+
     private fun openDeveloperToolsPanel(chip: String, body: String): Boolean {
+        openTrace = "start;"
         // A panel left open by an earlier test method would cover the chrome it
         // is opened from, so it is closed first rather than assumed away.
         device.findObjects(By.desc("Close developer tools")).firstOrNull()?.let {
@@ -716,18 +742,38 @@ class DevToolsConsoleNetworkE2eTest {
             "The browser chrome must be up before its sheet can be opened\n${uiTree()}",
             hasDesc("Page actions and settings", 30_000)
         )
-        if (!clickDesc("Page actions and settings", 6_000)) return false
+        if (!clickDesc("Page actions and settings", 6_000)) {
+            openTrace = "sheetTap=missed;"
+            return false
+        }
         assertTrue(
             "The Page Actions sheet must be on screen before any row in it is tapped\n${uiTree()}",
             hasText("Page Actions", 6_000)
         )
-        repeat(12) {
+        // The row sits ~22 rows into a scrollable sheet, so the walk steps
+        // through it a little at a time and checks before each step.
+        repeat(14) { step ->
             val row = device.findObjects(By.desc("Developer tools")).firstOrNull()
-            if (row != null && clickSmart(row) && hasDesc(overviewChip, 8_000)) {
-                return selectPanel(chip, body)
+            if (row != null && clickSmart(row)) {
+                openTrace += "row=$step;tap;"
+                if (hasDesc(overviewChip, 15_000)) {
+                    openTrace += "chip;"
+                    return selectPanel(chip, body)
+                }
+                // The sheet closes ITSELF when its row is taken. A sheet still
+                // on screen therefore means the tap never landed and the walk
+                // should scroll on; a sheet that is gone means the surface is
+                // open and dragging it would only move or close the thing
+                // under test.
+                if (!hasText("Page Actions", 2_000)) {
+                    openTrace += "surfaceWithoutChip;"
+                    return false
+                }
+                openTrace += "tapMissed=$step;"
             }
-            dragUpHalf()
+            sheetScrollStep()
         }
+        openTrace += "row=absent;"
         return false
     }
 
@@ -752,14 +798,28 @@ class DevToolsConsoleNetworkE2eTest {
      * right edge is clipped, and a clipped node is one this suite must not tap
      * by its stale bounds.
      */
-    private fun scrollStripToDesc(desc: String, maxSwipes: Int = 6): UiObject2? {
+    private fun scrollStripToDesc(desc: String, maxSwipes: Int = 12): UiObject2? {
         repeat(maxSwipes) {
             val node = device.findObjects(By.desc(desc)).firstOrNull()
-            if (node != null && isTappable(node)) return node
+            if (node != null && isFullyVisible(node)) return node
             stripLeft()
         }
         return device.findObjects(By.desc(desc)).firstOrNull()
     }
+
+    /**
+     * Whether a chip is wholly inside the window.
+     *
+     * The strip scrolls horizontally and there are more chips than fit, so a
+     * chip that answers a lookup can still be half off an edge -- and a tap at
+     * the centre of a clipped node lands on whatever is beside it.
+     */
+    private fun isFullyVisible(node: UiObject2): Boolean = try {
+        val b = node.visibleBounds
+        b.width() > 0 && b.left >= 0 && b.right <= device.displayWidth &&
+            b.centerY() > device.displayHeight / 4 &&
+            b.centerY() < device.displayHeight - 20
+    } catch (_: Exception) { false }
 
     /**
      * Where the strip sits: just under the header row.
@@ -774,12 +834,18 @@ class DevToolsConsoleNetworkE2eTest {
             .getOrDefault(device.displayHeight * 39 / 100)
     }
 
-    /** Drags the strip towards the left, which reveals the chips to its right. */
+    /**
+     * Drags the strip towards the left, which reveals the chips to its right.
+     *
+     * Half a window per step rather than nearly a whole one: a chip is narrower
+     * than the jump, so a bigger step can carry one from off the right edge to
+     * off the left edge without ever being wholly on screen.
+     */
     private fun stripLeft() {
         val y = stripY()
-        device.swipe(device.displayWidth - 24, y, 24, y, 100)
-        device.waitForIdle(600)
-        try { Thread.sleep(200) } catch (_: InterruptedException) { }
+        device.swipe(device.displayWidth - 24, y, device.displayWidth / 2, y, 40)
+        device.waitForIdle(400)
+        try { Thread.sleep(150) } catch (_: InterruptedException) { }
     }
 
     // ---------- Failure diagnostics -----------------------------------------

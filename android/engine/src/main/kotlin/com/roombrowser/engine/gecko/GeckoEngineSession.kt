@@ -1465,7 +1465,7 @@ internal class GeckoState(val json: String) : EngineState
 private fun GeckoSession.ProgressDelegate.SecurityInformation.toEngineSecurityInfo(): EngineSecurityInfo =
     EngineSecurityInfo(
         secure = isSecure,
-        host = host.takeIf { it.isNotEmpty() },
+        host = host?.takeIf { it.isNotEmpty() },
         protocolVersion = null,
         cipherSuite = null,
         certificate = certificate?.toEngineCertificate(),
