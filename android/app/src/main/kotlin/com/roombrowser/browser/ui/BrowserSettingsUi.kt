@@ -65,6 +65,7 @@ import com.roombrowser.BuildConfig
 import com.roombrowser.browser.BrowserViewModel
 import com.roombrowser.browser.FoundProxy
 import com.roombrowser.browser.engine.ProfileEngine
+import com.roombrowser.domain.agent.AgentPermissions
 import com.roombrowser.domain.engine.DnsValidator
 import com.roombrowser.domain.model.BrowserGlobalSettings
 import com.roombrowser.domain.model.ClaimedScreen
@@ -530,6 +531,15 @@ fun ProfileSettingsScreen(viewModel: BrowserViewModel, onClose: () -> Unit) {
         settings = new
         scope.launch { viewModel.updateSettings(new) }
     }
+
+    // The withheld set is a DENY list: unchecking a row adds its permission, so
+    // a permission a later build adds is granted rather than silently denied.
+    fun setPermission(base: ProfileSettings, permission: String, granted: Boolean): ProfileSettings =
+        base.copy(
+            agentWithheldPermissions =
+            if (granted) base.agentWithheldPermissions - permission
+            else base.agentWithheldPermissions + permission
+        )
 
     // The engine's page proxy is process-wide, so a change here has to be pushed at the
     // engine as well as stored — [viewModel.updateSettings] only touches sessions.
@@ -1061,6 +1071,52 @@ fun ProfileSettingsScreen(viewModel: BrowserViewModel, onClose: () -> Unit) {
                 title = "Request desktop site by default",
                 checked = settings.desktopModeDefault,
                 onCheckedChange = { update(settings.copy(desktopModeDefault = it)) }
+            )
+        }
+
+        // The agent's reach on THIS profile. The console switch is an approval
+        // requirement — off, the confirmation is removed, not the action — and
+        // the rows below each gate one thing the agent may read, refused by
+        // name rather than silently allowed.
+        SectionHeader("AI Agent (this profile)")
+        SettingsGroup {
+            SettingSwitchRow(
+                title = "Agent console execution requires approval",
+                subtitle = "The agent asks before it runs a script in the page with run_js. " +
+                    "Off, it runs scripts without asking — this removes the confirmation, not " +
+                    "the action. Typing in the Developer Tools Console yourself is never affected",
+                checked = settings.agentConsoleApprovalRequired,
+                onCheckedChange = { update(settings.copy(agentConsoleApprovalRequired = it)) }
+            )
+            SettingSwitchRow(
+                title = AgentPermissions.label(AgentPermissions.DEVTOOLS_READ),
+                subtitle = AgentPermissions.description(AgentPermissions.DEVTOOLS_READ),
+                checked = AgentPermissions.DEVTOOLS_READ !in settings.agentWithheldPermissions,
+                onCheckedChange = { update(setPermission(settings, AgentPermissions.DEVTOOLS_READ, it)) }
+            )
+            SettingSwitchRow(
+                title = AgentPermissions.label(AgentPermissions.DEVTOOLS_NETWORK),
+                subtitle = AgentPermissions.description(AgentPermissions.DEVTOOLS_NETWORK),
+                checked = AgentPermissions.DEVTOOLS_NETWORK !in settings.agentWithheldPermissions,
+                onCheckedChange = { update(setPermission(settings, AgentPermissions.DEVTOOLS_NETWORK, it)) }
+            )
+            SettingSwitchRow(
+                title = AgentPermissions.label(AgentPermissions.DEVTOOLS_STORAGE),
+                subtitle = AgentPermissions.description(AgentPermissions.DEVTOOLS_STORAGE),
+                checked = AgentPermissions.DEVTOOLS_STORAGE !in settings.agentWithheldPermissions,
+                onCheckedChange = { update(setPermission(settings, AgentPermissions.DEVTOOLS_STORAGE, it)) }
+            )
+            SettingSwitchRow(
+                title = AgentPermissions.label(AgentPermissions.DEVTOOLS_COOKIES),
+                subtitle = AgentPermissions.description(AgentPermissions.DEVTOOLS_COOKIES),
+                checked = AgentPermissions.DEVTOOLS_COOKIES !in settings.agentWithheldPermissions,
+                onCheckedChange = { update(setPermission(settings, AgentPermissions.DEVTOOLS_COOKIES, it)) }
+            )
+            SettingSwitchRow(
+                title = AgentPermissions.label(AgentPermissions.EXPORT_DIAGNOSTICS),
+                subtitle = AgentPermissions.description(AgentPermissions.EXPORT_DIAGNOSTICS),
+                checked = AgentPermissions.EXPORT_DIAGNOSTICS !in settings.agentWithheldPermissions,
+                onCheckedChange = { update(setPermission(settings, AgentPermissions.EXPORT_DIAGNOSTICS, it)) }
             )
         }
 

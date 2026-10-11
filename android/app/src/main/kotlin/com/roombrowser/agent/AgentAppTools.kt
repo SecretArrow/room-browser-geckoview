@@ -1,6 +1,7 @@
 package com.roombrowser.agent
 
 import android.os.SystemClock
+import com.roombrowser.browser.BrowserControlApi
 import com.roombrowser.browser.BrowserViewModel
 import com.roombrowser.data.db.DownloadEntity
 import com.roombrowser.data.db.HistoryEntity
@@ -43,6 +44,13 @@ import kotlinx.serialization.json.intOrNull
  * until this chat's tab is the visible one.
  */
 class AgentAppTools(
+    /**
+     * The browser operations this tool may name, as one surface. The page
+     * controls (find, desktop mode, opening Developer Tools) go through it
+     * rather than reaching [BrowserViewModel] directly, so the agent's reach
+     * stays reviewable in one place.
+     */
+    private val control: BrowserControlApi,
     private val vm: BrowserViewModel,
     /** The tab this chat is bound to, for "this chat's tab" defaults. */
     private val boundTabId: () -> String?,
@@ -550,14 +558,14 @@ class AgentAppTools(
                 val query = strArg(args, "query")
                     ?: return ToolResult(false, "the find actions need 'query' — including find_next and find_previous, which repeat it because the browser keeps no last query of its own")
                 when (action) {
-                    "find" -> vm.findInPage(query)
-                    "find_next" -> vm.findInPageNavigate(true, query)
-                    else -> vm.findInPageNavigate(false, query)
+                    "find" -> control.find(query, forward = false)
+                    "find_next" -> control.find(query, forward = true)
+                    else -> control.find(query, forward = false)
                 }
                 ToolResult(true, "Highlighting matches for \"$query\" in the page.")
             }
             "clear_find" -> {
-                vm.clearFindInPage()
+                control.clearFind()
                 ToolResult(true, "Cleared the find highlights.")
             }
             "reader_on" -> readerOn()
@@ -570,8 +578,16 @@ class AgentAppTools(
                 if (vm.pageState.desktopMode == wanted) {
                     return ToolResult(true, "Desktop mode is already ${if (wanted) "on" else "off"}.")
                 }
-                vm.toggleDesktopMode()
+                control.setDesktopMode(wanted)
                 ToolResult(true, "Desktop mode is now ${if (wanted) "on" else "off"}; the page was reloaded.")
+            }
+            "devtools_open" -> {
+                control.openDevToolsPanel(boundTabId())
+                ToolResult(
+                    true,
+                    "Opened Developer Tools for this chat's tab. The agent's own devtools_* tools read " +
+                        "the same console and network buffers this panel shows."
+                )
             }
             else -> {
                 val wanted = action == "bookmark_add"

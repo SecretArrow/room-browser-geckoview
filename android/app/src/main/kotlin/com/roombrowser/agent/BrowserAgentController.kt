@@ -7,6 +7,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import com.roombrowser.RoomBrowserApp
+import com.roombrowser.browser.BrowserControlApiImpl
 import com.roombrowser.browser.BrowserViewModel
 import com.roombrowser.browser.engine.ProfileEngine
 import com.roombrowser.data.db.AgentMessageEntity
@@ -968,8 +969,10 @@ class BrowserAgentController(
             // WHERE the turn runs is settled here too, and for the same reason
             // as the model: a conversation that recorded a request no surface
             // could carry out would claim a run that did not happen.
+            val control = BrowserControlApiImpl(vm, appContext)
             val visibleExecutor = AgentToolExecutor(
                 vm = vm,
+                control = control,
                 tabId = tabId,
                 onStatus = { setStatus(it) },
                 confirmGate = { name, label -> gate(name, label) },
@@ -980,6 +983,7 @@ class BrowserAgentController(
                 // Read live rather than from the turn's snapshot: the user can
                 // flip it while the turn is running.
                 otpDigitsAllowed = { appState.agentSettingsSnapshot().otpDigitsToAgent },
+                runJsApprovalRequired = { vm.profileSettings().agentConsoleApprovalRequired },
                 onPause = { state -> applyPauseState(state) },
                 awaitChallengeResume = { awaitChallengeDone() }
             )
@@ -1006,7 +1010,8 @@ class BrowserAgentController(
                     // A headless CHAT still has the person who sent it, so an
                     // action that has to be asked about is asked about rather
                     // than refused the way a scheduled run refuses it.
-                    askInteractive = { name, label -> gate(name, label) }
+                    askInteractive = { name, label -> gate(name, label) },
+                    runJsApprovalRequired = { vm.profileSettings().agentConsoleApprovalRequired }
                 )
             } else {
                 null
@@ -1024,8 +1029,12 @@ class BrowserAgentController(
             // included since those reach the page. Plan mode stays outermost:
             // an action it refuses never ran, so it must not spend the budget.
             val budget = ActionBudgetGate(pageExecutor)
+            // The profile's withheld agent permissions sit outside the budget
+            // for the same reason Plan mode does: a tool refused for want of a
+            // permission never ran, so it must not cost the turn a step.
+            val permitted = AgentPermissionGate(budget) { vm.profileSettings().agentWithheldPermissions }
             val executor: ToolExecutor =
-                if (settings.chatMode == AgentMode.PLAN) PlanModeToolGate(budget) else budget
+                if (settings.chatMode == AgentMode.PLAN) PlanModeToolGate(permitted) else permitted
             // "Delete all agent chats" can run in the settings ACTIVITY while
             // a session is active here — verify it still exists, else start a
             // fresh one instead of writing to a dead row (FK safety).

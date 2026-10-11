@@ -1,7 +1,7 @@
 package com.roombrowser.agent
 
 import android.os.SystemClock
-import com.roombrowser.engine.EngineSession
+import com.roombrowser.browser.BrowserControlApi
 import com.roombrowser.browser.BrowserViewModel
 import com.roombrowser.browser.PageEvent
 import com.roombrowser.domain.agent.ActionVerdict
@@ -26,6 +26,7 @@ import com.roombrowser.domain.agent.ToolResult
 import com.roombrowser.domain.agent.UntrustedContent
 import com.roombrowser.domain.engine.UrlIntelligence
 import com.roombrowser.domain.oct.OctUri
+import com.roombrowser.engine.EngineSession
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -65,6 +66,13 @@ import kotlin.coroutines.resume
 class AgentToolExecutor(
     private val vm: BrowserViewModel,
     /**
+     * The browser operations this turn may name, as one surface. Every
+     * navigation, tab move and page control goes through it rather than
+     * reaching [BrowserViewModel] directly, so the agent's reach is reviewable
+     * in one place.
+     */
+    private val control: BrowserControlApi,
+    /**
      * The tab this turn is bound to, or null when there was none to bind.
      * Reassigned only when the AGENT moves its own tab (see [bindTo]) — a
      * switch the user makes must never move the turn.
@@ -90,6 +98,16 @@ class AgentToolExecutor(
     /** Whether the digits of a generated code may be returned to the model. */
     private val otpDigitsAllowed: suspend () -> Boolean = { false },
     /**
+     * Whether `run_js` still has to be approved by the user.
+     *
+     * Read live rather than from the turn's snapshot, because the setting is
+     * per profile and the user can change it while a turn runs. ON preserves
+     * the ordinary confirmation chain; OFF is the profile's explicit decision
+     * to let the agent run scripts without asking. The user's own typing in the
+     * Console panel is a different surface and is never gated by this.
+     */
+    private val runJsApprovalRequired: suspend () -> Boolean = { true },
+    /**
      * Told every time the pause state changes, so the panel and the ongoing
      * notification can show it. See [AgentPause].
      */
@@ -106,6 +124,7 @@ class AgentToolExecutor(
 
     private val appTools by lazy {
         AgentAppTools(
+            control = control,
             vm = vm,
             boundTabId = { tabId },
             onStatus = onStatus,
@@ -114,6 +133,16 @@ class AgentToolExecutor(
             profileData = profileData,
             otpDigitsAllowed = otpDigitsAllowed,
             fillField = { ref, text -> rawFillField(ref, text) }
+        )
+    }
+
+    /** Built on first use, so a turn that never diagnoses pays for none of it. */
+    private val devtoolsTools by lazy {
+        AgentDevToolsTools(
+            control = control,
+            boundTabId = { tabId },
+            onStatus = onStatus,
+            destructiveGate = destructiveGate
         )
     }
 
@@ -147,6 +176,7 @@ class AgentToolExecutor(
                     awaitBoundTabActive()?.let { return@withContext it }
                 }
                 appTools.execute(name, argsJson)?.let { return@withContext answer(name, it) }
+                devtoolsTools.execute(name, argsJson)?.let { return@withContext answer(name, it) }
                 // Measured BEFORE the action so the page can be compared after
                 // it — see [appendEvidence] and [AgentStepVerifier].
                 val before = if (name in MUTATING_PAGE_TOOLS) measurePage() else null
@@ -159,6 +189,8 @@ class AgentToolExecutor(
                     AgentTools.PRESS_ENTER -> pressEnter(intOrNull(args, "ref"))
                     AgentTools.SCROLL -> scroll(str(args, "direction") ?: "down", intOrNull(args, "amount"))
                     AgentTools.GO_BACK -> goBack()
+                    AgentTools.RELOAD -> reloadTool()
+                    AgentTools.FORWARD -> forwardTool()
                     AgentTools.OPEN_NEW_TAB -> openNewTab(strOrNull(args, "url"))
                     AgentTools.LIST_TABS -> listTabs()
                     AgentTools.SWITCH_TAB -> switchTab(int(args, "index"))
@@ -210,13 +242,13 @@ class AgentToolExecutor(
         val url = normalizeUrl(rawUrl)
             ?: return ToolResult(false, "missing or invalid 'url' argument")
         val triggerAt = SystemClock.elapsedRealtime()
-        vm.loadUrl(url)
+        control.navigate(url)
         val settled = awaitPageSettle(triggerAt)
         // Where the tab LANDED, read from this tab's own engine: pageState
         // belongs to the tab on screen, and the user may have switched away
         // while the page was loading — the report would then name the page
         // they switched TO.
-        val landed = tabId?.let { vm.tabSession(it) }
+        val landed = tabId?.let { control.tabSession(it) }
         // A finished load is not a settled page: `readyState === 'complete'`
         // flips while the page's own fetch/XHR calls are still outstanding, and
         // the next read would show half of it (see [awaitReadiness]).
@@ -319,15 +351,44 @@ class AgentToolExecutor(
         return ToolResult(true, "went back to ${session.url.orEmpty()}")
     }
 
+    /**
+     * Reloads this chat's tab in place.
+     *
+     * A reload STARTS A NAVIGATION (see [MOVES_THE_PAGE]), so [execute] has
+     * already established that this chat's tab is the one on screen. The
+     * console and network buffers are untouched — Developer Tools owns that
+     * decision, and `devtools_reload` is the tool that says so explicitly.
+     */
+    private suspend fun reloadTool(): ToolResult {
+        val triggerAt = SystemClock.elapsedRealtime()
+        control.reload(tabId)
+        awaitPageSettle(triggerAt)
+        delay(SETTLE_MS)
+        val session = tabId?.let { control.tabSession(it) }
+        return ToolResult(true, "reloaded this chat's tab — \"${session?.title.orEmpty()}\"")
+    }
+
+    /** Forward one step, the mirror of [goBack] and classified the same way. */
+    private suspend fun forwardTool(): ToolResult {
+        val session = boundSession() ?: return ToolResult(false, "no page is loaded in this chat's tab")
+        if (!session.canGoForward) return ToolResult(true, "already at the latest page in this tab")
+        val triggerAt = SystemClock.elapsedRealtime()
+        control.goForward(tabId)
+        awaitPageSettle(triggerAt)
+        delay(SETTLE_MS)
+        return ToolResult(true, "went forward to ${session.url.orEmpty()}")
+    }
+
     private suspend fun openNewTab(url: String?): ToolResult {
         val target = url?.takeIf { it.isNotBlank() }?.let { normalizeUrl(it) } ?: "about:home"
-        vm.openNewTab(target)
+        val newId = control.openTab(target)
         // A tab opened TO BE WORKED IN is the tab this chat now means. Without
         // this the chat would sit bound to the tab it just left and gate its
         // own next navigation — the tool would open a tab nothing ever acts on.
-        vm.activeTabId?.let { bindTo(it) }
+        newId?.let { bindTo(it) }
         delay(SETTLE_MS)
-        return ToolResult(true, "opened a new tab at ${vm.pageState.url.ifBlank { target }}")
+        val landed = newId?.let { control.tabUrl(it) }?.takeIf { it.isNotBlank() }
+        return ToolResult(true, "opened a new tab at ${landed ?: target}")
     }
 
     private fun listTabs(): ToolResult {
@@ -353,7 +414,7 @@ class AgentToolExecutor(
         // Chosen by the agent, so the chat moves with it (see [bindTo]); a tab
         // the USER picks never does.
         bindTo(tab.id)
-        vm.selectTab(tab.id)
+        control.switchTab(tab.id)
         awaitPageSettle(SystemClock.elapsedRealtime() - 1500)
         return ToolResult(true, "switched to tab [$index]: ${tab.title.ifBlank { tab.url }}")
     }
@@ -361,9 +422,9 @@ class AgentToolExecutor(
     private suspend fun closeTab(): ToolResult {
         // THIS chat's tab, not the tab on screen: closing the active one would
         // shut a page the user is reading to tidy up a tab they are not.
-        val id = tabId ?: vm.activeTabId ?: return ToolResult(false, "no open tab")
-        if (!vm.tabExists(id)) return ToolResult(false, "this chat's tab is already closed")
-        vm.closeTab(id)
+        val id = tabId ?: control.activeTabId() ?: return ToolResult(false, "no open tab")
+        if (id !in control.tabIds()) return ToolResult(false, "this chat's tab is already closed")
+        control.closeTab(id)
         return ToolResult(true, "closed the tab this chat was working on")
     }
 
@@ -433,6 +494,16 @@ class AgentToolExecutor(
      */
     private suspend fun runJs(script: String?): ToolResult {
         val code = nonBlank(script) ?: return ToolResult(false, "missing 'script' argument")
+        // The per-profile "Agent console execution requires approval" setting.
+        // ON (the default) sends the call through the ordinary confirmation
+        // chain, so the person sees the script before it runs in their page;
+        // OFF is the profile's own decision to let scripts run unattended. The
+        // Console panel's own input is a different surface and never reaches
+        // here.
+        if (runJsApprovalRequired()) {
+            val preview = code.lineSequence().firstOrNull().orEmpty().take(60)
+            refuse(AgentTools.RUN_JS, "run this script in the page: $preview")?.let { return it }
+        }
         val session = boundSession() ?: return ToolResult(false, "no page is loaded in this chat's tab")
         val raw = evaluateJs(session, PageInjector.runJs(jsonString(code)))
             ?: return ToolResult(false, "run_js failed (JavaScript error or page still loading)")
@@ -524,9 +595,10 @@ class AgentToolExecutor(
      * Stops and hands over when the page is showing a challenge.
      *
      * The haystack is the result the model is about to read plus this tab's own
-     * title and URL — all three are written by the site. There is no console or
-     * network feed yet (those arrive with the devtools tools), so a challenge
-     * that leaves no trace in any of the three is not caught here.
+     * title and URL — all three are written by the site. The devtools tools'
+     * output is part of that result, so a console line or a request row can be
+     * what trips this; a challenge that leaves no trace in any of them is not
+     * caught here.
      */
     private suspend fun handOverIfChallenged(result: ToolResult): ToolResult {
         val session = boundSession()
@@ -964,7 +1036,13 @@ internal val PAGE_TEXT_TOOLS: Set<String> = setOf(
     AgentTools.CLICK,
     AgentTools.SELECT_OPTION,
     AgentTools.RUN_JS,
-    AgentTools.APP_PAGE
+    AgentTools.APP_PAGE,
+    // The audit and diagnose tools answer with counts and findings, but a
+    // finding's evidence quotes the console — the page's own words — so the
+    // result is fenced here rather than trusted. The console, network and
+    // inspect tools are absent because each fences its own body already.
+    AgentTools.DEVTOOLS_AUDIT,
+    AgentTools.DEVTOOLS_DIAGNOSE
 )
 
 /**
@@ -999,12 +1077,18 @@ internal val MOVES_THE_PAGE: Set<String> = setOf(
     AgentTools.FILL_INPUT,
     AgentTools.PRESS_ENTER,
     AgentTools.GO_BACK,
+    AgentTools.RELOAD,
+    AgentTools.FORWARD,
     AgentTools.SELECT_OPTION,
     AgentTools.PRESS_KEYS,
     AgentTools.AUTO_LIKE,
     AgentTools.AUTO_REPOST,
     AgentTools.AUTO_REPLY,
-    AgentTools.AUTO_POST
+    AgentTools.AUTO_POST,
+    // A diagnostic reload IS a page load, and a page patch is a script that can
+    // start one — both belong on this list for the same reason as navigate.
+    AgentTools.DEVTOOLS_RELOAD,
+    AgentTools.DEVTOOLS_PATCH
 )
 
 /**

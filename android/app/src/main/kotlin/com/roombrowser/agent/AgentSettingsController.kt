@@ -10,6 +10,8 @@ import com.roombrowser.data.db.AgentSessionEntity
 import com.roombrowser.data.net.AppHttpClients
 import com.roombrowser.data.repo.AgentSettings
 import com.roombrowser.data.repo.AgentRepository
+import com.roombrowser.domain.model.ProfileId
+import com.roombrowser.domain.model.ProfileSettings
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -51,6 +53,15 @@ class AgentSettingsController(
         private set
     var settings by mutableStateOf(AgentSettings())
         private set
+    /**
+     * This profile's own settings, for the Developer Tools permissions.
+     *
+     * Read on demand rather than observed: the row is written by the browser
+     * process too, and a screen that pushed a stale copy back would undo a
+     * change made there.
+     */
+    var profileSettings by mutableStateOf(ProfileSettings())
+        private set
     var activeProvider by mutableStateOf<AgentProviderEntity?>(null)
         private set
     var activeModel by mutableStateOf<String?>(null)
@@ -82,11 +93,48 @@ class AgentSettingsController(
             scope.launch {
                 repo.observeSessions(profileId).collect { sessions = it }
             }
+            loadProfileSettings()
         }
     }
 
     fun shutdown() {
         scope.cancel()
+    }
+
+    /** Whether the agent asks before running a script in the page with run_js. */
+    fun setAgentConsoleApproval(required: Boolean) =
+        updateProfileSettings { it.copy(agentConsoleApprovalRequired = required) }
+
+    /** Grants or withholds one granular agent permission on this profile. */
+    fun setAgentPermission(permission: String, granted: Boolean) = updateProfileSettings {
+        it.copy(
+            agentWithheldPermissions =
+            if (granted) it.agentWithheldPermissions - permission
+            else it.agentWithheldPermissions + permission
+        )
+    }
+
+    private fun loadProfileSettings() {
+        val id = profileId?.takeIf { it.isNotBlank() } ?: return
+        scope.launch {
+            graph.profileRepo.get(ProfileId(id))?.let { profileSettings = it.settings }
+        }
+    }
+
+    /**
+     * Read-modify-write against the stored row, never against the in-memory
+     * copy: the browser process writes the same row, and pushing a stale copy
+     * back would revert whatever it changed in between.
+     */
+    private fun updateProfileSettings(transform: (ProfileSettings) -> ProfileSettings) {
+        val id = profileId?.takeIf { it.isNotBlank() } ?: return
+        scope.launch {
+            val pid = ProfileId(id)
+            val current = graph.profileRepo.get(pid) ?: return@launch
+            val next = transform(current.settings)
+            graph.profileRepo.updateSettings(pid, next)
+            profileSettings = next
+        }
     }
 
     /**

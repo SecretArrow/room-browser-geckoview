@@ -54,6 +54,7 @@ import androidx.compose.material.icons.filled.ArrowDownward
 import androidx.compose.material.icons.filled.AttachFile
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.BookmarkBorder
+import androidx.compose.material.icons.filled.BugReport
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ContentCopy
@@ -979,6 +980,7 @@ private fun toolIcon(name: String): ImageVector = when (name) {
     AgentTools.OPEN_NEW_TAB -> Icons.Filled.Add
     AgentTools.LIST_TABS, AgentTools.SWITCH_TAB -> Icons.Filled.Tab
     AgentTools.CLOSE_TAB -> Icons.Filled.Close
+    in AgentTools.DEVTOOLS_TOOLS -> Icons.Filled.BugReport
     else -> Icons.Filled.Search
 }
 
