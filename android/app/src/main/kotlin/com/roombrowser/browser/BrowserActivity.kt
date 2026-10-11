@@ -210,6 +210,10 @@ class BrowserActivity : FragmentActivity() {
                     viewModel.resolveNetworkWarning(NetworkWarningDecision.SUPPRESS)
                 else -> Unit // Back / cancel: the decision is still pending.
             }
+            // A proxy chosen on the warning screen applies to this session only, so it is
+            // handed to the engine here rather than written to the profile.
+            NetworkWarningActivity.chosenProxyFrom(result.data)
+                ?.let { viewModel.applySessionProxy(it) }
             launchNetworkWarningIfNeeded()
         }
         lifecycleScope.launch {

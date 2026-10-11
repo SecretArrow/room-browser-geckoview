@@ -32,6 +32,7 @@ import com.roombrowser.data.db.SitePermissionEntity
 import com.roombrowser.data.db.SiteSettingEntity
 import com.roombrowser.data.db.TabEntity
 import com.roombrowser.data.proxy.ProxyDecision
+import com.roombrowser.data.proxy.ProxySessionOverride
 import com.roombrowser.data.repo.AppStateCirclePassphraseStore
 import com.roombrowser.data.repo.BrowserRepository
 import com.roombrowser.data.repo.CirclePassphraseStore
@@ -1083,6 +1084,28 @@ class BrowserViewModel(
             applyProxyDecision(graph.proxyCoordinator.resolveForBind(profile))
             applyScopedProxy(profile, ProxyScope.AGENT)
             applyScopedProxy(profile, ProxyScope.WALLET)
+        }
+    }
+
+    /**
+     * Use [candidate] for THIS session only, from the network-warning screen.
+     *
+     * It records the session override and re-hands the engine its PAGES proxy through the same
+     * path a bind uses — deliberately without persisting anything, so a choice made to get past
+     * one warning never becomes a saved policy. A null clears the session choice.
+     */
+    fun applySessionProxy(candidate: ProxyCandidate?) {
+        ProxySessionOverride.set(profileId.value, candidate)
+        viewModelScope.launch(Dispatchers.Main) {
+            try {
+                applyProxyDecision(
+                    candidate?.let { ProxyDecision.Use(it) } ?: ProxyDecision.Direct
+                )
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (t: Throwable) {
+                Log.w(PROXY_TAG, "session proxy not applied: ${t.javaClass.simpleName}")
+            }
         }
     }
 
