@@ -58,7 +58,13 @@ data class ChatMessage(
     val role: String,
     val content: String? = null,
     @SerialName("tool_calls") val toolCalls: List<ToolCall>? = null,
-    @SerialName("tool_call_id") val toolCallId: String? = null
+    @SerialName("tool_call_id") val toolCallId: String? = null,
+    /**
+     * Screenshots for this message. A separate field, not a content-parts
+     * union, so a provider that cannot see them is a per-gateway answer rather
+     * than a serialization error. Null (the default) is omitted by [AgentJson].
+     */
+    val images: List<AgentImage>? = null
 )
 
 @Serializable

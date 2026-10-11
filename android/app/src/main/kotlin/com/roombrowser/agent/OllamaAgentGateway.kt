@@ -8,6 +8,9 @@ import com.roombrowser.domain.agent.ChatMessage
 import com.roombrowser.domain.agent.ChatRequest
 import com.roombrowser.domain.agent.FunctionCall
 import com.roombrowser.domain.agent.LocalAiTuning
+import com.roombrowser.domain.agent.OllamaChatFunctionCall
+import com.roombrowser.domain.agent.OllamaChatMessage
+import com.roombrowser.domain.agent.OllamaChatToolCall
 import com.roombrowser.domain.agent.OllamaTagsParser
 import com.roombrowser.domain.agent.StreamEvent
 import com.roombrowser.domain.agent.ToolCall
@@ -38,33 +41,16 @@ import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 
 // ---------------------------------------------------------------------------
-// Private wire DTOs. ChatRequest is NEVER sent raw: Ollama's native /api/chat
+// Private request DTOs. ChatRequest is NEVER sent raw: Ollama's native /api/chat
 // differs from the OpenAI shape in exactly two places that matter —
 //  1. `tool_calls` arguments travel as a real JSON OBJECT, not a STRING
 //     (our FunctionCall.arguments is a string, so it is re-parsed here);
 //  2. generation options (num_ctx / num_gpu / num_thread) and keep_alive are
 //     top-level request fields driven by the Local AI tuning screen.
-// The tool CATALOGUE schema, however, matches OpenAI's tools shape 1:1, so
-// it is re-mapped through dedicated wire types for zero implicit coupling.
+// The message + tool-call shapes live in OllamaDtos.kt ([OllamaChatMessage])
+// so the images mapping is JVM-tested; the tool CATALOGUE schema matches OpenAI's tools shape 1:1, so
+// it is re-mapped through dedicated wire types.
 // ---------------------------------------------------------------------------
-
-@Serializable
-private data class WireMessage(
-    val role: String,
-    val content: String? = null,
-    @SerialName("tool_calls") val toolCalls: List<WireToolCall>? = null
-)
-
-@Serializable
-private data class WireToolCall(
-    val function: WireFunctionCall
-)
-
-@Serializable
-private data class WireFunctionCall(
-    val name: String,
-    val arguments: JsonObject
-)
 
 @Serializable
 private data class WireToolDef(
@@ -82,7 +68,7 @@ private data class WireToolFunction(
 @Serializable
 private data class WireChatRequest(
     val model: String,
-    val messages: List<WireMessage>,
+    val messages: List<OllamaChatMessage>,
     val stream: Boolean = true,
     val tools: List<WireToolDef>? = null,
     val options: JsonObject? = null,
@@ -203,11 +189,11 @@ class OllamaAgentGateway(
      * tool_calls (arguments STRING re-parsed into a real JSON object);
      * tool results → {role:"tool", content} (Ollama's native tool shape).
      */
-    private fun wireMessage(message: ChatMessage): WireMessage {
+    private fun wireMessage(message: ChatMessage): OllamaChatMessage {
         val calls = message.toolCalls.orEmpty().mapNotNull { call ->
             val name = call.function.name.takeIf { it.isNotBlank() } ?: return@mapNotNull null
-            WireToolCall(
-                function = WireFunctionCall(
+            OllamaChatToolCall(
+                function = OllamaChatFunctionCall(
                     name = name,
                     arguments = argsObject(call.function.arguments)
                 )
@@ -215,10 +201,12 @@ class OllamaAgentGateway(
         }
         // Tool results must carry non-null content on the Ollama wire.
         val content = if (message.role == "tool") message.content.orEmpty() else message.content
-        return WireMessage(
+        return OllamaChatMessage(
             role = message.role,
             content = content,
-            toolCalls = calls.takeIf { it.isNotEmpty() }
+            toolCalls = calls.takeIf { it.isNotEmpty() },
+            // Ollama's native field: raw base64, no `data:` prefix.
+            images = message.images?.map { it.dataBase64 }?.takeIf { it.isNotEmpty() }
         )
     }
 

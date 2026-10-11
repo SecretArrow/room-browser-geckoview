@@ -130,22 +130,34 @@ object AnthropicMessages {
     }
 
     /**
-     * A message's `content`: a plain string when there are no tool calls
-     * (which is what Anthropic expects and what reads best), otherwise the
-     * block array carrying the assistant's text and its `tool_use` blocks.
+     * A message's `content`: a plain string when it carries neither tool calls
+     * nor images (which is what Anthropic expects and what reads best),
+     * otherwise the block array carrying the assistant's text, its images and
+     * its `tool_use` blocks.
      *
      * An assistant that only called tools has no text at all, and an empty
      * string block is rejected — so the text block is omitted entirely.
      */
     private fun contentOf(m: ChatMessage): kotlinx.serialization.json.JsonElement {
         val calls = m.toolCalls.orEmpty()
-        if (calls.isEmpty()) return JsonPrimitive(m.content.orEmpty())
+        val images = m.images.orEmpty()
+        if (calls.isEmpty() && images.isEmpty()) return JsonPrimitive(m.content.orEmpty())
 
         return buildJsonArray {
             m.content?.takeIf { it.isNotBlank() }?.let { text ->
                 addJsonObject {
                     put("type", "text")
                     put("text", text)
+                }
+            }
+            images.forEach { image ->
+                addJsonObject {
+                    put("type", "image")
+                    putJsonObject("source") {
+                        put("type", "base64")
+                        put("media_type", image.mediaType)
+                        put("data", image.dataBase64)
+                    }
                 }
             }
             calls.forEach { call ->

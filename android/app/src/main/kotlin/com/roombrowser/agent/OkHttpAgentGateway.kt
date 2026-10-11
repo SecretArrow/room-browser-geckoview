@@ -4,6 +4,7 @@ import com.roombrowser.domain.agent.AgentClientIdentity
 import com.roombrowser.domain.agent.AgentGateway
 import com.roombrowser.domain.agent.AgentHttpException
 import com.roombrowser.domain.agent.AgentJson
+import com.roombrowser.domain.agent.AgentVisionRequest
 import com.roombrowser.domain.agent.ChatMessage
 import com.roombrowser.domain.agent.ChatRequest
 import com.roombrowser.domain.agent.ChatResponse
@@ -71,7 +72,7 @@ class OkHttpAgentGateway(
         request: ChatRequest,
         events: suspend (StreamEvent) -> Unit
     ): ChatMessage {
-        val body = AgentJson.encodeToString(ChatRequest.serializer(), request)
+        val body = AgentVisionRequest.openAiBody(request)
         val builder = Request.Builder()
             .url("$base/chat/completions")
             .post(body.toRequestBody("application/json; charset=utf-8".toMediaType()))

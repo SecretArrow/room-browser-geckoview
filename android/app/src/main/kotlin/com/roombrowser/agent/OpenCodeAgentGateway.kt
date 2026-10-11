@@ -5,6 +5,7 @@ import com.roombrowser.domain.agent.AgentGateway
 import com.roombrowser.domain.agent.AgentHttpException
 import com.roombrowser.domain.agent.AgentJson
 import com.roombrowser.domain.agent.AgentTools
+import com.roombrowser.domain.agent.AgentVisionSupport
 import com.roombrowser.domain.agent.ChatMessage
 import com.roombrowser.domain.agent.ChatRequest
 import com.roombrowser.domain.agent.ModelListParser
@@ -52,6 +53,10 @@ import kotlin.coroutines.resumeWithException
  *
  * A turn that was trimmed by the loop (history shrank) transparently starts
  * a fresh opencode session and replays the visible history.
+ *
+ * Screenshots are NOT supported — the server API carries text only, so
+ * [AgentVisionSupport] reports OPENCODE as unable and the caller must refuse
+ * before a request is built.
  */
 class OpenCodeAgentGateway(
     client: OkHttpClient,
