@@ -11,12 +11,12 @@ import com.roombrowser.domain.wallet.model.BroadcastResult
 import com.roombrowser.domain.wallet.model.ChainType
 import com.roombrowser.domain.wallet.model.NetworkConfig
 import com.roombrowser.domain.wallet.model.WalletException
-import java.util.Base64
 import kotlinx.coroutines.runBlocking
 import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
 import org.junit.Assert.assertThrows
 import org.junit.Test
+import java.util.Base64
 
 /**
  * Octra has no specification and publishes no official test vectors, so the

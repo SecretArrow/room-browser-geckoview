@@ -58,12 +58,12 @@ import com.roombrowser.domain.proxy.ProxyHealthRules
 import com.roombrowser.domain.proxy.ProxyMode
 import com.roombrowser.domain.proxy.ProxyScope
 import com.roombrowser.domain.theme.BuiltInThemes
+import com.roombrowser.domain.theme.RoomThemeSpec
+import com.roombrowser.domain.theme.ThemeJson
 import com.roombrowser.domain.wallet.chains.octra.OctCircleResolver
 import com.roombrowser.domain.wallet.chains.octra.OctDocument
 import com.roombrowser.domain.wallet.chains.octra.RpcCircleSource
 import com.roombrowser.domain.wallet.model.ChainType
-import com.roombrowser.domain.theme.RoomThemeSpec
-import com.roombrowser.domain.theme.ThemeJson
 import com.roombrowser.engine.BlockedResourceSink
 import com.roombrowser.engine.EngineProxyConfig
 import com.roombrowser.engine.EngineSession
@@ -242,6 +242,7 @@ class BrowserViewModel(
         private set
     var readerContent by mutableStateOf<ReaderContent?>(null)
         private set
+
     /** All profiles (for the quick switcher). */
     var allProfiles by mutableStateOf<List<Profile>>(emptyList())
         private set
@@ -1422,6 +1423,7 @@ class BrowserViewModel(
 
     fun goBack() { activeSession?.goBack() }
     fun goForward() { activeSession?.goForward() }
+
     /**
      * Retry the page whose error surface is on screen.
      *

@@ -78,8 +78,10 @@ class RoomSessionListener(
          * with it.
          */
         fun pageHostFor(session: EngineSession): String?
+
         /** Snapshot of site settings for the given request host (thread-safe). */
         fun siteSettingFor(host: String): SiteSettingEntity?
+
         /** Record a real blocking event (Room insert, fire-and-forget). */
         fun recordBlockEvent(host: String, category: String)
         fun onBlocked(host: String, category: FilterEngine.FilterCategory)
@@ -89,15 +91,19 @@ class RoomSessionListener(
 
         fun onProgress(session: EngineSession, progress: Int)
         fun onTitleChanged(session: EngineSession, title: String)
+
         /** [session] is the engine that fired: per-tab state must be routed to
          *  the OWNING tab's row, never to whichever tab happens to be active. */
         fun onPageStarted(session: EngineSession, url: String)
+
         /** [success] is false when the engine gave up on the load. */
         fun onPageFinished(session: EngineSession, url: String, title: String, success: Boolean)
+
         /** Live web-history state — fires on EVERY navigation (including
          *  same-document pushState/replaceState) so the UI's Back / Forward
          *  controls are never stale. */
         fun onHistoryChanged(session: EngineSession, canGoBack: Boolean, canGoForward: Boolean)
+
         /**
          * A main-frame load failed, for a reason that is NOT a certificate
          * failure. [kind] is the engine-neutral category (TRANSPORT covers
@@ -112,6 +118,7 @@ class RoomSessionListener(
             errorCode: Int,
             description: String?
         )
+
         /**
          * The connection was refused because its certificate is not trusted.
          * Reported through the facade's [PageErrorKind.CERTIFICATE] rather
@@ -120,6 +127,7 @@ class RoomSessionListener(
          * and not a `SslError` primary error.
          */
         fun onSslError(session: EngineSession, url: String, errorCode: Int, description: String?)
+
         /**
          * A site asked for HTTP Basic/Digest credentials. The host shows a
          * prompt and answers with exactly ONE of [proceed] or [cancel] — the
@@ -133,6 +141,7 @@ class RoomSessionListener(
             proceed: (String, String) -> Unit,
             cancel: () -> Unit
         )
+
         /**
          * The page asked for the camera and/or microphone. The host must
          * answer [responder] exactly once, and must refuse a request from
@@ -144,30 +153,35 @@ class RoomSessionListener(
             kinds: Set<PermissionKind>,
             originUrl: String
         )
+
         /** The page asked for the user's location. [origin] may be null. */
         fun onGeolocationRequest(
             session: EngineSession,
             origin: String?,
             responder: PermissionResponder
         )
+
         /**
          * The session entered or left fullscreen. A STATE, not a view: the
          * engine renders fullscreen content inside its own view, so the app
          * only hides or restores its chrome.
          */
         fun onFullScreen(session: EngineSession, fullScreen: Boolean)
+
         /**
          * A `<input type=file>` request. The engine built the picker Intent;
          * the host launches it and answers [accept] with the chosen documents,
          * or null for a cancelled picker.
          */
         fun onFileChooserRequest(intent: Intent, accept: (Array<Uri>?) -> Unit)
+
         /**
          * A message from one of this session's page-world bridges. [payload]
          * is page-controlled and must be treated as hostile; the session's own
          * URL is the anchor it is validated against.
          */
         fun onPageMessage(session: EngineSession, channel: String, payload: String)
+
         /**
          * The page started a download, or navigated to something the engine
          * cannot render. The app owns the download queue, so it handles every
@@ -182,9 +196,11 @@ class RoomSessionListener(
         )
         fun openNewWindow(session: EngineSession, url: String)
         fun openInNewTab(url: String, isPrivate: Boolean)
+
         /** A refused `oct://` navigation: the app's own loader opens it. */
         fun onCircleNavigation(session: EngineSession, url: String)
         fun currentUrl(): String?
+
         /** TRUE when [session] is the ACTIVE tab's engine. Needed because a
          *  popup request must be refused for a background tab, and this class
          *  has no other way to know which tab is on screen. */
@@ -561,7 +577,6 @@ object PageBridgeChannels {
 /** Reads a possibly-null string field out of a page-supplied envelope. */
 internal fun JSONObject.stringOrNull(name: String): String? =
     if (isNull(name)) null else optString(name, "").ifEmpty { null }
-
 
 /**
  * The page host a sub-resource block is judged against, given the FIRING

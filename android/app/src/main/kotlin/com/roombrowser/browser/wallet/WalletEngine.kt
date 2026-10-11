@@ -1,16 +1,14 @@
 package com.roombrowser.browser.wallet
 
-import com.roombrowser.domain.model.ProfileId
-import com.roombrowser.domain.export.WalletBackup
 import com.roombrowser.browser.wallet.dapp.WalletBridgeProtocol
+import com.roombrowser.domain.export.WalletBackup
+import com.roombrowser.domain.model.ProfileId
 import com.roombrowser.domain.wallet.chains.ChainRegistry
 import com.roombrowser.domain.wallet.chains.cosmos.CosmosAdapter
 import com.roombrowser.domain.wallet.chains.evm.EvmAdapter
 import com.roombrowser.domain.wallet.chains.octra.OctraAdapter
-import com.roombrowser.domain.wallet.crypto.Base58
 import com.roombrowser.domain.wallet.crypto.Bip32PrivateKey
 import com.roombrowser.domain.wallet.crypto.Ed25519
-import com.roombrowser.domain.wallet.crypto.Hashes
 import com.roombrowser.domain.wallet.crypto.Hex
 import com.roombrowser.domain.wallet.crypto.Mnemonics
 import com.roombrowser.domain.wallet.crypto.Slip10Ed25519Key
@@ -22,7 +20,6 @@ import com.roombrowser.domain.wallet.model.FeeEstimate
 import com.roombrowser.domain.wallet.model.NetworkConfig
 import com.roombrowser.domain.wallet.model.WalletException
 import com.roombrowser.domain.wallet.wire.ProtoWriter
-import kotlin.coroutines.cancellation.CancellationException
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -51,6 +48,7 @@ import java.math.BigDecimal
 import java.math.BigInteger
 import java.util.Base64
 import java.util.UUID
+import kotlin.coroutines.cancellation.CancellationException
 
 /**
  * Thrown by every [WalletEngine] operation that needs key material while the
@@ -459,7 +457,6 @@ open class WalletEngine(
         requireBound()
         repo.removeAccount(accountId)
     }
-
 
     // ------------------------------------------------------------------
 
@@ -1773,7 +1770,6 @@ open class WalletEngine(
             ?: throw WalletException.Unauthorized("Account has no stored private key")
         return WalletKeyCodec.ed25519Seed(key, account.chainType)
     }
-
 
     // ------------------------------------------------------------------
 

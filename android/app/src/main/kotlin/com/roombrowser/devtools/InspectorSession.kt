@@ -1,12 +1,12 @@
 package com.roombrowser.devtools
 
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.setValue
 import com.roombrowser.engine.EngineSession
 import com.roombrowser.engine.devtools.DeveloperToolsCapabilities
 import com.roombrowser.engine.devtools.EngineCookie
 import com.roombrowser.engine.devtools.EngineInspector
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableIntStateOf
-import androidx.compose.runtime.setValue
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withTimeoutOrNull

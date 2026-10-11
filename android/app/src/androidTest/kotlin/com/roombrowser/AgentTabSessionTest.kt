@@ -51,6 +51,7 @@ class AgentTabSessionTest {
     private val profileB = "22222222-2222-2222-2222-222222222222"
     private val tabOne = "aaaaaaaa-1111-1111-1111-111111111111"
     private val tabTwo = "bbbbbbbb-2222-2222-2222-222222222222"
+
     /** A tab id that is the SAME in both profiles, to prove profile scoping. */
     private val sharedTab = "cccccccc-3333-3333-3333-333333333333"
 

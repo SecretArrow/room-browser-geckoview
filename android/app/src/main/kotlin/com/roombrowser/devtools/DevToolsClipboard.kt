@@ -1,7 +1,7 @@
 package com.roombrowser.devtools
 
-import com.roombrowser.engine.devtools.DeveloperToolsCapabilities
 import com.roombrowser.engine.devtools.DevToolsCapability
+import com.roombrowser.engine.devtools.DeveloperToolsCapabilities
 
 /**
  * The one sentence the panel and the copied block both use when no reading

@@ -1,9 +1,9 @@
 package com.roombrowser.domain.oct
 
-import java.util.Base64
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.contentOrNull
+import java.util.Base64
 
 /**
  * What the node says a circle is.

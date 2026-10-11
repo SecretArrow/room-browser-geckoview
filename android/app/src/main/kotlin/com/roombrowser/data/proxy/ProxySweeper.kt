@@ -6,11 +6,6 @@ import com.roombrowser.domain.proxy.ProxyHealth
 import com.roombrowser.domain.proxy.ProxyHealthRules
 import com.roombrowser.domain.proxy.ProxyScheme
 import com.roombrowser.domain.proxy.ProxySweepPlan
-import java.net.InetSocketAddress
-import java.net.Proxy
-import java.util.Collections
-import java.util.concurrent.TimeUnit
-import java.util.concurrent.atomic.AtomicInteger
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
@@ -20,6 +15,11 @@ import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import java.net.InetSocketAddress
+import java.net.Proxy
+import java.util.Collections
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicInteger
 
 /**
  * Establishes that a candidate is actually a proxy, by connecting THROUGH it and reading back
@@ -136,6 +136,5 @@ class ProxySweeper {
         const val PROBE_TIMEOUT_MS = 4_000L
         const val PROBE_CONCURRENCY = 24
         const val SWEEP_BUDGET_MS = 45_000L
-
     }
 }

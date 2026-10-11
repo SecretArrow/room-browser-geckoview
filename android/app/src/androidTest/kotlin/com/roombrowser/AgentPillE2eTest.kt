@@ -138,7 +138,10 @@ class AgentPillE2eTest {
         val deadline = System.currentTimeMillis() + timeoutMs
         while (System.currentTimeMillis() < deadline) {
             if (condition()) return true
-            try { Thread.sleep(250) } catch (_: InterruptedException) { }
+            try {
+                Thread.sleep(250)
+            } catch (_: InterruptedException) {
+                }
         }
         return condition()
     }
@@ -230,7 +233,10 @@ class AgentPillE2eTest {
             device.displayWidth / 2, device.displayHeight / 4, 100
         )
         device.waitForIdle(800)
-        try { Thread.sleep(300) } catch (_: InterruptedException) { }
+        try {
+            Thread.sleep(300)
+        } catch (_: InterruptedException) {
+            }
     }
 
     /** The address pill always carries this desc, so it detects the engine. */
@@ -240,7 +246,10 @@ class AgentPillE2eTest {
             if (hasDescContains("Address bar", 400)) return true
             if (hasText("Search or type URL", 400)) return true
             if (hasText("Privacy Dashboard", 400)) return true
-            try { Thread.sleep(250) } catch (_: InterruptedException) { }
+            try {
+                Thread.sleep(250)
+            } catch (_: InterruptedException) {
+                }
         }
         return hasDescContains("Address bar", 500)
     }
@@ -263,7 +272,10 @@ class AgentPillE2eTest {
             } else {
                 firstSeen = 0L
             }
-            try { Thread.sleep(150) } catch (_: InterruptedException) { }
+            try {
+                Thread.sleep(150)
+            } catch (_: InterruptedException) {
+                }
         }
         return false
     }
@@ -485,7 +497,10 @@ class AgentPillE2eTest {
             device.displayWidth / 2, device.displayHeight * 3 / 4, 100
         )
         device.waitForIdle(800)
-        try { Thread.sleep(300) } catch (_: InterruptedException) { }
+        try {
+            Thread.sleep(300)
+        } catch (_: InterruptedException) {
+            }
     }
 
     /**

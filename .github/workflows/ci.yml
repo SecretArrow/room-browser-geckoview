@@ -321,11 +321,6 @@ jobs:
 
       - name: Kotlin style (ktlint)
         working-directory: android
-        # NON-BLOCKING for now: the codebase has never been ktlint-formatted, so
-        # this reports the violation set (artifact below) rather than failing a
-        # release over style that predates the gate. Delete this line to make it a
-        # hard gate, once the baseline is clean. Config is the root .editorconfig.
-        continue-on-error: true
         run: ./gradlew ktlintCheck --console=plain
 
       - name: Unit tests (domain + engine + app)
@@ -493,6 +488,7 @@ jobs:
             android/app/build/reports/ktlint/
             android/core/domain/build/reports/ktlint/
             android/core/wallet/build/reports/ktlint/
+            android/engine/build/reports/ktlint/
           if-no-files-found: ignore
 
       - name: Upload test reports

@@ -18,3 +18,75 @@ ktlint_standard_no-wildcard-imports = disabled
 
 # The agent's multi-line prompt strings read better hand-indented.
 ktlint_standard_string-template-indent = disabled
+
+# ---------------------------------------------------------------------------
+# Layout rules that fight this codebase's deliberate style, turned off so the
+# gate can be blocking without a 500-file rewrite. Each was measured against
+# the whole tree (65,766 hits) before being disabled here — this is a decision
+# about what the gate enforces, not a way to make it pass.
+#
+#   argument-list-wrapping (9,136)  would reflow the generated device table in
+#                                   core/domain/model/Devices.kt from 7,156
+#                                   lines to 16,345 — one named arg per line.
+#   indent (35,733)                 continuation-indent convention differs
+#                                   throughout; largely a consequence of the
+#                                   wrapping rules below.
+#   multiline-expression-wrapping   splits the idiomatic `fun f() = apply { }`
+#   (3,741)                         onto two lines.
+#   function-signature,             parameter/class/statement wrapping prefs.
+#   class-signature, statement-
+#   wrapping, wrapping, chain-
+#   wrapping, condition-wrapping,
+#   parameter-list-wrapping,
+#   enum-wrapping, if-else-wrapping,
+#   multiline-if-else
+#   trailing-comma-on-*-site        8,074 hits, almost all inside the device
+#   (8,074)                         table's multi-arg lines.
+#   chain-method-continuation,      ktlint_official-only rules.
+#   if-else-bracing, no-consecutive-
+#   comments, no-empty-first-line-
+#   in-class-body
+#   function-naming (568)           flags @Composable PascalCase functions.
+#   blank-line-before-declaration   the codebase opens class bodies and groups
+#   (231)                           declarations with blank lines on purpose.
+#
+# The second group is a different reason: these four cannot be auto-corrected,
+# so a blocking gate would demand hand-reformatting. The rule the gate follows
+# is that every failure is clearable with one `ktlintFormat` run.
+#
+#   try-catch-finally-spacing (425) expands the deliberate one-line interrupt
+#                                   guard `try { Thread.sleep(250) } catch
+#                                   (_: InterruptedException) { }` used
+#                                   throughout the instrumented tests.
+#   filename (4)                    wants files renamed after their class;
+#                                   renaming buys nothing and costs blame.
+#   property-naming (2)             wants top-level vals in SCREAMING_SNAKE,
+#                                   which would rename public API.
+#   value-parameter-comment (3)     wants inline parameter comments moved to
+#                                   their own line; nothing can move them.
+# ---------------------------------------------------------------------------
+ktlint_standard_indent = disabled
+ktlint_standard_argument-list-wrapping = disabled
+ktlint_standard_multiline-expression-wrapping = disabled
+ktlint_standard_function-signature = disabled
+ktlint_standard_class-signature = disabled
+ktlint_standard_statement-wrapping = disabled
+ktlint_standard_wrapping = disabled
+ktlint_standard_chain-wrapping = disabled
+ktlint_standard_condition-wrapping = disabled
+ktlint_standard_parameter-list-wrapping = disabled
+ktlint_standard_enum-wrapping = disabled
+ktlint_standard_if-else-wrapping = disabled
+ktlint_standard_multiline-if-else = disabled
+ktlint_standard_trailing-comma-on-call-site = disabled
+ktlint_standard_trailing-comma-on-declaration-site = disabled
+ktlint_standard_chain-method-continuation = disabled
+ktlint_standard_if-else-bracing = disabled
+ktlint_standard_no-consecutive-comments = disabled
+ktlint_standard_no-empty-first-line-in-class-body = disabled
+ktlint_standard_function-naming = disabled
+ktlint_standard_blank-line-before-declaration = disabled
+ktlint_standard_try-catch-finally-spacing = disabled
+ktlint_standard_filename = disabled
+ktlint_standard_property-naming = disabled
+ktlint_standard_value-parameter-comment = disabled

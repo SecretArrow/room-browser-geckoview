@@ -95,8 +95,8 @@ import androidx.compose.ui.unit.dp
 import androidx.core.net.toUri
 import androidx.fragment.app.FragmentActivity
 import com.roombrowser.RoomBrowserApp
-import com.roombrowser.browser.wallet.WalletActivityRecord
 import com.roombrowser.browser.wallet.WalletAccountRecord
+import com.roombrowser.browser.wallet.WalletActivityRecord
 import com.roombrowser.browser.wallet.WalletEngineApi
 import com.roombrowser.browser.wallet.WalletLockState
 import com.roombrowser.domain.model.ProfileId
@@ -108,8 +108,8 @@ import com.roombrowser.domain.wallet.model.BalanceResult
 import com.roombrowser.domain.wallet.model.ChainType
 import com.roombrowser.domain.wallet.model.NetworkConfig
 import com.roombrowser.domain.walletbackup.WalletBackupStatus
-import com.roombrowser.domain.walletbackup.WalletDeleteState
 import com.roombrowser.domain.walletbackup.WalletDeleteStage
+import com.roombrowser.domain.walletbackup.WalletDeleteState
 import com.roombrowser.security.BiometricGate
 import com.roombrowser.security.PinUnlockResult
 import com.roombrowser.security.WalletLockManager

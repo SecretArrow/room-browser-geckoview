@@ -66,12 +66,12 @@ class GgufTest {
     /** The 5-KV minimal v3 header from the task brief. */
     private fun minimalV3(): ByteArray = Builder()
         .raw(magic())
-        .u32(3)                                   // version
-        .u64(0)                                   // tensor_count
-        .u64(5)                                   // kv_count
+        .u32(3) // version
+        .u64(0) // tensor_count
+        .u64(5) // kv_count
         .kvString("general.architecture", "llama")
         .kvString("general.name", "test-model")
-        .kvU32("general.file_type", 15)           // Q4_K_M
+        .kvU32("general.file_type", 15) // Q4_K_M
         .kvU32("llama.context_length", 2048)
         .kvString("general.size_label", "1.5B")
         .bytes()

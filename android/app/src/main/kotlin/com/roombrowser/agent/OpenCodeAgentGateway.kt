@@ -4,7 +4,6 @@ import com.roombrowser.domain.agent.AgentClientIdentity
 import com.roombrowser.domain.agent.AgentGateway
 import com.roombrowser.domain.agent.AgentHttpException
 import com.roombrowser.domain.agent.AgentJson
-import com.roombrowser.domain.agent.AgentTools
 import com.roombrowser.domain.agent.AgentVisionSupport
 import com.roombrowser.domain.agent.ChatMessage
 import com.roombrowser.domain.agent.ChatRequest

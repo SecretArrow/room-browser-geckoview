@@ -36,16 +36,22 @@ class ProfileSwitchExecutor(
     interface Host {
         /** Step 1 — stop current navigation. */
         fun stopNavigation()
+
         /** Step 2 — persist all open tab state to Room. */
         suspend fun saveTabState()
+
         /** Step 3 — destroy every WebView in the browser context. */
         fun destroyBrowserContext()
+
         /** Step 4 — flush cookies/storage state to disk. */
         fun flushProfileState()
+
         /** Step 5 — release in-memory caches, thumbnails, pooled objects. */
         fun releaseProfileResources()
+
         /** Private-tab cleanup hook (session cookies). */
         fun cleanupPrivateTabs()
+
         /** Target activity class used for the restart intent. */
         val restartActivityClass: Class<*>
     }

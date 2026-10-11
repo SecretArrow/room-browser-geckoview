@@ -4,7 +4,6 @@ import android.content.Context
 import androidx.work.CoroutineWorker
 import androidx.work.WorkerParameters
 import com.roombrowser.RoomBrowserApp
-import com.roombrowser.domain.model.NetworkRetention
 
 /**
  * Daily maintenance worker: applies the IP-history retention policy and

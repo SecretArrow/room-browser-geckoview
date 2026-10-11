@@ -45,8 +45,8 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.roombrowser.browser.BrowserViewModel
 import com.roombrowser.browser.engine.ProfileEngine
-import com.roombrowser.engine.devtools.DeveloperToolsCapabilities
 import com.roombrowser.engine.devtools.DevToolsCapability
+import com.roombrowser.engine.devtools.DeveloperToolsCapabilities
 import com.roombrowser.ui.common.LocalRoomExtras
 import com.roombrowser.ui.common.RoomBottomSheetShape
 import com.roombrowser.ui.common.RoomCopyButton

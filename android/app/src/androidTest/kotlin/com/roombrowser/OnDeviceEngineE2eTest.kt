@@ -242,7 +242,10 @@ class OnDeviceEngineE2eTest {
                 if (!text.isNullOrBlank()) return text
             }
             runCatching { device.waitForIdle(1_000) }
-            try { Thread.sleep(2_000) } catch (_: InterruptedException) { }
+            try {
+                Thread.sleep(2_000)
+            } catch (_: InterruptedException) {
+                }
         }
         return null
     }

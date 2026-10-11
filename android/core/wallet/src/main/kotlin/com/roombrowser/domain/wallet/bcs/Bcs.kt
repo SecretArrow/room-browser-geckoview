@@ -40,7 +40,7 @@ class BcsWriter {
     }
 
     fun writeU64(value: Long) = apply {
-        for (shift in 0 until 64 step 8) out.write ((value shr shift).toInt() and 0xff)
+        for (shift in 0 until 64 step 8) out.write((value shr shift).toInt() and 0xff)
     }
 
     fun writeU128(value: String) = apply {

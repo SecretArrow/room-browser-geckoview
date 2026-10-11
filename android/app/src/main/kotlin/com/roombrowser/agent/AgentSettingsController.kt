@@ -9,8 +9,8 @@ import com.roombrowser.data.db.AgentProviderEntity
 import com.roombrowser.data.db.AgentSessionEntity
 import com.roombrowser.data.db.AgentSiteMemoryEntity
 import com.roombrowser.data.net.AppHttpClients
-import com.roombrowser.data.repo.AgentSettings
 import com.roombrowser.data.repo.AgentRepository
+import com.roombrowser.data.repo.AgentSettings
 import com.roombrowser.domain.model.ProfileId
 import com.roombrowser.domain.model.ProfileSettings
 import kotlinx.coroutines.CoroutineScope
@@ -53,11 +53,13 @@ class AgentSettingsController(
         private set
     var sessions by mutableStateOf<List<AgentSessionEntity>>(emptyList())
         private set
+
     /** What the agent has remembered for this profile, for the memory screen. */
     var siteMemory by mutableStateOf<List<AgentSiteMemoryEntity>>(emptyList())
         private set
     var settings by mutableStateOf(AgentSettings())
         private set
+
     /**
      * This profile's own settings, for the Developer Tools permissions.
      *
@@ -75,6 +77,7 @@ class AgentSettingsController(
     /** The provider being edited (null while loading, or in add-mode). */
     var editing by mutableStateOf<AgentProviderEntity?>(null)
         private set
+
     /** True once the editing target has been resolved (add-mode resolves immediately). */
     var editingLoaded by mutableStateOf(false)
         private set

@@ -493,7 +493,10 @@ class LocalAiE2eTest {
     private fun rectSettled(node: UiObject2, tries: Int = 6): Boolean {
         var previous = runCatching { node.visibleBounds }.getOrNull() ?: return false
         repeat(tries) {
-            try { Thread.sleep(200) } catch (_: InterruptedException) { }
+            try {
+                Thread.sleep(200)
+            } catch (_: InterruptedException) {
+                }
             val current = runCatching { node.visibleBounds }.getOrNull() ?: return false
             if (current == previous) return true
             previous = current
@@ -524,7 +527,10 @@ class LocalAiE2eTest {
             device.displayWidth / 2, device.displayHeight * 3 / 8, 100
         )
         device.waitForIdle(800)
-        try { Thread.sleep(300) } catch (_: InterruptedException) { }
+        try {
+            Thread.sleep(300)
+        } catch (_: InterruptedException) {
+            }
     }
 
     /** Reverse of [dragUpQuarter] — scrolls the viewport toward the START of
@@ -535,7 +541,10 @@ class LocalAiE2eTest {
             device.displayWidth / 2, device.displayHeight * 5 / 8, 100
         )
         device.waitForIdle(800)
-        try { Thread.sleep(200) } catch (_: InterruptedException) { }
+        try {
+            Thread.sleep(200)
+        } catch (_: InterruptedException) {
+            }
     }
 
     /** Reset to the top of the scrollable screen. Generous on purpose: the
@@ -760,7 +769,10 @@ class LocalAiE2eTest {
                 return true
             }
             if (hasDescContains(part, 300)) return true
-            try { Thread.sleep(250) } catch (_: InterruptedException) { }
+            try {
+                Thread.sleep(250)
+            } catch (_: InterruptedException) {
+                }
         }
         return false
     }
@@ -796,7 +808,10 @@ class LocalAiE2eTest {
         val deadline = System.currentTimeMillis() + timeoutMs
         while (System.currentTimeMillis() < deadline) {
             if (condition()) return true
-            try { Thread.sleep(200) } catch (_: InterruptedException) { }
+            try {
+                Thread.sleep(200)
+            } catch (_: InterruptedException) {
+                }
         }
         return condition()
     }
@@ -1076,7 +1091,10 @@ class LocalAiE2eTest {
                 lastCaption = catalogCaptionInPlace()
                 if (fake.libraryHits.get() > 0) break
                 if (lastCaption == "Failed" || lastCaption == "Ready") break
-                try { Thread.sleep(300) } catch (_: InterruptedException) { }
+                try {
+                    Thread.sleep(300)
+                } catch (_: InterruptedException) {
+                    }
             }
             if (fake.libraryHits.get() > 0) sawLibraryRequest = true
             // Proof tier 2: the discovered card (scrolls away from the button).

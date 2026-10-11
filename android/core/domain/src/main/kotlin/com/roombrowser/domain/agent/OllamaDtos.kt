@@ -481,6 +481,7 @@ object OllamaLibraryParser {
         """<li[^>]*flex items-baseline.*?</li>""",
         RegexOption.DOT_MATCHES_ALL
     )
+
     // NB: no trailing `"` in the regex — a Kotlin raw string cannot end with
     // a quote char (the closing delimiter would swallow it), and the capture
     // is identical anyway: the char class stops at the attribute's quote.

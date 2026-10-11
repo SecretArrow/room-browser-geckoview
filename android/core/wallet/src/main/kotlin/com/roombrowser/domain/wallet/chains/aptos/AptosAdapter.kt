@@ -6,7 +6,6 @@ import com.roombrowser.domain.wallet.crypto.Ed25519
 import com.roombrowser.domain.wallet.crypto.Hashes
 import com.roombrowser.domain.wallet.crypto.Hex
 import com.roombrowser.domain.wallet.crypto.Slip10Ed25519Key
-import com.roombrowser.domain.wallet.model.BroadcastResult
 import com.roombrowser.domain.wallet.model.ChainType
 import com.roombrowser.domain.wallet.model.NetworkConfig
 import com.roombrowser.domain.wallet.model.WalletException

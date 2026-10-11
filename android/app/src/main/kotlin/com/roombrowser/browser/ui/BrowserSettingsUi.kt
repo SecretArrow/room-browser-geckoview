@@ -26,8 +26,8 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.AccountBalanceWallet
+import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Key
@@ -67,8 +67,8 @@ import com.roombrowser.browser.FoundProxy
 import com.roombrowser.browser.engine.ProfileEngine
 import com.roombrowser.domain.agent.AgentPermissions
 import com.roombrowser.domain.engine.DnsValidator
-import com.roombrowser.domain.model.BrowserGlobalSettings
 import com.roombrowser.domain.model.ClaimedScreen
+import com.roombrowser.domain.model.ConflictSeverity
 import com.roombrowser.domain.model.DnsMode
 import com.roombrowser.domain.model.DnsPreset
 import com.roombrowser.domain.model.DnsPresets
@@ -77,11 +77,10 @@ import com.roombrowser.domain.model.NetworkRetention
 import com.roombrowser.domain.model.ProfileSettings
 import com.roombrowser.domain.model.ScreenSizeMode
 import com.roombrowser.domain.model.SearchEngines
+import com.roombrowser.domain.model.TabLayout
 import com.roombrowser.domain.model.UaMode
 import com.roombrowser.domain.model.UserAgents
 import com.roombrowser.domain.model.WarningBehavior
-import com.roombrowser.domain.model.ConflictSeverity
-import com.roombrowser.domain.model.TabLayout
 import com.roombrowser.domain.model.WebRtcPolicy
 import com.roombrowser.domain.model.withCustomUserAgent
 import com.roombrowser.domain.model.withUserAgentPreset

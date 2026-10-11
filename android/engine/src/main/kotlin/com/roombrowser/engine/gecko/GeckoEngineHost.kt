@@ -17,8 +17,6 @@ import com.roombrowser.engine.EngineProxyConfig
 import com.roombrowser.engine.EngineSession
 import com.roombrowser.engine.ResourceFilter
 import com.roombrowser.engine.devtools.EngineNetworkSignal
-import kotlin.coroutines.resume
-import kotlin.coroutines.resumeWithException
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withTimeoutOrNull
 import org.json.JSONArray
@@ -33,6 +31,8 @@ import org.mozilla.geckoview.WebExtension
 import java.io.File
 import java.util.concurrent.CopyOnWriteArraySet
 import java.util.concurrent.CountDownLatch
+import kotlin.coroutines.resume
+import kotlin.coroutines.resumeWithException
 
 /**
  * The GeckoView implementation of [EngineHost].

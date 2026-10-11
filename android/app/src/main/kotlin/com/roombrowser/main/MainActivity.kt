@@ -15,9 +15,9 @@ import androidx.fragment.app.FragmentActivity
 import androidx.lifecycle.ViewModelProvider
 import com.roombrowser.browser.BrowserActivity
 import com.roombrowser.domain.oct.OctUri
+import com.roombrowser.main.ui.MainScreen
 import com.roombrowser.security.BiometricGate
 import com.roombrowser.ui.common.RoomBrowserTheme
-import com.roombrowser.main.ui.MainScreen
 
 /**
  * Launcher activity (default process): profile selector, first-run flow,

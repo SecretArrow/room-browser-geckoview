@@ -181,7 +181,6 @@ internal object DeveloperToolsAuditText {
     } else {
         AuditRow(name, AuditVerdict.INFO, "$value ms")
     }
-
 }
 
 /** What the audit found, on a four-value scale that has no numbers on it. */

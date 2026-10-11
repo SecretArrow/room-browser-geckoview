@@ -681,7 +681,7 @@ class WalletBridgeProtocolTest {
     }
 
     @Test
-    fun `relay result resolves as a raw json value`() {        val result = Json.parseToJsonElement("\"0x1\"")
+    fun `relay result resolves as a raw json value`() { val result = Json.parseToJsonElement("\"0x1\"")
         val script = WalletBridgeProtocol.encodeResponseScript("w1", result.toString(), 0, null)
         assertThat(script).isEqualTo(
             "window.__roomWalletResponse && window.__roomWalletResponse(" +

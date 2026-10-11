@@ -20,10 +20,9 @@ import com.roombrowser.domain.model.SearchEngines
 import com.roombrowser.domain.task.AiTaskExecutionMode
 import com.roombrowser.domain.task.needsVisibleBrowser
 import com.roombrowser.engine.EngineSession
-import java.time.ZoneId
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
-import okhttp3.OkHttpClient
+import java.time.ZoneId
 
 /**
  * Runs a deferred task for real: a page on the task's own profile — hidden by

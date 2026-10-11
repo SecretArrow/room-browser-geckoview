@@ -6,12 +6,12 @@ import androidx.core.graphics.scale
 import com.roombrowser.domain.agent.AgentImage
 import com.roombrowser.domain.agent.AgentVisionBounds
 import com.roombrowser.engine.EngineSession
-import java.io.ByteArrayOutputStream
-import java.time.Instant
-import kotlin.coroutines.resume
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
+import java.io.ByteArrayOutputStream
+import java.time.Instant
+import kotlin.coroutines.resume
 
 /** A captured frame with where and when it was taken, so a stale one is visible. */
 data class CapturedScreenshot(

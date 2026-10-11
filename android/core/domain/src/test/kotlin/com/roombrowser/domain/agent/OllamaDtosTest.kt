@@ -394,8 +394,8 @@ class OllamaDtosTest {
     fun `embedding-only families are not chat candidates`() {
         val entries = OllamaLibraryParser.parse(libraryHtml)
         assertThat(OllamaLibraryHeuristics.isChatCandidate(entries[2])).isFalse() // bge-m3
-        assertThat(OllamaLibraryHeuristics.isChatCandidate(entries[0])).isTrue()  // deepseek-r1
-        assertThat(OllamaLibraryHeuristics.isChatCandidate(entries[1])).isTrue()  // qwen3.5
+        assertThat(OllamaLibraryHeuristics.isChatCandidate(entries[0])).isTrue() // deepseek-r1
+        assertThat(OllamaLibraryHeuristics.isChatCandidate(entries[1])).isTrue() // qwen3.5
         // No-capability entries carry no evidence either way — included.
         assertThat(
             OllamaLibraryHeuristics.isChatCandidate(OllamaLibraryEntry(name = "x"))

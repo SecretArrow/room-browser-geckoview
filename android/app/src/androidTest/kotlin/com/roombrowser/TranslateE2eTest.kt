@@ -204,7 +204,10 @@ class TranslateE2eTest {
         val deadline = System.currentTimeMillis() + timeoutMs
         while (System.currentTimeMillis() < deadline) {
             if (condition()) return true
-            try { Thread.sleep(250) } catch (_: InterruptedException) { }
+            try {
+                Thread.sleep(250)
+            } catch (_: InterruptedException) {
+                }
         }
         return condition()
     }
@@ -227,7 +230,11 @@ class TranslateE2eTest {
         var current: UiObject2? = node
         var hops = 0
         while (current != null && hops < 8) {
-            val clickable = try { current.isClickable } catch (_: Exception) { false }
+            val clickable = try {
+                current.isClickable
+            } catch (_: Exception) {
+                false
+            }
             if (clickable) {
                 val b = runCatching { current.visibleBounds }.getOrNull()
                 if (b != null && b.width() > 0) {
@@ -236,7 +243,11 @@ class TranslateE2eTest {
                     return true
                 }
             }
-            current = try { current.parent } catch (_: Exception) { null }
+            current = try {
+                current.parent
+            } catch (_: Exception) {
+                null
+            }
             hops++
         }
         return clickCenter(node)
@@ -263,7 +274,10 @@ class TranslateE2eTest {
             device.displayWidth / 2, device.displayHeight / 4, 100
         )
         device.waitForIdle(800)
-        try { Thread.sleep(300) } catch (_: InterruptedException) { }
+        try {
+            Thread.sleep(300)
+        } catch (_: InterruptedException) {
+            }
     }
 
     /**

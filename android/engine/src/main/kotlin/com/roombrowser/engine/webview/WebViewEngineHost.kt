@@ -22,10 +22,10 @@ import com.roombrowser.engine.EngineProxyConfig
 import com.roombrowser.engine.EngineSession
 import com.roombrowser.engine.PROXY_BYPASS_HOSTS
 import com.roombrowser.engine.ResourceFilter
-import java.io.File
-import java.util.concurrent.Executor
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.withTimeoutOrNull
+import java.io.File
+import java.util.concurrent.Executor
 
 private const val TAG = "RoomProxy"
 

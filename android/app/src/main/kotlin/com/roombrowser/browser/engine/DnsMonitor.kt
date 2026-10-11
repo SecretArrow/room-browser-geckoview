@@ -2,10 +2,8 @@ package com.roombrowser.browser.engine
 
 import com.roombrowser.domain.engine.DnsValidator
 import com.roombrowser.domain.model.BrowserGlobalSettings
-import com.roombrowser.domain.model.DnsMode
 import com.roombrowser.domain.model.DnsPresets
 import com.roombrowser.domain.model.Profile
-import com.roombrowser.domain.model.ProfileSettings
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow

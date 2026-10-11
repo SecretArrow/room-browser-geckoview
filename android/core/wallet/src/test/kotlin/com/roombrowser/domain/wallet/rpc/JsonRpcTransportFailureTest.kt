@@ -4,8 +4,8 @@ import com.google.common.truth.Truth.assertThat
 import com.roombrowser.domain.wallet.model.WalletException
 import kotlinx.coroutines.runBlocking
 import okhttp3.OkHttpClient
-import org.junit.Test
 import org.junit.Assert.assertThrows
+import org.junit.Test
 import java.io.IOException
 import java.net.UnknownHostException
 import javax.net.ssl.SSLHandshakeException

@@ -43,7 +43,11 @@ class ProfileManagerTest {
     fun `duplicate name rejected`() = runTest {
         manager.create("Personal", "x", 0)
         var thrown = false
-        try { manager.create("personal", "y", 0) } catch (e: IllegalArgumentException) { thrown = true }
+        try {
+            manager.create("personal", "y", 0)
+        } catch (e: IllegalArgumentException) {
+            thrown = true
+        }
         assertThat(thrown).isTrue()
     }
 
@@ -206,7 +210,11 @@ class ProfileManagerTest {
     fun `setDevice rejects an unknown id`() = runTest {
         val p = manager.create("Work", "w", 0)
         var thrown = false
-        try { manager.setDevice(p.id, "no-such-device") } catch (e: IllegalArgumentException) { thrown = true }
+        try {
+            manager.setDevice(p.id, "no-such-device")
+        } catch (e: IllegalArgumentException) {
+            thrown = true
+        }
         assertThat(thrown).isTrue()
     }
 

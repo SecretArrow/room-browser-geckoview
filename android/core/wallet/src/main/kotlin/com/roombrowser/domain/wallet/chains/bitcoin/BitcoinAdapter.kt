@@ -186,7 +186,7 @@ class BitcoinAdapter(private val rpc: JsonRpcClient = JsonRpcClient()) : Derivat
             if (inputSum >= target) break
         }
         if (inputSum < amountSats + 200) {
-            throw WalletException.InvalidParams("Insufficient balance (${inputSum} sats for ${amountSats}s send)")
+            throw WalletException.InvalidParams("Insufficient balance ($inputSum sats for ${amountSats}s send)")
         }
 
         val dustLimit = 546L

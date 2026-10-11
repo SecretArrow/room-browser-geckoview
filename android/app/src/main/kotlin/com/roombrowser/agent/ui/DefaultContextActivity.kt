@@ -117,6 +117,7 @@ private fun DefaultContextScreen(
     // this field rather than being overwritten by a stale draft.
     var draft by remember(settings.defaultContext) { mutableStateOf(settings.defaultContext) }
     var presetName by remember { mutableStateOf("") }
+
     /** The preset being renamed/replaced; null means the next save adds one. */
     var editingPresetId by remember { mutableStateOf<String?>(null) }
     var confirmDelete by remember { mutableStateOf<ContextPreset?>(null) }

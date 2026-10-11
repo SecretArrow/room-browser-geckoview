@@ -25,8 +25,6 @@ import com.roombrowser.domain.task.unattendedRefusal
 import com.roombrowser.domain.task.walletUnattendedRefusal
 import com.roombrowser.engine.EngineSession
 import com.roombrowser.engine.EngineSessionListener
-import java.util.concurrent.atomic.AtomicLong
-import kotlin.coroutines.resume
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -40,6 +38,8 @@ import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.jsonPrimitive
+import java.util.concurrent.atomic.AtomicLong
+import kotlin.coroutines.resume
 
 /**
  * Executes the agent's browser tools on ONE headless [EngineSession].

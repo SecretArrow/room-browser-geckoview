@@ -18,8 +18,8 @@ import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
-import com.roombrowser.engine.devtools.DeveloperToolsCapabilities
 import com.roombrowser.engine.devtools.DevToolsPanelId
+import com.roombrowser.engine.devtools.DeveloperToolsCapabilities
 import com.roombrowser.ui.common.LocalRoomExtras
 import com.roombrowser.ui.common.RoomCopyButton
 import com.roombrowser.ui.common.SectionHeader

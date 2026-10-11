@@ -9,6 +9,7 @@ interface SiteMemoryStore {
     suspend fun count(origin: String): Int
     suspend fun has(origin: String, key: String): Boolean
     suspend fun remember(origin: String, key: String, value: String)
+
     /** True when an entry was removed; false when there was none to remove. */
     suspend fun forget(origin: String, key: String): Boolean
 }

@@ -114,7 +114,10 @@ class AgentSettingsE2eTest {
         val deadline = System.currentTimeMillis() + timeoutMs
         while (System.currentTimeMillis() < deadline) {
             if (device.findObjects(By.text(text)).isEmpty()) return true
-            try { Thread.sleep(250) } catch (_: InterruptedException) { }
+            try {
+                Thread.sleep(250)
+            } catch (_: InterruptedException) {
+                }
         }
         return device.findObjects(By.text(text)).isEmpty()
     }
@@ -194,7 +197,10 @@ class AgentSettingsE2eTest {
             if (hasText("Search or type URL", 400)) return true
             if (hasText("Privacy Dashboard", 400)) return true
             if (hasText("trackers blocked", 400)) return true
-            try { Thread.sleep(250) } catch (_: InterruptedException) { }
+            try {
+                Thread.sleep(250)
+            } catch (_: InterruptedException) {
+                }
         }
         return hasDescContains("Address bar", 500)
     }
@@ -430,7 +436,10 @@ class AgentSettingsE2eTest {
             device.swipe(cx, bottom, cx, top, 250)
         }
         device.waitForIdle(500)
-        try { Thread.sleep(200) } catch (_: InterruptedException) { }
+        try {
+            Thread.sleep(200)
+        } catch (_: InterruptedException) {
+            }
         return true
     }
 
@@ -441,11 +450,17 @@ class AgentSettingsE2eTest {
             if (textExists("Could not fetch models")) return FetchOutcome.ERROR
             if (textExists("mock-model-a")) return FetchOutcome.CHIPS
             if (!dragged) {
-                try { Thread.sleep(1_200) } catch (_: InterruptedException) { }
+                try {
+                    Thread.sleep(1_200)
+                } catch (_: InterruptedException) {
+                    }
                 dragUpQuarter()
                 dragged = true
             } else {
-                try { Thread.sleep(300) } catch (_: InterruptedException) { }
+                try {
+                    Thread.sleep(300)
+                } catch (_: InterruptedException) {
+                    }
             }
         }
         return FetchOutcome.NOTHING
@@ -469,7 +484,10 @@ class AgentSettingsE2eTest {
             device.displayWidth / 2, device.displayHeight / 4, 100
         )
         device.waitForIdle(800)
-        try { Thread.sleep(300) } catch (_: InterruptedException) { }
+        try {
+            Thread.sleep(300)
+        } catch (_: InterruptedException) {
+            }
     }
 
     /**
@@ -492,7 +510,11 @@ class AgentSettingsE2eTest {
         if (b.width() <= 0 || b.height() <= 0) {
             true
         } else {
-            val p = try { node.parent?.visibleBounds } catch (_: Exception) { null }
+            val p = try {
+                node.parent?.visibleBounds
+            } catch (_: Exception) {
+                null
+            }
             p != null && (
                 b.top < p.top || b.bottom > p.bottom ||
                     b.left < p.left || b.right > p.right
@@ -552,14 +574,38 @@ class AgentSettingsE2eTest {
         // VISIBLE rect. The unclipped rect is in the logcat line that
         // `AccessibilityNodeInfoHelper` prints when it rejects the node.
         sb.append("\n$desc visible=").append(node.visibleBounds)
-        var parent = try { node.parent } catch (_: Exception) { null }
+        var parent = try {
+            node.parent
+        } catch (_: Exception) {
+            null
+        }
         var depth = 0
         while (parent != null && depth < 8) {
-            sb.append("\n  ^$depth ").append(try { parent.className } catch (_: Exception) { "?" })
-                .append(" visible=").append(try { parent.visibleBounds } catch (_: Exception) { "?" })
-                .append(" clickable=").append(try { parent.isClickable } catch (_: Exception) { false })
-                .append(" text=").append(try { parent.text } catch (_: Exception) { null })
-            parent = try { parent.parent } catch (_: Exception) { null }
+            sb.append("\n  ^$depth ").append(try {
+                parent.className
+            } catch (_: Exception) {
+                "?"
+            })
+                .append(" visible=").append(try {
+                    parent.visibleBounds
+                } catch (_: Exception) {
+                    "?"
+                })
+                .append(" clickable=").append(try {
+                    parent.isClickable
+                } catch (_: Exception) {
+                    false
+                })
+                .append(" text=").append(try {
+                    parent.text
+                } catch (_: Exception) {
+                    null
+                })
+            parent = try {
+                parent.parent
+            } catch (_: Exception) {
+                null
+            }
             depth++
         }
         return sb.toString()
@@ -577,14 +623,21 @@ class AgentSettingsE2eTest {
      * that brings it back.
      */
     private fun nudgeChatDown(node: UiObject2) {
-        val p = try { node.parent?.visibleBounds } catch (_: Exception) { null }
+        val p = try {
+            node.parent?.visibleBounds
+        } catch (_: Exception) {
+            null
+        }
         if (p == null || p.height() < 40) return
         val cx = p.centerX()
         val from = p.top + p.height() / 5
         val to = p.top + p.height() * 4 / 5
         device.swipe(cx, from, cx, to, 250)
         device.waitForIdle(500)
-        try { Thread.sleep(200) } catch (_: InterruptedException) { }
+        try {
+            Thread.sleep(200)
+        } catch (_: InterruptedException) {
+            }
     }
 
     /**
@@ -639,7 +692,10 @@ class AgentSettingsE2eTest {
             } else {
                 firstSeen = 0L
             }
-            try { Thread.sleep(150) } catch (_: InterruptedException) { }
+            try {
+                Thread.sleep(150)
+            } catch (_: InterruptedException) {
+                }
         }
         return false
     }
@@ -668,7 +724,10 @@ class AgentSettingsE2eTest {
     private fun rectSettled(node: UiObject2, tries: Int = 6): Boolean {
         var previous = runCatching { node.visibleBounds }.getOrNull() ?: return false
         repeat(tries) {
-            try { Thread.sleep(200) } catch (_: InterruptedException) { }
+            try {
+                Thread.sleep(200)
+            } catch (_: InterruptedException) {
+                }
             val current = runCatching { node.visibleBounds }.getOrNull() ?: return false
             if (current == previous) return true
             previous = current
@@ -1037,7 +1096,10 @@ class AgentSettingsE2eTest {
         // VERIFIED send: fresh re-find per attempt, retried until the app
         // actually takes the prompt out of the composer.
         device.waitForIdle(1_000)
-        try { Thread.sleep(400) } catch (_: InterruptedException) { }
+        try {
+            Thread.sleep(400)
+        } catch (_: InterruptedException) {
+            }
         // The dump is taken AFTER the attempts, not before them: built into the
         // message of a call whose condition is computed second, it would show
         // the state the failure is about to change.

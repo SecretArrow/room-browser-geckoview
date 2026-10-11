@@ -306,7 +306,7 @@ class AgentDtosTest {
         val raw = """{"error":{"message":"unauthorized client detected"}}"""
         val e = AgentHttpException(401, raw)
         assertThat(e.message).isEqualTo("HTTP 401: unauthorized client detected")
-        assertThat(e.body).isEqualTo(raw)   // raw body untouched for callers that want it
+        assertThat(e.body).isEqualTo(raw) // raw body untouched for callers that want it
         assertThat(e.code).isEqualTo(401)
     }
 

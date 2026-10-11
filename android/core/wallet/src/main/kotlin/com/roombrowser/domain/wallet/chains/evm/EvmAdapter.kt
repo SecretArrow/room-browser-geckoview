@@ -12,16 +12,13 @@ import com.roombrowser.domain.wallet.model.WalletException
 import com.roombrowser.domain.wallet.rpc.JsonRpcClient
 import com.roombrowser.domain.wallet.rpc.RpcEndpointChain
 import kotlinx.serialization.json.JsonPrimitive
-import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
-import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import org.web3j.crypto.Credentials
 import org.web3j.crypto.RawTransaction
 import org.web3j.crypto.Sign
 import org.web3j.crypto.StructuredDataEncoder
 import org.web3j.crypto.TransactionEncoder
-import org.web3j.crypto.Sign.SignatureData
 import org.web3j.utils.Numeric
 import java.math.BigInteger
 
@@ -270,15 +267,13 @@ class EvmAdapter(private val rpc: JsonRpcClient = JsonRpcClient()) : DerivationP
         return prepared to ("0x" + Hex.encode(signed))
     }
 
-    suspend fun broadcastRaw(network: NetworkConfig, signedRawHex: String): BroadcastResult {
-        return try {
+    suspend fun broadcastRaw(network: NetworkConfig, signedRawHex: String): BroadcastResult = try {
             val result = endpointsOf(network)
                 .call("eth_sendRawTransaction", listOf(JsonPrimitive(signedRawHex)))
             BroadcastResult.Ok(result.jsonPrimitive.content)
         } catch (e: WalletException) {
             BroadcastResult.Error(e.message ?: "Broadcast failed")
         }
-    }
 
     // ------------------------------------------------------------------
     // Reads

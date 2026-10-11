@@ -1,7 +1,7 @@
 package com.roombrowser.browser.wallet
 
-import com.roombrowser.domain.model.ProfileId
 import com.roombrowser.domain.export.WalletBackup
+import com.roombrowser.domain.model.ProfileId
 import com.roombrowser.domain.wallet.model.BalanceResult
 import com.roombrowser.domain.wallet.model.ChainType
 import com.roombrowser.domain.wallet.model.FeeEstimate
@@ -124,8 +124,10 @@ data class WalletActivityRecord(
 enum class WalletLockState {
     /** No wallet exists for the profile yet. */
     NO_WALLET,
+
     /** Wallet exists; signing/import/reveal requires [WalletEngineApi.unlock] first. */
     LOCKED,
+
     /** Unlocked for this session (after the UI biometric gate). */
     UNLOCKED
 }
@@ -137,6 +139,7 @@ enum class WalletLockState {
 /** A dApp-originated request awaiting the user's decision. */
 sealed interface DappRequest {
     val id: String
+
     /** WebView-verified host (never the page's claimed origin). */
     val host: String
     val chainType: ChainType
@@ -594,8 +597,7 @@ interface WalletEngineApi {
     ): FeeEstimate?
 
     /** Sends a native-token transfer from OUR account. Requires an unlocked session. */
-    suspend fun sendNative(accountId: String, networkId: String, to: String, amount: String):
-        com.roombrowser.domain.wallet.model.BroadcastResult
+    suspend fun sendNative(accountId: String, networkId: String, to: String, amount: String): com.roombrowser.domain.wallet.model.BroadcastResult
 
     // -- dApp pipeline -------------------------------------------------------
 

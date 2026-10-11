@@ -5,12 +5,12 @@ import com.roombrowser.domain.proxy.ProxyCandidate
 import com.roombrowser.domain.proxy.ProxyListParser
 import com.roombrowser.domain.proxy.ProxySource
 import com.roombrowser.domain.proxy.ProxySourceCatalogue
-import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import java.util.concurrent.TimeUnit
 
 /**
  * Where candidates come from: the list bundled in the APK first, the live sources second.

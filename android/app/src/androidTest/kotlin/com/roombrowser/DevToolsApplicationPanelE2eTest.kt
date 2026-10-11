@@ -11,7 +11,6 @@ import androidx.test.uiautomator.UiObject2
 import androidx.test.uiautomator.UiSelector
 import androidx.test.uiautomator.Until
 import com.roombrowser.domain.model.ProfileId
-import java.util.concurrent.atomic.AtomicInteger
 import kotlinx.coroutines.runBlocking
 import okhttp3.mockwebserver.Dispatcher
 import okhttp3.mockwebserver.MockResponse
@@ -22,6 +21,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
+import java.util.concurrent.atomic.AtomicInteger
 
 /**
  * E2E for the Developer Tools APPLICATION panel against a page that really
@@ -503,7 +503,11 @@ class DevToolsApplicationPanelE2eTest {
         var current: UiObject2? = node
         var hops = 0
         while (current != null && hops < 8) {
-            val clickable = try { current.isClickable } catch (_: Exception) { false }
+            val clickable = try {
+                current.isClickable
+            } catch (_: Exception) {
+                false
+            }
             if (clickable) {
                 val b = runCatching { current.visibleBounds }.getOrNull()
                 if (b != null && b.width() > 0) {
@@ -512,7 +516,11 @@ class DevToolsApplicationPanelE2eTest {
                     return true
                 }
             }
-            current = try { current.parent } catch (_: Exception) { null }
+            current = try {
+                current.parent
+            } catch (_: Exception) {
+                null
+            }
             hops++
         }
         return clickCenter(node)
@@ -537,7 +545,10 @@ class DevToolsApplicationPanelE2eTest {
             device.displayWidth / 2, device.displayHeight * 5 / 8, 40
         )
         device.waitForIdle(400)
-        try { Thread.sleep(150) } catch (_: InterruptedException) { }
+        try {
+            Thread.sleep(150)
+        } catch (_: InterruptedException) {
+            }
     }
 
     /**
@@ -586,7 +597,10 @@ class DevToolsApplicationPanelE2eTest {
             device.swipe(x, from, x, from - body.height() * 2 / 5, 60)
         }
         device.waitForIdle(600)
-        try { Thread.sleep(200) } catch (_: InterruptedException) { }
+        try {
+            Thread.sleep(200)
+        } catch (_: InterruptedException) {
+            }
     }
 
     /** The same drag the other way, for walking back to the top of the body. */
@@ -596,7 +610,10 @@ class DevToolsApplicationPanelE2eTest {
         val from = body.top + body.height() / 5
         device.swipe(body.centerX(), from, body.centerX(), from + body.height() * 2 / 5, 60)
         device.waitForIdle(400)
-        try { Thread.sleep(120) } catch (_: InterruptedException) { }
+        try {
+            Thread.sleep(120)
+        } catch (_: InterruptedException) {
+            }
     }
 
     /**
@@ -648,7 +665,10 @@ class DevToolsApplicationPanelE2eTest {
         val to = device.displayHeight / 2
         runCatching { device.executeShellCommand("input swipe $x $from $x $to 300") }
         device.waitForIdle(400)
-        try { Thread.sleep(150) } catch (_: InterruptedException) { }
+        try {
+            Thread.sleep(150)
+        } catch (_: InterruptedException) {
+            }
     }
 
     /**
@@ -914,7 +934,9 @@ class DevToolsApplicationPanelE2eTest {
         b.width() > 0 && b.left >= 0 && b.right <= device.displayWidth &&
             b.centerY() > device.displayHeight / 4 &&
             b.centerY() < device.displayHeight - 20
-    } catch (_: Exception) { false }
+    } catch (_: Exception) {
+        false
+    }
 
     /**
      * Where the strip sits: just under the header row.
@@ -940,7 +962,10 @@ class DevToolsApplicationPanelE2eTest {
         val y = stripY()
         device.swipe(device.displayWidth - 24, y, device.displayWidth / 2, y, 40)
         device.waitForIdle(400)
-        try { Thread.sleep(150) } catch (_: InterruptedException) { }
+        try {
+            Thread.sleep(150)
+        } catch (_: InterruptedException) {
+            }
     }
 
     // ---------- Failure diagnostics -----------------------------------------

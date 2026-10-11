@@ -3,11 +3,9 @@ package com.roombrowser.domain.agent
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
-import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.jsonObject
-import kotlinx.serialization.json.jsonPrimitive
 
 /**
  * The browsing agent's tool catalogue — the actions it can take on the
@@ -363,6 +361,7 @@ object AgentTools {
             (args[key] as? JsonPrimitive)?.contentOrNull?.takeIf { it.isNotBlank() }
         fun int(key: String): Int? =
             (args[key] as? JsonPrimitive)?.intOrNull
+
         // A UUID, shortened for the label; the model still passes the whole id.
         fun shortId(id: String?): String = id?.take(8) ?: "?"
 

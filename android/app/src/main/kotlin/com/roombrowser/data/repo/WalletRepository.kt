@@ -5,16 +5,16 @@ import com.roombrowser.browser.wallet.NetworkRecord
 import com.roombrowser.browser.wallet.RestoreReport
 import com.roombrowser.browser.wallet.WalletAccountRecord
 import com.roombrowser.browser.wallet.WalletActivityRecord
-import com.roombrowser.browser.wallet.WalletRepositoryApi
 import com.roombrowser.browser.wallet.WalletKeyCodec
+import com.roombrowser.browser.wallet.WalletRepositoryApi
 import com.roombrowser.browser.wallet.WalletSummary
 import com.roombrowser.data.db.DappPermissionDao
 import com.roombrowser.data.db.DappPermissionEntity
 import com.roombrowser.data.db.WalletAccountDao
 import com.roombrowser.data.db.WalletAccountEntity
+import com.roombrowser.data.db.WalletActiveNetworkEntity
 import com.roombrowser.data.db.WalletActivityDao
 import com.roombrowser.data.db.WalletActivityEntity
-import com.roombrowser.data.db.WalletActiveNetworkEntity
 import com.roombrowser.data.db.WalletDao
 import com.roombrowser.data.db.WalletEntity
 import com.roombrowser.data.db.WalletNetworkDao
@@ -306,7 +306,7 @@ class WalletRepository(
         var imported = 0
         payload.accounts.forEach { entry ->
             val key = entry.privateKey?.trim()
-            if (key.isNullOrEmpty()) return@forEach  // derived rows carry no key by design
+            if (key.isNullOrEmpty()) return@forEach // derived rows carry no key by design
             val chain = ChainType.fromName(entry.chain)
                 ?: ChainType.entries.firstOrNull {
                     it.displayName.equals(entry.chain, ignoreCase = true)

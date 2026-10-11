@@ -19,7 +19,6 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
-import okhttp3.OkHttpClient
 
 /**
  * State holder for the scheduled-tasks screens (default process, no WebView).

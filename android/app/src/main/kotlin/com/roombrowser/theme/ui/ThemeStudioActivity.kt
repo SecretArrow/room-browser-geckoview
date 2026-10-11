@@ -10,6 +10,7 @@ import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -31,7 +32,6 @@ import androidx.compose.foundation.layout.systemBars
 import androidx.compose.foundation.layout.union
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.windowInsetsPadding
-import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -98,7 +98,6 @@ import com.roombrowser.ui.common.LocalRoomExtras
 import com.roombrowser.ui.common.RoomBrowserTheme
 import com.roombrowser.ui.common.RoomPreviewTheme
 import com.roombrowser.ui.common.SectionHeader
-import kotlinx.coroutines.launch
 
 /**
  * Theme Studio — its OWN activity (own window / back stack / IME handling).

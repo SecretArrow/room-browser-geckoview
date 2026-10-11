@@ -412,7 +412,11 @@ class DevToolsLifecycleE2eTest {
         var current: UiObject2? = node
         var hops = 0
         while (current != null && hops < 8) {
-            val clickable = try { current.isClickable } catch (_: Exception) { false }
+            val clickable = try {
+                current.isClickable
+            } catch (_: Exception) {
+                false
+            }
             if (clickable) {
                 val b = runCatching { current.visibleBounds }.getOrNull()
                 if (b != null && b.width() > 0) {
@@ -421,7 +425,11 @@ class DevToolsLifecycleE2eTest {
                     return true
                 }
             }
-            current = try { current.parent } catch (_: Exception) { null }
+            current = try {
+                current.parent
+            } catch (_: Exception) {
+                null
+            }
             hops++
         }
         return clickCenter(node)
@@ -446,14 +454,20 @@ class DevToolsLifecycleE2eTest {
             device.displayWidth / 2, device.displayHeight * 5 / 8, 40
         )
         device.waitForIdle(400)
-        try { Thread.sleep(150) } catch (_: InterruptedException) { }
+        try {
+            Thread.sleep(150)
+        } catch (_: InterruptedException) {
+            }
     }
 
     private fun waitUntil(timeoutMs: Long, condition: () -> Boolean): Boolean {
         val deadline = System.currentTimeMillis() + timeoutMs
         while (System.currentTimeMillis() < deadline) {
             if (condition()) return true
-            try { Thread.sleep(250) } catch (_: InterruptedException) { }
+            try {
+                Thread.sleep(250)
+            } catch (_: InterruptedException) {
+                }
         }
         return condition()
     }
@@ -471,7 +485,10 @@ class DevToolsLifecycleE2eTest {
         val deadline = System.currentTimeMillis() + timeoutMs
         while (System.currentTimeMillis() < deadline) {
             if (!present()) return true
-            try { Thread.sleep(250) } catch (_: InterruptedException) { }
+            try {
+                Thread.sleep(250)
+            } catch (_: InterruptedException) {
+                }
         }
         return !present()
     }
@@ -591,7 +608,9 @@ class DevToolsLifecycleE2eTest {
         b.width() > 0 && b.left >= 0 && b.right <= device.displayWidth &&
             b.centerY() > device.displayHeight / 4 &&
             b.centerY() < device.displayHeight - 20
-    } catch (_: Exception) { false }
+    } catch (_: Exception) {
+        false
+    }
 
     /**
      * Where the strip sits: just under the header row.
@@ -617,7 +636,10 @@ class DevToolsLifecycleE2eTest {
         val y = stripY()
         device.swipe(device.displayWidth - 24, y, device.displayWidth / 2, y, 40)
         device.waitForIdle(400)
-        try { Thread.sleep(150) } catch (_: InterruptedException) { }
+        try {
+            Thread.sleep(150)
+        } catch (_: InterruptedException) {
+            }
     }
 
     // ---------- The tab grid, where a tab is switched and closed ------------
@@ -720,9 +742,17 @@ class DevToolsLifecycleE2eTest {
         var current: UiObject2? = node
         var hops = 0
         while (current != null && hops < 8) {
-            val clickable = try { current.isClickable } catch (_: Exception) { false }
+            val clickable = try {
+                current.isClickable
+            } catch (_: Exception) {
+                false
+            }
             if (clickable) return current
-            current = try { current.parent } catch (_: Exception) { null }
+            current = try {
+                current.parent
+            } catch (_: Exception) {
+                null
+            }
             hops++
         }
         return null
@@ -734,7 +764,10 @@ class DevToolsLifecycleE2eTest {
             device.displayWidth / 2, device.displayHeight / 4, 100
         )
         device.waitForIdle(800)
-        try { Thread.sleep(300) } catch (_: InterruptedException) { }
+        try {
+            Thread.sleep(300)
+        } catch (_: InterruptedException) {
+            }
     }
 
     // ---------- The Page Actions sheet, for the private-tab row ------------

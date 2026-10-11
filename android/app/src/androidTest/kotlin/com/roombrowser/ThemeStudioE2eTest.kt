@@ -72,7 +72,11 @@ class ThemeStudioE2eTest {
         var current: UiObject2? = node
         var hops = 0
         while (current != null && hops < 8) {
-            val clickable = try { current.isClickable } catch (_: Exception) { false }
+            val clickable = try {
+                current.isClickable
+            } catch (_: Exception) {
+                false
+            }
             if (clickable) {
                 try {
                     current.click()
@@ -81,7 +85,11 @@ class ThemeStudioE2eTest {
                 } catch (_: Exception) {
                 }
             }
-            current = try { current.parent } catch (_: Exception) { null }
+            current = try {
+                current.parent
+            } catch (_: Exception) {
+                null
+            }
             hops++
         }
         return clickCenter(node)
@@ -96,7 +104,10 @@ class ThemeStudioE2eTest {
             if (hasText("Search or type URL", 400)) return true
             if (hasText("Privacy Dashboard", 400)) return true
             if (hasText("trackers blocked", 400)) return true
-            try { Thread.sleep(250) } catch (_: InterruptedException) { }
+            try {
+                Thread.sleep(250)
+            } catch (_: InterruptedException) {
+                }
         }
         return device.wait(Until.hasObject(By.descContains("Address bar")), 500)
     }

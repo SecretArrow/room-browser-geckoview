@@ -3,8 +3,8 @@ package com.roombrowser.domain.profile
 import com.google.common.truth.Truth.assertThat
 import com.roombrowser.domain.model.ProfileId
 import com.roombrowser.domain.profile.ProfileSwitchStateMachine.Event
-import com.roombrowser.domain.profile.ProfileSwitchStateMachine.Step
 import com.roombrowser.domain.profile.ProfileSwitchStateMachine.State
+import com.roombrowser.domain.profile.ProfileSwitchStateMachine.Step
 import org.junit.Test
 
 class ProfileSwitchStateMachineTest {
@@ -38,7 +38,11 @@ class ProfileSwitchStateMachineTest {
         val sm = ProfileSwitchStateMachine()
         sm.onEvent(Event.Begin(a, b))
         var thrown = false
-        try { sm.onEvent(Event.Begin(a, b)) } catch (e: IllegalStateException) { thrown = true }
+        try {
+            sm.onEvent(Event.Begin(a, b))
+        } catch (e: IllegalStateException) {
+            thrown = true
+        }
         assertThat(thrown).isTrue()
     }
 
@@ -46,7 +50,11 @@ class ProfileSwitchStateMachineTest {
     fun `cannot switch to same profile`() {
         val sm = ProfileSwitchStateMachine()
         var thrown = false
-        try { sm.onEvent(Event.Begin(a, a)) } catch (e: IllegalArgumentException) { thrown = true }
+        try {
+            sm.onEvent(Event.Begin(a, a))
+        } catch (e: IllegalArgumentException) {
+            thrown = true
+        }
         assertThat(thrown).isTrue()
     }
 
