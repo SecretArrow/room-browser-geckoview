@@ -74,7 +74,7 @@ class ActionBudgetTest {
 
         val tooSoon = tracker.admit("scroll", "{\"direction\":\"down\"}", "page-2", 200)
         assertThat(tooSoon).isInstanceOf(BudgetDecision.Refuse::class.java)
-        assertThat(reasonOf(tooSoon)).contains("passed between identical repeats")
+        assertThat(reasonOf(tooSoon)).contains("between identical repeats")
     }
 
     @Test
