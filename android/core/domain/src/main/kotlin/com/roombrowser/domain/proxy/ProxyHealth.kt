@@ -72,6 +72,43 @@ object ProxyHealthRules {
     }
 
     /**
+     * The verified candidates, safest first, for the network-warning picker.
+     *
+     * Safety here is narrow, and only about what a sweep can actually observe:
+     *  - a candidate must be USABLE, so dead and transparent proxies — which load every page
+     *    perfectly while hiding nothing — are dropped rather than ranked;
+     *  - an encrypted transport is preferred, because a plaintext proxy can hand the operator
+     *    the page itself while an https one exposes only the host that was visited;
+     *  - then lower latency wins, with the id as a stable final tiebreak.
+     *
+     * Transport capability is the caller's concern, not this function's: an engine that cannot
+     * carry SOCKS filters those out with `proxySupportsScheme` before calling here, which is
+     * what keeps this pure.
+     */
+    fun rankSafe(
+        candidates: List<ProxyCandidate>,
+        health: Map<String, ProxyHealth>,
+        directIp: String?
+    ): List<ProxyCandidate> =
+        candidates
+            .filter { isUsable(health[it.id], directIp) }
+            .sortedWith(
+                compareBy(
+                    { transportRank(it.scheme) },
+                    { health.getValue(it.id).latencyMs },
+                    { it.id }
+                )
+            )
+
+    /** HTTPS is encrypted to the proxy; SOCKS tunnels the destination; plain http exposes it. */
+    private fun transportRank(scheme: ProxyScheme): Int = when (scheme) {
+        ProxyScheme.HTTPS -> 0
+        ProxyScheme.SOCKS5 -> 1
+        ProxyScheme.SOCKS4 -> 2
+        ProxyScheme.HTTP -> 3
+    }
+
+    /**
      * The endpoint AUTO should use for [profileKey]: the best candidate this profile has not
      * already failed through. [avoid] is per profile and per session — an endpoint that failed
      * for one profile is still offered to another, because the failure was the relationship

@@ -64,6 +64,15 @@ class ProxyCoordinator(
      */
     suspend fun resolveScope(profile: Profile, scope: ProxyScope): ProxyDecision {
         val settings = profile.settings
+        // A session choice is checked FIRST, above both the global finder switch and the
+        // profile's own mode, because the same choice is handed straight to the engine when
+        // it is made: a bind path that disagreed would apply the proxy and then silently
+        // drop it on the next rebind. The switch governs the AUTOMATIC finder, not a proxy
+        // the user picked by hand on the warning screen — that choice is never persisted,
+        // and an explicit change in proxy settings clears it.
+        if (scope == ProxyScope.PAGES) {
+            ProxySessionOverride.get(profile.id.value)?.let { return ProxyDecision.Use(it) }
+        }
         if (!appState.globalSettingsSnapshot().proxyEnabled) return ProxyDecision.Direct
         if (settings.proxyMode == ProxyMode.OFF) return ProxyDecision.Direct
         if (scope !in settings.proxyScopes) return ProxyDecision.Direct
