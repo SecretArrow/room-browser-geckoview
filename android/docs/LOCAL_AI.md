@@ -82,8 +82,13 @@ agent browsing Anda — semua percakapan agent berjalan di server lokal.
 Kejujuran teknis yang penting:
 
 - **Model TIDAK dibundel di APK.** File model itu ratusan MB sampai
-  multi-GB — diunduh **ke server Ollama**, bukan ke aplikasi. APK tetap
-  ~6 MB.
+  multi-GB — diunduh **ke server Ollama**, bukan ke aplikasi. Tetapi APK
+  kini **tidak lagi** sekecil versi lama (~6 MB): sejak mesin on-device
+  (llama.cpp) ditanamkan (lihat [Mesin on-device](#mesin-on-device-tanpa-termux)),
+  pustaka natifnya dikompilasi **per-ABI** dan ikut dikemas di tiap APK
+  split, jadi ukurannya bertambah sesuai ABI dan konfigurasi build.
+  Berapa tepatnya tidak dipatok di sini — yang pasti, bukan lagi ~6 MB,
+  dan bobot model tetap tidak ada di dalamnya.
 - Room Browser **hanya klien manajemen**: tanpa server Ollama yang
   berjalan, menu ini hanya menampilkan status offline.
 - **Pause** menghentikan tampilan unduhan di aplikasi ini; server Ollama

@@ -1,6 +1,8 @@
 package com.roombrowser.domain.model
 
 import com.google.common.truth.Truth.assertThat
+import com.roombrowser.domain.agent.AgentPermissions
+import com.roombrowser.domain.agent.AgentTools
 import org.junit.Test
 
 class ProfileModelTest {
@@ -224,5 +226,16 @@ class ProfileModelTest {
     @Test
     fun `search engine fallback for unknown id`() {
         assertThat(SearchEngines.byId("nope").id).isEqualTo("duckduckgo")
+    }
+
+    @Test
+    fun `the agent vision switch is off on a profile that predates it`() {
+        // A field, not a withheld permission: that set is a deny-list, where a
+        // permission added later is granted by default and so cannot express
+        // "off". A defaulted field is off for a profile written before the field
+        // existed, with no migration.
+        assertThat(ProfileSettings().agentVisionEnabled).isFalse()
+        // And the tool carries no permission, so this switch is its only gate.
+        assertThat(AgentPermissions.required(AgentTools.SEE_PAGE)).isEmpty()
     }
 }

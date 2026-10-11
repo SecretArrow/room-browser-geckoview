@@ -563,3 +563,29 @@ data class TotpEntity(
     /** Null = never copied or filled; drives the "recently used" sort. */
     @ColumnInfo(name = "last_used_at") val lastUsedAt: Long?
 )
+
+// =========================================================================
+// PER-PROFILE, PER-SITE AGENT MEMORY — schema v15
+// =========================================================================
+
+/**
+ * One thing the agent chose to remember about one site, for one profile.
+ *
+ * [origin] is derived from the engine's session URL, never from page-supplied
+ * text — a page must not be able to name the origin its memory is filed under.
+ * [value] is redacted on the way in (see SecretRedaction), so a token the page
+ * showed the agent is stored masked. Scoped to its profile like every other
+ * per-profile table; no cross-profile read exists.
+ */
+@Entity(
+    tableName = "agent_site_memory",
+    primaryKeys = ["profile_id", "origin", "key"],
+    indices = [Index("profile_id"), Index("profile_id", "origin")]
+)
+data class AgentSiteMemoryEntity(
+    @ColumnInfo(name = "profile_id") val profileId: String,
+    @ColumnInfo(name = "origin") val origin: String,
+    @ColumnInfo(name = "key") val key: String,
+    @ColumnInfo(name = "value") val value: String,
+    @ColumnInfo(name = "updated_at_ms") val updatedAtMs: Long
+)

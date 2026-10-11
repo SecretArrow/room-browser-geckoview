@@ -111,9 +111,29 @@ object AnthropicMessages {
                         }
                     }
                     if (blocks.isNotEmpty()) {
+                        // A screenshot a tool captured arrives as a user message
+                        // of its own, right after the results it belongs to.
+                        // Anthropic rejects two consecutive user messages, so
+                        // it is folded into THIS one, beside the tool_result
+                        // blocks it answers.
+                        val attached = buildJsonArray {
+                            while (i < messages.size && messages[i].role == "user" &&
+                                !messages[i].images.isNullOrEmpty()
+                            ) {
+                                val u = messages[i]
+                                u.content?.takeIf { it.isNotBlank() }?.let { text ->
+                                    addJsonObject {
+                                        put("type", "text")
+                                        put("text", text)
+                                    }
+                                }
+                                u.images.orEmpty().forEach { add(imageBlock(it)) }
+                                i++
+                            }
+                        }
                         addJsonObject {
                             put("role", "user")
-                            put("content", blocks)
+                            put("content", if (attached.isEmpty()) blocks else JsonArray(blocks + attached))
                         }
                     }
                 }
@@ -130,16 +150,18 @@ object AnthropicMessages {
     }
 
     /**
-     * A message's `content`: a plain string when there are no tool calls
-     * (which is what Anthropic expects and what reads best), otherwise the
-     * block array carrying the assistant's text and its `tool_use` blocks.
+     * A message's `content`: a plain string when it carries neither tool calls
+     * nor images (which is what Anthropic expects and what reads best),
+     * otherwise the block array carrying the assistant's text, its images and
+     * its `tool_use` blocks.
      *
      * An assistant that only called tools has no text at all, and an empty
      * string block is rejected — so the text block is omitted entirely.
      */
     private fun contentOf(m: ChatMessage): kotlinx.serialization.json.JsonElement {
         val calls = m.toolCalls.orEmpty()
-        if (calls.isEmpty()) return JsonPrimitive(m.content.orEmpty())
+        val images = m.images.orEmpty()
+        if (calls.isEmpty() && images.isEmpty()) return JsonPrimitive(m.content.orEmpty())
 
         return buildJsonArray {
             m.content?.takeIf { it.isNotBlank() }?.let { text ->
@@ -148,6 +170,7 @@ object AnthropicMessages {
                     put("text", text)
                 }
             }
+            images.forEach { add(imageBlock(it)) }
             calls.forEach { call ->
                 addJsonObject {
                     put("type", "tool_use")
@@ -159,6 +182,15 @@ object AnthropicMessages {
                     put("input", parseObjectOrEmpty(call.function.arguments))
                 }
             }
+        }
+    }
+
+    private fun imageBlock(image: AgentImage): JsonObject = buildJsonObject {
+        put("type", "image")
+        putJsonObject("source") {
+            put("type", "base64")
+            put("media_type", image.mediaType)
+            put("data", image.dataBase64)
         }
     }
 

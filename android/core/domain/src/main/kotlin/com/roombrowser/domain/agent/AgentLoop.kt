@@ -34,7 +34,17 @@ interface ToolExecutor {
     suspend fun execute(name: String, argsJson: String): ToolResult
 }
 
-data class ToolResult(val ok: Boolean, val output: String) {
+data class ToolResult(
+    val ok: Boolean,
+    val output: String,
+    /**
+     * Pictures this tool captured for the model to look at, empty for every
+     * tool that only speaks text. They are handed to the provider as a user
+     * turn of their own — see [AgentLoop.runTurn] — because a tool result
+     * message carries text only.
+     */
+    val images: List<AgentImage> = emptyList()
+) {
     fun asMessageContent(): String = (if (ok) "" else "ERROR: ") + output
 }
 
@@ -135,6 +145,7 @@ class AgentLoop(
                     return
                 }
 
+                val turnImages = mutableListOf<AgentImage>()
                 for (call in calls) {
                     listener(AgentEvent.ToolStarted(call.id, call.function.name, call.function.arguments))
                     val result = try {
@@ -149,6 +160,19 @@ class AgentLoop(
                     listener(AgentEvent.ToolFinished(call.id, call.function.name, result.ok, summary))
                     history.add(
                         ChatMessage(role = "tool", content = content, toolCallId = call.id)
+                    )
+                    if (result.ok) turnImages += result.images
+                }
+                if (turnImages.isNotEmpty()) {
+                    // A tool result message carries text only, so a captured
+                    // picture rides in a user turn of its own, right after the
+                    // results it belongs to.
+                    history.add(
+                        ChatMessage(
+                            role = "user",
+                            content = "The page as the last tool captured it.",
+                            images = turnImages
+                        )
                     )
                 }
             }

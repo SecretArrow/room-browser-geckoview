@@ -187,6 +187,15 @@
             android:exported="false"
             android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboard|keyboardHidden|density|uiMode" />
         <!--
+          What the agent has remembered, grouped by site — its OWN activity in
+          the default process, like the other agent screens. Reached from AI
+          Agent settings, and the place the user prunes the per-site notes.
+        -->
+        <activity
+            android:name=".agent.ui.AgentMemoryActivity"
+            android:exported="false"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboard|keyboardHidden|density|uiMode" />
+        <!--
           The default-context editor — its OWN activity (default process, no
           WebView), reached from the agent panel's context chip and from AI
           Agent settings, so a paragraph has a screen to be written on.

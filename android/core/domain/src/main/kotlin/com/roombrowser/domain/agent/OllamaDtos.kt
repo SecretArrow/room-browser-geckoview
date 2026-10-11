@@ -1,5 +1,6 @@
 package com.roombrowser.domain.agent
 
+import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
@@ -38,6 +39,28 @@ import kotlinx.serialization.json.longOrNull
  * proxies), so every parser degrades to empty/null instead of throwing —
  * the UI then shows an honest "no models / retry" state, never a crash.
  */
+
+// ---------- Chat wire shapes (POST /api/chat) ----------
+
+/**
+ * One message on Ollama's native `/api/chat` wire. Public (not private to the
+ * gateway) so the images mapping is covered by a JVM test. [images] are raw
+ * base64 payloads with NO `data:` prefix — Ollama's own field.
+ */
+@Serializable
+data class OllamaChatMessage(
+    val role: String,
+    val content: String? = null,
+    @SerialName("tool_calls") val toolCalls: List<OllamaChatToolCall>? = null,
+    val images: List<String>? = null
+)
+
+/** Ollama's `tool_calls` entry: `arguments` is a real JSON OBJECT, not a string. */
+@Serializable
+data class OllamaChatToolCall(val function: OllamaChatFunctionCall)
+
+@Serializable
+data class OllamaChatFunctionCall(val name: String, val arguments: JsonObject)
 
 // ---------- Installed inventory (GET /api/tags) ----------
 

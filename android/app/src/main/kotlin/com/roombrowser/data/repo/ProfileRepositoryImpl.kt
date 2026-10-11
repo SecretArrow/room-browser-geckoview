@@ -51,6 +51,7 @@ class ProfileRepositoryImpl(db: AppDatabase) : ProfileStore {
     private val aiTaskDao = db.aiTaskDao()
     private val noteDao = db.noteDao()
     private val totpDao = db.totpDao()
+    private val siteMemoryDao = db.agentSiteMemoryDao()
 
     private val json = Json { ignoreUnknownKeys = true; encodeDefaults = true }
 
@@ -108,6 +109,9 @@ class ProfileRepositoryImpl(db: AppDatabase) : ProfileStore {
             // Notes are profile content like bookmarks — no keystore key
             // involved, so they simply go with the profile.
             noteDao.deleteAllForProfile(id.value)
+            // The agent's per-site memory is profile content too, and the
+            // promise the toggle makes is that it goes when the profile does.
+            siteMemoryDao.deleteAllForProfile(id.value)
             // 2FA accounts: rows first, then their OWN Keystore key — the same
             // fail-closed order as the credential and wallet cascades above.
             totpDao.deleteAllForProfile(id.value)
@@ -155,6 +159,7 @@ class ProfileRepositoryImpl(db: AppDatabase) : ProfileStore {
         statsDao.deleteAllFor(id.value)
         ipDao.deleteAllFor(id.value)
         noteDao.deleteAllForProfile(id.value)
+        siteMemoryDao.deleteAllForProfile(id.value)
     }
 
     suspend fun touch(id: ProfileId, ts: Long) = dao.touch(id.value, ts)

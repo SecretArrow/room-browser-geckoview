@@ -5,10 +5,14 @@ import com.roombrowser.domain.agent.ActionVerdict
 import com.roombrowser.domain.agent.AgentAppActions
 import com.roombrowser.domain.agent.AgentJson
 import com.roombrowser.domain.agent.AgentTools
+import com.roombrowser.domain.agent.DataTransform
 import com.roombrowser.domain.agent.KeyChord
 import com.roombrowser.domain.agent.PageSnapshotDto
 import com.roombrowser.domain.agent.PageSnapshotFormatter
 import com.roombrowser.domain.agent.SecretRedaction
+import com.roombrowser.domain.agent.SiteMemory
+import com.roombrowser.domain.agent.SiteMemoryStore
+import com.roombrowser.domain.agent.SiteMemoryTool
 import com.roombrowser.domain.agent.ToolExecutor
 import com.roombrowser.domain.agent.ToolResult
 import com.roombrowser.domain.agent.UntrustedContent
@@ -88,7 +92,38 @@ class HeadlessToolExecutor(
      * CHAT has one, a scheduled run does not, and the latter's `run_js` use is
      * governed by the task's own permissions instead.
      */
-    private val runJsApprovalRequired: suspend () -> Boolean = { true }
+    private val runJsApprovalRequired: suspend () -> Boolean = { true },
+    /**
+     * Whether this profile may send a page screenshot to the model. OFF unless
+     * a caller that knows the setting says otherwise — a caller that does not
+     * must not hand the picture over.
+     */
+    private val visionEnabled: suspend () -> Boolean = { false },
+    /**
+     * Why the active provider cannot be sent an image, or null when it can.
+     * Checked before capture so a text-only provider is refused rather than
+     * silently handed a request with the picture dropped.
+     */
+    private val visionUnsupportedReason: () -> String? = { null },
+    /**
+     * The detached page `compute_js` runs in. A headless CHAT passes one, since
+     * the controller owns a scratchpad for the turn either way; a scheduled run
+     * passes nothing and the tool then refuses with a real message rather than
+     * running the script against the run's own page.
+     */
+    private val scratchpad: AgentScratchpad? = null,
+    /**
+     * The agent's per-site memory, scoped to the profile this run works as.
+     * Null — every scheduled run — leaves the tool unavailable rather than
+     * writing under a profile the run was not given.
+     */
+    private val siteMemory: SiteMemoryStore? = null,
+    /**
+     * The per-profile "Let the agent remember this site" setting, read live.
+     * OFF unless the caller passes it, so a run that was not told the user
+     * opted in keeps no notes.
+     */
+    private val siteMemoryEnabled: suspend () -> Boolean = { false }
 ) : ToolExecutor {
 
     private val lastStartedAt = AtomicLong(0L)
@@ -125,6 +160,7 @@ class HeadlessToolExecutor(
                     AgentTools.NAVIGATE -> navigate(str(args, "url"))
                     AgentTools.SEARCH_WEB -> searchWeb(str(args, "query"))
                     AgentTools.READ_PAGE -> readPage()
+                    AgentTools.SEE_PAGE -> seePage(str(args, "question"), str(args, "reason"))
                     AgentTools.CLICK -> click(int(args, "ref"))
                     AgentTools.FILL_INPUT -> fillInput(int(args, "ref"), str(args, "text"))
                     AgentTools.PRESS_ENTER -> pressEnter(intOrNull(args, "ref"))
@@ -138,6 +174,9 @@ class HeadlessToolExecutor(
                     AgentTools.AUTO_POST -> autoPost(str(args, "text"))
                     AgentTools.WAIT -> waitTool(intOrNull(args, "ms"))
                     AgentTools.RUN_JS -> runJs(str(args, "script"))
+                    AgentTools.COMPUTE_JS -> computeJs(str(args, "script"))
+                    AgentTools.DATA_TRANSFORM -> dataTransform(args)
+                    AgentTools.SITE_MEMORY -> siteMemoryTool(args)
                     AgentTools.SELECT_OPTION -> selectOption(int(args, "ref"), str(args, "value"))
                     AgentTools.PRESS_KEYS -> pressKeys(str(args, "keys"), intOrNull(args, "ref"))
                     AgentTools.WAIT_FOR -> waitFor(str(args, "text"), intOrNull(args, "timeout_ms"))
@@ -263,6 +302,34 @@ class HeadlessToolExecutor(
         return ToolResult(true, formatted)
     }
 
+    /**
+     * A picture of the headless page. A headless session is never private, so
+     * there is no private-tab refusal here; the profile's own switch and the
+     * provider's ability to carry an image are the caller's to supply.
+     */
+    private suspend fun seePage(question: String?, reason: String?): ToolResult {
+        if (!visionEnabled()) {
+            return ToolResult(
+                false,
+                "see_page is turned off for this profile — turn on \"Agent can see the page\" in AI Agent settings."
+            )
+        }
+        visionUnsupportedReason()?.let { why ->
+            return ToolResult(
+                false,
+                "see_page is not available on this provider — $why. Switch to a provider that accepts images."
+            )
+        }
+        val shot = PageScreenshot.capture(session).getOrElse {
+            return ToolResult(false, "could not capture the page: ${it.message ?: "unknown error"}")
+        }
+        return ToolResult(
+            true,
+            screenshotSummary(shot, question, reason),
+            images = listOf(shot.image)
+        )
+    }
+
     private suspend fun click(ref: Int?): ToolResult {
         if (ref == null) return ToolResult(false, "missing 'ref' argument")
         val triggerAt = SystemClock.elapsedRealtime()
@@ -374,6 +441,86 @@ class HeadlessToolExecutor(
         val raw = evaluateJs(session, PageInjector.runJs(jsonString(code)))
             ?: return ToolResult(false, "run_js failed (JavaScript error or page still loading)")
         return ToolResult(true, clip(unquote(raw)))
+    }
+
+    /**
+     * Runs a script in the turn's detached scratchpad. Refused when this run has
+     * none: a scheduled run is given no scratchpad, and running the script
+     * against the run's own page would be the live-page mutation `compute_js`
+     * exists to avoid.
+     */
+    private suspend fun computeJs(script: String?): ToolResult {
+        val code = nonBlank(script) ?: return ToolResult(false, "missing 'script' argument")
+        val pad = scratchpad
+            ?: return ToolResult(
+                false,
+                "compute_js is not available in this run — a scheduled run has no scratchpad, " +
+                    "and this tool never runs in the page the run is working on."
+            )
+        val session = pad.session()
+            ?: return ToolResult(false, "compute_js could not start its scratchpad")
+        val raw = evaluateJs(session, PageInjector.runJs(jsonString(code)))
+            ?: return ToolResult(false, "compute_js failed (JavaScript error in the scratchpad)")
+        return ToolResult(
+            true,
+            "Scratchpad result (a detached page — the run's own page was not touched):\n" + clip(unquote(raw))
+        )
+    }
+
+    /**
+     * Runs one of the pure host-side transforms. No engine and no page are
+     * involved, so a headless run performs it exactly as a chat turn does.
+     */
+    private suspend fun dataTransform(args: Map<String, Any?>): ToolResult {
+        val op = str(args, "op") ?: return ToolResult(false, "missing 'op' argument")
+        val input = str(args, "input") ?: return ToolResult(false, "missing 'input' argument")
+        val limit = intOrNull(args, "limit") ?: MAX_JS_RESULT_CHARS
+        if (limit !in 1..MAX_JS_RESULT_CHARS) {
+            return ToolResult(false, "limit must be between 1 and $MAX_JS_RESULT_CHARS")
+        }
+        val result = when (op) {
+            "json_path" -> DataTransform.jsonPath(input, str(args, "path") ?: "", limit)
+            "csv_rows" -> DataTransform.csvRows(input, limit)
+            "aggregate" -> DataTransform.aggregate(input, intOrNull(args, "column"), str(args, "agg").orEmpty())
+            "diff" -> {
+                val compare = str(args, "compare")
+                    ?: return ToolResult(false, "missing 'compare' argument for op=diff")
+                DataTransform.diff(input, compare, limit)
+            }
+            else -> return ToolResult(
+                false,
+                "unsupported op '$op': use json_path, csv_rows, aggregate or diff"
+            )
+        }
+        return when (result) {
+            is DataTransform.Result.Success -> {
+                val note = if (result.truncated) "\n[output capped at $limit characters]" else ""
+                ToolResult(
+                    true,
+                    "Data transform result (computed on the device — the run's own page was not touched):\n" +
+                        result.text + note
+                )
+            }
+            is DataTransform.Result.Failure -> ToolResult(false, result.reason)
+        }
+    }
+
+    /**
+     * The agent's per-site memory. The origin comes from THIS session's own
+     * URL, never from page text, so the page cannot choose the bucket.
+     */
+    private suspend fun siteMemoryTool(args: Map<String, Any?>): ToolResult {
+        SiteMemory.refusalWhenDisabled(siteMemoryEnabled())?.let { return ToolResult(false, it) }
+        val store = siteMemory
+            ?: return ToolResult(false, "site_memory is not available in this run")
+        return SiteMemoryTool.execute(
+            store = store,
+            origin = SiteMemory.originOf(session.url),
+            op = str(args, "op"),
+            key = str(args, "key"),
+            value = str(args, "value"),
+            limit = intOrNull(args, "limit")
+        )
     }
 
     private suspend fun selectOption(ref: Int?, value: String?): ToolResult {
@@ -549,13 +696,24 @@ class HeadlessToolExecutor(
          */
         internal val SUPPORTED_TOOLS: Set<String> = setOf(
             AgentTools.NAVIGATE, AgentTools.SEARCH_WEB, AgentTools.READ_PAGE,
+            AgentTools.SEE_PAGE,
             AgentTools.CLICK, AgentTools.FILL_INPUT, AgentTools.PRESS_ENTER,
             AgentTools.SCROLL, AgentTools.GO_BACK, AgentTools.RELOAD, AgentTools.FORWARD,
             AgentTools.AUTO_LIKE,
             AgentTools.AUTO_REPOST, AgentTools.AUTO_REPLY, AgentTools.AUTO_POST,
             AgentTools.WAIT,
             AgentTools.RUN_JS, AgentTools.SELECT_OPTION, AgentTools.PRESS_KEYS,
-            AgentTools.WAIT_FOR
+            AgentTools.WAIT_FOR,
+            // Recognised here so a headless run answers it honestly instead of
+            // "unknown tool"; it runs in a detached scratchpad, not the page.
+            AgentTools.COMPUTE_JS,
+            // A pure host-side transform with no engine and no page, so a
+            // headless run performs it exactly as a chat turn does.
+            AgentTools.DATA_TRANSFORM,
+            // The agent's per-site memory reads and writes the profile's own
+            // database, never the page, so a headless run reaches it exactly as
+            // a chat turn does — and its own opt-in gate still applies.
+            AgentTools.SITE_MEMORY
         )
 
         /**

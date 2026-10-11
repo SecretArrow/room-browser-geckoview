@@ -237,6 +237,17 @@ data class ProfileSettings(
     // nothing else — the settings row says so where it is made. The user's own
     // typing in the DevTools Console panel is never gated by this.
     val agentConsoleApprovalRequired: Boolean = true,
+    // OFF by default; a field rather than a withheld permission because that
+    // set is a DENY-list, where a permission added later is granted by default.
+    val agentVisionEnabled: Boolean = false,
+    // The agent's per-site memory, OFF until the user turns it on.
+    //
+    // A Boolean rather than an entry in agentWithheldPermissions: that set is a
+    // deny-list, so an empty set grants every tool and a default-OFF feature
+    // cannot be expressed there (see AgentPermissionsTest). The agent writes
+    // notes about the sites it visits, readable by this profile only and wiped
+    // with it, so the user opts in where the setting is shown.
+    val agentSiteMemoryEnabled: Boolean = false,
     // Granular AI-agent permissions, stored as the set that is WITHHELD.
     //
     // Negated on purpose: an empty set means every permission is granted, so a

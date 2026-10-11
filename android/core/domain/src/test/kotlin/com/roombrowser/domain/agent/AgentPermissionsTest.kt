@@ -32,9 +32,12 @@ class AgentPermissionsTest {
         val expected = mapOf(
             AgentTools.DEVTOOLS_CONSOLE to AgentPermissions.DEVTOOLS_READ,
             AgentTools.DEVTOOLS_INSPECT to AgentPermissions.DEVTOOLS_READ,
+            AgentTools.DEVTOOLS_ELEMENTS to AgentPermissions.DEVTOOLS_READ,
             AgentTools.DEVTOOLS_DIAGNOSE to AgentPermissions.DEVTOOLS_READ,
             AgentTools.DEVTOOLS_NETWORK to AgentPermissions.DEVTOOLS_NETWORK,
             AgentTools.DEVTOOLS_AUDIT to AgentPermissions.DEVTOOLS_STORAGE,
+            AgentTools.DEVTOOLS_STORAGE to AgentPermissions.DEVTOOLS_STORAGE,
+            AgentTools.DEVTOOLS_SECURITY to AgentPermissions.DEVTOOLS_SECURITY,
             AgentTools.DEVTOOLS_REPORT to AgentPermissions.EXPORT_DIAGNOSTICS
         )
         // Everything that reads a buffer or writes a file is covered here; the

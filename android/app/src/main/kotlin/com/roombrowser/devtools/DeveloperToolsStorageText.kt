@@ -29,12 +29,17 @@ internal object DeveloperToolsStorageText {
      * examined at all. The header still speaks only for the page probe: "could
      * not read the page's storage" is about the page not answering, and the
      * cookie list comes from the engine and can be complete either way.
+     *
+     * [includeCookies] is false for a caller that is not allowed to read them:
+     * dropping the section is honest, while an empty one would claim they were
+     * read and found to be none.
      */
     fun applicationReport(
         probe: ApplicationProbe?,
         frames: FrameNode?,
         cookies: List<EngineCookie>?,
-        engineName: String
+        engineName: String,
+        includeCookies: Boolean = true
     ): String {
         val header = if (probe == null) {
             "Application -- this build could not read the page's storage."
@@ -43,7 +48,7 @@ internal object DeveloperToolsStorageText {
         } else {
             "Application -- engine: $engineName"
         }
-        return listOf(
+        val sections = mutableListOf(
             header,
             "",
             estimateText(probe?.estimate),
@@ -62,13 +67,16 @@ internal object DeveloperToolsStorageText {
             "",
             backgroundText(probe?.background, probe?.bfcache, probe?.reports),
             "",
-            framesText(frames),
-            "",
+            framesText(frames)
+        )
+        if (includeCookies) {
+            sections += ""
             // The masked form, like the section's own copy control: a report is
             // the thing that gets pasted somewhere, so a value must not ride out
             // in it.
-            DeveloperToolsCookiesText.cookiesSection(cookies)
-        ).joinToString("\n").trimEnd()
+            sections += DeveloperToolsCookiesText.cookiesSection(cookies)
+        }
+        return sections.joinToString("\n").trimEnd()
     }
 
     /** One key and the length of its value. The value itself is only read when a row is revealed. */

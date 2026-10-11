@@ -41,6 +41,10 @@ class AgentToolForegroundPolicyTest {
      */
     private val staysInBackground = setOf(
         AgentTools.READ_PAGE,
+        // A screenshot captures this chat's own engine and starts no load, so
+        // it does not have to wait for the tab. A tab that is not attached to a
+        // display has no frame and the tool fails honestly rather than waiting.
+        AgentTools.SEE_PAGE,
         AgentTools.SCROLL,
         AgentTools.OPEN_NEW_TAB,
         AgentTools.LIST_TABS,
@@ -49,6 +53,16 @@ class AgentToolForegroundPolicyTest {
         AgentTools.WAIT,
         AgentTools.RUN_JS,
         AgentTools.WAIT_FOR,
+        // compute_js runs in a detached scratchpad, not on this chat's tab, so
+        // it needs no tab on screen and starts no navigation.
+        AgentTools.COMPUTE_JS,
+        // data_transform is a pure host-side transform with no engine and no
+        // page, so it too needs no tab on screen and starts no navigation.
+        AgentTools.DATA_TRANSFORM,
+        // site_memory reads and writes this profile's own database, never the
+        // page, so it needs no tab on screen and starts no navigation. Its
+        // per-profile opt-in is the gate, not this list.
+        AgentTools.SITE_MEMORY,
         AgentTools.APP_OPEN,
         AgentTools.APP_TABS,
         AgentTools.APP_DATA,
@@ -75,6 +89,9 @@ class AgentToolForegroundPolicyTest {
         AgentTools.DEVTOOLS_CONSOLE,
         AgentTools.DEVTOOLS_NETWORK,
         AgentTools.DEVTOOLS_INSPECT,
+        AgentTools.DEVTOOLS_ELEMENTS,
+        AgentTools.DEVTOOLS_STORAGE,
+        AgentTools.DEVTOOLS_SECURITY,
         AgentTools.DEVTOOLS_AUDIT,
         AgentTools.DEVTOOLS_DIAGNOSE,
         AgentTools.DEVTOOLS_REPORT

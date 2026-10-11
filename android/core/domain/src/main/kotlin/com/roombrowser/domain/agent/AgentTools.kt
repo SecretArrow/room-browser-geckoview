@@ -19,6 +19,7 @@ object AgentTools {
     const val NAVIGATE = "navigate"
     const val SEARCH_WEB = "search_web"
     const val READ_PAGE = "read_page"
+    const val SEE_PAGE = "see_page"
     const val CLICK = "click"
     const val FILL_INPUT = "fill_input"
     const val PRESS_ENTER = "press_enter"
@@ -49,6 +50,13 @@ object AgentTools {
     const val PRESS_KEYS = "press_keys"
     const val WAIT_FOR = "wait_for"
 
+    // ---- local compute (a detached scratchpad, never the user's page) ----
+    const val COMPUTE_JS = "compute_js"
+    const val DATA_TRANSFORM = "data_transform"
+
+    // ---- the agent's own per-site memory (this profile only, opt-in) ----
+    const val SITE_MEMORY = "site_memory"
+
     // ---- the app's own components ----
     const val APP_OPEN = "app_open"
     const val APP_TABS = "app_tabs"
@@ -75,6 +83,9 @@ object AgentTools {
     const val DEVTOOLS_DIAGNOSE = "devtools_diagnose"
     const val DEVTOOLS_REPORT = "devtools_report"
     const val DEVTOOLS_PATCH = "devtools_patch"
+    const val DEVTOOLS_STORAGE = "devtools_storage"
+    const val DEVTOOLS_SECURITY = "devtools_security"
+    const val DEVTOOLS_ELEMENTS = "devtools_elements"
 
     private const val OBJ = """{"type":"object"}"""
 
@@ -89,9 +100,13 @@ object AgentTools {
     private val SCHEMA_TAB_INDEX = """{"type":"object","properties":{"index":{"type":"integer","description":"Tab index from list_tabs"}},"required":["index"]}"""
     private val SCHEMA_TEXT = """{"type":"object","properties":{"text":{"type":"string","description":"Text to send"}},"required":["text"]}"""
     private val SCHEMA_WAIT = """{"type":"object","properties":{"ms":{"type":"integer","description":"Milliseconds to wait, 200-20000, default 1500"}}}"""
+    private val SCHEMA_SEE_PAGE = """{"type":"object","properties":{"question":{"type":"string","description":"Optional: what you want to know about the page, so the picture is looked at with that in mind"},"reason":{"type":"string","description":"Optional: why a picture is needed rather than the text read_page returns"}}}"""
     private val SCHEMA_REQUEST_ID = """{"type":"object","properties":{"request_id":{"type":"string","description":"Request id from wallet_requests"}},"required":["request_id"]}"""
     private val SCHEMA_NETWORK_ID = """{"type":"object","properties":{"network_id":{"type":"string","description":"Network id from wallet_state, e.g. EVM:137. The wallet must already know it."}},"required":["network_id"]}"""
     private val SCHEMA_RUN_JS = """{"type":"object","properties":{"script":{"type":"string","description":"JavaScript to run in the page. Synchronous only: the value of the last expression comes back as text, and a returned Promise is not awaited."}},"required":["script"]}"""
+    private val SCHEMA_COMPUTE_JS = """{"type":"object","properties":{"script":{"type":"string","description":"JavaScript to evaluate in the scratchpad. Synchronous only: the value of the last expression comes back as text, and a returned Promise is not awaited."}},"required":["script"]}"""
+    private val SCHEMA_DATA_TRANSFORM = """{"type":"object","properties":{"op":{"type":"string","enum":["json_path","csv_rows","aggregate","diff"],"description":"Which transform to run"},"input":{"type":"string","description":"The text to transform"},"path":{"type":"string","description":"For op=json_path: a dotted path into the JSON, e.g. a.b.0.c; omit or leave blank to read the whole document"},"column":{"type":"string","description":"For op=aggregate: the zero-based column index, default 0"},"agg":{"type":"string","enum":["count","sum","min","max","avg"],"description":"For op=aggregate: the operation to apply over the column"},"compare":{"type":"string","description":"For op=diff: the second text to compare against 'input'"},"limit":{"type":"integer","description":"Maximum characters of output to return, default 4000"}},"required":["op","input"]}"""
+    private val SCHEMA_SITE_MEMORY = """{"type":"object","properties":{"op":{"type":"string","enum":["remember","recall","forget"],"description":"remember stores or replaces one entry; recall lists what is remembered for this site; forget deletes one entry by key"},"key":{"type":"string","description":"A short name for the entry, e.g. 'checkout steps' or 'pricing selector'"},"value":{"type":"string","description":"For op=remember: the text to remember"},"limit":{"type":"integer","description":"For op=recall: the most entries to return, default 20"}},"required":["op"]}"""
     private val SCHEMA_SELECT_OPTION = """{"type":"object","properties":{"ref":{"type":"integer","description":"<select> element reference number from read_page"},"value":{"type":"string","description":"The option's value, or its visible text"}},"required":["ref","value"]}"""
     private val SCHEMA_PRESS_KEYS = """{"type":"object","properties":{"keys":{"type":"string","description":"Key chord: Enter, Escape, Tab, ArrowDown, PageDown, F1-F12, or a combination like Control+a"},"ref":{"type":"integer","description":"Optional element reference to focus first; defaults to whatever is focused"}},"required":["keys"]}"""
     private val SCHEMA_WAIT_FOR = """{"type":"object","properties":{"text":{"type":"string","description":"Text to wait for in the visible page"},"timeout_ms":{"type":"integer","description":"How long to wait, 500-30000, default 10000"}},"required":["text"]}"""
@@ -100,6 +115,9 @@ object AgentTools {
     private val SCHEMA_DEVTOOLS_CONSOLE = """{"type":"object","properties":{"action":{"type":"string","enum":["read","clear","preserve"],"description":"read lists the buffered entries; clear empties the buffer; preserve sets whether the buffer keeps its entries across navigations (needs 'enabled')"},"enabled":{"type":"boolean","description":"For action=preserve: true to keep entries across navigations, false to drop them on each load"},"level":{"type":"string","description":"read filter: only entries at this level, e.g. error, warning, log"},"contains":{"type":"string","description":"read filter: only entries whose text contains this"}}}"""
     private val SCHEMA_DEVTOOLS_NETWORK = """{"type":"object","properties":{"action":{"type":"string","enum":["read","clear"],"description":"read lists the buffered request rows; clear empties the buffer"},"failed_only":{"type":"boolean","description":"read filter: only rows that failed (error status or no status at all)"},"contains":{"type":"string","description":"read filter: only rows whose URL contains this"}}}"""
     private val SCHEMA_DEVTOOLS_INSPECT = """{"type":"object","properties":{"ref":{"type":"integer","description":"Element reference number from read_page"},"selector":{"type":"string","description":"CSS selector, for an element the snapshot did not number"}}}"""
+    private val SCHEMA_DEVTOOLS_ELEMENTS = """{"type":"object","properties":{"node":{"type":"integer","description":"Node id from a previous devtools_elements read, to list that node's children. Omit to read the tree from its root."},"from":{"type":"integer","description":"For a node's children: the first child index to list, for paging past the first page"}}}"""
+    private val SCHEMA_DEVTOOLS_STORAGE = OBJ
+    private val SCHEMA_DEVTOOLS_SECURITY = OBJ
     private val SCHEMA_DEVTOOLS_DIAGNOSE = """{"type":"object","properties":{"focus":{"type":"string","description":"Optional text to correlate on, e.g. a button label or an error the user saw"}}}"""
     private val SCHEMA_DEVTOOLS_PATCH = """{"type":"object","properties":{"script":{"type":"string","description":"JavaScript that applies the fix to the live page"},"reason":{"type":"string","description":"What the patch changes, shown to the user who has to approve it"}},"required":["script"]}"""
 
@@ -157,7 +175,8 @@ object AgentTools {
     val DEVTOOLS_TOOLS = setOf(
         DEVTOOLS_RELOAD, DEVTOOLS_CONSOLE, DEVTOOLS_NETWORK,
         DEVTOOLS_INSPECT, DEVTOOLS_AUDIT, DEVTOOLS_DIAGNOSE,
-        DEVTOOLS_REPORT, DEVTOOLS_PATCH
+        DEVTOOLS_REPORT, DEVTOOLS_PATCH,
+        DEVTOOLS_STORAGE, DEVTOOLS_SECURITY, DEVTOOLS_ELEMENTS
     )
 
     /**
@@ -174,6 +193,17 @@ object AgentTools {
         def(NAVIGATE, "Navigate the current tab to a URL. Use complete URLs (https://...).", SCHEMA_NAVIGATE),
         def(SEARCH_WEB, "Search the web with the browser's search engine and show results.", SCHEMA_SEARCH),
         def(READ_PAGE, "Read the current page: URL, title, visible text and all interactive elements with [ref] numbers. Always call this after navigating or before interacting with the page.", SCHEMA_NO_PARAMS),
+        def(
+            SEE_PAGE,
+            "Screenshot the CURRENT page and send the picture to the model provider so you can see " +
+                "what read_page's text cannot show: layout, images, charts, canvases, colours and " +
+                "the state of anything drawn. The picture is of the engine's page area only — the " +
+                "app's own UI and the Developer Tools overlay are never in frame — but it is NOT " +
+                "redacted: anything rendered, including a token drawn into a canvas, goes with it, " +
+                "along with whatever the user is signed in to on this page. Refused in a private " +
+                "tab. Prefer read_page when text answers the question.",
+            SCHEMA_SEE_PAGE
+        ),
         def(CLICK, "Click an interactive element identified by its [ref] number from read_page.", SCHEMA_REF),
         def(FILL_INPUT, "Type text into an input/textarea field identified by its [ref] number from read_page.", SCHEMA_FILL),
         def(PRESS_ENTER, "Press Enter (submit the focused form or the given [ref] element).", SCHEMA_ENTER),
@@ -214,6 +244,21 @@ object AgentTools {
             SCHEMA_NETWORK_ID
         ),
         def(RUN_JS, "Run JavaScript in the current page and get the value of the last expression back as text. Use it for anything the other tools do not cover: reading attributes, hovering, scrolling an element into view, localStorage. Synchronous only — a returned Promise is not awaited, so read its eventual effect with wait_for or read_page instead.", SCHEMA_RUN_JS),
+        def(
+            COMPUTE_JS,
+            "Evaluate JavaScript in a detached scratchpad page, never the user's page. The scratchpad has NO network, NO filesystem and NO npm or packages, and it cannot see or change the user's page — use it to calculate and transform data you already have: parse JSON, total a column, format text. Synchronous only: the value of the last expression comes back as text, and a returned Promise is not awaited. Prefer this over run_js whenever the work is local, because run_js runs in the live page and the page can observe it.",
+            SCHEMA_COMPUTE_JS
+        ),
+        def(
+            DATA_TRANSFORM,
+            "Transform data you already have, on the device, with a pure host-side operation — no JavaScript, no engine and no page, and it never touches the user's page. op=json_path walks a dotted path into JSON, op=csv_rows reads CSV rows, op=aggregate totals a numeric column (agg=count, sum, min, max or avg), op=diff compares two texts line by line. The output is capped at 'limit' characters, and malformed input is reported as an error, never as an empty success.",
+            SCHEMA_DATA_TRANSFORM
+        ),
+        def(
+            SITE_MEMORY,
+            "Keep notes about the site open in this chat's tab, for this profile only. op=remember stores or replaces one entry under a short key; op=recall lists what is remembered for this site; op=forget deletes one entry. The origin is taken from the tab's real URL, never from anything written on the page, and values are redacted before they are stored. The list is per site and per profile, readable only by this profile, wiped when the profile is deleted, and it never leaves the device — and it is OFF unless the user has turned on \"Let the agent remember this site\" in Agent settings.",
+            SCHEMA_SITE_MEMORY
+        ),
         def(SELECT_OPTION, "Choose an option in a dropdown (<select>) by its value or by its visible text.", SCHEMA_SELECT_OPTION),
         def(PRESS_KEYS, "Send a key chord to the focused element (or to one by [ref]): Enter, Escape to close a dialog, Tab, ArrowDown, PageDown, F1-F12, or a combination like Control+a.", SCHEMA_PRESS_KEYS),
         def(WAIT_FOR, "Wait until the given text appears in the visible page. Cheaper than polling with read_page when a page loads its content late.", SCHEMA_WAIT_FOR),
@@ -248,7 +293,7 @@ object AgentTools {
         ),
         def(
             DEVTOOLS_NETWORK,
-            "Read the page's Developer Tools network log — the real buffer the Network panel shows, one row per request with its status, method, URL and timing. action=read lists rows (use failed_only or contains to narrow), action=clear empties it. Use it to find a request that failed or a resource that never loaded.",
+            "Read the page's Developer Tools network log — the real buffer the Network panel shows, one row per request with its status, method, URL and timing, plus the request and response headers the engine captured (already masked where a value is credential-shaped). action=read lists rows (use failed_only or contains to narrow), action=clear empties it. Use it to find a request that failed or a resource that never loaded.",
             SCHEMA_DEVTOOLS_NETWORK
         ),
         def(
@@ -257,8 +302,23 @@ object AgentTools {
             SCHEMA_DEVTOOLS_INSPECT
         ),
         def(
+            DEVTOOLS_ELEMENTS,
+            "Read the Elements panel's own tree of the live document, addressed by the panel's node ids — not a fresh querySelector. Returns the root and its first page of children; pass 'node' with an id from a read to list that node's children, and 'from' to page past the first page. Use the selector printed for a row with devtools_inspect for that one node's attributes, box and text.",
+            SCHEMA_DEVTOOLS_ELEMENTS
+        ),
+        def(
+            DEVTOOLS_STORAGE,
+            "Read the Application panel's view of what the page has stored on this device: localStorage and sessionStorage keys with their value lengths (never the values themselves), IndexedDB databases and their stores, Cache Storage, service workers, the web app manifest, the storage usage estimate and the frame tree. It is the same probe the Application panel runs, so an absent section reads as absent rather than empty.",
+            SCHEMA_DEVTOOLS_STORAGE
+        ),
+        def(
+            DEVTOOLS_SECURITY,
+            "Read the Security panel's view of this connection: the transport the engine sees (host, scheme, protocol, cipher where the engine exposes one, the mixed-content flag) and what the page can observe about itself (protocol, secure context, insecure form posts, http:// subresources, meta-tag CSP and referrer policy). The certificate section states plainly whether this edition can read a connection's certificate at all, so a blank is never read as 'this page has none'.",
+            SCHEMA_DEVTOOLS_SECURITY
+        ),
+        def(
             DEVTOOLS_AUDIT,
-            "Run a fixed diagnostic checklist over the open page — document readiness, console errors, failed requests, broken resources, mixed content, and storage/cookie availability — and report what it found with each finding labelled OBSERVED FACT, HYPOTHESIS or RECOMMENDATION. It changes nothing on the page.",
+            "Run the Audit panel's own probe over the open page — the same check the panel runs, so the two cannot disagree — and report each result with the panel's verdict, alongside the console error and failed-request counts from the live buffers. The probe reads only what the page can observe about itself and changes nothing. This is not Lighthouse and carries no score.",
             SCHEMA_DEVTOOLS_AUDIT
         ),
         def(
@@ -310,6 +370,7 @@ object AgentTools {
             NAVIGATE -> "Open ${str("url") ?: "page"}"
             SEARCH_WEB -> "Search \"${str("query") ?: ""}\""
             READ_PAGE -> "Read current page"
+            SEE_PAGE -> "See the page"
             CLICK -> "Click [${int("ref") ?: "?"}]"
             FILL_INPUT -> "Type into [${int("ref") ?: "?"}]"
             PRESS_ENTER -> "Press Enter"
@@ -330,6 +391,9 @@ object AgentTools {
             WALLET_REJECT -> "Reject wallet request ${shortId(str("request_id"))}"
             WALLET_SWITCH_NETWORK -> "Switch network to ${str("network_id") ?: "?"}"
             RUN_JS -> "Run JS: " + (str("script") ?: "").lineSequence().firstOrNull().orEmpty().take(40)
+            COMPUTE_JS -> "Compute: " + (str("script") ?: "").lineSequence().firstOrNull().orEmpty().take(40)
+            DATA_TRANSFORM -> "${str("op") ?: "Transform"}: " + (str("input") ?: "").lineSequence().firstOrNull().orEmpty().take(40)
+            SITE_MEMORY -> "Memory: ${str("op") ?: "recall"}${str("key")?.let { " \"$it\"" } ?: ""}"
             SELECT_OPTION -> "Select \"${(str("value") ?: "").take(30)}\" in [${int("ref") ?: "?"}]"
             PRESS_KEYS -> "Press ${str("keys") ?: "?"}"
             WAIT_FOR -> "Wait for \"${(str("text") ?: "").take(30)}\""
@@ -348,6 +412,9 @@ object AgentTools {
             DEVTOOLS_CONSOLE -> "Console: ${str("action") ?: "read"}${str("level")?.let { " ($it)" } ?: ""}"
             DEVTOOLS_NETWORK -> "Network: ${str("action") ?: "read"}${if (str("failed_only").toBoolean()) " (failed)" else ""}"
             DEVTOOLS_INSPECT -> "Inspect " + (int("ref")?.let { "[$it]" } ?: str("selector") ?: "element")
+            DEVTOOLS_ELEMENTS -> "Elements: " + (int("node")?.let { "children of #$it" } ?: "read the tree")
+            DEVTOOLS_STORAGE -> "Read the page's storage"
+            DEVTOOLS_SECURITY -> "Read the connection's security"
             DEVTOOLS_AUDIT -> "Audit the page"
             DEVTOOLS_DIAGNOSE -> "Diagnose" + (str("focus")?.let { ": \"${it.take(30)}\"" } ?: "")
             DEVTOOLS_REPORT -> "Export diagnostic report"

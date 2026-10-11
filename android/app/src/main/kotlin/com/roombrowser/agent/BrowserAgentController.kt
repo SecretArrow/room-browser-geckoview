@@ -25,6 +25,7 @@ import com.roombrowser.domain.agent.AgentPause
 import com.roombrowser.domain.agent.AgentPauseLabels
 import com.roombrowser.domain.agent.AgentPrompts
 import com.roombrowser.domain.agent.AgentTools
+import com.roombrowser.domain.agent.AgentVisionSupport
 import com.roombrowser.domain.agent.AutoModelPicker
 import com.roombrowser.domain.agent.ChatMessage
 import com.roombrowser.domain.agent.LocalAiTuning
@@ -927,6 +928,9 @@ class BrowserAgentController(
         // A headless turn's page. Declared out here because the finally below
         // is where it is destroyed, and that runs whatever path left the try.
         var ownedPage: EngineSession? = null
+        // The `compute_js` scratchpad, for the same reason: it belongs to the
+        // turn and goes with it, so it is declared here and closed in the finally.
+        var scratchpad: AgentScratchpad? = null
         try {
             // The turn belongs to the tab it was started from. Every tool
             // resolves its engine from this id rather than from whatever is on
@@ -970,6 +974,11 @@ class BrowserAgentController(
             // as the model: a conversation that recorded a request no surface
             // could carry out would claim a run that did not happen.
             val control = BrowserControlApiImpl(vm, appContext)
+            // One scratchpad per turn, shared by whichever page executor the
+            // turn uses. The holder is cheap; its engine session starts only if
+            // compute_js is actually called.
+            val pad = AgentScratchpad(appContext, vm.profile)
+            scratchpad = pad
             val visibleExecutor = AgentToolExecutor(
                 vm = vm,
                 control = control,
@@ -984,8 +993,14 @@ class BrowserAgentController(
                 // flip it while the turn is running.
                 otpDigitsAllowed = { appState.agentSettingsSnapshot().otpDigitsToAgent },
                 runJsApprovalRequired = { vm.profileSettings().agentConsoleApprovalRequired },
+                siteMemory = GraphSiteMemoryStore(graph, profileId),
+                siteMemoryEnabled = { vm.profileSettings().agentSiteMemoryEnabled },
+                scratchpad = pad,
                 onPause = { state -> applyPauseState(state) },
-                awaitChallengeResume = { awaitChallengeDone() }
+                awaitChallengeResume = { awaitChallengeDone() },
+                visionUnsupportedReason = {
+                    activeProvider?.protocol?.let { AgentVisionSupport.unsupportedReason(it) }
+                }
             )
             // HEADLESS: the turn drives a hidden page of this profile's own
             // instead of the tab on screen. The reference is kept so the
@@ -1011,7 +1026,14 @@ class BrowserAgentController(
                     // action that has to be asked about is asked about rather
                     // than refused the way a scheduled run refuses it.
                     askInteractive = { name, label -> gate(name, label) },
-                    runJsApprovalRequired = { vm.profileSettings().agentConsoleApprovalRequired }
+                    runJsApprovalRequired = { vm.profileSettings().agentConsoleApprovalRequired },
+                    visionEnabled = { vm.profileSettings().agentVisionEnabled },
+                    visionUnsupportedReason = {
+                        activeProvider?.protocol?.let { AgentVisionSupport.unsupportedReason(it) }
+                    },
+                    siteMemory = GraphSiteMemoryStore(graph, profileId),
+                    siteMemoryEnabled = { vm.profileSettings().agentSiteMemoryEnabled },
+                    scratchpad = pad
                 )
             } else {
                 null
@@ -1203,6 +1225,9 @@ class BrowserAgentController(
             // it is never in the tab list, and a session left alive keeps a
             // renderer and its cookies' page state around for nothing.
             ownedPage?.let { runCatching { it.close() } }
+            // The scratchpad belongs to the turn too, and a session left alive
+            // keeps a renderer around for nothing.
+            scratchpad?.close()
             // A turn that ends — finished, stopped or thrown — leaves nothing
             // waiting and nothing on screen claiming it is still paused.
             clearPause()

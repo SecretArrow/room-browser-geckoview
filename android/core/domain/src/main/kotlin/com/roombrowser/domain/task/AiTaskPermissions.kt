@@ -39,8 +39,13 @@ data class AiTaskPermissions(
     val allowPost: Boolean = false
 ) {
     fun groupOf(toolName: String): ToolGroup? = when (toolName) {
-        AgentTools.READ_PAGE, AgentTools.SCROLL, AgentTools.WAIT,
-        AgentTools.WAIT_FOR -> ToolGroup.READ_PAGE
+        AgentTools.READ_PAGE, AgentTools.SEE_PAGE, AgentTools.SCROLL, AgentTools.WAIT,
+        AgentTools.WAIT_FOR, AgentTools.COMPUTE_JS, AgentTools.DATA_TRANSFORM,
+        // site_memory touches no page and starts no navigation: like the two
+        // local tools above, it is bookkeeping the agent does on the device, so
+        // it rides with the read group. Its own per-profile opt-in is the real
+        // gate; this group is only the coarse unattended one.
+        AgentTools.SITE_MEMORY -> ToolGroup.READ_PAGE
         AgentTools.NAVIGATE, AgentTools.SEARCH_WEB, AgentTools.GO_BACK,
         AgentTools.OPEN_NEW_TAB, AgentTools.LIST_TABS,
         AgentTools.SWITCH_TAB, AgentTools.CLOSE_TAB,

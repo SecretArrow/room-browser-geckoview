@@ -185,7 +185,12 @@ class BrowserActivity : FragmentActivity() {
             otpDigitsAllowed = {
                 (application as com.roombrowser.RoomBrowserApp).graph.appState
                     .agentSettingsSnapshot().otpDigitsToAgent
-            }
+            },
+            siteMemory = com.roombrowser.agent.GraphSiteMemoryStore(
+                graph = (application as com.roombrowser.RoomBrowserApp).graph,
+                profileId = viewModel.profileId
+            ),
+            siteMemoryEnabled = { viewModel.profileSettings().agentSiteMemoryEnabled }
         )
         taskPageHost = pageHost
         AiTaskPageHosts.register(pageHost)

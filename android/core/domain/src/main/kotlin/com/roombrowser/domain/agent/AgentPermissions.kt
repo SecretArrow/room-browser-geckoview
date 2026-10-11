@@ -21,11 +21,14 @@ object AgentPermissions {
     const val DEVTOOLS_NETWORK = "devtools.network"
     const val DEVTOOLS_STORAGE = "devtools.storage"
     const val DEVTOOLS_COOKIES = "devtools.cookies"
+    const val DEVTOOLS_SECURITY = "devtools.security"
     const val EXPORT_DIAGNOSTICS = "agent.exportDiagnostics"
+    const val AGENT_COMPUTE = "agent.compute"
 
     /** Every permission this build knows, for the settings screen and the tests. */
     val ALL = setOf(
-        DEVTOOLS_READ, DEVTOOLS_NETWORK, DEVTOOLS_STORAGE, DEVTOOLS_COOKIES, EXPORT_DIAGNOSTICS
+        DEVTOOLS_READ, DEVTOOLS_NETWORK, DEVTOOLS_STORAGE, DEVTOOLS_COOKIES,
+        DEVTOOLS_SECURITY, EXPORT_DIAGNOSTICS, AGENT_COMPUTE
     )
 
     /**
@@ -39,13 +42,21 @@ object AgentPermissions {
     fun required(tool: String): Set<String> = when (tool) {
         AgentTools.DEVTOOLS_CONSOLE,
         AgentTools.DEVTOOLS_INSPECT,
+        AgentTools.DEVTOOLS_ELEMENTS,
         AgentTools.DEVTOOLS_DIAGNOSE -> setOf(DEVTOOLS_READ)
 
         AgentTools.DEVTOOLS_NETWORK -> setOf(DEVTOOLS_NETWORK)
 
-        AgentTools.DEVTOOLS_AUDIT -> setOf(DEVTOOLS_STORAGE)
+        AgentTools.DEVTOOLS_AUDIT,
+        AgentTools.DEVTOOLS_STORAGE -> setOf(DEVTOOLS_STORAGE)
+
+        AgentTools.DEVTOOLS_SECURITY -> setOf(DEVTOOLS_SECURITY)
 
         AgentTools.DEVTOOLS_REPORT -> setOf(EXPORT_DIAGNOSTICS)
+
+        AgentTools.COMPUTE_JS -> setOf(AGENT_COMPUTE)
+
+        AgentTools.DATA_TRANSFORM -> setOf(AGENT_COMPUTE)
 
         else -> emptySet()
     }
@@ -68,7 +79,9 @@ object AgentPermissions {
         DEVTOOLS_NETWORK -> "Read the network log"
         DEVTOOLS_STORAGE -> "Read page storage and run the audit"
         DEVTOOLS_COOKIES -> "Read cookies"
+        DEVTOOLS_SECURITY -> "Read the connection's security"
         EXPORT_DIAGNOSTICS -> "Export diagnostic reports"
+        AGENT_COMPUTE -> "Compute in a scratchpad"
         else -> permission
     }
 
@@ -79,11 +92,15 @@ object AgentPermissions {
         DEVTOOLS_NETWORK ->
             "Lets the agent read the list of requests the page made, including their status and timing. Header values and token-bearing URLs are redacted before the agent sees them."
         DEVTOOLS_STORAGE ->
-            "Lets the agent run the page audit, which checks document readiness, resources, mixed content and whether storage is available. It reports what it finds; it does not read stored values."
+            "Lets the agent read the Application panel's view of what the page has stored — storage keys with their value lengths, IndexedDB, Cache Storage, service workers, the manifest and the usage estimate — and run the page audit. It never returns stored values in bulk."
         DEVTOOLS_COOKIES ->
             "Lets a tool read the site's cookies. Nothing in this build uses it yet; the Application panel that will is a separate change."
+        DEVTOOLS_SECURITY ->
+            "Lets the agent read the connection's transport state and what the page can observe about its own security — protocol, secure context, mixed content, meta-tag CSP. On an edition with no certificate API the report says so instead of leaving the section blank."
         EXPORT_DIAGNOSTICS ->
             "Lets the agent build a diagnostic report and save it for the user to share. The report is redacted, but it is still a file leaving the profile, so it is its own permission."
+        AGENT_COMPUTE ->
+            "Lets the agent evaluate JavaScript in a detached scratchpad page to calculate and transform data it already has. The scratchpad has no network, no filesystem and no packages, and it cannot see or change the page you are on."
         else -> permission
     }
 }

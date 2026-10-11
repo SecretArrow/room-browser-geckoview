@@ -2,6 +2,7 @@ package com.roombrowser.agent
 
 import com.roombrowser.domain.agent.AgentGateway
 import com.roombrowser.domain.agent.AgentHttpException
+import com.roombrowser.domain.agent.AgentVisionSupport
 import com.roombrowser.domain.agent.ChatMessage
 import com.roombrowser.domain.agent.ChatRequest
 import com.roombrowser.domain.agent.FunctionCall
@@ -50,6 +51,10 @@ import java.util.concurrent.atomic.AtomicInteger
  * as text under [LocalToolProtocol]'s contract. That translation is what lets
  * the on-device model actually DRIVE the browser instead of describing what it
  * would do; see that file for the shape and its parsing rules.
+ *
+ * Screenshots are NOT supported — the engine takes a text prompt only, so
+ * [AgentVisionSupport] reports LOCAL as unable and the caller must refuse
+ * before a request is built.
  */
 class LocalLlamaGateway(
     private val engine: LlamaEngineApi = LlamaEngine
