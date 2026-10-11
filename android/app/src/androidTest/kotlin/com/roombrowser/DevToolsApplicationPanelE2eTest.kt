@@ -516,25 +516,50 @@ class DevToolsApplicationPanelE2eTest {
     }
 
     /**
-     * A slow half-screen drag down the panel body. The panel body is a
-     * vertically scrollable Column, so this is how a section below the fold is
-     * reached; no text field is ever tapped, so the soft IME is never raised to
-     * swallow the drag.
+     * A slow drag up the panel body. The panel body is a vertically scrollable
+     * Column, so this is how a section below the fold is reached; no text field
+     * is ever tapped, so the soft IME is never raised to swallow the drag.
+     *
+     * Both endpoints stay INSIDE the docked panel on purpose. The docked panel
+     * is the bottom ~72% of the window, so a drag ending above its top edge
+     * leaves the surface mid-gesture and moves nothing -- the same rule the
+     * console/network suite writes down beside its own downward drag.
      */
     private fun dragUpHalf() {
         device.swipe(
             device.displayWidth / 2, device.displayHeight * 3 / 4,
-            device.displayWidth / 2, device.displayHeight / 4, 100
+            device.displayWidth / 2, device.displayHeight / 2, 100
         )
         device.waitForIdle(600)
         try { Thread.sleep(200) } catch (_: InterruptedException) { }
     }
 
     /**
+     * Docks the panel to the whole window through its own control, confirmed by
+     * the control flipping to "Dock" rather than by the press alone.
+     */
+    private fun expandToFullScreen(): Boolean {
+        val node = findDescNow("Full screen") ?: return false
+        if (!clickSmart(node)) return false
+        return hasDesc("Dock", 5_000)
+    }
+
+    /**
      * Scrolls the panel body until [text] appears, checking BEFORE each drag so
      * evidence already on screen is never scrolled past.
+     *
+     * A docked body is only ~72% of the window, so a section near the bottom
+     * costs many short drags; taking the panel full screen first is the fallback,
+     * and is the shape the console/network suite already uses for its own
+     * below-the-fold row.
      */
     private fun scrollPanelToText(text: String, maxDrags: Int = 24): Boolean {
+        repeat(maxDrags) {
+            if (device.findObjects(By.textContains(text)).isNotEmpty()) return true
+            dragUpHalf()
+        }
+        if (device.findObjects(By.textContains(text)).isNotEmpty()) return true
+        if (!expandToFullScreen()) return false
         repeat(maxDrags) {
             if (device.findObjects(By.textContains(text)).isNotEmpty()) return true
             dragUpHalf()
@@ -551,15 +576,23 @@ class DevToolsApplicationPanelE2eTest {
      * sat below the fold. Only scrolling the body gives "absent" a meaning.
      */
     private fun firstHiddenSectionOnScreen(): String? {
-        repeat(16) {
-            hiddenSectionLabels.firstOrNull { label ->
-                device.findObjects(By.textContains(label)).isNotEmpty()
-            }?.let { return it }
-            dragUpHalf()
-        }
-        return hiddenSectionLabels.firstOrNull { label ->
+        fun found(): String? = hiddenSectionLabels.firstOrNull { label ->
             device.findObjects(By.textContains(label)).isNotEmpty()
         }
+        repeat(16) {
+            found()?.let { return it }
+            dragUpHalf()
+        }
+        found()?.let { return it }
+        // The walk has to reach the bottom, and a docked body is only ~72% of
+        // the window; without this the sections below it are never looked at,
+        // and "absent" would mean "not scrolled to".
+        if (!expandToFullScreen()) return found()
+        repeat(16) {
+            found()?.let { return it }
+            dragUpHalf()
+        }
+        return found()
     }
 
     // ---------- Developer Tools: opening it (proven pattern) ----------------
