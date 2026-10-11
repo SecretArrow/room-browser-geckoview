@@ -63,6 +63,12 @@ class DevToolsApplicationPanelE2eTest {
     private val pageHeading = "ROOM-DEVTOOLS-APP-$tag"
     private val seededMarker = "SEEDED-$tag"
 
+    /** The fixture's pre-ready words, so a red gate can say whether the script ran at all. */
+    private val waitingMarker = "WAITING-$tag"
+
+    /** Which half of the readiness gate failed, reported by [assertSeeded]. */
+    private var seedTrace: String = ""
+
     private val fixturePath = "/app-$tag"
     private val manifestPath = "/manifest-$tag.webmanifest"
     private val serviceWorkerPath = "/sw-$tag.js"
@@ -227,7 +233,17 @@ class DevToolsApplicationPanelE2eTest {
           (function () {
             var tag = '$tag';
             function ready() {
-              try { document.getElementById('ready').textContent = '$seededMarker'; } catch (e) {}
+              try {
+                var stay = document.getElementById('ready');
+                if (stay) stay.textContent = '$seededMarker';
+                if (!document.getElementById('ready-done')) {
+                  var done = document.createElement('div');
+                  done.id = 'ready-done';
+                  done.style.fontSize = '24px';
+                  done.textContent = '$seededMarker';
+                  document.body.appendChild(done);
+                }
+              } catch (e) {}
             }
             try {
               localStorage.setItem('$localKey', 'local-value-' + tag);
@@ -262,7 +278,6 @@ class DevToolsApplicationPanelE2eTest {
               try {
                 if (!('serviceWorker' in navigator)) { resolve(); return; }
                 navigator.serviceWorker.register('$serviceWorkerPath')
-                  .then(function () { return navigator.serviceWorker.ready; })
                   .then(resolve, resolve);
               } catch (e) { resolve(); }
             }));
@@ -306,10 +321,7 @@ class DevToolsApplicationPanelE2eTest {
             "A profile must be active before the engine can be cold-started\n${uiTree()}",
             ensureActiveProfile()
         )
-        assertTrue(
-            "The fixture page must render and seed before Developer Tools can read it\n${uiTree()}",
-            openSeededPage()
-        )
+        assertSeeded()
         assertDevToolsOpened()
 
         assertReached("The manifest's name must reach the panel", manifestName)
@@ -327,10 +339,7 @@ class DevToolsApplicationPanelE2eTest {
             "A profile must be active before the engine can be cold-started\n${uiTree()}",
             ensureActiveProfile()
         )
-        assertTrue(
-            "The fixture page must render and seed before Developer Tools can read it\n${uiTree()}",
-            openSeededPage()
-        )
+        assertSeeded()
         assertDevToolsOpened()
 
         assertReached("A localStorage key must reach the panel", localKey)
@@ -353,10 +362,7 @@ class DevToolsApplicationPanelE2eTest {
             "A profile must be active before the engine can be cold-started\n${uiTree()}",
             ensureActiveProfile()
         )
-        assertTrue(
-            "The fixture page must render and seed before Developer Tools can read it\n${uiTree()}",
-            openSeededPage()
-        )
+        assertSeeded()
         assertDevToolsOpened()
 
         // A positive control first: the panel really composed, and really read
@@ -402,7 +408,21 @@ class DevToolsApplicationPanelE2eTest {
      */
     private fun openSeededPage(): Boolean {
         if (!openPage(server.url(fixturePath).toString())) return false
-        return hasText(seededMarker, 30_000)
+        if (hasTextContains(seededMarker, 30_000)) return true
+        seedTrace = "heading=${visibleCount(pageHeading)} " +
+            "waiting=${visibleCount(waitingMarker)} seeded=${visibleCount(seededMarker)}"
+        return false
+    }
+
+    private fun visibleCount(text: String): Int =
+        runCatching { device.findObjects(By.textContains(text)).size }.getOrDefault(-1)
+
+    private fun assertSeeded() {
+        val ready = openSeededPage()
+        assertTrue(
+            "The fixture page must render and seed before Developer Tools can read it [$seedTrace]\n${uiTree()}",
+            ready
+        )
     }
 
     /**
