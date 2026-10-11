@@ -11,6 +11,7 @@ import androidx.test.uiautomator.UiObject2
 import androidx.test.uiautomator.UiSelector
 import androidx.test.uiautomator.Until
 import com.roombrowser.domain.model.ProfileId
+import java.util.concurrent.atomic.AtomicInteger
 import kotlinx.coroutines.runBlocking
 import okhttp3.mockwebserver.Dispatcher
 import okhttp3.mockwebserver.MockResponse
@@ -68,6 +69,15 @@ class DevToolsApplicationPanelE2eTest {
 
     /** Which half of the readiness gate failed, reported by [assertSeeded]. */
     private var seedTrace: String = ""
+
+    /**
+     * How many times the fixture's script asked the server for its service
+     * worker. The script is the only thing that registers one, so this is the
+     * server's own witness that the engine ran the page's JavaScript -- which
+     * an empty marker cannot tell apart from a JavaScript engine that never
+     * started.
+     */
+    private val swRequests = AtomicInteger()
 
     private val fixturePath = "/app-$tag"
     private val manifestPath = "/manifest-$tag.webmanifest"
@@ -138,6 +148,7 @@ class DevToolsApplicationPanelE2eTest {
         server.dispatcher = object : Dispatcher() {
             override fun dispatch(request: RecordedRequest): MockResponse {
                 val path = (request.path ?: "").substringBefore('?')
+                if (path.startsWith("/sw-")) swRequests.incrementAndGet()
                 return when {
                     path.startsWith("/app-") -> MockResponse()
                         .setHeader("Content-Type", "text/html; charset=utf-8")
@@ -400,17 +411,27 @@ class DevToolsApplicationPanelE2eTest {
     }
 
     /**
-     * Opens the fixture page and waits for the seeds to settle.
+     * Opens the fixture page and waits for the seeds to settle, twice if need be.
      *
      * The heading proves the document rendered; the marker proves the manifest,
      * the storage areas, the database and the cache write all finished, so the
      * panel is only ever asked to read a page that is ready to be read.
+     *
+     * The first load in a cold engine is the one that can lose it. Measured on
+     * the CI emulator, the marker of a suite's first page arrived just past a 30s
+     * gate while the two later loads of the same run seeded in under a second, so
+     * the page is loaded again rather than called dead -- and [seedTrace] still
+     * names every attempt, [swRequests] included.
      */
     private fun openSeededPage(): Boolean {
-        if (!openPage(server.url(fixturePath).toString())) return false
-        if (hasTextContains(seededMarker, 30_000)) return true
-        seedTrace = "heading=${visibleCount(pageHeading)} " +
-            "waiting=${visibleCount(waitingMarker)} seeded=${visibleCount(seededMarker)}"
+        val url = server.url(fixturePath).toString()
+        repeat(2) { attempt ->
+            val opened = openPage(url)
+            if (opened && hasTextContains(seededMarker, 30_000)) return true
+            seedTrace += "attempt${attempt + 1}[opened=$opened " +
+                "heading=${visibleCount(pageHeading)} waiting=${visibleCount(waitingMarker)} " +
+                "seeded=${visibleCount(seededMarker)} swRequests=${swRequests.get()}] "
+        }
         return false
     }
 
