@@ -2,6 +2,7 @@ package com.roombrowser.agent
 
 import android.graphics.Bitmap
 import android.util.Base64
+import androidx.core.graphics.scale
 import com.roombrowser.domain.agent.AgentImage
 import com.roombrowser.domain.agent.AgentVisionBounds
 import com.roombrowser.engine.EngineSession
@@ -68,7 +69,7 @@ object PageScreenshot {
         val scaled = if (size.width == bitmap.width && size.height == bitmap.height) {
             bitmap
         } else {
-            Bitmap.createScaledBitmap(bitmap, size.width, size.height, true)
+            bitmap.scale(size.width, size.height)
         }
         val scaledOwned = scaled !== bitmap
         try {
