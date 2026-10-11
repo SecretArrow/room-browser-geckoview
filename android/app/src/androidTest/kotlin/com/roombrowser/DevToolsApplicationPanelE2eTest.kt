@@ -654,6 +654,14 @@ class DevToolsApplicationPanelE2eTest {
      * Walks the panel body until [text] appears, checking BEFORE each move so
      * evidence already on screen is never scrolled past.
      *
+     * The body is walked from the TOP every time, because an earlier assertion
+     * leaves it scrolled wherever its own target sat and the engine chooses the
+     * order its storage keys are listed in: measured on the CI emulator, the
+     * Application panel listed `room-ls-alt-*` ABOVE `room-ls-*` on GeckoView
+     * and the other way round on WebView. A forward-only walk finds the first
+     * key and can never reach a second one that sits above it, which is a
+     * property of the engine's list order rather than of the panel.
+     *
      * A docked body is only the bottom half of the window, so a section near
      * the bottom costs many short movings; taking the panel full screen and
      * walking again is the fallback. Every attempt is recorded in [scrollTrace],
@@ -665,6 +673,12 @@ class DevToolsApplicationPanelE2eTest {
         scrollTrace = "body=${bodyRect()} top=${bodyTop()}"
         if (found()) {
             scrollTrace += "|onScreen"
+            return true
+        }
+        // Top first, then down. A body already at the top costs one no-op drag.
+        repeat(maxDrags) { if (!found()) dragDownHalf() }
+        if (found()) {
+            scrollTrace += "|upHit top=${bodyTop()}"
             return true
         }
         repeat(maxDrags) {
