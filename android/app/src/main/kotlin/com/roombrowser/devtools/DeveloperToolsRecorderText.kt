@@ -7,7 +7,6 @@ import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
-import java.util.Locale
 
 internal const val ACTION_NAVIGATE = "NAVIGATE"
 internal const val ACTION_CLICK = "CLICK"
@@ -56,9 +55,15 @@ internal fun recorderSelectorLabel(kind: String): String = when (kind) {
 /** True for the selector kinds that can break when the page is re-rendered. */
 internal fun recorderSelectorIsWeak(kind: String): Boolean = kind == SELECTOR_STRUCTURAL
 
-/** A moment, written as an offset from the first step so the rows read as a sequence. */
-internal fun recorderOffsetText(offsetMs: Long): String =
-    "+" + String.format(Locale.US, "%.1f s", (if (offsetMs < 0) 0L else offsetMs) / 1000.0)
+/**
+ * A moment, written as an offset from the first step so the rows read as a
+ * sequence. Truncated to a tenth rather than rounded, so a recorded step never
+ * reads as later than it happened.
+ */
+internal fun recorderOffsetText(offsetMs: Long): String {
+    val tenths = (if (offsetMs < 0) 0L else offsetMs) / 100
+    return "+${tenths / 10}.${tenths % 10} s"
+}
 
 /** How many steps used each selector kind, so the panel can say where a recording is fragile. */
 internal fun recorderSelectorTally(steps: List<RecorderStep>): String {

@@ -66,6 +66,9 @@ class DevToolsRecorderTextTest {
     fun an_offset_is_written_relative_to_the_first_step() {
         assertThat(recorderOffsetText(0L)).isEqualTo("+0.0 s")
         assertThat(recorderOffsetText(1_250L)).isEqualTo("+1.2 s")
+        // Truncated, not rounded: a step just under the next tenth stays below it.
+        assertThat(recorderOffsetText(1_999L)).isEqualTo("+1.9 s")
+        assertThat(recorderOffsetText(-5L)).isEqualTo("+0.0 s")
     }
 
     @Test
