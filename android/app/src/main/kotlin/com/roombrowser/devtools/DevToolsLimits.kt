@@ -30,10 +30,10 @@ internal fun sharedLimits(): List<LimitsSection> = listOf(
         rows = listOf(
             LimitsRow(
                 "Memory and heap snapshots",
-                "A heap snapshot is not shipped on either edition. A snapshot of a phone-sized " +
-                    "page is hundreds of megabytes, which is not a cost that belongs on a phone, " +
-                    "so the Memory view reports only coarse figures the page itself exposes — and " +
-                    "an engine that exposes none shows no Memory view rather than an empty one."
+                "No Memory panel is built on either edition and no heap snapshot is shipped: a " +
+                    "snapshot of a phone-sized page is hundreds of megabytes, which is not a cost " +
+                    "that belongs on a phone, and the panel is gated on a CPU profiler that " +
+                    "neither engine offers."
             ),
             LimitsRow(
                 "Audit, and what it is not",

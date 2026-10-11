@@ -32,7 +32,11 @@ enum class DevToolsCapability {
     /** Requests are observable at all: method, URL, and frame. */
     NETWORK_REQUEST_LINE,
 
-    /** Responses are observable: status and response headers. */
+    /**
+     * Response headers are observable. A status read on its own is not this
+     * capability: the network feed reports a status wherever the engine gives
+     * one, and this stays absent until the headers themselves are readable.
+     */
     NETWORK_RESPONSE_HEADERS,
 
     /**

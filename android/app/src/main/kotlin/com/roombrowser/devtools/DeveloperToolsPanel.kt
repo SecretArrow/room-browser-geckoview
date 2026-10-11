@@ -561,7 +561,7 @@ internal fun capabilityDetail(capability: DevToolsCapability): String = when (ca
     DevToolsCapability.CONSOLE_CAPTURE -> "Messages the page itself logs."
     DevToolsCapability.ENGINE_CONSOLE -> "Messages the browser engine reports about the page."
     DevToolsCapability.NETWORK_REQUEST_LINE -> "Method, URL and request headers of each load."
-    DevToolsCapability.NETWORK_RESPONSE_HEADERS -> "Status and response headers, read without breaking streaming."
+    DevToolsCapability.NETWORK_RESPONSE_HEADERS -> "The response's header names and values for each load."
     DevToolsCapability.COOKIES -> "The cookies the engine would send to this origin — names and values."
     DevToolsCapability.COOKIE_ATTRIBUTES -> "HttpOnly / Secure / Expires / SameSite, not just name and value."
     DevToolsCapability.SECURITY_INFO -> "Protocol version, cipher and mixed-content state for this page."
