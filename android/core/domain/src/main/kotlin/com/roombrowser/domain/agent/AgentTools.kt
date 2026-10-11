@@ -62,6 +62,20 @@ object AgentTools {
     const val APP_2FA = "app_2fa"
     const val APP_NOTES = "app_notes"
 
+    // ---- page history controls the catalogue was missing ----
+    const val RELOAD = "reload"
+    const val FORWARD = "forward"
+
+    // ---- Developer Tools (the agent reading and driving the real buffers) ----
+    const val DEVTOOLS_RELOAD = "devtools_reload"
+    const val DEVTOOLS_CONSOLE = "devtools_console"
+    const val DEVTOOLS_NETWORK = "devtools_network"
+    const val DEVTOOLS_INSPECT = "devtools_inspect"
+    const val DEVTOOLS_AUDIT = "devtools_audit"
+    const val DEVTOOLS_DIAGNOSE = "devtools_diagnose"
+    const val DEVTOOLS_REPORT = "devtools_report"
+    const val DEVTOOLS_PATCH = "devtools_patch"
+
     private const val OBJ = """{"type":"object"}"""
 
     private val SCHEMA_NAVIGATE = """{"type":"object","properties":{"url":{"type":"string","description":"Full URL, e.g. https://example.com/path"}},"required":["url"]}"""
@@ -82,6 +96,13 @@ object AgentTools {
     private val SCHEMA_PRESS_KEYS = """{"type":"object","properties":{"keys":{"type":"string","description":"Key chord: Enter, Escape, Tab, ArrowDown, PageDown, F1-F12, or a combination like Control+a"},"ref":{"type":"integer","description":"Optional element reference to focus first; defaults to whatever is focused"}},"required":["keys"]}"""
     private val SCHEMA_WAIT_FOR = """{"type":"object","properties":{"text":{"type":"string","description":"Text to wait for in the visible page"},"timeout_ms":{"type":"integer","description":"How long to wait, 500-30000, default 10000"}},"required":["text"]}"""
 
+    private val SCHEMA_DEVTOOLS_AUDIT = OBJ
+    private val SCHEMA_DEVTOOLS_CONSOLE = """{"type":"object","properties":{"action":{"type":"string","enum":["read","clear","preserve"],"description":"read lists the buffered entries; clear empties the buffer; preserve sets whether the buffer keeps its entries across navigations (needs 'enabled')"},"enabled":{"type":"boolean","description":"For action=preserve: true to keep entries across navigations, false to drop them on each load"},"level":{"type":"string","description":"read filter: only entries at this level, e.g. error, warning, log"},"contains":{"type":"string","description":"read filter: only entries whose text contains this"}}}"""
+    private val SCHEMA_DEVTOOLS_NETWORK = """{"type":"object","properties":{"action":{"type":"string","enum":["read","clear"],"description":"read lists the buffered request rows; clear empties the buffer"},"failed_only":{"type":"boolean","description":"read filter: only rows that failed (error status or no status at all)"},"contains":{"type":"string","description":"read filter: only rows whose URL contains this"}}}"""
+    private val SCHEMA_DEVTOOLS_INSPECT = """{"type":"object","properties":{"ref":{"type":"integer","description":"Element reference number from read_page"},"selector":{"type":"string","description":"CSS selector, for an element the snapshot did not number"}}}"""
+    private val SCHEMA_DEVTOOLS_DIAGNOSE = """{"type":"object","properties":{"focus":{"type":"string","description":"Optional text to correlate on, e.g. a button label or an error the user saw"}}}"""
+    private val SCHEMA_DEVTOOLS_PATCH = """{"type":"object","properties":{"script":{"type":"string","description":"JavaScript that applies the fix to the live page"},"reason":{"type":"string","description":"What the patch changes, shown to the user who has to approve it"}},"required":["script"]}"""
+
     /** An enum built from the object that defines it, so the two cannot drift. */
     private fun enumOf(values: Collection<String>): String =
         values.joinToString("\",\"", prefix = "[\"", postfix = "\"]")
@@ -99,16 +120,20 @@ object AgentTools {
     /**
      * Tool names whose execution may require user confirmation.
      *
-     * `run_js` is deliberately NOT here: it is the through-the-back-door tool
-     * and is offered unconfirmed by the owner's decision. `wait_for` only
-     * reads, like `wait`. `wallet_reject` is absent because rejecting is the
-     * safe direction and must never be gated.
+     * `run_js` is deliberately NOT here: it has a gate of its own, the
+     * per-profile "Agent console execution requires approval" setting, which is
+     * ON by default — see
+     * [com.roombrowser.domain.model.ProfileSettings.agentConsoleApprovalRequired]. The
+     * Confirm actions switch and YOLO do not reach it either way. `wait_for`
+     * only reads, like `wait`. `wallet_reject` is absent because rejecting is
+     * the safe direction and must never be gated.
      *
      * The app tools are here because they change the browser itself — a
      * setting, a saved permission, a bookmark — which is exactly what the
      * Confirm actions switch is for. The actions among them that cannot be
      * undone ask EVERY time regardless of this set: see
-     * [AgentAppActions.isDestructive].
+     * [AgentAppActions.isDestructive]. `devtools_patch` is here for the same
+     * reason, and additionally asks through the destructive gate every time.
      */
     val INTERACTIVE_TOOLS = setOf(
         CLICK, FILL_INPUT, PRESS_ENTER, SELECT_OPTION, PRESS_KEYS,
@@ -116,7 +141,23 @@ object AgentTools {
         WALLET_APPROVE, WALLET_SWITCH_NETWORK,
         APP_OPEN, APP_TABS, APP_DATA, APP_SETTINGS, APP_SHIELDS,
         APP_SITE_PERMISSION, APP_PAGE,
-        APP_2FA, APP_NOTES
+        APP_2FA, APP_NOTES,
+        DEVTOOLS_PATCH
+    )
+
+    /**
+     * The Developer Tools tools as one set.
+     *
+     * Being here is not what gates them: each one names the permission it needs
+     * (see [AgentPermissions]), and a tool whose permission the profile withholds
+     * is refused. It is the set the unattended paths use to refuse the whole
+     * group — a scheduled or headless run has no Console panel to drive and no
+     * user to confirm a page patch, so none of these has an honest meaning there.
+     */
+    val DEVTOOLS_TOOLS = setOf(
+        DEVTOOLS_RELOAD, DEVTOOLS_CONSOLE, DEVTOOLS_NETWORK,
+        DEVTOOLS_INSPECT, DEVTOOLS_AUDIT, DEVTOOLS_DIAGNOSE,
+        DEVTOOLS_REPORT, DEVTOOLS_PATCH
     )
 
     /**
@@ -182,7 +223,7 @@ object AgentTools {
         def(APP_SETTINGS, "Read or change this profile's browsing settings by name (JavaScript, ad and tracker blocking, HTTPS upgrade, search engine, and the other names in the schema). Everything the tool can write is listed in its 'key' values.", SCHEMA_APP_SETTINGS),
         def(APP_SHIELDS, "Report tracking protection for the site in this chat's tab and turn it off or on for that site, or clear the browser's stored site data.", SCHEMA_APP_SHIELDS),
         def(APP_SITE_PERMISSION, "List or change the permissions saved for the site in this chat's tab: camera, microphone, location, notifications and the rest.", SCHEMA_APP_SITE_PERMISSION),
-        def(APP_PAGE, "Act on the open page from the browser side: find text in it, step through the matches, toggle reader mode or desktop mode, or bookmark it.", SCHEMA_APP_PAGE),
+        def(APP_PAGE, "Act on the open page from the browser side: find text in it, step through the matches, toggle reader mode or desktop mode, bookmark it, or open Developer Tools for this chat's tab.", SCHEMA_APP_PAGE),
         def(
             APP_2FA,
             "The profile's authenticator (TOTP) accounts. action=list names them — issuer, account and id, never the setup key. action=code gives the code that is valid right now for one of them, action=copy puts it on the clipboard and action=fill types it into the login form. Codes are generated on the device; there is no way to read a setup key out of this tool, and the person cannot be asked to hand one over. Ask for a code only when a form on the page actually needs one.",
@@ -192,6 +233,48 @@ object AgentTools {
             APP_NOTES,
             "The notes saved in this profile. action=list shows them with their ids, action=get reads one in full, and add/update/delete change them. Notes belong to the profile, not to the page.",
             SCHEMA_APP_NOTES
+        ),
+        def(RELOAD, "Reload the page in this chat's tab. The Developer Tools console and network buffers keep working across the reload.", SCHEMA_NO_PARAMS),
+        def(FORWARD, "Go forward one step in this chat's tab's history, undoing a back.", SCHEMA_NO_PARAMS),
+        def(
+            DEVTOOLS_RELOAD,
+            "Reload the page specifically to watch what it does on a fresh load, then read the console. Use it when a bug only shows up on load, or after a change you just made. A plain reload is `reload`; this one announces itself as a diagnostic step.",
+            SCHEMA_NO_PARAMS
+        ),
+        def(
+            DEVTOOLS_CONSOLE,
+            "Read the page's Developer Tools console — the real buffer the Console panel shows, including errors and warnings the page logged. action=read lists entries (filter with level and contains), action=clear empties the buffer, action=preserve decides whether entries survive a navigation. Reading is how you find out WHY something broke; the browser will never guess and never answer with an empty list when the panel is unavailable, it says so instead.",
+            SCHEMA_DEVTOOLS_CONSOLE
+        ),
+        def(
+            DEVTOOLS_NETWORK,
+            "Read the page's Developer Tools network log — the real buffer the Network panel shows, one row per request with its status, method, URL and timing. action=read lists rows (use failed_only or contains to narrow), action=clear empties it. Use it to find a request that failed or a resource that never loaded.",
+            SCHEMA_DEVTOOLS_NETWORK
+        ),
+        def(
+            DEVTOOLS_INSPECT,
+            "Inspect one element on the page: its tag, attributes, computed box and the text around it, by the [ref] number from read_page or by a CSS selector. Use it after a console error or a failed request to find the exact node involved.",
+            SCHEMA_DEVTOOLS_INSPECT
+        ),
+        def(
+            DEVTOOLS_AUDIT,
+            "Run a fixed diagnostic checklist over the open page — document readiness, console errors, failed requests, broken resources, mixed content, and storage/cookie availability — and report what it found with each finding labelled OBSERVED FACT, HYPOTHESIS or RECOMMENDATION. It changes nothing on the page.",
+            SCHEMA_DEVTOOLS_AUDIT
+        ),
+        def(
+            DEVTOOLS_DIAGNOSE,
+            "Correlate a symptom you or the user noticed with the console and network buffers: give it the text (a message, a button label, a URL) and it returns the console error and the request that go with it, plus the element that likely triggered it. Read-only; it is the deepest single-step diagnosis available.",
+            SCHEMA_DEVTOOLS_DIAGNOSE
+        ),
+        def(
+            DEVTOOLS_REPORT,
+            "Produce a diagnostic report for the user to share with a site's developer or keep: the engine, the app and Android versions, the profile's label (never its id), the active URL, and the redacted console and network buffers with correlated findings. Nothing secret goes into it — headers, tokens and URLs are redacted before they leave the device. Say where you saved it.",
+            SCHEMA_NO_PARAMS
+        ),
+        def(
+            DEVTOOLS_PATCH,
+            "Apply a candidate fix to the live page, in the page's own session, by running JavaScript. THIS IS A WRITE TO A LIVE PAGE and is always confirmed by the user, every time, and refused in plan mode and in any unattended run — it is grouped with the destructive actions for that reason. Use it only when the user asked you to fix the page, and explain in 'reason' what the patch changes so the person approving it knows what they are agreeing to.",
+            SCHEMA_DEVTOOLS_PATCH
         )
     )
 
@@ -259,6 +342,16 @@ object AgentTools {
             APP_PAGE -> "Page: ${str("action") ?: "?"}"
             APP_2FA -> "2FA: ${str("action") ?: "list"}"
             APP_NOTES -> "Notes: ${str("action") ?: "list"}"
+            RELOAD -> "Reload page"
+            FORWARD -> "Go forward"
+            DEVTOOLS_RELOAD -> "Reload and watch the console"
+            DEVTOOLS_CONSOLE -> "Console: ${str("action") ?: "read"}${str("level")?.let { " ($it)" } ?: ""}"
+            DEVTOOLS_NETWORK -> "Network: ${str("action") ?: "read"}${if (str("failed_only").toBoolean()) " (failed)" else ""}"
+            DEVTOOLS_INSPECT -> "Inspect " + (int("ref")?.let { "[$it]" } ?: str("selector") ?: "element")
+            DEVTOOLS_AUDIT -> "Audit the page"
+            DEVTOOLS_DIAGNOSE -> "Diagnose" + (str("focus")?.let { ": \"${it.take(30)}\"" } ?: "")
+            DEVTOOLS_REPORT -> "Export diagnostic report"
+            DEVTOOLS_PATCH -> "Apply a page patch"
             else -> name
         }
     } catch (_: Exception) {

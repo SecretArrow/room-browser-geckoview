@@ -81,7 +81,14 @@ class HeadlessToolExecutor(
      */
     private val allowProfileTools: Boolean = false,
     /** Whether the digits of a generated code may be returned to the model. */
-    private val otpDigitsAllowed: suspend () -> Boolean = { false }
+    private val otpDigitsAllowed: suspend () -> Boolean = { false },
+    /**
+     * The per-profile "Agent console execution requires approval" setting, read
+     * live. It is applied only where a person is actually reachable — a headless
+     * CHAT has one, a scheduled run does not, and the latter's `run_js` use is
+     * governed by the task's own permissions instead.
+     */
+    private val runJsApprovalRequired: suspend () -> Boolean = { true }
 ) : ToolExecutor {
 
     private val lastStartedAt = AtomicLong(0L)
@@ -123,6 +130,8 @@ class HeadlessToolExecutor(
                     AgentTools.PRESS_ENTER -> pressEnter(intOrNull(args, "ref"))
                     AgentTools.SCROLL -> scroll(str(args, "direction") ?: "down", intOrNull(args, "amount"))
                     AgentTools.GO_BACK -> goBack()
+                    AgentTools.RELOAD -> reloadTool()
+                    AgentTools.FORWARD -> forwardTool()
                     AgentTools.AUTO_LIKE -> autoLike()
                     AgentTools.AUTO_REPOST -> autoRepost()
                     AgentTools.AUTO_REPLY -> autoReply(str(args, "text"))
@@ -191,6 +200,18 @@ class HeadlessToolExecutor(
                 is ActionVerdict.Deny -> ToolResult(false, verdict.reason)
                 // Asking is the caller's job, so a verdict that reaches here is
                 // a bug — deny rather than run.
+                is ActionVerdict.Ask -> ToolResult(false, "the user denied this action")
+            }
+        }
+        // The per-profile "Agent console execution requires approval" setting.
+        // Only the headless CHAT can act on it, because only it has the person
+        // who sent the message; a scheduled run falls through to run the script
+        // as its task's permissions allow.
+        if (name == AgentTools.RUN_JS && runJsApprovalRequired()) {
+            val ask = askInteractive ?: return null
+            return when (val verdict = ask(name, AgentTools.describeTool(name, argsJson))) {
+                is ActionVerdict.Allow -> null
+                is ActionVerdict.Deny -> ToolResult(false, verdict.reason)
                 is ActionVerdict.Ask -> ToolResult(false, "the user denied this action")
             }
         }
@@ -294,6 +315,23 @@ class HeadlessToolExecutor(
         awaitPageSettle(triggerAt)
         delay(SETTLE_MS)
         return ToolResult(true, "went back to ${session.url.orEmpty()}")
+    }
+
+    private suspend fun reloadTool(): ToolResult {
+        val triggerAt = SystemClock.elapsedRealtime()
+        session.reload()
+        awaitPageSettle(triggerAt)
+        delay(SETTLE_MS)
+        return ToolResult(true, "reloaded the page — \"${session.title.orEmpty()}\"")
+    }
+
+    private suspend fun forwardTool(): ToolResult {
+        if (!session.canGoForward) return ToolResult(true, "already at the latest page")
+        val triggerAt = SystemClock.elapsedRealtime()
+        session.goForward()
+        awaitPageSettle(triggerAt)
+        delay(SETTLE_MS)
+        return ToolResult(true, "went forward to ${session.url.orEmpty()}")
     }
 
     private suspend fun autoLike(): ToolResult = socialAction { evaluateJs(session, PageInjector.autoLikeJs()) }
@@ -504,7 +542,7 @@ class HeadlessToolExecutor(
         /**
          * The tools a headless run performs, declared rather than inferred so
          * [HeadlessToolCatalogTest] can hold the WHOLE catalogue to
-         * [SUPPORTED_TOOLS] ∪ [TAB_TOOLS] ∪ [APP_TOOLS] ∪
+         * [SUPPORTED_TOOLS] ∪ [TAB_TOOLS] ∪ [APP_TOOLS] ∪ [DEVELOPER_TOOLS] ∪
          * [AgentTools.WALLET_TOOLS]: a tool added to the catalogue later must
          * be classified deliberately, because the wrong answer is either a tool
          * the model is offered and refused, or one refused silently.
@@ -512,7 +550,8 @@ class HeadlessToolExecutor(
         internal val SUPPORTED_TOOLS: Set<String> = setOf(
             AgentTools.NAVIGATE, AgentTools.SEARCH_WEB, AgentTools.READ_PAGE,
             AgentTools.CLICK, AgentTools.FILL_INPUT, AgentTools.PRESS_ENTER,
-            AgentTools.SCROLL, AgentTools.GO_BACK, AgentTools.AUTO_LIKE,
+            AgentTools.SCROLL, AgentTools.GO_BACK, AgentTools.RELOAD, AgentTools.FORWARD,
+            AgentTools.AUTO_LIKE,
             AgentTools.AUTO_REPOST, AgentTools.AUTO_REPLY, AgentTools.AUTO_POST,
             AgentTools.WAIT,
             AgentTools.RUN_JS, AgentTools.SELECT_OPTION, AgentTools.PRESS_KEYS,
@@ -544,5 +583,15 @@ class HeadlessToolExecutor(
          * is one message for it, not two.
          */
         internal val APP_TOOLS: Set<String> = AgentAppActions.TOOLS
+
+        /**
+         * The Developer Tools tools. They read the live Console and Network
+         * panels and one of them writes to the live page, so a headless run has
+         * no meaning for them: there is no panel to show and nobody to confirm
+         * a patch. Declared so [HeadlessToolCatalogTest] can hold the whole
+         * catalogue to these sets. The refusal itself
+         * comes from [AiTaskPermissions], which denies the DEVTOOLS group.
+         */
+        internal val DEVELOPER_TOOLS: Set<String> = AgentTools.DEVTOOLS_TOOLS
     }
 }

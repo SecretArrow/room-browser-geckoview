@@ -176,6 +176,7 @@ class BrowserActivity : FragmentActivity() {
         // run can never open a tab on a dead ViewModel.
         val pageHost = BrowserTaskPageHost(
             vm = viewModel,
+            control = com.roombrowser.browser.BrowserControlApiImpl(viewModel, application),
             profileData = com.roombrowser.agent.GraphAgentProfileData(
                 graph = (application as com.roombrowser.RoomBrowserApp).graph,
                 profileId = viewModel.profileId,

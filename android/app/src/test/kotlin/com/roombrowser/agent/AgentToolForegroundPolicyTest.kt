@@ -67,7 +67,17 @@ class AgentToolForegroundPolicyTest {
         AgentTools.WALLET_REQUESTS,
         AgentTools.WALLET_APPROVE,
         AgentTools.WALLET_REJECT,
-        AgentTools.WALLET_SWITCH_NETWORK
+        AgentTools.WALLET_SWITCH_NETWORK,
+        // The Developer Tools reads drive their own probes on this chat's engine
+        // and start no navigation, so they keep working in the background. The
+        // two that DO move the page — a diagnostic reload and a page patch —
+        // are on [MOVES_THE_PAGE] instead.
+        AgentTools.DEVTOOLS_CONSOLE,
+        AgentTools.DEVTOOLS_NETWORK,
+        AgentTools.DEVTOOLS_INSPECT,
+        AgentTools.DEVTOOLS_AUDIT,
+        AgentTools.DEVTOOLS_DIAGNOSE,
+        AgentTools.DEVTOOLS_REPORT
     )
 
     @Test

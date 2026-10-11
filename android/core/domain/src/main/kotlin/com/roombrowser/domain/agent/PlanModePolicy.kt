@@ -35,7 +35,10 @@ object PlanModePolicy {
         AgentTools.AUTO_REPLY,
         AgentTools.AUTO_POST,
         AgentTools.WALLET_APPROVE,
-        AgentTools.WALLET_SWITCH_NETWORK
+        AgentTools.WALLET_SWITCH_NETWORK,
+        // A patch runs script in a live page, so it belongs with run_js and
+        // every other tool that can change what the page does.
+        AgentTools.DEVTOOLS_PATCH
     )
 
     /**

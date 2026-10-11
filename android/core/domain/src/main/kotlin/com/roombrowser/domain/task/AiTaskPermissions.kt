@@ -43,12 +43,14 @@ data class AiTaskPermissions(
         AgentTools.WAIT_FOR -> ToolGroup.READ_PAGE
         AgentTools.NAVIGATE, AgentTools.SEARCH_WEB, AgentTools.GO_BACK,
         AgentTools.OPEN_NEW_TAB, AgentTools.LIST_TABS,
-        AgentTools.SWITCH_TAB, AgentTools.CLOSE_TAB -> ToolGroup.NAVIGATE
+        AgentTools.SWITCH_TAB, AgentTools.CLOSE_TAB,
+        AgentTools.RELOAD, AgentTools.FORWARD -> ToolGroup.NAVIGATE
         AgentTools.CLICK, AgentTools.FILL_INPUT, AgentTools.PRESS_ENTER,
         AgentTools.SELECT_OPTION, AgentTools.PRESS_KEYS, AgentTools.RUN_JS -> ToolGroup.INTERACT
         AgentTools.AUTO_LIKE, AgentTools.AUTO_REPOST,
         AgentTools.AUTO_REPLY, AgentTools.AUTO_POST -> ToolGroup.POST
         in AgentTools.WALLET_TOOLS -> ToolGroup.WALLET
+        in AgentTools.DEVTOOLS_TOOLS -> ToolGroup.DEVTOOLS
         AgentTools.APP_OPEN, AgentTools.APP_TABS, AgentTools.APP_DATA,
         AgentTools.APP_SETTINGS, AgentTools.APP_SHIELDS,
         AgentTools.APP_SITE_PERMISSION, AgentTools.APP_PAGE -> ToolGroup.APP
@@ -66,6 +68,9 @@ data class AiTaskPermissions(
         // Nobody is watching a scheduled run, and these change the browser
         // itself — including irreversibly. A chat turn is the only route.
         ToolGroup.APP -> false
+        // The Developer Tools tools need a live Console and Network panel and a
+        // person to confirm a patch; a scheduled run has neither.
+        ToolGroup.DEVTOOLS -> false
         // The one group a SETTING can hand over: see [ToolGroup.TOTP].
         ToolGroup.TOTP, ToolGroup.NOTES -> false
         null -> false
@@ -92,6 +97,9 @@ enum class ToolGroup(val label: String) {
     /** Never granted to a task; see [appUnattendedRefusal]. */
     APP("the app's own screens, settings and data"),
 
+    /** Never granted to a task; see [devtoolsUnattendedRefusal]. */
+    DEVTOOLS("the Developer Tools tools"),
+
     /** Never granted by a task itself; one setting can hand it over. */
     TOTP("the authenticator codes"),
 
@@ -109,6 +117,7 @@ internal fun refusalMessage(toolName: String, group: ToolGroup?): String = when 
     null -> "unknown tool: $toolName"
     ToolGroup.WALLET -> walletUnattendedRefusal(toolName)
     ToolGroup.APP -> appUnattendedRefusal(toolName)
+    ToolGroup.DEVTOOLS -> devtoolsUnattendedRefusal(toolName)
     ToolGroup.TOTP, ToolGroup.NOTES -> profileUnattendedRefusal(toolName)
     else -> "tool '$toolName' is switched off for this task: ${group.label} is not permitted"
 }
@@ -133,6 +142,17 @@ fun profileUnattendedRefusal(toolName: String): String =
 fun appUnattendedRefusal(toolName: String): String =
     "tool '$toolName' changes the app itself and works only in a chat, where you can be asked " +
         "first. Run this as a chat, or do it from the app's own screens."
+
+/**
+ * The refusal for the Developer Tools tools in a scheduled run: they read the
+ * live Console and Network panels, which exist only while the user has those
+ * panels open, and one of them — applying a patch — is a write to a live page
+ * that must be confirmed. A scheduled run has neither the panels nor the person.
+ */
+fun devtoolsUnattendedRefusal(toolName: String): String =
+    "tool '$toolName' works only in a chat: it reads the live Developer Tools panels, which are " +
+        "there only while the user has them open, and a page patch needs their confirmation. " +
+        "Run this as a chat."
 
 /**
  * The refusal for an action the task DOES allow but an unattended run must not

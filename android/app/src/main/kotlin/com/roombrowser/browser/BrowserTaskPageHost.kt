@@ -1,5 +1,6 @@
 package com.roombrowser.browser
 
+import com.roombrowser.agent.AgentPermissionGate
 import com.roombrowser.agent.AgentProfileData
 import com.roombrowser.agent.AgentToolExecutor
 import com.roombrowser.agent.AiTaskPage
@@ -7,6 +8,7 @@ import com.roombrowser.agent.AiTaskPageHost
 import com.roombrowser.agent.AiTaskPageRequest
 import com.roombrowser.agent.ScheduledRunToolGate
 import com.roombrowser.domain.agent.ActionVerdict
+import com.roombrowser.domain.agent.ToolExecutor
 import com.roombrowser.domain.task.unattendedRefusal
 
 /**
@@ -25,6 +27,11 @@ import com.roombrowser.domain.task.unattendedRefusal
  */
 class BrowserTaskPageHost(
     private val vm: BrowserViewModel,
+    /**
+     * The browser operations a task's executor may name. Passed in rather than
+     * built here so the same one surface serves every route the agent has.
+     */
+    private val control: BrowserControlApi,
     /**
      * The profile's own notes and authenticator accounts, so this run's
      * executor can offer `app_2fa`/`app_notes` when the task is allowed them.
@@ -51,22 +58,34 @@ class BrowserTaskPageHost(
         }
         return object : AiTaskPage {
 
-            override val executor = ScheduledRunToolGate(
-                delegate = AgentToolExecutor(
-                    vm = vm,
-                    tabId = tabId,
-                    // Nobody is watching a scheduled run, so a gate is a refusal
-                    // with the reason, never a prompt that waits for an answer
-                    // that will not come.
-                    confirmGate = { name, _ -> ActionVerdict.Deny(unattendedRefusal(name)) },
-                    walletConfirm = { false },
-                    destructiveGate = { name, _ -> ActionVerdict.Deny(unattendedRefusal(name)) },
-                    profileData = profileData,
-                    otpDigitsAllowed = otpDigitsAllowed
+            override val executor: ToolExecutor = AgentPermissionGate(
+                inner = ScheduledRunToolGate(
+                    delegate = AgentToolExecutor(
+                        vm = vm,
+                        control = control,
+                        tabId = tabId,
+                        // Nobody is watching a scheduled run, so a gate is a refusal
+                        // with the reason, never a prompt that waits for an answer
+                        // that will not come.
+                        confirmGate = { name, _ -> ActionVerdict.Deny(unattendedRefusal(name)) },
+                        walletConfirm = { false },
+                        destructiveGate = { name, _ -> ActionVerdict.Deny(unattendedRefusal(name)) },
+                        profileData = profileData,
+                        otpDigitsAllowed = otpDigitsAllowed,
+                        // The "console execution requires approval" setting is an
+                        // APPROVAL requirement, and a scheduled run has nobody to
+                        // give one; its run_js is instead governed by the task's
+                        // own "clicking and typing" permission, which the user
+                        // grants per task. So the setting is not applied here.
+                        runJsApprovalRequired = { false }
+                    ),
+                    permissions = request.permissions,
+                    confirmActions = request.confirmActions,
+                    allowProfileTools = request.allowProfileTools
                 ),
-                permissions = request.permissions,
-                confirmActions = request.confirmActions,
-                allowProfileTools = request.allowProfileTools
+                // Read live from the profile, never the turn's snapshot: the
+                // user can withdraw a permission while the run is going.
+                withheld = { vm.profileSettings().agentWithheldPermissions }
             )
 
             override fun close() {

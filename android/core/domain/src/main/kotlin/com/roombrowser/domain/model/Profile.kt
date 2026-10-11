@@ -229,7 +229,22 @@ data class ProfileSettings(
     // Downloads
     val downloadSubfolder: String = "RoomBrowser",
     // Autofill
-    val autofillEnabled: Boolean = true
+    val autofillEnabled: Boolean = true,
+    // Agent console execution
+    //
+    // ON, which means the agent's run_js passes the ordinary approval chain.
+    // Turning it off is a per-profile decision that removes the prompt and
+    // nothing else — the settings row says so where it is made. The user's own
+    // typing in the DevTools Console panel is never gated by this.
+    val agentConsoleApprovalRequired: Boolean = true,
+    // Granular AI-agent permissions, stored as the set that is WITHHELD.
+    //
+    // Negated on purpose: an empty set means every permission is granted, so a
+    // profile that predates this field keeps working unchanged and a permission
+    // added later is not silently denied on old profiles. A tool whose
+    // permission is in here is refused with a message naming the setting, never
+    // quietly allowed.
+    val agentWithheldPermissions: Set<String> = emptySet()
 ) {
     companion object {
         val defaultShortcuts = listOf(

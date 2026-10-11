@@ -66,6 +66,18 @@ class HeadlessChatToolGate(
                     "to the browser tab."
             )
         }
+        if (name in HeadlessToolExecutor.DEVELOPER_TOOLS) {
+            // The executor below refuses these with "run this as a chat", which
+            // is not what is wrong here: this IS a chat, on a page the user
+            // cannot see, and the panels these tools read belong to the tab on
+            // screen.
+            return ToolResult(
+                false,
+                "tool '$name' reads the Console and Network panels of the tab you have open, " +
+                    "and this turn is on a hidden page. Switch this chat to the browser tab " +
+                    "and ask again."
+            )
+        }
         return page.execute(name, argsJson)
     }
 

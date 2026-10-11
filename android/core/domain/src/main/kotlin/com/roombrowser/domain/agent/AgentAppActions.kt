@@ -85,7 +85,8 @@ object AgentAppActions {
     val PAGE_ACTIONS = setOf(
         "find", "find_next", "find_previous", "clear_find",
         "reader_on", "reader_off", "desktop_on", "desktop_off",
-        "bookmark_add", "bookmark_remove"
+        "bookmark_add", "bookmark_remove",
+        "devtools_open"
     )
 
     /**
@@ -287,7 +288,9 @@ object AgentAppActions {
         AgentTools.APP_SETTINGS -> action == "set"
         AgentTools.APP_SHIELDS -> action != "read"
         AgentTools.APP_SITE_PERMISSION -> action == "set"
-        AgentTools.APP_PAGE -> action in setOf("desktop_on", "desktop_off", "bookmark_add", "bookmark_remove")
+        AgentTools.APP_PAGE -> action in setOf(
+            "desktop_on", "desktop_off", "bookmark_add", "bookmark_remove", "devtools_open"
+        )
         AgentTools.APP_NOTES -> action in setOf("add", "update")
         // Every 2FA action is a read: a code is generated from the stored seed,
         // the clipboard copy writes nothing the user keeps, and the fill types

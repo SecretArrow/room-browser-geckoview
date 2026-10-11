@@ -6,7 +6,7 @@ import com.roombrowser.domain.agent.AgentTools
 import org.junit.Test
 
 /**
- * Holds the whole tool catalogue to the four sets [HeadlessToolExecutor] knows
+ * Holds the whole tool catalogue to the five sets [HeadlessToolExecutor] knows
  * about.
  *
  * A scheduled run is offered the same tool list as a chat turn, so a tool added
@@ -29,6 +29,7 @@ class HeadlessToolCatalogTest {
         val classified = HeadlessToolExecutor.SUPPORTED_TOOLS +
             HeadlessToolExecutor.TAB_TOOLS +
             HeadlessToolExecutor.APP_TOOLS +
+            HeadlessToolExecutor.DEVELOPER_TOOLS +
             AgentTools.WALLET_TOOLS
 
         assertThat(classified).containsExactlyElementsIn(everyTool)
@@ -41,6 +42,7 @@ class HeadlessToolCatalogTest {
             HeadlessToolExecutor.SUPPORTED_TOOLS,
             HeadlessToolExecutor.TAB_TOOLS,
             HeadlessToolExecutor.APP_TOOLS,
+            HeadlessToolExecutor.DEVELOPER_TOOLS,
             AgentTools.WALLET_TOOLS
         )
 
@@ -78,6 +80,7 @@ class HeadlessToolCatalogTest {
         // cannot use them at all), which is why the union is the set to check.
         val classified = HeadlessToolExecutor.SUPPORTED_TOOLS +
             HeadlessToolExecutor.APP_TOOLS +
+            HeadlessToolExecutor.DEVELOPER_TOOLS +
             AgentTools.WALLET_TOOLS
         assertThat(classified).containsAtLeastElementsIn(AgentTools.INTERACTIVE_TOOLS)
         assertThat(AgentTools.INTERACTIVE_TOOLS).isNotEmpty()

@@ -72,6 +72,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.roombrowser.agent.AgentSettingsController
 import com.roombrowser.data.db.AgentProviderEntity
+import com.roombrowser.domain.agent.AgentPermissions
 import com.roombrowser.domain.agent.RetryCodes
 import com.roombrowser.domain.agent.RetryPolicy
 import com.roombrowser.domain.agent.RetryStatusCode
@@ -493,6 +494,61 @@ private fun AgentSettingsRoot(
             )
 
             SystemPromptSection(controller, onApplied = { notice = "System prompt applied" })
+
+            // ================= Developer Tools permissions =================
+            // These live in the PROFILE's own settings, so this screen edits the
+            // profile it was opened for. A withheld permission refuses the tool
+            // by name rather than hiding it: the model is told what is missing
+            // instead of probing for another route to the same thing.
+            SectionHeader("Developer Tools permissions")
+            SettingSwitchRow(
+                title = "Agent console execution requires approval",
+                subtitle = "The agent asks before it runs a script in the page with run_js. Off, it " +
+                    "runs scripts without asking — this removes the confirmation, not the action. " +
+                    "Typing in the Developer Tools Console yourself is never affected",
+                checked = controller.profileSettings.agentConsoleApprovalRequired,
+                onCheckedChange = { checked -> controller.setAgentConsoleApproval(checked) }
+            )
+            SettingSwitchRow(
+                title = AgentPermissions.label(AgentPermissions.DEVTOOLS_READ),
+                subtitle = AgentPermissions.description(AgentPermissions.DEVTOOLS_READ),
+                checked = AgentPermissions.DEVTOOLS_READ !in controller.profileSettings.agentWithheldPermissions,
+                onCheckedChange = { checked ->
+                    controller.setAgentPermission(AgentPermissions.DEVTOOLS_READ, checked)
+                }
+            )
+            SettingSwitchRow(
+                title = AgentPermissions.label(AgentPermissions.DEVTOOLS_NETWORK),
+                subtitle = AgentPermissions.description(AgentPermissions.DEVTOOLS_NETWORK),
+                checked = AgentPermissions.DEVTOOLS_NETWORK !in controller.profileSettings.agentWithheldPermissions,
+                onCheckedChange = { checked ->
+                    controller.setAgentPermission(AgentPermissions.DEVTOOLS_NETWORK, checked)
+                }
+            )
+            SettingSwitchRow(
+                title = AgentPermissions.label(AgentPermissions.DEVTOOLS_STORAGE),
+                subtitle = AgentPermissions.description(AgentPermissions.DEVTOOLS_STORAGE),
+                checked = AgentPermissions.DEVTOOLS_STORAGE !in controller.profileSettings.agentWithheldPermissions,
+                onCheckedChange = { checked ->
+                    controller.setAgentPermission(AgentPermissions.DEVTOOLS_STORAGE, checked)
+                }
+            )
+            SettingSwitchRow(
+                title = AgentPermissions.label(AgentPermissions.DEVTOOLS_COOKIES),
+                subtitle = AgentPermissions.description(AgentPermissions.DEVTOOLS_COOKIES),
+                checked = AgentPermissions.DEVTOOLS_COOKIES !in controller.profileSettings.agentWithheldPermissions,
+                onCheckedChange = { checked ->
+                    controller.setAgentPermission(AgentPermissions.DEVTOOLS_COOKIES, checked)
+                }
+            )
+            SettingSwitchRow(
+                title = AgentPermissions.label(AgentPermissions.EXPORT_DIAGNOSTICS),
+                subtitle = AgentPermissions.description(AgentPermissions.EXPORT_DIAGNOSTICS),
+                checked = AgentPermissions.EXPORT_DIAGNOSTICS !in controller.profileSettings.agentWithheldPermissions,
+                onCheckedChange = { checked ->
+                    controller.setAgentPermission(AgentPermissions.EXPORT_DIAGNOSTICS, checked)
+                }
+            )
 
             // ================= Retry on error =================
             SectionHeader("Retry on error")
