@@ -513,6 +513,7 @@ jobs:
             android/app/build/reports/ktlint/
             android/core/domain/build/reports/ktlint/
             android/core/wallet/build/reports/ktlint/
+            android/engine/build/reports/ktlint/
           if-no-files-found: ignore
 
       - name: Upload test reports
