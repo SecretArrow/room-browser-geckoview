@@ -322,6 +322,19 @@ class WhatsMyIpE2eTest {
         assertTrue("Engine must come up on a fresh profile", bootstrapFreshEngine())
         assertTrue("The diagnostics screen must open\n${uiTree()}", openWhatsMyIp())
 
+        // The first read is asynchronous: while it is in flight the screen shows
+        // "Reading this device and its network" and the address row does not
+        // exist yet, so the row is waited for instead of asserted at once. It is
+        // held to the same contract as a refresh -- an address or the honest
+        // failure -- because a dead network is a legitimate outcome here.
+        assertTrue(
+            "The first read must end in an address or in an honest failure\n${uiTree()}",
+            waitUntil(40_000) {
+                val value = ipv4Value().orEmpty()
+                value.isNotBlank() && (looksLikeAddress(value) || value == failureText)
+            }
+        )
+
         val before = ipv4Value()
         assertTrue(
             "The address row must carry a value before any refresh (saw '$before')\n${uiTree()}",

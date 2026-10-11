@@ -385,7 +385,8 @@ class DevToolsApplicationPanelE2eTest {
         )
         val offender = firstHiddenSectionOnScreen()
         assertTrue(
-            "A section this build does not read must be absent, but '$offender' was on screen\n${uiTree()}",
+            "The walk must move the panel body and find no section this build does not " +
+                "read; it reported [$offender]\n${uiTree()}",
             offender == null
         )
     }
@@ -736,21 +737,73 @@ class DevToolsApplicationPanelE2eTest {
         fun found(): String? = hiddenSectionLabels.firstOrNull { label ->
             device.findObjects(By.textContains(label)).isNotEmpty()
         }
+        // Proof that the walk MOVED the body. Without it a body that never
+        // scrolled and a panel that never drew the sections both end in "not
+        // seen", and the assertion would pass on a panel nothing looked at.
+        var moved = false
+        var last = bodySignature()
+        fun step(drag: () -> Unit) {
+            drag()
+            val now = bodySignature()
+            if (now != last) moved = true
+            last = now
+        }
+        // Reach the top first. The content assertion before this one leaves the
+        // body wherever its own target sat, and a walk that starts at the
+        // bottom can only report that it never moved.
+        var topGuard = 0
+        while (topGuard++ < 16) {
+            val before = last
+            step { dragDownHalf() }
+            if (last == before) break
+        }
         repeat(16) {
             found()?.let { return it }
-            dragUpHalf()
+            step { dragUpHalf() }
         }
         found()?.let { return it }
         // The walk has to reach the bottom, and a docked body is only ~72% of
         // the window; without this the sections below it are never looked at,
         // and "absent" would mean "not scrolled to".
-        if (!expandToFullScreen()) return found()
+        if (!expandToFullScreen()) return found() ?: if (moved) null else unwalked()
         repeat(16) {
             found()?.let { return it }
-            dragUpHalf()
+            step { dragUpHalf() }
         }
-        return found()
+        return found() ?: if (moved) null else unwalked()
     }
+
+    /**
+     * What UiAutomator can see inside the panel body right now, as one string.
+     *
+     * This is how the walk proves it moved. A single anchor row cannot answer
+     * that: measured on the CI emulator, the "read from the live page" line had
+     * already scrolled out when the walk began, so its bounds read "(off)"
+     * before and after every drag and a body that scrolled perfectly still
+     * reported that it never moved.
+     */
+    private fun bodySignature(): String {
+        val body = bodyRect() ?: return "(no body)"
+        val pkg = targetContext.packageName
+        val seen = sortedSetOf<String>()
+        runCatching {
+            device.findObjects(By.pkg(pkg)).forEach { node ->
+                val text = runCatching { node.text }.getOrNull()?.trim().orEmpty()
+                if (text.isEmpty()) return@forEach
+                val bounds = runCatching { node.visibleBounds }.getOrNull() ?: return@forEach
+                if (android.graphics.Rect.intersects(bounds, body)) seen.add(text)
+            }
+        }
+        return seen.joinToString("\u0001")
+    }
+
+    /**
+     * Stands in for the "nothing forbidden was seen" answer when the body never
+     * moved, so a panel the walk never reached fails the assertion instead of
+     * satisfying it.
+     */
+    private fun unwalked(): String =
+        "the panel body never scrolled, so an absent section cannot be told apart from one below the fold"
 
     // ---------- Developer Tools: opening it (proven pattern) ----------------
 
