@@ -107,6 +107,7 @@ val PROVIDER_PRESETS: List<ProviderPreset> = listOf(
     ProviderPreset("DeepSeek", "https://api.deepseek.com/v1", "OPENAI"),
     ProviderPreset("Mistral", "https://api.mistral.ai/v1", "OPENAI"),
     ProviderPreset("Together", "https://api.together.xyz/v1", "OPENAI"),
+    ProviderPreset("InferHub", "https://api.inferhub.dev/v1", "OPENAI"),
     // AgentRouter speaks the @ai-sdk/anthropic shape (POST /messages). The
     // gateway probes once and falls back to the OpenAI shape if the endpoint
     // is really OpenAI-compatible, so this one preset covers both. It ships a
