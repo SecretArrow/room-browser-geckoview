@@ -6,13 +6,24 @@ import com.roombrowser.browser.BrowserViewModel
 import com.roombrowser.browser.PageEvent
 import com.roombrowser.domain.agent.ActionVerdict
 import com.roombrowser.domain.agent.AgentJson
+import com.roombrowser.domain.agent.AgentPause
+import com.roombrowser.domain.agent.AgentStepVerifier
 import com.roombrowser.domain.agent.AgentTools
+import com.roombrowser.domain.agent.ChallengeDetector
+import com.roombrowser.domain.agent.ChallengeHit
 import com.roombrowser.domain.agent.formatDurationMs
 import com.roombrowser.domain.agent.KeyChord
+import com.roombrowser.domain.agent.PageDigestDto
+import com.roombrowser.domain.agent.PageReadiness
+import com.roombrowser.domain.agent.PageReadinessDto
 import com.roombrowser.domain.agent.PageSnapshotDto
 import com.roombrowser.domain.agent.PageSnapshotFormatter
+import com.roombrowser.domain.agent.ReadinessSample
+import com.roombrowser.domain.agent.ReadinessVerdict
+import com.roombrowser.domain.agent.SecretRedaction
 import com.roombrowser.domain.agent.ToolExecutor
 import com.roombrowser.domain.agent.ToolResult
+import com.roombrowser.domain.agent.UntrustedContent
 import com.roombrowser.domain.engine.UrlIntelligence
 import com.roombrowser.domain.oct.OctUri
 import kotlinx.coroutines.CancellationException
@@ -77,8 +88,21 @@ class AgentToolExecutor(
     /** This profile's own notes and authenticator accounts; see [AgentProfileData]. */
     private val profileData: AgentProfileData? = null,
     /** Whether the digits of a generated code may be returned to the model. */
-    private val otpDigitsAllowed: suspend () -> Boolean = { false }
+    private val otpDigitsAllowed: suspend () -> Boolean = { false },
+    /**
+     * Told every time the pause state changes, so the panel and the ongoing
+     * notification can show it. See [AgentPause].
+     */
+    private val onPause: suspend (AgentPause) -> Unit = {},
+    /**
+     * Suspends until the user says the page's check is done. The executor
+     * itself NEVER touches the check — see [handOver].
+     */
+    private val awaitChallengeResume: suspend () -> Unit = {}
 ) : ToolExecutor {
+
+    /** Why the last failed readiness wait gave up; null when it did not fail. */
+    private var lastReadinessMessage: String? = null
 
     private val appTools by lazy {
         AgentAppTools(
@@ -122,8 +146,11 @@ class AgentToolExecutor(
                 if (name in MOVES_THE_PAGE || name in NEEDS_SCREEN_TAB) {
                     awaitBoundTabActive()?.let { return@withContext it }
                 }
-                appTools.execute(name, argsJson)?.let { return@withContext it }
-                when (name) {
+                appTools.execute(name, argsJson)?.let { return@withContext answer(name, it) }
+                // Measured BEFORE the action so the page can be compared after
+                // it — see [appendEvidence] and [AgentStepVerifier].
+                val before = if (name in MUTATING_PAGE_TOOLS) measurePage() else null
+                val raw = when (name) {
                     AgentTools.NAVIGATE -> navigate(str(args, "url"))
                     AgentTools.SEARCH_WEB -> searchWeb(str(args, "query"))
                     AgentTools.READ_PAGE -> readPage()
@@ -152,6 +179,8 @@ class AgentToolExecutor(
                     AgentTools.WAIT_FOR -> waitFor(str(args, "text"), intOrNull(args, "timeout_ms"))
                     else -> ToolResult(false, "unknown tool: $name")
                 }
+                val withEvidence = before?.let { appendEvidence(raw, it) } ?: raw
+                answer(name, withEvidence)
             } catch (ce: CancellationException) {
                 throw ce
             } catch (t: Throwable) {
@@ -183,17 +212,21 @@ class AgentToolExecutor(
         val triggerAt = SystemClock.elapsedRealtime()
         vm.loadUrl(url)
         val settled = awaitPageSettle(triggerAt)
-        delay(SETTLE_MS)
         // Where the tab LANDED, read from this tab's own engine: pageState
         // belongs to the tab on screen, and the user may have switched away
         // while the page was loading — the report would then name the page
         // they switched TO.
         val landed = tabId?.let { vm.tabSession(it) }
+        // A finished load is not a settled page: `readyState === 'complete'`
+        // flips while the page's own fetch/XHR calls are still outstanding, and
+        // the next read would show half of it (see [awaitReadiness]).
+        val busy = landed?.let { awaitReadiness(it) == ReadinessVerdict.TimedOut } ?: false
         val landedUrl = landed?.url?.takeIf { it.isNotBlank() } ?: url
         return if (settled) {
             ToolResult(
                 true,
-                "Navigated to $landedUrl — \"${landed?.title.orEmpty()}\". Call read_page to inspect the content."
+                "Navigated to $landedUrl — \"${landed?.title.orEmpty()}\". Call read_page to inspect the content." +
+                    if (busy) " " + lastReadinessMessage.orEmpty() else ""
             )
         } else {
             ToolResult(
@@ -466,6 +499,172 @@ class AgentToolExecutor(
         }
     }
 
+    // ------------------------------------------------------------- page safety
+
+    /**
+     * The last thing every page-derived result passes through: the fence, the
+     * masking, and the check for a page that is asking for a person.
+     *
+     * Both transformations live HERE, at the one boundary every tool result
+     * crosses, rather than inside each tool — a tool added later then cannot
+     * forget them (see [PAGE_TEXT_TOOLS]).
+     */
+    private suspend fun answer(name: String, result: ToolResult): ToolResult {
+        val framed =
+            if (name in PAGE_TEXT_TOOLS) ToolResult(result.ok, framePageText(result.output))
+            else result
+        return handOverIfChallenged(framed)
+    }
+
+    /** Fences page text as DATA and masks anything credential-shaped in it. */
+    private fun framePageText(text: String): String =
+        UntrustedContent.wrap(SecretRedaction.redact(text), "the page")
+
+    /**
+     * Stops and hands over when the page is showing a challenge.
+     *
+     * The haystack is the result the model is about to read plus this tab's own
+     * title and URL — all three are written by the site. There is no console or
+     * network feed yet (those arrive with the devtools tools), so a challenge
+     * that leaves no trace in any of the three is not caught here.
+     */
+    private suspend fun handOverIfChallenged(result: ToolResult): ToolResult {
+        val session = boundSession()
+        val hit = ChallengeDetector.detect(
+            pageText = result.output.take(MAX_CHALLENGE_SCAN_CHARS),
+            url = session?.url,
+            title = session?.title
+        )
+        if (!hit.detected) return result
+        return handOver(hit)
+    }
+
+    /**
+     * Hand the turn over to the user and wait.
+     *
+     * NOTHING here touches the check: no click, no tap at a coordinate, no
+     * retry of whatever ran into the wall. An agent that "helps" with one of
+     * these is the exact automation they exist to stop, and a coordinate tap
+     * would be guessing at a page it cannot read.
+     *
+     * Resume is not taken on trust either. It re-runs the readiness gate and
+     * takes a FRESH reading of the page, and the turn only continues when the
+     * challenge is gone from that reading — a user who resumes too early is
+     * told so and asked again instead of being quietly obeyed.
+     */
+    private suspend fun handOver(first: ChallengeHit): ToolResult {
+        var hit = first
+        var round = 0
+        // Bounded, because a caller with nobody behind it — a scheduled run,
+        // where the resume callback returns at once — would otherwise spin here
+        // forever against a page that never stops asking.
+        while (round < MAX_HANDOVER_ROUNDS) {
+            round++
+            onPause(AgentPause.ChallengeDetected(hit.kind))
+            // Held briefly so the first state is actually seen before the ask
+            // replaces it.
+            delay(PAUSE_NOTICE_MS)
+            onPause(AgentPause.WaitingForUser)
+            val resumed = withTimeoutOrNull(CHALLENGE_WAIT_MS) { awaitChallengeResume() } != null
+            if (!resumed) {
+                onPause(AgentPause.None)
+                return ToolResult(
+                    false,
+                    "no one answered the check within ${CHALLENGE_WAIT_MS / 60_000} minutes, so this " +
+                        "turn stopped here. Tell the user the page is still waiting for them."
+                )
+            }
+            if (!kotlin.coroutines.coroutineContext.isActive) {
+                return ToolResult(false, "the turn was stopped while the page was waiting for the user")
+            }
+            val session = boundSession()
+            if (session == null) {
+                onPause(AgentPause.VerificationSuccessful)
+                delay(PAUSE_NOTICE_MS)
+                onPause(AgentPause.None)
+                return ToolResult(true, CHALLENGE_CLEARED_NOTE + " The page is no longer open.")
+            }
+            awaitReadiness(session)
+            val again = ChallengeDetector.detect(
+                pageText = rawSnapshotText(session),
+                url = session.url,
+                title = session.title
+            )
+            if (!again.detected) {
+                onPause(AgentPause.VerificationSuccessful)
+                delay(PAUSE_NOTICE_MS)
+                onPause(AgentPause.None)
+                return ToolResult(true, CHALLENGE_CLEARED_NOTE)
+            }
+            onPause(AgentPause.VerificationFailed)
+            delay(PAUSE_NOTICE_MS)
+            hit = again
+        }
+        onPause(AgentPause.None)
+        return ToolResult(
+            false,
+            "the page is still asking for a person after $MAX_HANDOVER_ROUNDS attempts, so this turn " +
+                "stops here. Tell the user the page needs them."
+        )
+    }
+
+    /** The page's own visible text, unframed — used only to look for a challenge. */
+    private suspend fun rawSnapshotText(session: EngineSession): String? {
+        val raw = evaluateJs(session, PageInjector.snapshotJs()) ?: return null
+        if (raw.isBlank() || raw == "null" || raw == "undefined") return null
+        return runCatching { AgentJson.decodeFromString(PageSnapshotDto.serializer(), raw) }
+            .getOrNull()?.text
+    }
+
+    /** The page's canonical digest, or null when it cannot be measured at all. */
+    private suspend fun measurePage(): String? {
+        val session = boundSession() ?: return null
+        val raw = evaluateJs(session, PageInjector.digestJs()) ?: return null
+        val dto = runCatching { AgentJson.decodeFromString(PageDigestDto.serializer(), raw) }
+            .getOrNull() ?: return null
+        return AgentStepVerifier.digest(dto)
+    }
+
+    /**
+     * Appends what the action actually did, measured rather than assumed —
+     * "the page did NOT change" one step after a click is the fact that stops
+     * the model repeating it (see [AgentStepVerifier]).
+     */
+    private suspend fun appendEvidence(result: ToolResult, before: String): ToolResult =
+        result.copy(output = result.output + "\n\n" + AgentStepVerifier.evidenceFor(before, measurePage()))
+
+    /**
+     * The readiness gate: `readyState === 'complete'` AND nothing in flight for
+     * a settle window.
+     *
+     * A page that never goes quiet is reported rather than waited on forever —
+     * the caller gets [ReadinessVerdict.TimedOut] with the probe's own last
+     * sample, and says so instead of pretending the page was ready.
+     */
+    private suspend fun awaitReadiness(session: EngineSession): ReadinessVerdict {
+        val gate = PageReadiness(settleMs = READINESS_SETTLE_MS, ceilingMs = READINESS_CEILING_MS)
+        gate.start(SystemClock.elapsedRealtime())
+        var last: ReadinessSample? = null
+        val verdict = withTimeoutOrNull(READINESS_CEILING_MS + 1_000) {
+            var result: ReadinessVerdict = ReadinessVerdict.Busy
+            while (result == ReadinessVerdict.Busy) {
+                val raw = evaluateJs(session, PageInjector.readinessJs())
+                val dto = raw?.let {
+                    runCatching { AgentJson.decodeFromString(PageReadinessDto.serializer(), it) }.getOrNull()
+                }
+                if (dto != null) {
+                    val sample = ReadinessSample(dto.readyState, dto.inFlight, SystemClock.elapsedRealtime())
+                    last = sample
+                    result = gate.observe(sample)
+                }
+                if (result == ReadinessVerdict.Busy) delay(POLL_MS)
+            }
+            result
+        } ?: ReadinessVerdict.TimedOut
+        lastReadinessMessage = if (verdict == ReadinessVerdict.TimedOut) gate.busyMessage(last) else null
+        return verdict
+    }
+
     // ------------------------------------------------------------- helpers
 
     /**
@@ -691,8 +890,82 @@ class AgentToolExecutor(
          * at another tab, short enough that a turn is not held hostage by one.
          */
         private const val TAB_FOREGROUND_WAIT_MS = 8_000L
+
+        /**
+         * How long a page must show `readyState === 'complete'` with nothing in
+         * flight before it counts as settled. Shorter than the old fixed delay
+         * on a quiet page because it measures the page rather than guessing.
+         */
+        private const val READINESS_SETTLE_MS = 500L
+
+        /**
+         * The ceiling on a readiness wait, after which the page is reported as
+         * still busy. A site that keeps a request open (long-polling, analytics
+         * beacon) must not hold a turn open with it.
+         */
+        private const val READINESS_CEILING_MS = 3_000L
+
+        /** How long each hand-over state stays on screen before the next one. */
+        private const val PAUSE_NOTICE_MS = 700L
+
+        /**
+         * How long a hand-over waits for the user. Long enough to actually
+         * finish a check by hand, short enough that an unattended turn ends
+         * instead of sitting on a live foreground service forever.
+         */
+        private const val CHALLENGE_WAIT_MS = 10 * 60_000L
+
+        /** How many times a hand-over is offered before the turn gives up. */
+        private const val MAX_HANDOVER_ROUNDS = 3
+
+        /** A challenge this deep into a result is not what the page is about. */
+        private const val MAX_CHALLENGE_SCAN_CHARS = 20_000
+
+        private const val CHALLENGE_CLEARED_NOTE =
+            "the check is gone and the page reads normally again. Call read_page before acting, " +
+                "then carry on with what you were doing."
+
+        /**
+         * The tools that are supposed to CHANGE the page, and so are measured
+         * before and after (see [appendEvidence]). read_page and navigate are
+         * not here: one is a read, and the other reports where it landed.
+         */
+        private val MUTATING_PAGE_TOOLS = setOf(
+            AgentTools.CLICK,
+            AgentTools.FILL_INPUT,
+            AgentTools.PRESS_ENTER,
+            AgentTools.SELECT_OPTION,
+            AgentTools.PRESS_KEYS,
+            AgentTools.AUTO_LIKE,
+            AgentTools.AUTO_REPOST,
+            AgentTools.AUTO_REPLY,
+            AgentTools.AUTO_POST
+        )
     }
 }
+
+/**
+ * The tools whose answer QUOTES the page back at the model, and so has to
+ * arrive inside the untrusted fence (see [UntrustedContent]).
+ *
+ * Classified by what the script's own return value contains rather than by
+ * feel: `click` reports the element's `innerText` label, `select_option`
+ * reports the option names it found, `run_js` returns whatever the model's
+ * script read, and `app_page` reports the page's title. The rest answer with
+ * sentences this app wrote ("typed the reply and clicked submit"), which are
+ * nobody's page talking. read_page is absent because [PageSnapshotFormatter]
+ * already fences it, and so it must NOT appear here or it would be fenced twice.
+ *
+ * Top-level rather than private to one executor because BOTH page executors
+ * need it — a headless turn reads the same pages — and a list kept in two
+ * places is a list that drifts.
+ */
+internal val PAGE_TEXT_TOOLS: Set<String> = setOf(
+    AgentTools.CLICK,
+    AgentTools.SELECT_OPTION,
+    AgentTools.RUN_JS,
+    AgentTools.APP_PAGE
+)
 
 /**
  * The tools that can START A NAVIGATION in the tab they act on, and so may

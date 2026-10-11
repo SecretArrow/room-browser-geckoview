@@ -36,6 +36,7 @@ class AgentKeepAliveService : Service() {
 
     private var wakeLock: PowerManager.WakeLock? = null
     private var lastStatus: String = "Working…"
+    private var lastPaused: Boolean = false
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -51,6 +52,18 @@ class AgentKeepAliveService : Service() {
                 AgentForeground.stopCurrentTurn?.invoke()
                 requestStop()
             }
+            // The toggle does the deciding and then reports back through
+            // [setPaused], so the action's label can never disagree with the
+            // turn's actual state.
+            ACTION_PAUSE -> {
+                val toggle = AgentForeground.pauseCurrentTurn
+                if (toggle == null) {
+                    requestStop()
+                } else {
+                    goForeground(lastStatus)
+                    toggle.invoke()
+                }
+            }
             else -> {
                 intent?.getStringExtra(EXTRA_STATUS)?.let { lastStatus = it }
                 goForeground(lastStatus)
@@ -63,6 +76,17 @@ class AgentKeepAliveService : Service() {
     fun updateStatus(status: String?) {
         if (status.isNullOrBlank()) return
         lastStatus = status
+        notifyLast()
+    }
+
+    /** Called (same process) by [AgentForeground.setPaused]. */
+    fun setPaused(paused: Boolean) {
+        if (paused == lastPaused) return
+        lastPaused = paused
+        notifyLast()
+    }
+
+    private fun notifyLast() {
         val nm = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
         try {
             nm.notify(NOTIFICATION_ID, buildNotification(lastStatus))
@@ -158,6 +182,11 @@ class AgentKeepAliveService : Service() {
             Intent(this, AgentKeepAliveService::class.java).setAction(ACTION_STOP),
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
+        val pause = PendingIntent.getService(
+            this, 2,
+            Intent(this, AgentKeepAliveService::class.java).setAction(ACTION_PAUSE),
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
         return NotificationCompat.Builder(this, CHANNEL_ID)
             .setSmallIcon(android.R.drawable.ic_menu_view)
             .setContentTitle("Room Agent")
@@ -165,6 +194,9 @@ class AgentKeepAliveService : Service() {
             .setOngoing(true)
             .setOnlyAlertOnce(true)
             .setContentIntent(open)
+            // Pause sits beside Stop so the two ways out of a running turn are
+            // equally close: one holds it, the other ends it.
+            .addAction(0, if (lastPaused) "Resume" else "Pause", pause)
             .addAction(0, "Stop", stop)
             .build()
     }
@@ -179,6 +211,7 @@ class AgentKeepAliveService : Service() {
     companion object {
         const val ACTION_START = "com.roombrowser.agent.START"
         const val ACTION_STOP = "com.roombrowser.agent.STOP"
+        const val ACTION_PAUSE = "com.roombrowser.agent.PAUSE"
         const val EXTRA_STATUS = "status"
         private const val CHANNEL_ID = "agent_progress"
         private const val NOTIFICATION_ID = 402
@@ -197,6 +230,14 @@ object AgentForeground {
     @Volatile
     var stopCurrentTurn: (() -> Unit)? = null
 
+    /**
+     * Set while a turn runs — the notification's Pause/Resume action invokes
+     * it. One toggle rather than two actions, because the label the user reads
+     * is then always the state they will get.
+     */
+    @Volatile
+    var pauseCurrentTurn: (() -> Unit)? = null
+
     @Volatile
     internal var instance: AgentKeepAliveService? = null
 
@@ -214,6 +255,15 @@ object AgentForeground {
     /** Mirrors a progress line into the ongoing notification. */
     fun status(text: String?) {
         instance?.updateStatus(text)
+    }
+
+    /**
+     * Switches the notification's Pause action between "Pause" and "Resume".
+     * Driven by the turn's actual state rather than by whoever tapped, so the
+     * button cannot end up describing the wrong thing.
+     */
+    fun setPaused(paused: Boolean) {
+        instance?.setPaused(paused)
     }
 
     /** Stops the service when the turn is over. */

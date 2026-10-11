@@ -1,5 +1,6 @@
 package com.roombrowser.agent
 
+import com.roombrowser.domain.agent.SecretRedaction
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -59,7 +60,19 @@ object AgentChatExport {
 
     private const val RULE = "================================================================"
 
-    fun render(header: Header, sessions: List<Session>): String = buildString {
+    /**
+     * The document, with every credential-shaped string masked.
+     *
+     * Redaction is applied to the FINISHED text rather than to each field, and
+     * that is deliberate: this file leaves the app — it is attached to bug
+     * reports and shared — and a field-by-field pass is only as complete as the
+     * list of fields someone remembered. Masking the whole document cannot miss
+     * a line added later.
+     */
+    fun render(header: Header, sessions: List<Session>): String =
+        SecretRedaction.redact(buildDocument(header, sessions))
+
+    private fun buildDocument(header: Header, sessions: List<Session>): String = buildString {
         appendLine("Room Browser — AI agent chat export")
         appendLine("Profile: ${header.profileLabel}")
         appendLine("Exported: ${stamp(header.exportedAt)}")

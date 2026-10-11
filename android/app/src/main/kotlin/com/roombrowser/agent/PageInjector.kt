@@ -461,4 +461,83 @@ object PageInjector {
           return body.toLowerCase().indexOf(String($jsonText).toLowerCase()) !== -1 ? '1' : '0';
         })()
     """.trimIndent()
+
+    /**
+     * Reports whether the page is still working: `{readyState, inFlight}`.
+     *
+     * `document.readyState === 'complete'` flips while the page's OWN fetch and
+     * XHR calls are still outstanding, which is the window where a snapshot
+     * shows half a page. So the probe installs a counter on first call (once
+     * per document — the site's own framing may replace `window`, which just
+     * means a fresh counter on the new document) and every wrapper decrements
+     * it on both settle paths, including rejection, so a failed request cannot
+     * wedge the count upward forever.
+     */
+    fun readinessJs(): String = """
+        (function(){
+          var w = window;
+          if (!w.__roomAgentNet) {
+            var c = { n: 0 };
+            w.__roomAgentNet = c;
+            try {
+              var f = w.fetch;
+              if (f) {
+                w.fetch = function(){
+                  c.n++;
+                  var p = f.apply(this, arguments);
+                  if (p && p.then) {
+                    // Handled, not rethrown: a rejection handler that rethrows
+                    // would fire the page's own unhandledrejection for a
+                    // request that did reject — noise this probe caused.
+                    p.then(function(r){ c.n--; return r; }, function(e){ c.n--; });
+                  } else { c.n--; }
+                  return p;
+                };
+              }
+            } catch (e) {}
+            try {
+              var X = w.XMLHttpRequest;
+              if (X && X.prototype && X.prototype.send) {
+                var send = X.prototype.send;
+                X.prototype.send = function(){
+                  c.n++;
+                  try { this.addEventListener('loadend', function(){ c.n--; }); } catch (e) {}
+                  return send.apply(this, arguments);
+                };
+              }
+            } catch (e) {}
+          }
+          return { readyState: document.readyState, inFlight: Math.max(w.__roomAgentNet.n, 0) };
+        })()
+    """.trimIndent()
+
+    /**
+     * The inputs of [com.roombrowser.domain.agent.AgentStepVerifier]'s digest:
+     * URL, visible-text length and hash, and the state of the tagged elements.
+     * The text is hashed here rather than shipped, because the point is to
+     * notice a change, not to read the page twice.
+     */
+    fun digestJs(): String = """
+        (function(){
+          var text = (document.body ? (document.body.innerText || '') : '') || '';
+          var h = 2166136261;
+          for (var i = 0; i < text.length; i++) {
+            h = (h ^ text.charCodeAt(i)) >>> 0;
+            h = (h * 16777619) >>> 0;
+          }
+          var els = document.querySelectorAll('[$REF_ATTR]');
+          var parts = [];
+          for (var j = 0; j < els.length && j < 200; j++) {
+            var e = els[j];
+            parts.push(e.getAttribute('$REF_ATTR') + ':' + e.tagName + ':' +
+              (e.checked === true ? '1' : '0') + ':' + (e.disabled === true ? '1' : '0'));
+          }
+          return {
+            url: String(location.href),
+            textLength: text.length,
+            textHash: h.toString(16),
+            elements: parts.join('|')
+          };
+        })()
+    """.trimIndent()
 }
