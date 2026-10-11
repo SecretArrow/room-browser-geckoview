@@ -580,6 +580,7 @@ private fun AgentSettingsRoot(
             // express a default-off feature), and the row below opens the list
             // where the user reads and prunes what has been kept.
             SectionHeader("Agent memory")
+            val memoryContext = LocalContext.current
             SettingSwitchRow(
                 title = "Let the agent remember this site",
                 subtitle = "Lets the agent keep notes about the sites you visit, so it can pick up " +
@@ -592,7 +593,7 @@ private fun AgentSettingsRoot(
             SettingActionRow(
                 title = "Remembered sites",
                 subtitle = "See and delete what the agent has remembered for this profile",
-                onClick = { AgentMemoryActivity.launch(LocalContext.current, controller.profileId) }
+                onClick = { AgentMemoryActivity.launch(memoryContext, controller.profileId) }
             )
 
             // ================= Retry on error =================
