@@ -385,7 +385,8 @@ class DevToolsApplicationPanelE2eTest {
         )
         val offender = firstHiddenSectionOnScreen()
         assertTrue(
-            "A section this build does not read must be absent, but '$offender' was on screen\n${uiTree()}",
+            "The walk must move the panel body and find no section this build does not " +
+                "read; it reported [$offender]\n${uiTree()}",
             offender == null
         )
     }
@@ -736,21 +737,39 @@ class DevToolsApplicationPanelE2eTest {
         fun found(): String? = hiddenSectionLabels.firstOrNull { label ->
             device.findObjects(By.textContains(label)).isNotEmpty()
         }
+        // Proof that the walk MOVED the body. Without it a body that never
+        // scrolled and a panel that never drew the sections both end in "not
+        // seen", and the assertion would pass on a panel nothing looked at.
+        var moved = false
+        var lastTop = bodyTop()
+        fun step() {
+            dragUpHalf()
+            val top = bodyTop()
+            if (top != lastTop) moved = true
+            lastTop = top
+        }
         repeat(16) {
             found()?.let { return it }
-            dragUpHalf()
+            step()
         }
         found()?.let { return it }
         // The walk has to reach the bottom, and a docked body is only ~72% of
         // the window; without this the sections below it are never looked at,
         // and "absent" would mean "not scrolled to".
-        if (!expandToFullScreen()) return found()
+        if (!expandToFullScreen()) return found() ?: if (moved) null else unwalked()
         repeat(16) {
             found()?.let { return it }
-            dragUpHalf()
+            step()
         }
-        return found()
+        return found() ?: if (moved) null else unwalked()
     }
+
+    /**
+     * Stands in for the "nothing forbidden was seen" answer when the body never
+     * moved, so a panel the walk never reached fails the assertion instead of
+     * satisfying it.
+     */
+    private fun unwalked(): String = "the panel body never scrolled"
 
     // ---------- Developer Tools: opening it (proven pattern) ----------------
 
