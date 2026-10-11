@@ -8,8 +8,10 @@ import com.roombrowser.domain.agent.AgentTools
 import com.roombrowser.domain.agent.KeyChord
 import com.roombrowser.domain.agent.PageSnapshotDto
 import com.roombrowser.domain.agent.PageSnapshotFormatter
+import com.roombrowser.domain.agent.SecretRedaction
 import com.roombrowser.domain.agent.ToolExecutor
 import com.roombrowser.domain.agent.ToolResult
+import com.roombrowser.domain.agent.UntrustedContent
 import com.roombrowser.domain.agent.formatDurationMs
 import com.roombrowser.domain.engine.UrlIntelligence
 import com.roombrowser.domain.oct.OctUri
@@ -112,7 +114,7 @@ class HeadlessToolExecutor(
             val args: Map<String, Any?> = parseArgs(argsJson)
             refusal(name, argsJson)?.let { return@withContext it }
             try {
-                when (name) {
+                val raw = when (name) {
                     AgentTools.NAVIGATE -> navigate(str(args, "url"))
                     AgentTools.SEARCH_WEB -> searchWeb(str(args, "query"))
                     AgentTools.READ_PAGE -> readPage()
@@ -134,6 +136,11 @@ class HeadlessToolExecutor(
                         ?.execute(name, argsJson)
                         ?: ToolResult(false, "tool '$name' is not available in this run")
                     else -> ToolResult(false, "unknown tool: $name")
+                }
+                if (name in PAGE_TEXT_TOOLS) {
+                    ToolResult(raw.ok, UntrustedContent.wrap(SecretRedaction.redact(raw.output), "the page"))
+                } else {
+                    raw
                 }
             } catch (ce: CancellationException) {
                 throw ce

@@ -20,6 +20,8 @@ import com.roombrowser.domain.agent.AgentEvent
 import com.roombrowser.domain.agent.AgentGateway
 import com.roombrowser.domain.agent.AgentHttpException
 import com.roombrowser.domain.agent.AgentLoop
+import com.roombrowser.domain.agent.AgentPause
+import com.roombrowser.domain.agent.AgentPauseLabels
 import com.roombrowser.domain.agent.AgentPrompts
 import com.roombrowser.domain.agent.AgentTools
 import com.roombrowser.domain.agent.AutoModelPicker
@@ -32,6 +34,7 @@ import com.roombrowser.domain.model.SearchEngines
 import com.roombrowser.domain.task.AiTaskPermissions
 import com.roombrowser.engine.EngineSession
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -305,6 +308,21 @@ class BrowserAgentController(
         private set
     var modelsError by mutableStateOf<String?>(null)
         private set
+    /**
+     * Why the turn is not moving right now: the user's own Pause, or a
+     * challenge that has been handed to them. [AgentPause.None] while it runs.
+     *
+     * Read by the panel and mirrored into the ongoing notification, so the two
+     * cannot say different things.
+     */
+    var pauseState by mutableStateOf<AgentPause>(AgentPause.None)
+        private set
+
+    /** A user Pause the loop is waiting out; completed by [resume]. */
+    private var userResume: CompletableDeferred<Unit>? = null
+
+    /** A challenge hand-over the executor is waiting out; completed by [resume]. */
+    private var challengeResume: CompletableDeferred<Unit>? = null
 
     /** Cached /models results per provider id. */
     private val modelCache = HashMap<Long, List<String>>()
@@ -397,6 +415,7 @@ class BrowserAgentController(
     fun shutdown() {
         turnJob?.cancel()
         AgentForeground.stopCurrentTurn = null
+        AgentForeground.pauseCurrentTurn = null
         AgentForeground.finish()
         scope.cancel()
     }
@@ -756,7 +775,87 @@ class BrowserAgentController(
         running = false
         statusLine = null
         approval = null
+        clearPause()
         entries = entries + AgentEntry.Notice("Stopped by user", error = true, at = System.currentTimeMillis())
+    }
+
+    /**
+     * Pauses the turn. Honoured BETWEEN steps — nothing can cut a tool in half —
+     * and refused while a challenge is on screen, where the turn is already
+     * stopped and "Task Paused" would replace the line that says what the user
+     * is being asked to do.
+     */
+    fun pause() {
+        if (!running || pauseState != AgentPause.None) return
+        applyPauseState(AgentPause.Paused)
+    }
+
+    /**
+     * Resumes whatever the turn is waiting on: the user's own pause, or a
+     * challenge they say they have finished.
+     *
+     * The challenge path does NOT take that on trust — the executor re-reads the
+     * page and hands over again if the check is still there.
+     */
+    fun resume() {
+        if (pauseState == AgentPause.Paused) {
+            pauseState = AgentPause.None
+            AgentForeground.setPaused(false)
+            setStatus(null)
+        }
+        userResume?.let { if (!it.isCompleted) it.complete(Unit) }
+        challengeResume?.let { if (!it.isCompleted) it.complete(Unit) }
+    }
+
+    /** What the notification's single Pause/Resume action does. */
+    fun togglePause() {
+        if (!running) return
+        if (pauseState == AgentPause.None) pause() else resume()
+    }
+
+    /** Waits out a user Pause between steps; see [AgentLoop.beforeStep]. */
+    private suspend fun awaitUserResume() {
+        while (running && pauseState == AgentPause.Paused) {
+            val waiter = CompletableDeferred<Unit>()
+            userResume = waiter
+            waiter.await()
+        }
+        userResume = null
+    }
+
+    /** Waits for the user to say a challenge is done. */
+    private suspend fun awaitChallengeDone() {
+        val waiter = CompletableDeferred<Unit>()
+        challengeResume = waiter
+        waiter.await()
+        challengeResume = null
+    }
+
+    /**
+     * Mirrors the executor's pause state into the panel and the notification,
+     * and says in the chat what is being asked of the user the moment a
+     * challenge is first seen — a notification the user never sees and a panel
+     * they are not looking at is not a hand-over.
+     */
+    private fun applyPauseState(state: AgentPause) {
+        pauseState = state
+        (state as? AgentPause.ChallengeDetected)?.let {
+            note(AgentPauseLabels.handOverText(it.kind), error = false)
+        }
+        // The same sentence in the status line and in the notification, so the
+        // panel and a user who is looking at their lock screen agree.
+        AgentPauseLabels.labelOf(state)?.let { setStatus(it) }
+        AgentForeground.setPaused(state != AgentPause.None)
+    }
+
+    /** Ends whatever the turn was waiting on, without pretending it finished. */
+    private fun clearPause() {
+        userResume?.let { if (!it.isCompleted) it.complete(Unit) }
+        challengeResume?.let { if (!it.isCompleted) it.complete(Unit) }
+        userResume = null
+        challengeResume = null
+        pauseState = AgentPause.None
+        AgentForeground.setPaused(false)
     }
 
     /** Sends the turn that did not finish again, word for word. */
@@ -795,6 +894,7 @@ class BrowserAgentController(
         // Background mode: foreground service + wake lock so the turn keeps
         // running when the user leaves the app or the screen turns off.
         AgentForeground.stopCurrentTurn = { stop() }
+        AgentForeground.pauseCurrentTurn = { togglePause() }
         AgentForeground.begin(appContext)
         AgentForeground.status("Working: " + text.take(60))
         setStatus(null)
@@ -879,7 +979,9 @@ class BrowserAgentController(
                 profileData = GraphAgentProfileData(graph, profileId, appContext),
                 // Read live rather than from the turn's snapshot: the user can
                 // flip it while the turn is running.
-                otpDigitsAllowed = { appState.agentSettingsSnapshot().otpDigitsToAgent }
+                otpDigitsAllowed = { appState.agentSettingsSnapshot().otpDigitsToAgent },
+                onPause = { state -> applyPauseState(state) },
+                awaitChallengeResume = { awaitChallengeDone() }
             )
             // HEADLESS: the turn drives a hidden page of this profile's own
             // instead of the tab on screen. The reference is kept so the
@@ -918,8 +1020,12 @@ class BrowserAgentController(
             // Plan mode wraps the WHOLE turn, the headless gate included:
             // that gate hands the app's own tools straight through, and one of
             // them (app_2fa action=fill) reaches the page by that route.
+            // The action budget wraps the whole turn too, the app's own tools
+            // included since those reach the page. Plan mode stays outermost:
+            // an action it refuses never ran, so it must not spend the budget.
+            val budget = ActionBudgetGate(pageExecutor)
             val executor: ToolExecutor =
-                if (settings.chatMode == AgentMode.PLAN) PlanModeToolGate(pageExecutor) else pageExecutor
+                if (settings.chatMode == AgentMode.PLAN) PlanModeToolGate(budget) else budget
             // "Delete all agent chats" can run in the settings ACTIVITY while
             // a session is active here — verify it still exists, else start a
             // fresh one instead of writing to a dead row (FK safety).
@@ -973,7 +1079,18 @@ class BrowserAgentController(
                 request = text
             )
 
-            val loop = AgentLoop(gateway, executor, config)
+            val loop = AgentLoop(
+                gateway = gateway,
+                tools = executor,
+                config = config,
+                // A Pause is honoured here, BETWEEN steps: a tool that has
+                // already started is never cut in half.
+                beforeStep = { awaitUserResume() },
+                // The budget's hard stop ends the turn with its own sentence
+                // rather than leaving the model to hammer a refused action.
+                stopRequested = { budget.stopped },
+                stopReason = { budget.stopReason }
+            )
             loop.runTurn(history) { event ->
                 when (event) {
                     is AgentEvent.AssistantText -> {
@@ -1077,7 +1194,11 @@ class BrowserAgentController(
             // it is never in the tab list, and a session left alive keeps a
             // renderer and its cookies' page state around for nothing.
             ownedPage?.let { runCatching { it.close() } }
+            // A turn that ends — finished, stopped or thrown — leaves nothing
+            // waiting and nothing on screen claiming it is still paused.
+            clearPause()
             AgentForeground.stopCurrentTurn = null
+            AgentForeground.pauseCurrentTurn = null
             AgentForeground.finish()
             // The pin belongs to the turn, so it lifts with the turn —
             // including when the turn threw. Cleared by value and not by id on

@@ -63,6 +63,8 @@ import androidx.compose.material.icons.filled.ErrorOutline
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardReturn
+import androidx.compose.material.icons.filled.Pause
+import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Public
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
@@ -138,6 +140,8 @@ import com.roombrowser.agent.BrowserAgentController
 import com.roombrowser.browser.BrowserViewModel
 import com.roombrowser.data.db.AgentProviderEntity
 import com.roombrowser.data.repo.AgentMode
+import com.roombrowser.domain.agent.AgentPause
+import com.roombrowser.domain.agent.AgentPauseLabels
 import com.roombrowser.domain.agent.AgentTools
 import com.roombrowser.domain.paging.Paging
 import com.roombrowser.ui.common.LocalRoomExtras
@@ -1363,6 +1367,35 @@ private fun AgentComposer(agent: BrowserAgentController, modifier: Modifier = Mo
                         }
                     }
                 }
+
+                // A pause or a challenge is a STATE, not a message: it stays on
+                // screen for as long as it is true, in the exact words the core
+                // decided on (see AgentPauseLabels), so the panel, the status
+                // line and the notification cannot drift apart.
+                val pauseLabel = AgentPauseLabels.labelOf(agent.pauseState)
+                if (pauseLabel != null) {
+                    Spacer(Modifier.height(6.dp))
+                    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+                        Text(
+                            pauseLabel,
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.tertiary,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier
+                                .weight(1f)
+                                .semantics { contentDescription = "agent_pause_state" }
+                        )
+                        if (agent.pauseState != AgentPause.Paused) {
+                            TextButton(
+                                onClick = { agent.resume() },
+                                modifier = Modifier.semantics { contentDescription = "agent_resume" }
+                            ) {
+                                Text("Resume")
+                            }
+                        }
+                    }
+                }
             }
 
             // Row 2 — full-width input row.
@@ -1389,6 +1422,22 @@ private fun AgentComposer(agent: BrowserAgentController, modifier: Modifier = Mo
                 )
                 Spacer(Modifier.width(8.dp))
                 if (agent.running) {
+                    // One toggle beside Stop: it holds the turn when it is
+                    // running and lets it go when it is held — a challenge
+                    // included, where "carry on" is the only useful answer.
+                    val held = agent.pauseState != AgentPause.None
+                    FilledTonalIconButton(
+                        onClick = { agent.togglePause() },
+                        modifier = Modifier
+                            .size(48.dp)
+                            .semantics { contentDescription = "agent_pause_toggle" }
+                    ) {
+                        Icon(
+                            if (held) Icons.Filled.PlayArrow else Icons.Filled.Pause,
+                            contentDescription = null
+                        )
+                    }
+                    Spacer(Modifier.width(8.dp))
                     FilledIconButton(
                         onClick = { agent.stop() },
                         modifier = Modifier

@@ -73,7 +73,20 @@ sealed interface AgentEvent {
 class AgentLoop(
     private val gateway: AgentGateway,
     private val tools: ToolExecutor,
-    private val config: AgentConfig
+    private val config: AgentConfig,
+    /**
+     * Runs before every step and MAY SUSPEND. This is where an attended turn
+     * waits: a Pause is honoured here, between steps, and never inside a tool
+     * that has already started. Default: no wait.
+     */
+    private val beforeStep: suspend () -> Unit = {},
+    /**
+     * Checked between steps. When it turns true the turn ends with a notice
+     * instead of continuing — the action budget uses it for a hard stop.
+     */
+    private val stopRequested: () -> Boolean = { false },
+    /** The sentence shown when [stopRequested] ends the turn. */
+    private val stopReason: () -> String = { "Stopped." }
 ) {
 
     /**
@@ -88,6 +101,14 @@ class AgentLoop(
             var step = 0
             while (step < config.maxSteps) {
                 if (!currentCoroutineContext().isActive) return
+                beforeStep()
+                if (!currentCoroutineContext().isActive) return
+                if (stopRequested()) {
+                    val reason = stopReason()
+                    listener(AgentEvent.Notice(reason))
+                    listener(AgentEvent.FinalAnswer(reason))
+                    return
+                }
                 step++
 
                 trimHistory(history)
