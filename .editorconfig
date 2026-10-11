@@ -1,0 +1,20 @@
+# ktlint reads this from the linted file's directory upward; root=true stops the
+# walk at the repo so a stray parent config cannot change what CI enforces.
+root = true
+
+[*.{kt,kts}]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+indent_style = space
+indent_size = 4
+
+# Long explanatory comments are deliberate here — judge structure, not prose.
+max_line_length = off
+
+# Compose files use wildcard imports by convention and by template.
+ktlint_standard_no-wildcard-imports = disabled
+
+# The agent's multi-line prompt strings read better hand-indented.
+ktlint_standard_string-template-indent = disabled

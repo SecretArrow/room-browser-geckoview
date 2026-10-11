@@ -17,7 +17,6 @@ import com.roombrowser.domain.credentials.PasswordVaultCrypto
 import com.roombrowser.domain.credentials.SavedCredential
 import com.roombrowser.domain.credentials.VaultAuthException
 import com.roombrowser.domain.credentials.VaultFormatException
-import com.roombrowser.domain.engine.UrlIntelligence
 import com.roombrowser.domain.export.PasswordTransfer
 import com.roombrowser.domain.export.PasswordTransferFormatException
 import com.roombrowser.domain.export.ProfileBackup
@@ -2182,8 +2181,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         pendingExternalUrl = url
         viewModelScope.launch { appState.setExternalUrl(url) }
     }
-
-    fun isUrl(text: String): Boolean = UrlIntelligence.looksLikeUrl(text)
 
     fun setFirstRunDone() {
         viewModelScope.launch { appState.setFirstRunDone() }

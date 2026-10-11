@@ -319,6 +319,15 @@ jobs:
         working-directory: android
         run: ./gradlew lintDebug --console=plain
 
+      - name: Kotlin style (ktlint)
+        working-directory: android
+        # NON-BLOCKING for now: the codebase has never been ktlint-formatted, so
+        # this reports the violation set (artifact below) rather than failing a
+        # release over style that predates the gate. Delete this line to make it a
+        # hard gate, once the baseline is clean. Config is the root .editorconfig.
+        continue-on-error: true
+        run: ./gradlew ktlintCheck --console=plain
+
       - name: Unit tests (domain + engine + app)
         working-directory: android
         # --continue so a failure in one module still reports the other's
@@ -471,6 +480,19 @@ jobs:
         with:
           name: lint-report
           path: android/app/build/reports/lint-results-debug.html
+          if-no-files-found: ignore
+
+      - name: Upload ktlint report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: ktlint-report
+          # The per-source-set .txt files hold the rule id, file:line and the
+          # offending snippet — that is the list the config gets tuned from.
+          path: |
+            android/app/build/reports/ktlint/
+            android/core/domain/build/reports/ktlint/
+            android/core/wallet/build/reports/ktlint/
           if-no-files-found: ignore
 
       - name: Upload test reports
