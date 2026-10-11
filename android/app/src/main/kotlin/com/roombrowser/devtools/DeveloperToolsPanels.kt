@@ -35,6 +35,10 @@ import com.roombrowser.ui.common.SectionHeader
  * The page overview and the refresh callback are here because reading the page
  * is one pull owned by the host -- two panels that each pulled it would double
  * the cost of opening the surface and could disagree about the same page.
+ *
+ * [onRunAgentTask] is how a panel hands work to the agent rather than driving
+ * the page itself: replay leaves down the agent's own path, with its
+ * confirmations, or it does not leave at all.
  */
 internal class DevToolsPanelScope(
     val session: InspectorSession?,
@@ -45,7 +49,8 @@ internal class DevToolsPanelScope(
     val overview: PageOverview?,
     val answered: Boolean?,
     val hasEngine: Boolean,
-    val onRefresh: () -> Unit
+    val onRefresh: () -> Unit,
+    val onRunAgentTask: (String) -> Unit
 )
 
 /**
@@ -115,6 +120,17 @@ internal fun devToolsPanelEntries(): List<DevToolsPanelEntry> = listOf(
                 AuditPanel(scope)
             } else {
                 NeedsEngine("The audit needs a live page to read.")
+            }
+        }
+    ),
+    DevToolsPanelEntry(
+        DevToolsPanelId.RECORDER,
+        { it.serves(DevToolsPanelId.RECORDER) },
+        { scope ->
+            if (scope.session != null) {
+                RecorderPanel(scope)
+            } else {
+                NeedsEngine("The recorder needs a live page to install its listeners in.")
             }
         }
     )
