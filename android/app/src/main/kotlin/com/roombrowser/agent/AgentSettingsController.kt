@@ -7,6 +7,7 @@ import androidx.compose.runtime.setValue
 import com.roombrowser.RoomBrowserApp
 import com.roombrowser.data.db.AgentProviderEntity
 import com.roombrowser.data.db.AgentSessionEntity
+import com.roombrowser.data.db.AgentSiteMemoryEntity
 import com.roombrowser.data.net.AppHttpClients
 import com.roombrowser.data.repo.AgentSettings
 import com.roombrowser.data.repo.AgentRepository
@@ -32,7 +33,8 @@ import okhttp3.OkHttpClient
  */
 class AgentSettingsController(
     application: Application,
-    private val profileId: String?
+    /** The profile these settings belong to; null when none was selected. */
+    val profileId: String?
 ) {
 
     private val graph = (application as RoomBrowserApp).graph
@@ -50,6 +52,9 @@ class AgentSettingsController(
     var providers by mutableStateOf<List<AgentProviderEntity>>(emptyList())
         private set
     var sessions by mutableStateOf<List<AgentSessionEntity>>(emptyList())
+        private set
+    /** What the agent has remembered for this profile, for the memory screen. */
+    var siteMemory by mutableStateOf<List<AgentSiteMemoryEntity>>(emptyList())
         private set
     var settings by mutableStateOf(AgentSettings())
         private set
@@ -93,6 +98,9 @@ class AgentSettingsController(
             scope.launch {
                 repo.observeSessions(profileId).collect { sessions = it }
             }
+            scope.launch {
+                graph.database.agentSiteMemoryDao().observe(profileId).collect { siteMemory = it }
+            }
             loadProfileSettings()
         }
     }
@@ -105,6 +113,10 @@ class AgentSettingsController(
     fun setAgentConsoleApproval(required: Boolean) =
         updateProfileSettings { it.copy(agentConsoleApprovalRequired = required) }
 
+    /** Whether the agent may send a page screenshot to the model provider. */
+    fun setAgentVision(enabled: Boolean) =
+        updateProfileSettings { it.copy(agentVisionEnabled = enabled) }
+
     /** Grants or withholds one granular agent permission on this profile. */
     fun setAgentPermission(permission: String, granted: Boolean) = updateProfileSettings {
         it.copy(
@@ -112,6 +124,36 @@ class AgentSettingsController(
             if (granted) it.agentWithheldPermissions - permission
             else it.agentWithheldPermissions + permission
         )
+    }
+
+    /** Turns the agent's per-site memory on or off for this profile. */
+    fun setAgentSiteMemoryEnabled(enabled: Boolean) =
+        updateProfileSettings { it.copy(agentSiteMemoryEnabled = enabled) }
+
+    // --------------------------------------------------------- site memory
+
+    /** Deletes one remembered entry. Immediate and irreversible. */
+    fun forgetMemory(origin: String, key: String) {
+        val id = profileId?.takeIf { it.isNotBlank() } ?: return
+        scope.launch {
+            runCatching { graph.database.agentSiteMemoryDao().deleteOne(id, origin, key) }
+        }
+    }
+
+    /** Deletes every entry for one site. Immediate and irreversible. */
+    fun forgetSite(origin: String) {
+        val id = profileId?.takeIf { it.isNotBlank() } ?: return
+        scope.launch {
+            runCatching { graph.database.agentSiteMemoryDao().deleteOrigin(id, origin) }
+        }
+    }
+
+    /** Deletes every remembered entry for this profile. Confirmed by the caller. */
+    fun forgetAllMemory() {
+        val id = profileId?.takeIf { it.isNotBlank() } ?: return
+        scope.launch {
+            runCatching { graph.database.agentSiteMemoryDao().deleteAllForProfile(id) }
+        }
     }
 
     private fun loadProfileSettings() {

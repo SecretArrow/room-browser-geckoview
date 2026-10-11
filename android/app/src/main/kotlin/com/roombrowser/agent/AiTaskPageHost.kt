@@ -34,6 +34,13 @@ data class AiTaskPageRequest(
      * carried here so the gate that refuses them by default learns about it.
      */
     val allowProfileTools: Boolean = false,
+    /**
+     * The provider this run will talk to, carried here for the same reason as
+     * [allowProfileTools]: a text-only provider cannot take a screenshot, and
+     * the executor that refuses `see_page` for it is built below, where the
+     * provider is otherwise out of scope.
+     */
+    val providerProtocol: String? = null,
     /** STANDARD leaves the tab open when the run ends, so the person can carry
      *  on from where it stopped; HEADED closes it. */
     val keepTab: Boolean

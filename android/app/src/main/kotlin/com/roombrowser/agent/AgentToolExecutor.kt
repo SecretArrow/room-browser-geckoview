@@ -11,6 +11,7 @@ import com.roombrowser.domain.agent.AgentStepVerifier
 import com.roombrowser.domain.agent.AgentTools
 import com.roombrowser.domain.agent.ChallengeDetector
 import com.roombrowser.domain.agent.ChallengeHit
+import com.roombrowser.domain.agent.DataTransform
 import com.roombrowser.domain.agent.formatDurationMs
 import com.roombrowser.domain.agent.KeyChord
 import com.roombrowser.domain.agent.PageDigestDto
@@ -21,6 +22,9 @@ import com.roombrowser.domain.agent.PageSnapshotFormatter
 import com.roombrowser.domain.agent.ReadinessSample
 import com.roombrowser.domain.agent.ReadinessVerdict
 import com.roombrowser.domain.agent.SecretRedaction
+import com.roombrowser.domain.agent.SiteMemory
+import com.roombrowser.domain.agent.SiteMemoryStore
+import com.roombrowser.domain.agent.SiteMemoryTool
 import com.roombrowser.domain.agent.ToolExecutor
 import com.roombrowser.domain.agent.ToolResult
 import com.roombrowser.domain.agent.UntrustedContent
@@ -108,6 +112,23 @@ class AgentToolExecutor(
      */
     private val runJsApprovalRequired: suspend () -> Boolean = { true },
     /**
+     * The detached page `compute_js` runs in. Null — a scheduled run's executor —
+     * leaves the tool unavailable rather than running it in the wrong place;
+     * the turn that owns this executor owns the session's lifecycle too.
+     */
+    private val scratchpad: AgentScratchpad? = null,
+    /**
+     * The agent's per-site memory, scoped to this turn's profile. Null leaves
+     * the tool unavailable rather than writing under the wrong profile.
+     */
+    private val siteMemory: SiteMemoryStore? = null,
+    /**
+     * The per-profile "Let the agent remember this site" setting, read live.
+     * OFF by default: the agent keeps no notes about a site until the user says
+     * it may, so this is the gate rather than a withheld permission.
+     */
+    private val siteMemoryEnabled: suspend () -> Boolean = { false },
+    /**
      * Told every time the pause state changes, so the panel and the ongoing
      * notification can show it. See [AgentPause].
      */
@@ -116,7 +137,13 @@ class AgentToolExecutor(
      * Suspends until the user says the page's check is done. The executor
      * itself NEVER touches the check — see [handOver].
      */
-    private val awaitChallengeResume: suspend () -> Unit = {}
+    private val awaitChallengeResume: suspend () -> Unit = {},
+    /**
+     * Why the active provider cannot be sent an image, or null when it can.
+     * Checked before capture so a text-only provider is refused rather than
+     * silently handed a request with the picture dropped.
+     */
+    private val visionUnsupportedReason: () -> String? = { null }
 ) : ToolExecutor {
 
     /** Why the last failed readiness wait gave up; null when it did not fail. */
@@ -184,6 +211,7 @@ class AgentToolExecutor(
                     AgentTools.NAVIGATE -> navigate(str(args, "url"))
                     AgentTools.SEARCH_WEB -> searchWeb(str(args, "query"))
                     AgentTools.READ_PAGE -> readPage()
+                    AgentTools.SEE_PAGE -> seePage(args)
                     AgentTools.CLICK -> click(int(args, "ref"))
                     AgentTools.FILL_INPUT -> fillInput(int(args, "ref"), str(args, "text"))
                     AgentTools.PRESS_ENTER -> pressEnter(intOrNull(args, "ref"))
@@ -206,6 +234,9 @@ class AgentToolExecutor(
                     AgentTools.WALLET_REJECT -> walletTools.reject(str(args, "request_id"))
                     AgentTools.WALLET_SWITCH_NETWORK -> walletTools.switchNetwork(str(args, "network_id"))
                     AgentTools.RUN_JS -> runJs(str(args, "script"))
+                    AgentTools.COMPUTE_JS -> computeJs(str(args, "script"))
+                    AgentTools.DATA_TRANSFORM -> dataTransform(args)
+                    AgentTools.SITE_MEMORY -> siteMemoryTool(args)
                     AgentTools.SELECT_OPTION -> selectOption(int(args, "ref"), str(args, "value"))
                     AgentTools.PRESS_KEYS -> pressKeys(str(args, "keys"), intOrNull(args, "ref"))
                     AgentTools.WAIT_FOR -> waitFor(str(args, "text"), intOrNull(args, "timeout_ms"))
@@ -283,6 +314,42 @@ class AgentToolExecutor(
                 "No readable page in this chat's tab. It is on the start page, still loading, or JavaScript is disabled. Use navigate first and wait for it to finish."
             )
         return ToolResult(true, formatted)
+    }
+
+    /**
+     * A picture of this chat's tab, for the model to look at. Refused in a
+     * private tab for the same reason Developer Tools is: nothing a private
+     * session renders leaves the device.
+     */
+    private suspend fun seePage(args: Map<String, Any?>): ToolResult {
+        if (!vm.profileSettings().agentVisionEnabled) {
+            return ToolResult(
+                false,
+                "see_page is turned off for this profile — turn on \"Agent can see the page\" in AI Agent settings."
+            )
+        }
+        visionUnsupportedReason()?.let { why ->
+            return ToolResult(
+                false,
+                "see_page is not available on this provider — $why. Switch to a provider that accepts images."
+            )
+        }
+        val id = tabId
+        if (id != null && vm.tabs.firstOrNull { it.id == id }?.isPrivate == true) {
+            return ToolResult(
+                false,
+                "see_page is not available in a private tab: a screenshot of a private session is never sent to the model provider."
+            )
+        }
+        val session = boundSession() ?: return ToolResult(false, "no page is loaded in this chat's tab")
+        val shot = PageScreenshot.capture(session).getOrElse {
+            return ToolResult(false, "could not capture the page: ${it.message ?: "unknown error"}")
+        }
+        return ToolResult(
+            true,
+            screenshotSummary(shot, str(args, "question"), str(args, "reason")),
+            images = listOf(shot.image)
+        )
     }
 
     private suspend fun click(ref: Int?): ToolResult {
@@ -508,6 +575,85 @@ class AgentToolExecutor(
         val raw = evaluateJs(session, PageInjector.runJs(jsonString(code)))
             ?: return ToolResult(false, "run_js failed (JavaScript error or page still loading)")
         return ToolResult(true, clip(unquote(raw)))
+    }
+
+    /**
+     * Runs a script in the detached scratchpad, never the user's page. There is
+     * no approval gate here as there is for [runJs]: the scratchpad has no
+     * network, no filesystem and no origin, and the user's page cannot observe
+     * it, so there is nothing of theirs for a script to change.
+     */
+    private suspend fun computeJs(script: String?): ToolResult {
+        val code = nonBlank(script) ?: return ToolResult(false, "missing 'script' argument")
+        val pad = scratchpad
+            ?: return ToolResult(false, "compute_js is not available in this run")
+        val session = pad.session()
+            ?: return ToolResult(false, "compute_js could not start its scratchpad")
+        val raw = evaluateJs(session, PageInjector.runJs(jsonString(code)))
+            ?: return ToolResult(false, "compute_js failed (JavaScript error in the scratchpad)")
+        return ToolResult(
+            true,
+            "Scratchpad result (a detached page — the user's page was not touched):\n" + clip(unquote(raw))
+        )
+    }
+
+    /**
+     * Runs one of the pure host-side transforms. No engine and no page are
+     * involved: the input is the model's own data and the answer is computed in
+     * this process, so there is nothing of the user's to touch and no gate.
+     */
+    private suspend fun dataTransform(args: Map<String, Any?>): ToolResult {
+        val op = str(args, "op") ?: return ToolResult(false, "missing 'op' argument")
+        val input = str(args, "input") ?: return ToolResult(false, "missing 'input' argument")
+        val limit = intOrNull(args, "limit") ?: MAX_JS_RESULT_CHARS
+        if (limit !in 1..MAX_JS_RESULT_CHARS) {
+            return ToolResult(false, "limit must be between 1 and $MAX_JS_RESULT_CHARS")
+        }
+        val result = when (op) {
+            "json_path" -> DataTransform.jsonPath(input, str(args, "path") ?: "", limit)
+            "csv_rows" -> DataTransform.csvRows(input, limit)
+            "aggregate" -> DataTransform.aggregate(input, intOrNull(args, "column"), str(args, "agg").orEmpty())
+            "diff" -> {
+                val compare = str(args, "compare")
+                    ?: return ToolResult(false, "missing 'compare' argument for op=diff")
+                DataTransform.diff(input, compare, limit)
+            }
+            else -> return ToolResult(
+                false,
+                "unsupported op '$op': use json_path, csv_rows, aggregate or diff"
+            )
+        }
+        return when (result) {
+            is DataTransform.Result.Success -> {
+                val note = if (result.truncated) "\n[output capped at $limit characters]" else ""
+                ToolResult(
+                    true,
+                    "Data transform result (computed on the device — the user's page was not touched):\n" +
+                        result.text + note
+                )
+            }
+            is DataTransform.Result.Failure -> ToolResult(false, result.reason)
+        }
+    }
+
+    /**
+     * The agent's per-site memory. The origin comes from the ENGINE's own
+     * session URL, never from page text, so the page cannot choose the bucket
+     * its notes are filed under.
+     */
+    private suspend fun siteMemoryTool(args: Map<String, Any?>): ToolResult {
+        SiteMemory.refusalWhenDisabled(siteMemoryEnabled())?.let { return ToolResult(false, it) }
+        val store = siteMemory
+            ?: return ToolResult(false, "site_memory is not available in this run")
+        val origin = SiteMemory.originOf(boundSession()?.url)
+        return SiteMemoryTool.execute(
+            store = store,
+            origin = origin,
+            op = str(args, "op"),
+            key = str(args, "key"),
+            value = str(args, "value"),
+            limit = intOrNull(args, "limit")
+        )
     }
 
     private suspend fun selectOption(ref: Int?, value: String?): ToolResult {

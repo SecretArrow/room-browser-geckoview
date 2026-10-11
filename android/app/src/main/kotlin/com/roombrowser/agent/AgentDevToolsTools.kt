@@ -1,7 +1,14 @@
 package com.roombrowser.agent
 
 import com.roombrowser.browser.BrowserControlApi
+import com.roombrowser.devtools.AuditVerdict
 import com.roombrowser.devtools.ConsoleEntry
+import com.roombrowser.devtools.DeveloperToolsAuditText
+import com.roombrowser.devtools.DeveloperToolsElementsText
+import com.roombrowser.devtools.DeveloperToolsSecurityText
+import com.roombrowser.devtools.DeveloperToolsStorageText
+import com.roombrowser.devtools.ElementChildren
+import com.roombrowser.devtools.ElementNode
 import com.roombrowser.devtools.InspectorSession
 import com.roombrowser.devtools.NetworkEntry
 import com.roombrowser.domain.agent.ActionVerdict
@@ -33,8 +40,8 @@ import kotlin.coroutines.resume
 
 /**
  * The agent's Developer Tools tools — the real Console and Network buffers, the
- * Elements probe, an audit checklist, correlation, the report export and a
- * gated page patch.
+ * Elements panel's tree, the Application and Security panels' probes, the Audit
+ * panel's own checklist, correlation, the report export and a gated page patch.
  *
  * WHAT THIS IS NOT: a second, agent-shaped inspector. Every read goes through
  * [BrowserControlApi.inspectorFor], which returns the same [InspectorSession]
@@ -70,6 +77,15 @@ class AgentDevToolsTools(
      */
     private val keepConsole = mutableMapOf<String, Boolean>()
 
+    /**
+     * The element-tree generation last read per tab.
+     *
+     * A page-side node id is only meaningful inside the generation it was issued
+     * for, so a drill-down reuses the generation the tree read handed back rather
+     * than starting a new one and silently addressing different nodes.
+     */
+    private val elementsGen = mutableMapOf<String, Int>()
+
     /** Null when [name] is not a Developer Tools tool — the caller's other tools run. */
     suspend fun execute(name: String, argsJson: String): ToolResult? {
         if (name !in AgentTools.DEVTOOLS_TOOLS) return null
@@ -80,6 +96,9 @@ class AgentDevToolsTools(
                 AgentTools.DEVTOOLS_CONSOLE -> console(args)
                 AgentTools.DEVTOOLS_NETWORK -> network(args)
                 AgentTools.DEVTOOLS_INSPECT -> inspect(args)
+                AgentTools.DEVTOOLS_ELEMENTS -> elements(args)
+                AgentTools.DEVTOOLS_STORAGE -> storage()
+                AgentTools.DEVTOOLS_SECURITY -> security()
                 AgentTools.DEVTOOLS_AUDIT -> audit()
                 AgentTools.DEVTOOLS_DIAGNOSE -> diagnose(args)
                 AgentTools.DEVTOOLS_REPORT -> report()
@@ -222,7 +241,13 @@ class AgentDevToolsTools(
         val body = rows.takeLast(MAX_NETWORK_ROWS).joinToString("\n") { e ->
             val status = e.status?.toString() ?: "ERR"
             val time = e.durationMs?.let { " in ${(it.toInt())}ms" } ?: ""
-            "$status  ${e.method ?: "GET"} ${e.url}$time" + (e.note?.let { "  [$it]" } ?: "")
+            val head = "$status  ${e.method ?: "GET"} ${e.url}$time" + (e.note?.let { "  [$it]" } ?: "")
+            // Header values were already masked when the row entered the buffer
+            // (EngineNetworkSignal.toEntry), so this reuses that redaction
+            // rather than re-deriving it.
+            val headers = e.requestHeaders.map { "    > ${it.name}: ${it.value}" } +
+                e.responseHeaders.map { "    < ${it.name}: ${it.value}" }
+            (listOf(head) + headers).joinToString("\n")
         }
         return UntrustedContent.wrap(SecretRedaction.redact("$header\n$body"), "the network log")
     }
@@ -249,74 +274,179 @@ class AgentDevToolsTools(
         return ToolResult(true, UntrustedContent.wrap(SecretRedaction.redact("$label:\n$text"), "the page"))
     }
 
+    // --------------------------------------------------------------- elements
+
+    private suspend fun elements(args: JsonObject): ToolResult {
+        val tabId = boundTabId() ?: return ToolResult(false, noTab())
+        val caps = control.capabilitiesFor(tabId)
+        if (!caps.has(DevToolsCapability.PAGE_SCRIPTING)) {
+            return ToolResult(
+                false,
+                capabilityAbsent("the element tree", caps.noteFor(DevToolsCapability.PAGE_SCRIPTING))
+            )
+        }
+        val session = control.inspectorFor(tabId) ?: return ToolResult(false, noEngine(tabId))
+        val nodeId = intArg(args, "node")
+        val from = intArg(args, "from") ?: 0
+
+        if (nodeId == null) {
+            // The panel's own read: one generation, the root, then one page of
+            // its children. The ids printed are the panel's, not a fresh walk.
+            val tree = session.elementsTree()
+                ?: return ToolResult(false, "the page did not answer the element read — the page may be mid-load")
+            val gen = tree.gen
+                ?: return ToolResult(false, "the element read carried no generation, so its node ids cannot be trusted")
+            elementsGen[tabId] = gen
+            val root = tree.node ?: return ToolResult(false, "the page reported no document element")
+            val rootId = root.id ?: return ToolResult(false, "the page's root node had no id")
+            val page = session.elementChildren(gen, rootId, 0)
+                ?: return ToolResult(false, "the page did not answer the read for the root's children")
+            val rows = listOf(root to 0) + page.nodes.orEmpty().map { it to 1 }
+            return ToolResult(true, renderElements(gen, rows, childPageNote(page.nodes.orEmpty().size, page)))
+        }
+
+        val gen = elementsGen[tabId]
+            ?: return ToolResult(
+                false,
+                "no element tree has been read for this tab yet — call devtools_elements with no 'node' first"
+            )
+        val page = session.elementChildren(gen, nodeId, from)
+            ?: return ToolResult(false, "the page did not answer the element read")
+        if (page.stale == true) {
+            return ToolResult(
+                false,
+                "the document was re-read since those node ids were issued, so node $nodeId is no longer the one " +
+                    "you read — call devtools_elements with no 'node' for a fresh tree"
+            )
+        }
+        val children = page.nodes.orEmpty()
+        val rows = children.map { it to 1 }
+        val note = childPageNote(children.size, page)
+            ?: if (children.isEmpty()) "node $nodeId has no element children" else null
+        return ToolResult(true, renderElements(gen, rows, note))
+    }
+
+    private fun childPageNote(shown: Int, page: ElementChildren): String? {
+        val total = page.total
+        val more = if (total != null && total > shown) "(showing $shown of $total; pass 'from' to page on)" else null
+        val capped = if (page.exhausted == true) "the page has more nodes than one read holds, so some are not shown" else null
+        return listOfNotNull(more, capped).joinToString(". ").takeIf { it.isNotEmpty() }
+    }
+
+    private fun renderElements(gen: Int, rows: List<Pair<ElementNode, Int>>, note: String?): String {
+        val text = buildString {
+            appendLine("Elements — engine: ${control.engineName} (generation $gen)")
+            appendLine(DeveloperToolsElementsText.TREE_CAPTION)
+            rows.forEach { (node, depth) ->
+                appendLine("${"  ".repeat(depth)}#${node.id} ${DeveloperToolsElementsText.rowText(node)}")
+            }
+            note?.let { appendLine(it) }
+        }.trimEnd()
+        return UntrustedContent.wrap(SecretRedaction.redact(text), "the page")
+    }
+
+    // --------------------------------------------------------------- storage
+
+    private suspend fun storage(): ToolResult {
+        val tabId = boundTabId() ?: return ToolResult(false, noTab())
+        val caps = control.capabilitiesFor(tabId)
+        if (!caps.has(DevToolsCapability.PAGE_SCRIPTING)) {
+            return ToolResult(
+                false,
+                capabilityAbsent("the page's storage", caps.noteFor(DevToolsCapability.PAGE_SCRIPTING))
+            )
+        }
+        val session = control.inspectorFor(tabId) ?: return ToolResult(false, noEngine(tabId))
+        // The Application panel's own probe and its own report, so the two
+        // cannot drift -- including the "still working, so this is partial"
+        // header, which a hand-assembled copy would lose.
+        val probe = session.applicationProbe()
+            ?: return ToolResult(false, "the page did not answer the storage probe — the page may be mid-load")
+        val frames = session.frames()
+        // Cookies are a section of the panel's report but a separate permission
+        // here, so the section is dropped rather than filled with a claim.
+        val text = DeveloperToolsStorageText.applicationReport(
+            probe = probe,
+            frames = frames,
+            cookies = null,
+            engineName = control.engineName,
+            includeCookies = false
+        )
+        return ToolResult(true, UntrustedContent.wrap(SecretRedaction.redact(text), "the page"))
+    }
+
+    // -------------------------------------------------------------- security
+
+    private suspend fun security(): ToolResult {
+        val tabId = boundTabId() ?: return ToolResult(false, noTab())
+        val caps = control.capabilitiesFor(tabId)
+        if (!caps.has(DevToolsCapability.SECURITY_INFO)) {
+            return ToolResult(
+                false,
+                capabilityAbsent("the connection's security", caps.noteFor(DevToolsCapability.SECURITY_INFO))
+            )
+        }
+        val session = control.inspectorFor(tabId) ?: return ToolResult(false, noEngine(tabId))
+        val info = session.inspector.securityInfo()
+        val probe = session.securityProbe()
+        if (info == null && probe == null) {
+            return ToolResult(false, "neither the engine nor the page reported anything about this connection")
+        }
+        // The certificate section is told which edition it is on, so a WebView
+        // blank reads as "this build cannot read a certificate", never as
+        // "this page presented none".
+        val text = DeveloperToolsSecurityText.securityReport(
+            info,
+            probe,
+            control.engineName,
+            caps.has(DevToolsCapability.SECURITY_CERTIFICATE)
+        )
+        return ToolResult(true, UntrustedContent.wrap(SecretRedaction.redact(text), "the page"))
+    }
+
     // ------------------------------------------------------------------ audit
 
     private suspend fun audit(): ToolResult {
         val tabId = boundTabId() ?: return ToolResult(false, noTab())
-        val session = control.tabSession(tabId) ?: return ToolResult(false, noEngine(tabId))
         val caps = control.capabilitiesFor(tabId)
+        val session = control.inspectorFor(tabId) ?: return ToolResult(false, noEngine(tabId))
+
+        // The Audit PANEL's own probe, not a private script, so the agent's
+        // answer and the panel's answer are the same read and cannot disagree.
+        val probe = session.auditProbe()
+            ?: return ToolResult(false, "the engine did not answer the audit probe — the page may be mid-load")
 
         val findings = mutableListOf<DiagnosisFinding>()
-        val raw = evaluate(session, AUDIT_JS)
-        if (raw == null) {
-            return ToolResult(false, "the engine did not answer the audit probe — the page may be mid-load")
+        fun observed(title: String) {
+            findings += DiagnosisFinding(DiagnosisLabel.OBSERVED_FACT, title, emptyList())
         }
-        val text = unquote(raw)
-        val audit = parseObject(text) ?: return ToolResult(false, "the audit probe returned unreadable output")
-
-        fun observed(title: String, evidence: List<String> = emptyList()) {
-            findings += DiagnosisFinding(DiagnosisLabel.OBSERVED_FACT, title, evidence)
-        }
-        fun hypothesis(title: String, evidence: List<String> = emptyList()) {
-            findings += DiagnosisFinding(DiagnosisLabel.HYPOTHESIS, title, evidence)
-        }
-        fun recommend(title: String, evidence: List<String> = emptyList()) {
-            findings += DiagnosisFinding(DiagnosisLabel.RECOMMENDATION, title, evidence)
+        fun recommend(title: String) {
+            findings += DiagnosisFinding(DiagnosisLabel.RECOMMENDATION, title, emptyList())
         }
 
-        val readyState = audit.str("readyState")
-        observed("Document readiness: ${readyState ?: "unknown"}")
-        audit.int("nodes")?.let { observed("${it} elements in the document") }
-        audit.int("scripts")?.let { observed("$it script tag(s)") }
-        val broken = audit.int("imagesBroken") ?: 0
-        val images = audit.int("images") ?: 0
-        if (images > 0) observed("$images image(s), $broken failed to load")
-        if (broken > 0) {
-            hypothesis("$broken image(s) did not decode", listOf("a broken asset often explains a layout that looks wrong"))
-        }
-        val mixed = audit.int("mixedContent") ?: 0
-        if (mixed > 0) {
-            observed("$mixed http:// resource(s) on the page")
-            hypothesis("mixed content may be blocked by the engine", listOf("check the network log for requests with no response"))
-        }
-        audit.bool("isSecureContext")?.let {
-            observed("secure context: $it")
-            if (!it) recommend("The page is not a secure context; some browser APIs are unavailable.")
-        }
-        observed(
-            "Storage availability: localStorage=${audit.bool("localStorage")}, " +
-                "sessionStorage=${audit.bool("sessionStorage")}, indexedDB=${audit.bool("indexedDb")}, " +
-                "caches=${audit.bool("caches")}, cookiesEnabled=${audit.bool("cookiesEnabled")}"
-        )
+        // Each finding is the panel's own line, verdict word and all.
+        val rows = DeveloperToolsAuditText.rows(probe)
+        rows.forEach { observed(it.line().trim()) }
+        val failures = rows.count { it.verdict == AuditVerdict.FAIL }
 
-        // The buffers say what the checklist cannot: what the page logged and
+        // The buffers say what the page's own report cannot: what it logged and
         // what it asked for that failed.
-        val inspector = control.inspectorFor(tabId)
-        val consoleErrors = inspector?.console?.snapshot().orEmpty().count { it.level.equals("error", true) }
-        val failedRequests = inspector?.network?.snapshot().orEmpty().count { it.status == null || it.status >= 400 }
+        val consoleErrors = session.console.snapshot().count { it.level.equals("error", true) }
+        val failedRequests = session.network.snapshot().count { it.status == null || it.status >= 400 }
         observed("$consoleErrors console error(s) in the buffer")
         observed("$failedRequests failed request(s) in the buffer")
+        if (failures > 0) recommend("$failures audit check(s) came back missing; the Audit panel lists the same verdicts.")
         if (consoleErrors > 0) recommend("Read the console with devtools_console and correlate with devtools_diagnose.")
         if (failedRequests > 0) recommend("Read the network log with devtools_network failed_only=true.")
 
         if (!caps.has(DevToolsCapability.CONSOLE_CAPTURE) && !caps.has(DevToolsCapability.ENGINE_CONSOLE)) {
             recommend(
-                "This engine exposes no console capture, so the error count above cannot change here.",
-                listOf(caps.noteFor(DevToolsCapability.CONSOLE_CAPTURE) ?: "the engine reports no reason")
+                "This engine exposes no console capture, so the error count above cannot change here. " +
+                    (caps.noteFor(DevToolsCapability.CONSOLE_CAPTURE) ?: "The engine reports no reason.")
             )
         }
 
-        val header = "Page audit — ${control.tabUrl(tabId) ?: "(no url)"}"
+        val header = "Page audit — ${control.tabUrl(tabId) ?: "(no url)"}\n${DeveloperToolsAuditText.CAPTION}"
         return ToolResult(true, renderReport(header, findings))
     }
 
@@ -478,18 +608,6 @@ class AgentDevToolsTools(
     private fun clip(text: String): String =
         if (text.length <= MAX_RESULT_CHARS) text else text.take(MAX_RESULT_CHARS) + "…"
 
-    private fun parseObject(json: String): JsonObject? =
-        runCatching { AgentJson.parseToJsonElement(json) as? JsonObject }.getOrNull()
-
-    private fun JsonObject.str(key: String): String? =
-        (this[key] as? JsonPrimitive)?.contentOrNull
-
-    private fun JsonObject.int(key: String): Int? =
-        (this[key] as? JsonPrimitive)?.intOrNull
-
-    private fun JsonObject.bool(key: String): Boolean? =
-        (this[key] as? JsonPrimitive)?.booleanOrNull
-
     private fun parseArgs(argsJson: String): JsonObject =
         runCatching { AgentJson.parseToJsonElement(argsJson) as? JsonObject }
             .getOrNull() ?: JsonObject(emptyMap())
@@ -536,36 +654,5 @@ class AgentDevToolsTools(
               return JSON.stringify(out);
             })()
         """.trimIndent()
-
-        /** The audit checklist: counts and presence flags, never page content. */
-        const val AUDIT_JS = """
-            (function(){
-              function safe(f){ try { var v = f(); return v === undefined ? null : v; } catch (e) { return null; } }
-              return JSON.stringify({
-                readyState: safe(function(){ return document.readyState; }),
-                nodes: safe(function(){ return document.getElementsByTagName('*').length; }),
-                scripts: safe(function(){ return document.scripts.length; }),
-                images: safe(function(){ return document.images.length; }),
-                imagesBroken: safe(function(){
-                  var b = 0;
-                  for (var i = 0; i < document.images.length; i++) {
-                    var im = document.images[i];
-                    if (im.complete && im.naturalWidth === 0) b++;
-                  }
-                  return b;
-                }),
-                forms: safe(function(){ return document.forms.length; }),
-                mixedContent: safe(function(){
-                  return document.querySelectorAll('img[src^="http://"],script[src^="http://"],link[href^="http://"]').length;
-                }),
-                isSecureContext: safe(function(){ return window.isSecureContext; }),
-                localStorage: safe(function(){ return 'localStorage' in window; }),
-                sessionStorage: safe(function(){ return 'sessionStorage' in window; }),
-                indexedDb: safe(function(){ return 'indexedDB' in window; }),
-                caches: safe(function(){ return 'caches' in window; }),
-                cookiesEnabled: safe(function(){ return navigator.cookieEnabled; })
-              });
-            })()
-        """
     }
 }

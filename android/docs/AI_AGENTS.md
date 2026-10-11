@@ -117,6 +117,10 @@ listed below; the two that must have their tab on screen are marked.
 | `auto_reply(text)` | Types the text into the visible reply box and submits it — *needs the tab on screen* |
 | `auto_post(text)` | Opens the composer, types a new post/status/tweet and submits it — *needs the tab on screen* |
 | `wait(ms)` | Waits for post-submit animations / infinite-scroll loading before reading again |
+| `compute_js(script)` | Evaluates JavaScript in a **detached scratchpad page**, never the user's page — for local calculation and text work (see **Local compute, vision, site memory** below) |
+| `data_transform(op, input, …)` | Pure host-side transform of data the agent already has — `json_path`, `csv_rows`, `aggregate`, `diff` — with no page and no engine (see below) |
+| `see_page(question?)` | Screenshots this chat's tab and sends the image to the provider — *off unless the profile enables it; refused on text-only providers and in a private tab* (see below) |
+| `site_memory(op, key, …)` | Reads, writes or forgets a per-site note kept for this profile — *off unless the profile enables it* (see below) |
 
 A tool marked *needs the tab on screen* waits up to 8 seconds for its tab to
 come to the front, then refuses with an explanation. The reason is concrete:
@@ -155,6 +159,169 @@ Note the honest limits: swiping the app away from Recents kills the
 process (standard Android behaviour), and the system caps `dataSync`
 services at ~6 hours per day on Android 14+ — far beyond any realistic
 agent task.
+
+## Agent permissions, and the new capabilities
+
+### The permission model (a withheld-set)
+
+Every tool declares the permission it needs, and a profile stores the set of
+permissions it **withholds** (`ProfileSettings.agentWithheldPermissions`, per
+profile). A tool whose permission is withheld is refused **by name** — the
+refusal says which tool and which setting — so the model reports what is
+missing instead of probing for another route. The check is a decorator
+(`AgentPermissionGate`) that wraps the executor, so the visible tab, a hidden
+page and a scheduled run all pass through it, and the withheld set is read live,
+so a permission granted mid-turn is seen by the next call.
+
+The names are wire strings (`devtools.read`, `devtools.network`,
+`devtools.storage`, `devtools.security`, `devtools.cookies`,
+`agent.exportDiagnostics`, `agent.compute`), not an enum: a profile that stored a
+name this build does not know simply carries an inert entry.
+
+**Off by default, where it matters.** The withheld set cannot express "off": it
+is a deny-list, so a permission added later is granted until the profile
+withholds it, and an empty set (a fresh or upgraded profile) grants everything.
+So the two capabilities that leave the device or persist new data — vision
+(`see_page`) and site memory (`site_memory`) — are instead gated by a
+per-profile Boolean (`agentVisionEnabled`, `agentSiteMemoryEnabled`) that is
+**false on every profile, new and old**, with its own settings row. The two
+local ones — `compute_js` and `data_transform` — are governed by the withheld
+`agent.compute` permission and are therefore on until the profile withholds it.
+
+### Tool catalogue shape
+
+`AgentTools` declares each tool as a `ToolDef` — a name, a description and a
+JSON-schema for its arguments. Two named sets sit alongside it:
+`INTERACTIVE_TOOLS` are the state-changing calls the Confirm-actions /
+decision-gate / YOLO rules cover, and `DEVTOOLS_TOOLS` are refused wholesale on
+unattended runs (a scheduled or headless run has no Console panel to drive and
+no user to confirm a patch). `AgentTools.describeTool` renders the one-line
+label the chat cards show.
+
+### `compute_js` — a detached scratchpad
+
+Evaluates JavaScript in a scratchpad engine session created for the turn: a
+blank document, never attached to a view, so a script there cannot appear on
+screen or touch the page the user is on. It is deliberately **not** the chat's
+own tab, which is live and may have navigated.
+
+Honest limits:
+
+* **It is not the page.** It cannot see or change the user's page; the page
+  cannot observe it either.
+* **File access is off.** Every session is created with `allowFileAccess`,
+  `allowFileAccessFromFileURLs` and `allowUniversalAccessFromFileURLs` false,
+  so a script cannot read the device's files.
+* **It is not a network sandbox.** The app does not block network loads on the
+  scratchpad: a script there can still attempt an outbound request. The
+  scratchpad has no page and no site origin, but it is a separate context, not
+  a firewall — do not treat it as a place to run code you do not trust.
+* **Synchronous only.** The value of the last expression comes back as text; a
+  returned `Promise` is not awaited.
+* **One scratchpad per turn**, closed with the turn. On a scheduled or headless
+  run the executor has no scratchpad and the tool refuses rather than running
+  the script somewhere it does not belong.
+* Gated by the per-profile `agent.compute` permission.
+
+### `data_transform` — pure host-side transforms
+
+Four operations computed in this process on data the agent already holds — no
+JavaScript, no engine, no page:
+
+| `op` | What it does |
+|---|---|
+| `json_path` | The value at a dotted path (`a.b.0.c`) in JSON; a blank path reads the whole document |
+| `csv_rows` | The rows of a CSV text |
+| `aggregate` | `count`, `sum`, `min`, `max` or `avg` over a column |
+| `diff` | Two texts compared |
+
+Honest limits:
+
+* Output is capped at `limit` characters (default and maximum 4000); a
+  truncated answer says so rather than being cut silently.
+* **Malformed input is an error, never an empty success** — a caller that could
+  not tell "no rows" from "not CSV" would answer the user with the wrong thing.
+* It shares the `agent.compute` permission with `compute_js`.
+
+### Vision (`see_page`) — a screenshot to the provider
+
+Captures a screenshot of the current page and sends it to the model provider.
+
+The honest limits are the point of the feature, not a footnote:
+
+* **It sends a picture of the page — including anything you are signed in to —
+  to the provider.** That is a real privacy consequence and it is stated in
+  `SECURITY.md`, not only here.
+* **The engine's view.** It captures the engine's frame; the app's own Compose
+  UI is not part of it. On the WebView edition `EngineSession.capturePixels`
+  crops the Activity window to the engine's bounds, so whether a docked panel
+  that overlaps those bounds can appear is not something this page can promise
+  (see `SECURITY.md`).
+* **It cannot redact pixels.** Anything rendered on screen — including a secret
+  drawn into a canvas — goes with the image. There is no redaction pass over
+  the pixels.
+* **Refused in a private tab.** The capture is refused before it happens when the
+  tab the agent is working on is private, the same rule that disables the
+  Developer Tools panels there.
+* **Unavailable on text-only providers.** The on-device `LOCAL` engine and the
+  `OPENCODE` server take text prompts only, so the tool is refused for them
+  **before capture**, with the reason (`AgentVisionSupport`). [OI]-compatible,
+  Anthropic and Ollama providers can carry an image.
+* **Off by default.** `agentVisionEnabled` is false on every profile, and the
+  setting's own description states the consequence in full.
+
+**Status in this build:** implemented — the `see_page` tool, the
+`agentVisionEnabled` switch and its settings row, the per-gateway image bodies
+and the text-only refusal are all present.
+
+### Site memory (`site_memory`) — an origin-keyed memory
+
+A per-profile memory the agent reads and writes so it can learn how a site
+works, keyed by origin.
+
+Honest limits:
+
+* **Origin comes from the session URL, never from page-supplied text** — a page
+  cannot name the origin its notes are filed under.
+* **Redaction is applied at entry**, like the console and network buffers.
+* **The user can see and delete what is remembered**, per entry and per site.
+* **Wiped with the profile.**
+* **Off by default.**
+
+**Status in this build:** implemented — the `site_memory` tool reads and writes a
+per-profile table keyed by the tab's real origin, `AgentMemoryActivity` lists what
+has been kept with per-entry and per-site delete, and the whole store stays off
+until the user turns on "Let the agent remember this site".
+
+### Deeper Developer Tools reach
+
+New agent tools that read the **same buffers the Developer Tools panels
+display**, not a second capture: `devtools_storage`, `devtools_security`,
+`devtools_elements`, and headers in `devtools_network`. The existing
+`devtools_console`, `devtools_network`, `devtools_inspect`, `devtools_diagnose`
+and `devtools_report` already read the panel's own inspector session, which is
+what keeps the agent and the panel from disagreeing — the agent sees what the
+panel shows, redaction included.
+
+Honest limits:
+
+* **On the WebView edition, response status and headers are not observable.**
+  WebView reports a request to `shouldInterceptRequest` before it is sent and
+  never hands back the response, so response headers stay absent here (see
+  `SECURITY.md`). Any header the agent can read on this edition is a *request*
+  header, redacted at entry.
+* **The agent's storage report has no cookie section.** Cookies are a section of
+  the Application panel, but reading them is a separate permission
+  (`devtools.cookies`) that names no tool yet, so the tool prints the panel's
+  report without that section rather than claiming the cookies were examined.
+* **`devtools_security` has its own permission** (`devtools.security`), so it can
+  be withheld on its own. The certificate section says which edition it is on:
+  WebView cannot read a certificate and prints that, GeckoView prints the real
+  one.
+
+**Status in this build:** implemented — `devtools_storage`, `devtools_security`
+and `devtools_elements` read the panels' own inspector session, and
+`devtools_network` prints the entry-time-redacted request and response headers.
 
 ## File attachments in the composer
 

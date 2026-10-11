@@ -423,4 +423,32 @@ class DevToolsApplicationTextTest {
         // And the cookie read that failed says so rather than showing nothing.
         assertThat(text).contains("Cookies -- this build could not read them")
     }
+
+    @Test
+    fun the_agent_report_drops_the_cookie_section_instead_of_claiming_it() {
+        // The agent's storage tool is not allowed to read cookies, so it asks for
+        // the same report without that section. Dropping it is honest; printing
+        // the section with a null list would claim the cookies were examined.
+        val text = DeveloperToolsStorageText.applicationReport(
+            ApplicationProbe(done = true, localStorage = StorageAreaDump(total = 1, keys = listOf(StorageKeyEntry("k", 1)))),
+            null,
+            cookies = null,
+            engineName = "WebView",
+            includeCookies = false
+        )
+        assertThat(text).contains("localStorage -- 1 key")
+        assertThat(text).doesNotContain("Cookies")
+        // Everything else the panel prints is still there, so the two reports
+        // differ by exactly one section and cannot drift apart.
+        val full = DeveloperToolsStorageText.applicationReport(
+            ApplicationProbe(done = true, localStorage = StorageAreaDump(total = 1, keys = listOf(StorageKeyEntry("k", 1)))),
+            null,
+            emptyList(),
+            "WebView"
+        )
+        assertThat(full).contains("Cookies -- none for this page")
+        // The two reports differ by exactly that one appended section, so they
+        // cannot drift apart.
+        assertThat(full.startsWith(text)).isTrue()
+    }
 }

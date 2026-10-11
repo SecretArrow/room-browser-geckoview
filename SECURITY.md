@@ -24,6 +24,8 @@ device. It is **not** an anonymity tool.
 | Downloads | Filename sanitization (path traversal / separators / double-dot collapse), explicit notifications |
 | Malicious sites | Bundled blocklist + heuristics (http, IP-literal URLs, punycode) surfaced as warnings/blocks |
 | Agent actions | Every state-changing tool call passes a gate: **Confirm actions** (a blanket Allow/Deny prompt) and, optionally, a local Ollama decision model that judges the action first. Both are bypassed while **YOLO** is on. None of the three is a security boundary — see below |
+| Agent vision | A screenshot of the current page can be sent to the model provider, signed-in content included; **off by default** (per-profile switch), refused on text-only providers and in a private tab — see *The agent's vision and site memory* below |
+| Agent site memory | Per-profile, origin-keyed notes the agent keeps about a site; redaction at entry, user-visible and deletable per entry and per site, wiped with the profile — see *The agent's vision and site memory* below |
 | Credentials | **Never stored by Room Browser.** Autofill is delegated to the Android autofill framework; no plaintext (or any) credential storage exists in the app |
 | Secrets in repo | None. Signing comes exclusively from environment variables / CI secrets |
 | Backups | `allowBackup=false` + data-extraction rules exclude the DB, profile dirs and DataStore — isolated state cannot leak into cloud backups |
@@ -287,6 +289,76 @@ weights, never for cloud, MLX or Safetensors models. Only `OLLAMA`-protocol
 providers appear in the picker. YOLO is not a gate feature and is not
 restricted that way — it is a local decision, so it applies to every
 provider, Ollama included.
+
+## The agent's vision and site memory (Android)
+
+Two of the agent's newer capabilities touch data that leaves the device or
+accumulates in the profile, so their limits are stated here rather than left in
+the user guide alone. Both are per-profile and both are **off on every profile,
+new and old**, carried by a defaulted Boolean (`agentVisionEnabled`,
+`agentSiteMemoryEnabled`) rather than by a withheld permission — that set is a
+deny-list, so a permission added later is granted by default and cannot express
+"off".
+
+### Vision (a screenshot to the provider)
+
+`see_page` captures a screenshot of the current page and sends it to the model
+provider. That is the one change in this document with a direct privacy
+consequence, and it is not mitigated:
+
+- **A picture of the page leaves the device, and it includes anything you are
+  signed in to.** The image is not the page's text — it is everything the
+  engine renders, which is exactly why it is useful and exactly why it is
+  dangerous. If the page is a bank, an inbox or a dashboard, that is what the
+  provider receives.
+- **The app cannot redact pixels.** There is no redaction pass over the image:
+  a token, a one-time code, a private key or a secret drawn into a canvas is
+  sent as rendered. The redaction that protects the console and network buffers
+  does not apply here, and this document does not claim it does.
+- **The capture is the engine's frame.** The app's own Compose UI is not part
+  of it. On the WebView edition `EngineSession.capturePixels` crops the
+  Activity window to the engine's bounds, so a panel that overlaps those bounds
+  can appear in a frame; the claim that the Developer Tools overlay is *never*
+  in the frame is not verified here.
+- **Unavailable on text-only providers.** The on-device `LOCAL` engine and the
+  `OPENCODE` server take text prompts only, and the tool is refused for them
+  **before any capture**, with that reason (`AgentVisionSupport`) — a request
+  whose image would be silently dropped is never sent. [OI]-compatible,
+  Anthropic and Ollama providers can carry one.
+- **Refused in a private tab.** When the tab the agent is working on is private,
+  `see_page` refuses before capture, the same rule that disables the Developer
+  Tools panels there. The refusal is in the tool, so it holds whether the switch
+  is on or off.
+- **Off by default.** `agentVisionEnabled` is false on every profile, and the
+  setting's own description states the consequence in full.
+
+The honest summary: while vision is on, the agent can hand a provider a picture
+of whatever is on the screen, and nothing in the app stands between the page's
+pixels and the request. That is a deliberate trade for a capability the user
+opts into, not a sandbox.
+
+### Site memory (an origin-keyed memory)
+
+Site memory lets the agent keep notes about a site so it does not relearn the
+same thing every turn. It is a new place where secrets could accumulate, and it
+is bounded as follows:
+
+- **Origin comes from the session URL, never from page-supplied text.** A page
+  cannot choose the origin its notes are filed under, so it cannot read or
+  overwrite another site's memory by naming it.
+- **Redaction is applied at entry**, the same pass that protects the console and
+  network buffers, so a credential the agent copies out of a header or a URL is
+  masked before it is stored.
+- **The user can see and delete what is remembered**, per entry and per site —
+  memory the user cannot inspect is memory the user cannot audit.
+- **Wiped with the profile.** Site memory is profile state, not device state;
+  deleting the profile removes it with the rest.
+
+What is not mitigated: redaction is name-based and bounded to the values it
+knows (the same header and query names listed under Developer Tools below), so a
+secret that reaches a note under some other shape is not caught. Site memory is
+stored in the profile's own database, in the same file as the rest of the
+profile's state, and is **off unless the profile opts in**.
 
 ## Developer Tools (Android)
 

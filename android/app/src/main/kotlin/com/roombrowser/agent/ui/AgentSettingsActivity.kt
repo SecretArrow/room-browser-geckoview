@@ -534,6 +534,14 @@ private fun AgentSettingsRoot(
                 }
             )
             SettingSwitchRow(
+                title = AgentPermissions.label(AgentPermissions.DEVTOOLS_SECURITY),
+                subtitle = AgentPermissions.description(AgentPermissions.DEVTOOLS_SECURITY),
+                checked = AgentPermissions.DEVTOOLS_SECURITY !in controller.profileSettings.agentWithheldPermissions,
+                onCheckedChange = { checked ->
+                    controller.setAgentPermission(AgentPermissions.DEVTOOLS_SECURITY, checked)
+                }
+            )
+            SettingSwitchRow(
                 title = AgentPermissions.label(AgentPermissions.DEVTOOLS_COOKIES),
                 subtitle = AgentPermissions.description(AgentPermissions.DEVTOOLS_COOKIES),
                 checked = AgentPermissions.DEVTOOLS_COOKIES !in controller.profileSettings.agentWithheldPermissions,
@@ -548,6 +556,43 @@ private fun AgentSettingsRoot(
                 onCheckedChange = { checked ->
                     controller.setAgentPermission(AgentPermissions.EXPORT_DIAGNOSTICS, checked)
                 }
+            )
+
+            // ================= Agent vision =================
+            // Its own section, not the Developer Tools one: see_page is a
+            // reading tool like read_page, and the thing it sends is the page
+            // itself rather than anything the panels hold.
+            SectionHeader("Agent vision")
+            SettingSwitchRow(
+                title = "Agent can see the page",
+                subtitle = "Lets the agent send a screenshot of the page it is working on to the " +
+                    "model provider. The picture is of the page itself — including anything you " +
+                    "are signed in to — while the browser's own screens, and the Developer Tools " +
+                    "overlay, are never in it. Nothing is redacted, so anything drawn on the " +
+                    "page, including a secret in a canvas, goes with it. It is refused in a " +
+                    "private tab, and it is unavailable on providers that take text only.",
+                checked = controller.profileSettings.agentVisionEnabled,
+                onCheckedChange = { checked -> controller.setAgentVision(checked) }
+            )
+            // ================= Agent memory =================
+            // The agent's own per-site notes. OFF by default; the toggle is the
+            // gate (not a withheld permission, which is a deny-list and cannot
+            // express a default-off feature), and the row below opens the list
+            // where the user reads and prunes what has been kept.
+            SectionHeader("Agent memory")
+            SettingSwitchRow(
+                title = "Let the agent remember this site",
+                subtitle = "Lets the agent keep notes about the sites you visit, so it can pick up " +
+                    "where it left off. Stored on this device, per site, and readable only by this " +
+                    "profile — wiped when the profile is deleted. The agent can still be wrong, so " +
+                    "check the list below. Off by default.",
+                checked = controller.profileSettings.agentSiteMemoryEnabled,
+                onCheckedChange = { checked -> controller.setAgentSiteMemoryEnabled(checked) }
+            )
+            SettingActionRow(
+                title = "Remembered sites",
+                subtitle = "See and delete what the agent has remembered for this profile",
+                onClick = { AgentMemoryActivity.launch(LocalContext.current, controller.profileId) }
             )
 
             // ================= Retry on error =================

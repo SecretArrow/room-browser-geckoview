@@ -1088,6 +1088,18 @@ fun ProfileSettingsScreen(viewModel: BrowserViewModel, onClose: () -> Unit) {
                 checked = settings.agentConsoleApprovalRequired,
                 onCheckedChange = { update(settings.copy(agentConsoleApprovalRequired = it)) }
             )
+            // The agent's own per-site notes: off until the user says otherwise,
+            // and the gate the site_memory tool reads. The list itself lives on
+            // the AI Agent settings screen, so this row is only the switch.
+            SettingSwitchRow(
+                title = "Let the agent remember this site",
+                subtitle = "Lets the agent keep notes about the sites you visit, so it can pick up " +
+                    "where it left off. Stored on this device, per site, and readable only by this " +
+                    "profile — wiped when the profile is deleted. The agent can still be wrong, so " +
+                    "check the list in AI Agent settings. Off by default.",
+                checked = settings.agentSiteMemoryEnabled,
+                onCheckedChange = { update(settings.copy(agentSiteMemoryEnabled = it)) }
+            )
             SettingSwitchRow(
                 title = AgentPermissions.label(AgentPermissions.DEVTOOLS_READ),
                 subtitle = AgentPermissions.description(AgentPermissions.DEVTOOLS_READ),
@@ -1107,6 +1119,12 @@ fun ProfileSettingsScreen(viewModel: BrowserViewModel, onClose: () -> Unit) {
                 onCheckedChange = { update(setPermission(settings, AgentPermissions.DEVTOOLS_STORAGE, it)) }
             )
             SettingSwitchRow(
+                title = AgentPermissions.label(AgentPermissions.DEVTOOLS_SECURITY),
+                subtitle = AgentPermissions.description(AgentPermissions.DEVTOOLS_SECURITY),
+                checked = AgentPermissions.DEVTOOLS_SECURITY !in settings.agentWithheldPermissions,
+                onCheckedChange = { update(setPermission(settings, AgentPermissions.DEVTOOLS_SECURITY, it)) }
+            )
+            SettingSwitchRow(
                 title = AgentPermissions.label(AgentPermissions.DEVTOOLS_COOKIES),
                 subtitle = AgentPermissions.description(AgentPermissions.DEVTOOLS_COOKIES),
                 checked = AgentPermissions.DEVTOOLS_COOKIES !in settings.agentWithheldPermissions,
@@ -1117,6 +1135,17 @@ fun ProfileSettingsScreen(viewModel: BrowserViewModel, onClose: () -> Unit) {
                 subtitle = AgentPermissions.description(AgentPermissions.EXPORT_DIAGNOSTICS),
                 checked = AgentPermissions.EXPORT_DIAGNOSTICS !in settings.agentWithheldPermissions,
                 onCheckedChange = { update(setPermission(settings, AgentPermissions.EXPORT_DIAGNOSTICS, it)) }
+            )
+            SettingSwitchRow(
+                title = "Agent can see the page",
+                subtitle = "Lets the agent send a screenshot of the page it is working on to the " +
+                    "model provider. The picture is of the page itself — including anything you " +
+                    "are signed in to — while the browser's own screens, and the Developer Tools " +
+                    "overlay, are never in it. Nothing is redacted, so anything drawn on the " +
+                    "page, including a secret in a canvas, goes with it. It is refused in a " +
+                    "private tab, and it is unavailable on providers that take text only.",
+                checked = settings.agentVisionEnabled,
+                onCheckedChange = { update(settings.copy(agentVisionEnabled = it)) }
             )
         }
 

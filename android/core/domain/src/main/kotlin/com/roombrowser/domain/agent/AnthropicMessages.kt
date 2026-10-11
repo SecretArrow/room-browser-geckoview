@@ -111,9 +111,29 @@ object AnthropicMessages {
                         }
                     }
                     if (blocks.isNotEmpty()) {
+                        // A screenshot a tool captured arrives as a user message
+                        // of its own, right after the results it belongs to.
+                        // Anthropic rejects two consecutive user messages, so
+                        // it is folded into THIS one, beside the tool_result
+                        // blocks it answers.
+                        val attached = buildJsonArray {
+                            while (i < messages.size && messages[i].role == "user" &&
+                                !messages[i].images.isNullOrEmpty()
+                            ) {
+                                val u = messages[i]
+                                u.content?.takeIf { it.isNotBlank() }?.let { text ->
+                                    addJsonObject {
+                                        put("type", "text")
+                                        put("text", text)
+                                    }
+                                }
+                                u.images.orEmpty().forEach { add(imageBlock(it)) }
+                                i++
+                            }
+                        }
                         addJsonObject {
                             put("role", "user")
-                            put("content", blocks)
+                            put("content", if (attached.isEmpty()) blocks else JsonArray(blocks + attached))
                         }
                     }
                 }
@@ -150,16 +170,7 @@ object AnthropicMessages {
                     put("text", text)
                 }
             }
-            images.forEach { image ->
-                addJsonObject {
-                    put("type", "image")
-                    putJsonObject("source") {
-                        put("type", "base64")
-                        put("media_type", image.mediaType)
-                        put("data", image.dataBase64)
-                    }
-                }
-            }
+            images.forEach { add(imageBlock(it)) }
             calls.forEach { call ->
                 addJsonObject {
                     put("type", "tool_use")
@@ -171,6 +182,15 @@ object AnthropicMessages {
                     put("input", parseObjectOrEmpty(call.function.arguments))
                 }
             }
+        }
+    }
+
+    private fun imageBlock(image: AgentImage): JsonObject = buildJsonObject {
+        put("type", "image")
+        putJsonObject("source") {
+            put("type", "base64")
+            put("media_type", image.mediaType)
+            put("data", image.dataBase64)
         }
     }
 

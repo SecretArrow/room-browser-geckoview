@@ -13,6 +13,7 @@ import com.roombrowser.domain.agent.AgentEvent
 import com.roombrowser.domain.agent.AgentGateway
 import com.roombrowser.domain.agent.AgentLoop
 import com.roombrowser.domain.agent.AgentPrompts
+import com.roombrowser.domain.agent.AgentVisionSupport
 import com.roombrowser.domain.agent.AutoModelPicker
 import com.roombrowser.domain.model.ProfileId
 import com.roombrowser.domain.model.SearchEngines
@@ -120,6 +121,7 @@ class HeadlessAiTaskRunner(
                         permissions = task.permissions,
                         confirmActions = settings.confirmActions,
                         allowProfileTools = settings.taskProfileTools,
+                        providerProtocol = provider.protocol,
                         keepTab = runConfig.executionMode == AiTaskExecutionMode.STANDARD
                     )
                 ) ?: return@withContext AiTaskRunOutcome.Deferred(
@@ -152,7 +154,17 @@ class HeadlessAiTaskRunner(
                         allowProfileTools = settings.taskProfileTools,
                         otpDigitsAllowed = {
                             graph.appState.agentSettingsSnapshot().otpDigitsToAgent
-                        }
+                        },
+                        visionEnabled = { profile.settings.agentVisionEnabled },
+                        visionUnsupportedReason = {
+                            AgentVisionSupport.unsupportedReason(provider.protocol)
+                        },
+                        // Same per-profile opt-in the chat path uses: a task run
+                        // must not tell the user to turn on a setting that is
+                        // already on, nor write memory the profile has not asked
+                        // for.
+                        siteMemory = GraphSiteMemoryStore(graph, ProfileId(task.profileId)),
+                        siteMemoryEnabled = { profile.settings.agentSiteMemoryEnabled }
                     )
                 }
                 val config = AgentConfig(

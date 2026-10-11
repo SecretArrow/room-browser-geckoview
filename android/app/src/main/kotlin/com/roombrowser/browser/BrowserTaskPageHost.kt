@@ -8,6 +8,8 @@ import com.roombrowser.agent.AiTaskPageHost
 import com.roombrowser.agent.AiTaskPageRequest
 import com.roombrowser.agent.ScheduledRunToolGate
 import com.roombrowser.domain.agent.ActionVerdict
+import com.roombrowser.domain.agent.AgentVisionSupport
+import com.roombrowser.domain.agent.SiteMemoryStore
 import com.roombrowser.domain.agent.ToolExecutor
 import com.roombrowser.domain.task.unattendedRefusal
 
@@ -38,7 +40,14 @@ class BrowserTaskPageHost(
      */
     private val profileData: AgentProfileData,
     /** Whether the digits of a generated code may be returned to the model. */
-    private val otpDigitsAllowed: suspend () -> Boolean = { false }
+    private val otpDigitsAllowed: suspend () -> Boolean = { false },
+    /**
+     * The agent's per-site memory for this run's profile, and the per-profile
+     * toggle that gates it. Passed in rather than read here because the
+     * ViewModel does not expose the graph these come from.
+     */
+    private val siteMemory: SiteMemoryStore? = null,
+    private val siteMemoryEnabled: suspend () -> Boolean = { false }
 ) : AiTaskPageHost {
 
     override suspend fun openPage(request: AiTaskPageRequest): AiTaskPage? {
@@ -77,7 +86,12 @@ class BrowserTaskPageHost(
                         // give one; its run_js is instead governed by the task's
                         // own "clicking and typing" permission, which the user
                         // grants per task. So the setting is not applied here.
-                        runJsApprovalRequired = { false }
+                        runJsApprovalRequired = { false },
+                        visionUnsupportedReason = {
+                            request.providerProtocol?.let { AgentVisionSupport.unsupportedReason(it) }
+                        },
+                        siteMemory = siteMemory,
+                        siteMemoryEnabled = siteMemoryEnabled
                     ),
                     permissions = request.permissions,
                     confirmActions = request.confirmActions,

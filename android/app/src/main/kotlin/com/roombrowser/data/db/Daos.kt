@@ -833,3 +833,46 @@ interface TotpDao {
     @Query("SELECT COUNT(*) FROM totp_entries WHERE profile_id = :profileId")
     suspend fun countForProfile(profileId: String): Int
 }
+
+// =========================================================================
+// PER-PROFILE, PER-SITE AGENT MEMORY
+// =========================================================================
+
+@Dao
+interface AgentSiteMemoryDao {
+    /** Insert-or-replace by (profile_id, origin, key) — the natural PK. */
+    @Upsert
+    suspend fun upsert(entity: AgentSiteMemoryEntity)
+
+    /** Newest first — the order the memory screen groups and shows. */
+    @Query("SELECT * FROM agent_site_memory WHERE profile_id = :profileId ORDER BY origin ASC, updated_at_ms DESC")
+    fun observe(profileId: String): Flow<List<AgentSiteMemoryEntity>>
+
+    @Query("SELECT * FROM agent_site_memory WHERE profile_id = :profileId ORDER BY origin ASC, key ASC")
+    suspend fun allForProfile(profileId: String): List<AgentSiteMemoryEntity>
+
+    @Query("SELECT * FROM agent_site_memory WHERE profile_id = :profileId AND origin = :origin ORDER BY key ASC")
+    suspend fun forOrigin(profileId: String, origin: String): List<AgentSiteMemoryEntity>
+
+    @Query(
+        "SELECT * FROM agent_site_memory WHERE profile_id = :profileId " +
+            "AND origin = :origin AND `key` = :key"
+    )
+    suspend fun get(profileId: String, origin: String, key: String): AgentSiteMemoryEntity?
+
+    @Query("SELECT COUNT(*) FROM agent_site_memory WHERE profile_id = :profileId AND origin = :origin")
+    suspend fun countForOrigin(profileId: String, origin: String): Int
+
+    @Query(
+        "DELETE FROM agent_site_memory WHERE profile_id = :profileId " +
+            "AND origin = :origin AND `key` = :key"
+    )
+    suspend fun deleteOne(profileId: String, origin: String, key: String)
+
+    @Query("DELETE FROM agent_site_memory WHERE profile_id = :profileId AND origin = :origin")
+    suspend fun deleteOrigin(profileId: String, origin: String)
+
+    /** Profile-deletion / reset cascade. */
+    @Query("DELETE FROM agent_site_memory WHERE profile_id = :profileId")
+    suspend fun deleteAllForProfile(profileId: String)
+}

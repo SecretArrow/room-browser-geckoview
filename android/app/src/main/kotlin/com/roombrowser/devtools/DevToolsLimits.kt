@@ -23,6 +23,11 @@ internal const val NOT_LIGHTHOUSE_CAPTION =
  * a feature does something — so a row cannot outrun the code. The per-edition
  * reasons live in [capabilityLimits] and come from the capability set itself,
  * so these two lists never restate each other.
+ *
+ * The "Agent capabilities" section is the same idea for the agent's newer
+ * tools: each row names what the capability cannot do, and is kept in step
+ * with `AI_AGENTS.md` and `SECURITY.md` rather than being derived, because the
+ * agent's tools are not part of [DevToolsCapability].
  */
 internal fun sharedLimits(): List<LimitsSection> = listOf(
     LimitsSection(
@@ -76,6 +81,42 @@ internal fun sharedLimits(): List<LimitsSection> = listOf(
                     "build: its remote debugger is a separate desktop connection and it does not " +
                     "speak CDP. Until that changes, those capabilities stay absent and those " +
                     "panels stay hidden."
+            )
+        )
+    ),
+    LimitsSection(
+        title = "Agent capabilities, and their limits",
+        rows = listOf(
+            LimitsRow(
+                "compute_js — a detached scratchpad",
+                "Evaluates JavaScript in a blank, detached page that is never attached to a " +
+                    "view, so it cannot see or change the page you are on. It is not a network " +
+                    "sandbox — the app does not block outbound requests from it — and it is " +
+                    "synchronous only: a returned Promise is not awaited."
+            ),
+            LimitsRow(
+                "data_transform — on the device only",
+                "Four transforms (JSON path, CSV rows, aggregate, diff) computed in the app " +
+                    "with no page and no engine. The output is capped at 4000 characters, and " +
+                    "malformed input is an error, never an empty success."
+            ),
+            LimitsRow(
+                "Vision (see_page) — a screenshot leaves the device",
+                "Sends a picture of the page, including anything you are signed in to, to the " +
+                    "model provider. It is off by default, it cannot redact pixels, it is " +
+                    "refused in a private tab, and it is unavailable on text-only providers — " +
+                    "the on-device engine and the opencode server."
+            ),
+            LimitsRow(
+                "Site memory — origin-keyed notes",
+                "A per-profile memory keyed by the session URL's origin, never by page-supplied " +
+                    "text. It is off by default; redaction is applied at entry, the user can " +
+                    "see and delete it per entry and per site, and it is wiped with the profile."
+            ),
+            LimitsRow(
+                "Deeper Developer Tools reach",
+                "The new agent tools read the same buffers the panels show, not a second " +
+                    "capture, so the agent and the panel cannot disagree — redaction included."
             )
         )
     )
