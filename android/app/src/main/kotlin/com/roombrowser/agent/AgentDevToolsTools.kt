@@ -97,7 +97,7 @@ class AgentDevToolsTools(
 
     private suspend fun console(args: JsonObject): ToolResult {
         val action = strArg(args, "action") ?: "read"
-        val tabId = boundTabId() ?: return ToolResult(false, noTab)
+        val tabId = boundTabId() ?: return ToolResult(false, noTab())
         val inspector = control.inspectorFor(tabId)
         val caps = control.capabilitiesFor(tabId)
         val consoleAvailable = caps.has(DevToolsCapability.CONSOLE_CAPTURE) ||
@@ -166,7 +166,7 @@ class AgentDevToolsTools(
 
     private suspend fun network(args: JsonObject): ToolResult {
         val action = strArg(args, "action") ?: "read"
-        val tabId = boundTabId() ?: return ToolResult(false, noTab)
+        val tabId = boundTabId() ?: return ToolResult(false, noTab())
         val inspector = control.inspectorFor(tabId)
         val caps = control.capabilitiesFor(tabId)
         val networkAvailable = caps.has(DevToolsCapability.NETWORK_REQUEST_LINE) ||
@@ -230,7 +230,7 @@ class AgentDevToolsTools(
     // ---------------------------------------------------------------- inspect
 
     private suspend fun inspect(args: JsonObject): ToolResult {
-        val tabId = boundTabId() ?: return ToolResult(false, noTab)
+        val tabId = boundTabId() ?: return ToolResult(false, noTab())
         val session = control.tabSession(tabId) ?: return ToolResult(false, noEngine(tabId))
         val ref = intArg(args, "ref")
         val selector = strArg(args, "selector")
@@ -252,7 +252,7 @@ class AgentDevToolsTools(
     // ------------------------------------------------------------------ audit
 
     private suspend fun audit(): ToolResult {
-        val tabId = boundTabId() ?: return ToolResult(false, noTab)
+        val tabId = boundTabId() ?: return ToolResult(false, noTab())
         val session = control.tabSession(tabId) ?: return ToolResult(false, noEngine(tabId))
         val caps = control.capabilitiesFor(tabId)
 
@@ -323,7 +323,7 @@ class AgentDevToolsTools(
     // --------------------------------------------------------------- diagnose
 
     private suspend fun diagnose(args: JsonObject): ToolResult {
-        val tabId = boundTabId() ?: return ToolResult(false, noTab)
+        val tabId = boundTabId() ?: return ToolResult(false, noTab())
         val focus = strArg(args, "focus").orEmpty()
         val (console, network) = buffers(tabId)
         val dom = domEvidence(tabId)
@@ -344,7 +344,7 @@ class AgentDevToolsTools(
     // ----------------------------------------------------------------- report
 
     private suspend fun report(): ToolResult {
-        val tabId = boundTabId() ?: return ToolResult(false, noTab)
+        val tabId = boundTabId() ?: return ToolResult(false, noTab())
         val dom = domEvidence(tabId)
         onStatus("Building the diagnostic report…")
         val diag = control.captureDiagnostics(tabId, dom)
@@ -382,7 +382,7 @@ class AgentDevToolsTools(
             is ActionVerdict.Deny -> return ToolResult(false, verdict.reason)
             is ActionVerdict.Ask -> return ToolResult(false, "the user did not confirm this page patch")
         }
-        val tabId = boundTabId() ?: return ToolResult(false, noTab)
+        val tabId = boundTabId() ?: return ToolResult(false, noTab())
         val session = control.tabSession(tabId) ?: return ToolResult(false, noEngine(tabId))
         val raw = evaluate(session, script)
             ?: return ToolResult(false, "the patch did not run — the engine reported an error or the page is mid-load")
@@ -399,7 +399,7 @@ class AgentDevToolsTools(
     // ---------------------------------------------------------------- helpers
 
     private fun devtoolsReload(): ToolResult {
-        val tabId = boundTabId() ?: return ToolResult(false, noTab)
+        val tabId = boundTabId() ?: return ToolResult(false, noTab())
         if (keepConsole[tabId] == false) control.inspectorFor(tabId)?.clearConsole()
         control.reload(tabId)
         return ToolResult(
