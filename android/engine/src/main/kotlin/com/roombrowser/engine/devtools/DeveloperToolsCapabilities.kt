@@ -35,6 +35,18 @@ enum class DevToolsCapability {
     /** Responses are observable: status and response headers. */
     NETWORK_RESPONSE_HEADERS,
 
+    /**
+     * Cookies for an origin are readable at all -- their names and values.
+     *
+     * Deliberately separate from [COOKIE_ATTRIBUTES]: an engine can list cookies
+     * without being able to say whether they are HttpOnly, and blurring the two
+     * would either hide a list this build really has or claim flags it never
+     * read. WHICH cookies a list holds is the engine's business, though, and the
+     * difference is real: an edition whose only store is the page's own cannot
+     * see a cookie the server marked HttpOnly, and it says so in its notes.
+     */
+    COOKIES,
+
     /** Cookie attributes (HttpOnly, Secure, Expires, SameSite) are readable. */
     COOKIE_ATTRIBUTES,
 

@@ -1,5 +1,7 @@
 package com.roombrowser.devtools
 
+import com.roombrowser.engine.devtools.EngineCookie
+
 /**
  * The text every Application-panel copy control writes.
  *
@@ -19,8 +21,21 @@ package com.roombrowser.devtools
  */
 internal object DeveloperToolsStorageText {
 
-    /** The whole panel, as one paste: every section, each with the state it was found in. */
-    fun applicationReport(probe: ApplicationProbe?, frames: FrameNode?, engineName: String): String {
+    /**
+     * The whole panel, as one paste: every section, each with the state it was found in.
+     *
+     * [cookies] is here because it is a section of this panel, and a report that
+     * omitted it would leave a reader unable to tell whether the cookies were
+     * examined at all. The header still speaks only for the page probe: "could
+     * not read the page's storage" is about the page not answering, and the
+     * cookie list comes from the engine and can be complete either way.
+     */
+    fun applicationReport(
+        probe: ApplicationProbe?,
+        frames: FrameNode?,
+        cookies: List<EngineCookie>?,
+        engineName: String
+    ): String {
         val header = if (probe == null) {
             "Application -- this build could not read the page's storage."
         } else if (!probe.done) {
@@ -47,7 +62,12 @@ internal object DeveloperToolsStorageText {
             "",
             backgroundText(probe?.background, probe?.bfcache, probe?.reports),
             "",
-            framesText(frames)
+            framesText(frames),
+            "",
+            // The masked form, like the section's own copy control: a report is
+            // the thing that gets pasted somewhere, so a value must not ride out
+            // in it.
+            DeveloperToolsCookiesText.cookiesSection(cookies)
         ).joinToString("\n").trimEnd()
     }
 
