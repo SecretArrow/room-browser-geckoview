@@ -2,6 +2,7 @@ package com.roombrowser.devtools
 
 import com.roombrowser.engine.EngineSession
 import com.roombrowser.engine.devtools.DeveloperToolsCapabilities
+import com.roombrowser.engine.devtools.EngineCookie
 import com.roombrowser.engine.devtools.EngineInspector
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
@@ -201,6 +202,20 @@ class InspectorSession(
         val raw = rawEval(DeveloperToolsStorageScripts.framesProbeJs()) ?: return null
         return decode(raw, FrameNode.serializer())
     }
+
+    /**
+     * The cookies the engine would send to [origin], or null when the read did
+     * not complete.
+     *
+     * Null and an empty list are different answers, kept apart for the same
+     * reason the storage sections keep "could not read" out of "empty": a
+     * section that swallows a failed read into an empty list would tell a reader
+     * the page set no cookies when the truth is that nothing was read. The
+     * engine's own `cookies()` never throws, so a null here is a real fault
+     * (a dead session) rather than an ordinary absence.
+     */
+    suspend fun cookies(origin: String): List<EngineCookie>? =
+        runCatching { inspector.cookies(origin) }.getOrNull()
 
     /**
      * What the page can say about its own transport security.

@@ -3,10 +3,16 @@ package com.roombrowser.engine.gecko
 import com.roombrowser.engine.devtools.DeveloperToolsCapabilities
 import com.roombrowser.engine.devtools.DevToolsCapability
 import com.roombrowser.engine.devtools.EngineConsoleMessage
+import com.roombrowser.engine.devtools.EngineCookie
 import com.roombrowser.engine.devtools.EngineInspector
 import com.roombrowser.engine.devtools.EngineNetworkSignal
 import com.roombrowser.engine.devtools.EngineSecurityInfo
+import com.roombrowser.engine.devtools.parseCookieHeader
+import kotlin.coroutines.resume
+import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.withTimeoutOrNull
 import org.json.JSONObject
+import org.json.JSONTokener
 
 /**
  * What the GeckoView edition can serve to Developer Tools, and the per-session
@@ -23,13 +29,20 @@ internal object GeckoDevTools {
             DevToolsCapability.PAGE_SCRIPTING,
             DevToolsCapability.CONSOLE_CAPTURE,
             DevToolsCapability.NETWORK_REQUEST_LINE,
+            // Read from the page, not from the engine: GeckoView hands the
+            // embedder no cookie store, so this is the page's own view of its
+            // cookies. Names and values only -- see [COOKIE_ATTRIBUTES_NOTE].
+            DevToolsCapability.COOKIES,
             // GeckoSession.ProgressDelegate.onSecurityChange hands over the live
             // connection's X509Certificate, which is the whole reason the
             // Security panel is worth having on this edition.
             DevToolsCapability.SECURITY_INFO,
             DevToolsCapability.SECURITY_CERTIFICATE
         ),
-        notes = mapOf(DevToolsCapability.ENGINE_CONSOLE to ENGINE_CONSOLE_NOTE)
+        notes = mapOf(
+            DevToolsCapability.ENGINE_CONSOLE to ENGINE_CONSOLE_NOTE,
+            DevToolsCapability.COOKIE_ATTRIBUTES to COOKIE_ATTRIBUTES_NOTE
+        )
     )
 
     /**
@@ -42,6 +55,25 @@ internal object GeckoDevTools {
             "there is no ConsoleDelegate, and GeckoRuntimeSettings.consoleOutput(true) only " +
             "writes engine messages to logcat under the tag GeckoConsole at a fixed level, " +
             "with no way to read them in the app."
+
+    /**
+     * The second in-scope absence, and the honest shape of what this build does
+     * instead.
+     *
+     * The cookie LIST is served -- from the page's own `document.cookie` -- but
+     * nothing here can describe a cookie. `StorageController` clears cookies and
+     * reads none, and the `browser.cookies` WebExtension API that WOULD report
+     * domain, expiry, SameSite and the HttpOnly/Secure flags is available to a
+     * BACKGROUND script only; this build's `roombridge` port is a content
+     * script's. Saying that is what keeps "the flags are unknown" from reading
+     * as a bug in the panel.
+     */
+    const val COOKIE_ATTRIBUTES_NOTE: String =
+        "This edition reads cookies from the page itself, which reports a cookie's name " +
+            "and value and nothing else -- no domain, path, expiry, SameSite, HttpOnly or " +
+            "Secure flag, and no cookie the page cannot see. GeckoView exposes no cookie " +
+            "store to the app, and the browser.cookies extension API that would describe " +
+            "one belongs to a background script, which this build's bridge is not."
 
     /**
      * What the Security panel says this engine does and does not hand over.
@@ -124,12 +156,59 @@ internal class GeckoInspector(private val session: GeckoEngineSession) : EngineI
      */
     override suspend fun securityInfo(): EngineSecurityInfo? = session.securityState
 
+    /**
+     * The cookies the PAGE can see for this origin.
+     *
+     * A FALLBACK, and it is a weaker answer than the WebView edition's: this is
+     * `document.cookie` evaluated in the page, not the engine's cookie store, so
+     * a cookie the server marked HttpOnly never appears here and no cookie's
+     * flags are readable at all. The alternative -- `browser.cookies.getAll()`
+     * over the extension's port -- needs a background script, and this build's
+     * `roombridge` port belongs to the content-script half of the extension, so
+     * it cannot be reached from here without rebuilding that bridge. See
+     * [GeckoDevTools.COOKIE_ATTRIBUTES_NOTE] for how that is stated in the panel.
+     *
+     * [parseCookieHeader] is shared with the WebView edition because both answer
+     * in the same flat `name=value; name2=value2` shape, and an unanswered eval
+     * yields an empty list: the capability is declared, so "no cookies" is the
+     * honest floor rather than a blank. [origin] is not used to narrow anything --
+     * the script runs in the document on screen, and that document IS the origin.
+     */
+    override suspend fun cookies(origin: String): List<EngineCookie> =
+        parseCookieHeader(evalString("document.cookie"))
+
+    /** One script's string result, decoded from the JSON-encoded reply, or null when nothing answered in time. */
+    private suspend fun evalString(script: String): String? {
+        val raw = withTimeoutOrNull(COOKIE_TIMEOUT_MS) {
+            suspendCancellableCoroutine<String?> { continuation ->
+                try {
+                    session.evaluateJs(script) { value ->
+                        if (continuation.isActive) continuation.resume(value)
+                    }
+                } catch (t: Throwable) {
+                    if (continuation.isActive) continuation.resume(null)
+                }
+            }
+        }
+        val text = raw?.trim().orEmpty()
+        if (text.isEmpty() || text == "null") return null
+        // The reply is JSON, like WebView's evaluateJavascript: a string result
+        // arrives quoted and escaped, and only a string result is of use here.
+        if (!text.startsWith("\"")) return text
+        return runCatching { JSONTokener(text).nextValue() as? String }.getOrNull()
+    }
+
     override fun close() {
         val wasArmed = networkSink != null
         consoleSink = null
         networkSink = null
         session.sendConsoleControl(armed = false)
         if (wasArmed) session.host.onNetworkCaptureChanged(this, armed = false)
+    }
+
+    private companion object {
+        /** How long one cookie eval may take before it is reported as unanswered. */
+        const val COOKIE_TIMEOUT_MS = 5_000L
     }
 }
 

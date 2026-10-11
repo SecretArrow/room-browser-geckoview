@@ -19,6 +19,19 @@ class GeckoDevToolsCapabilitiesTest {
 
     private val capabilities = GeckoDevTools.CAPABILITIES
 
+    /**
+     * The absences that carry a reason.
+     *
+     * Engine console has always been one. Cookie attributes joined it with the
+     * Cookies section: the list is served, from the page's own `document.cookie`,
+     * and nothing on that path describes a cookie -- so the flags are a real,
+     * stated limit and not work waiting to be done.
+     */
+    private val reasonedAbsences = setOf(
+        DevToolsCapability.ENGINE_CONSOLE,
+        DevToolsCapability.COOKIE_ATTRIBUTES
+    )
+
     @Test
     fun the_declared_set_is_exactly_what_this_edition_serves() {
         assertThat(capabilities.capabilities).isEqualTo(
@@ -26,10 +39,20 @@ class GeckoDevToolsCapabilitiesTest {
                 DevToolsCapability.PAGE_SCRIPTING,
                 DevToolsCapability.CONSOLE_CAPTURE,
                 DevToolsCapability.NETWORK_REQUEST_LINE,
+                DevToolsCapability.COOKIES,
                 DevToolsCapability.SECURITY_INFO,
                 DevToolsCapability.SECURITY_CERTIFICATE
             )
         )
+    }
+
+    @Test
+    fun this_edition_lists_cookies_without_being_able_to_describe_them() {
+        // The pair that keeps the panel honest: the Cookies block has something
+        // to draw, and the attribute cells have a reason to read "unknown".
+        assertThat(capabilities.has(DevToolsCapability.COOKIES)).isTrue()
+        assertThat(capabilities.has(DevToolsCapability.COOKIE_ATTRIBUTES)).isFalse()
+        assertThat(GeckoDevTools.COOKIE_ATTRIBUTES_NOTE).contains("browser.cookies")
     }
 
     @Test
@@ -83,12 +106,25 @@ class GeckoDevToolsCapabilitiesTest {
     }
 
     @Test
+    fun the_cookie_attribute_absence_names_what_the_api_really_omits() {
+        // Same discipline: the wording is asserted, not read back from the
+        // constant, because it is a claim about where the flags could come from.
+        assertThat(capabilities.noteFor(DevToolsCapability.COOKIE_ATTRIBUTES)).isEqualTo(
+            "This edition reads cookies from the page itself, which reports a cookie's name " +
+                "and value and nothing else -- no domain, path, expiry, SameSite, HttpOnly or " +
+                "Secure flag, and no cookie the page cannot see. GeckoView exposes no cookie " +
+                "store to the app, and the browser.cookies extension API that would describe " +
+                "one belongs to a background script, which this build's bridge is not."
+        )
+    }
+
+    @Test
     fun no_other_absent_capability_carries_a_reason() {
         // "not built yet" and "cannot" are different answers, and only the
         // second one may put a sentence on the screen.
         DevToolsCapability.entries
             .filterNot { capabilities.has(it) }
-            .filterNot { it == DevToolsCapability.ENGINE_CONSOLE }
+            .filterNot { it in reasonedAbsences }
             .forEach { capability ->
                 assertThat(capabilities.noteFor(capability)).isNull()
             }

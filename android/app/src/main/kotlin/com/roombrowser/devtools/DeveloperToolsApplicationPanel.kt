@@ -27,6 +27,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.roombrowser.engine.devtools.DevToolsCapability
+import com.roombrowser.engine.devtools.EngineCookie
 import com.roombrowser.ui.common.LocalRoomExtras
 import com.roombrowser.ui.common.RoomCopyButton
 import com.roombrowser.ui.common.SectionHeader
@@ -35,16 +37,18 @@ import kotlinx.coroutines.launch
 /**
  * The Application panel: what this page has put on the device.
  *
- * WHAT IS READ AND WHEN. Everything here comes from one page-side probe that
+ * WHAT IS READ AND WHEN. The page sections come from one page-side probe that
  * has to be started and then collected -- see [DeveloperToolsStorageScripts]
  * for why the engine cannot await it -- plus one synchronous frame-tree read.
- * The probe runs when the panel is composed and again on demand; nothing polls,
- * so a closed panel costs the page nothing.
+ * The Cookies section is neither: it is the engine's own answer, read in the
+ * same pass but from the engine rather than from the page, so it is shown even
+ * when the page never replied. Everything runs when the panel is composed and
+ * again on demand; nothing polls, so a closed panel costs the page nothing.
  *
  * WHAT IS NOT SENT. The probe carries key names and lengths, never values. A
  * value is fetched one row at a time by tapping that row, and the reveal is
- * local state that no copy control and no report reads. That is what keeps a
- * site's stored tokens out of a paste.
+ * local state that no copy control and no report reads. A cookie's value is the
+ * same kind of secret and is masked by default in both the rows and the copies.
  *
  * A section the page did not answer and a section that is empty are rendered
  * differently on purpose: `(not reported)` and "empty" are different facts and
@@ -57,6 +61,7 @@ internal fun ApplicationPanel(scope: DevToolsPanelScope) {
 
     var probe by remember(session) { mutableStateOf<ApplicationProbe?>(null) }
     var frames by remember(session) { mutableStateOf<FrameNode?>(null) }
+    var cookies by remember(session) { mutableStateOf<List<EngineCookie>?>(null) }
     var reading by remember(session) { mutableStateOf(session != null) }
     var refreshKey by remember(session) { mutableIntStateOf(0) }
 
@@ -65,12 +70,14 @@ internal fun ApplicationPanel(scope: DevToolsPanelScope) {
         if (attached == null) {
             probe = null
             frames = null
+            cookies = null
             reading = false
             return@LaunchedEffect
         }
         reading = true
         probe = attached.applicationProbe()
         frames = attached.frames()
+        cookies = attached.cookies(scope.tabUrl)
         reading = false
     }
 
@@ -78,7 +85,7 @@ internal fun ApplicationPanel(scope: DevToolsPanelScope) {
         // The whole panel, not the sections on screen: the report is the thing
         // a bug report carries, and it states each section's own state.
         RoomCopyButton(
-            DeveloperToolsStorageText.applicationReport(probe, frames, scope.engineName),
+            DeveloperToolsStorageText.applicationReport(probe, frames, cookies, scope.engineName),
             "Application",
             "Copy the whole Application report"
         )
@@ -98,34 +105,158 @@ internal fun ApplicationPanel(scope: DevToolsPanelScope) {
         }
     }
 
-    val answered = probe ?: return
-    val losses = answered.failures.orEmpty()
-    if (losses.isNotEmpty()) {
-        // Not a Block: a section whose whole content is an admission has no
-        // useful "copy this section" -- the whole-panel report carries it.
-        SectionHeader("Some reads did not finish")
-        losses.forEach { line ->
-            Text(
-                line,
-                style = MaterialTheme.typography.bodySmall,
-                color = extras.textSecondary,
-                fontFamily = FontFamily.Monospace,
-                modifier = Modifier.padding(horizontal = 20.dp, vertical = 1.dp)
-            )
+    // The page sections need the probe; the Cookies section does not, so it
+    // renders even when the page never answered.
+    val answered = probe
+    if (answered != null) {
+        val losses = answered.failures.orEmpty()
+        if (losses.isNotEmpty()) {
+            // Not a Block: a section whose whole content is an admission has no
+            // useful "copy this section" -- the whole-panel report carries it.
+            SectionHeader("Some reads did not finish")
+            losses.forEach { line ->
+                Text(
+                    line,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = extras.textSecondary,
+                    fontFamily = FontFamily.Monospace,
+                    modifier = Modifier.padding(horizontal = 20.dp, vertical = 1.dp)
+                )
+            }
         }
+
+        Block(DeveloperToolsStorageText.estimateText(answered.estimate), "Usage")
+        Block(DeveloperToolsStorageText.manifestText(answered.hasManifestLink, answered.manifest), "Manifest")
+        Block(DeveloperToolsStorageText.serviceWorkersText(answered.serviceWorkers), "Service workers")
+        StorageArea("localStorage", answered.localStorage, session)
+        StorageArea("sessionStorage", answered.sessionStorage, session)
+        Block(DeveloperToolsStorageText.indexedDbText(answered.databases), "IndexedDB")
+        Block(DeveloperToolsStorageText.cacheText(answered.caches), "Cache storage")
+        Block(DeveloperToolsStorageText.backgroundText(answered.background, answered.bfcache, answered.reports), "Background services")
+        // The frame tree is a pull of its own, so it can be missing while everything
+        // else answered; framesText() says which of the two happened.
+        Block(DeveloperToolsStorageText.framesText(frames), "Frames")
     }
 
-    Block(DeveloperToolsStorageText.estimateText(answered.estimate), "Usage")
-    Block(DeveloperToolsStorageText.manifestText(answered.hasManifestLink, answered.manifest), "Manifest")
-    Block(DeveloperToolsStorageText.serviceWorkersText(answered.serviceWorkers), "Service workers")
-    StorageArea("localStorage", answered.localStorage, session)
-    StorageArea("sessionStorage", answered.sessionStorage, session)
-    Block(DeveloperToolsStorageText.indexedDbText(answered.databases), "IndexedDB")
-    Block(DeveloperToolsStorageText.cacheText(answered.caches), "Cache storage")
-    Block(DeveloperToolsStorageText.backgroundText(answered.background, answered.bfcache, answered.reports), "Background services")
-    // The frame tree is a pull of its own, so it can be missing while everything
-    // else answered; framesText() says which of the two happened.
-    Block(DeveloperToolsStorageText.framesText(frames), "Frames")
+    // Cookies come from the engine's own store, not from the page, so they are
+    // shown whether or not the page answered -- but only when the engine says it
+    // can list them at all.
+    if (scope.capabilities.has(DevToolsCapability.COOKIES)) {
+        CookiesSection(
+            cookies,
+            scope.tabUrl,
+            scope.capabilities.noteFor(DevToolsCapability.COOKIE_ATTRIBUTES)
+        )
+    }
+}
+
+/**
+ * The cookies the engine would send to this page's origin, one row each.
+ *
+ * The section text is the last entry of [cookies]; the per-row split exists so a
+ * value is revealed only in the row a reader opened. What a copy carries is
+ * always the MASKED form, in both places, so a revealed value cannot leave the
+ * panel through a copy control.
+ *
+ * [attributeNote] is the capability layer's own reason for the missing flags,
+ * shown beside the rows it explains rather than only on the capability screen:
+ * every attribute cell below reads "unknown on this engine", and a reader
+ * deserves to know WHY without having to go and look.
+ */
+@Composable
+private fun CookiesSection(cookies: List<EngineCookie>?, origin: String, attributeNote: String?) {
+    val extras = LocalRoomExtras.current
+    SectionHeader("Cookies") {
+        RoomCopyButton(
+            DeveloperToolsCookiesText.cookiesSection(cookies),
+            "Cookies",
+            "Copy the cookie list for this page"
+        )
+    }
+    when {
+        cookies == null -> Text(
+            "This build could not read the cookies for this page.",
+            style = MaterialTheme.typography.bodySmall,
+            color = extras.textSecondary,
+            modifier = Modifier.padding(horizontal = 20.dp, vertical = 2.dp)
+        )
+        cookies.isEmpty() -> Text(
+            "No cookies for this origin.",
+            style = MaterialTheme.typography.bodySmall,
+            color = extras.textSecondary,
+            modifier = Modifier.padding(horizontal = 20.dp, vertical = 2.dp)
+        )
+        else -> {
+            cookies.forEach { cookie ->
+                CookieRow(cookie)
+            }
+            Text(
+                origin,
+                style = MaterialTheme.typography.labelSmall,
+                color = extras.textSecondary,
+                fontFamily = FontFamily.Monospace,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.padding(horizontal = 20.dp, vertical = 2.dp)
+            )
+            // Why every attribute above reads "unknown": the engine's own reason,
+            // in the engine's own words, next to the rows it is about.
+            if (attributeNote != null) {
+                Text(
+                    attributeNote,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = extras.textSecondary,
+                    modifier = Modifier.padding(horizontal = 20.dp, vertical = 2.dp)
+                )
+            }
+        }
+    }
+}
+
+/**
+ * One cookie: its name, a reveal, and a copy that is always masked.
+ *
+ * The reveal draws [DeveloperToolsCookiesText.revealedCookieText] in this
+ * composable's own state and nowhere else -- the values never sit in a buffer a
+ * copy or an export could walk.
+ */
+@Composable
+private fun CookieRow(cookie: EngineCookie) {
+    val extras = LocalRoomExtras.current
+    // Keyed on the whole cookie, not its name: the same name can be set for two
+    // paths, and a reveal on one must not open the other.
+    var revealed by remember(cookie) { mutableStateOf(false) }
+
+    Row(
+        Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 3.dp),
+        verticalAlignment = Alignment.Top
+    ) {
+        Row(
+            Modifier.weight(1f).clickable { revealed = !revealed },
+            verticalAlignment = Alignment.Top
+        ) {
+            Icon(
+                if (revealed) Icons.Filled.VisibilityOff else Icons.Filled.Visibility,
+                contentDescription = if (revealed) "Hide this cookie value" else "Reveal this cookie value",
+                tint = extras.icon,
+                modifier = Modifier.width(24.dp)
+            )
+            Text(
+                if (revealed) DeveloperToolsCookiesText.revealedCookieText(cookie)
+                else DeveloperToolsCookiesText.cookieText(cookie),
+                style = MaterialTheme.typography.bodySmall,
+                color = extras.textPrimary,
+                fontFamily = FontFamily.Monospace,
+                modifier = Modifier.weight(1f)
+            )
+        }
+        // Always the masked form, revealed or not: this is the one path out.
+        RoomCopyButton(
+            DeveloperToolsCookiesText.cookieText(cookie),
+            "cookie",
+            "Copy this cookie (value masked)"
+        )
+    }
 }
 
 /**

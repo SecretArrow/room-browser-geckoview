@@ -1,6 +1,7 @@
 package com.roombrowser.devtools
 
 import com.google.common.truth.Truth.assertThat
+import com.roombrowser.engine.devtools.EngineCookie
 import kotlinx.serialization.json.JsonPrimitive
 import org.junit.Test
 
@@ -350,12 +351,25 @@ class DevToolsApplicationTextTest {
 
     @Test
     fun a_probe_that_never_finished_says_the_report_is_partial() {
-        val partial = DeveloperToolsStorageText.applicationReport(ApplicationProbe(done = false), null, "WebView")
+        val partial = DeveloperToolsStorageText.applicationReport(
+            ApplicationProbe(done = false),
+            null,
+            emptyList(),
+            "WebView"
+        )
         assertThat(partial.lines()[0])
             .isEqualTo("Application -- the page was still working when reading stopped, so this is partial.")
-        val failed = DeveloperToolsStorageText.applicationReport(null, null, "WebView")
+        // The two reads are separate, and the report says so: the page never
+        // answered about its storage while its cookies came back fine.
+        val failed = DeveloperToolsStorageText.applicationReport(
+            null,
+            null,
+            listOf(EngineCookie(name = "sid", value = "abc123")),
+            "WebView"
+        )
         assertThat(failed.lines()[0])
             .isEqualTo("Application -- this build could not read the page's storage.")
+        assertThat(failed).contains("Cookies -- 1 cookie")
     }
 
     @Test
@@ -372,16 +386,21 @@ class DevToolsApplicationTextTest {
                 reports = emptyList()
             ),
             FrameNode(path = "0", url = "https://example.test/", readable = true),
+            listOf(EngineCookie(name = "sid", value = "abc123")),
             "WebView 141"
         )
         assertThat(text.lines()[0]).isEqualTo("Application -- engine: WebView 141")
         listOf(
             "Usage --", "Manifest --", "Service workers --", "localStorage --",
             "sessionStorage --", "IndexedDB --", "Cache storage --",
-            "Background services", "Reporting API --", "back/forward cache reasons:", "Frames --"
+            "Background services", "Reporting API --", "back/forward cache reasons:", "Frames --",
+            "Cookies -- 1 cookie"
         ).forEach { section ->
             assertThat(text).contains(section)
         }
+        // A report is a thing that gets pasted, so the value must not ride out in
+        // it -- the masked form is what the section prints.
+        assertThat(text).doesNotContain("abc123")
     }
 
     @Test
@@ -395,10 +414,13 @@ class DevToolsApplicationTextTest {
                 localStorage = StorageAreaDump(total = 1, keys = listOf(StorageKeyEntry("k", 1)))
             ),
             null,
+            null,
             "GeckoView"
         )
         assertThat(text.lines()[0]).isEqualTo("Application -- engine: GeckoView")
         assertThat(text).contains("localStorage -- 1 key")
         assertThat(text).contains("Frames -- the page did not answer")
+        // And the cookie read that failed says so rather than showing nothing.
+        assertThat(text).contains("Cookies -- this build could not read them")
     }
 }

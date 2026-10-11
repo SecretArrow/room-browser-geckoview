@@ -45,10 +45,17 @@ interface EngineInspector {
     fun stopNetworkCapture() {}
 
     /**
-     * The cookies the engine would send to [origin].
+     * The cookies this engine can report for [origin].
      *
      * An engine that can report only name and value sets
      * [EngineCookie.attributesKnown] to false rather than guessing the flags.
+     *
+     * "CAN REPORT" IS THE WEAKER PHRASE ON PURPOSE. An engine that reads its own
+     * cookie store answers with everything it would send; one whose only store is
+     * the page's own answers with what the page can see, which leaves out a cookie
+     * the server marked HttpOnly. Both are a real answer, and the edition that
+     * has the narrower one states the difference in its capability notes rather
+     * than letting the panel imply it looked everywhere.
      */
     suspend fun cookies(origin: String): List<EngineCookie> = emptyList()
 
