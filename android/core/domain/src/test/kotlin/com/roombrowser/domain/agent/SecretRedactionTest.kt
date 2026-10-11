@@ -47,6 +47,36 @@ class SecretRedactionTest {
         }
     }
 
+    @Test
+    fun a_credential_pair_after_a_log_prefix_is_masked_too() {
+        // The pair is rarely at the start of the line, and a prefix is exactly
+        // where a real log line puts it.
+        val redacted = SecretRedaction.redact("I/chromium: Authorization: Bearer FAKE-NOT-A-REAL-TOKEN")
+
+        assertThat(redacted).isEqualTo("I/chromium: Authorization: ${SecretRedaction.MASK}")
+        assertThat(SecretRedaction.redact(redacted)).isEqualTo(redacted)
+    }
+
+    @Test
+    fun every_credential_pair_on_a_line_is_masked() {
+        val redacted = SecretRedaction.redact(
+            "console: a: b Cookie: FAKE-SESSION-VALUE Set-Cookie: FAKE-OTHER"
+        )
+
+        assertThat(redacted).doesNotContain("FAKE-SESSION-VALUE")
+        assertThat(redacted).doesNotContain("FAKE-OTHER")
+        assertThat(redacted).contains("console: a: b Cookie:")
+        assertThat(redacted).contains("Set-Cookie:")
+    }
+
+    @Test
+    fun a_prefix_does_not_turn_the_next_ordinary_header_into_a_secret() {
+        // Negative control for the two tests above.
+        val line = "Response: Content-Type: text/html; charset=utf-8"
+
+        assertThat(SecretRedaction.redact(line)).isEqualTo(line)
+    }
+
     // ------------------------------------------------------------- query strings
 
     @Test

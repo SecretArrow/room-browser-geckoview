@@ -51,8 +51,12 @@ object SecretRedaction {
         "session"
     )
 
-    /** `Authorization: Bearer xyz`, `- Cookie: a=b`, `"X-Api-Key": "k"`. */
-    private val HEADER_LINE = Regex("""(?mi)^([ \t>\-*]*"?([A-Za-z0-9_-]+)"?[ \t]*:[ \t]*)(\S.*)$""")
+    /**
+     * A `name:` pair, wherever it sits on the line. The value is deliberately
+     * NOT part of this pattern; [maskHeaderValues] takes it as the text up to
+     * the next pair.
+     */
+    private val HEADER_PAIR = Regex("""(?i)(?<![A-Za-z0-9_])("?([A-Za-z0-9_-]{1,40})"?[ \t]*:[ \t]*)""")
 
     /** The same pair inside a JSON object on one line. */
     private val HEADER_JSON = Regex(
@@ -81,10 +85,7 @@ object SecretRedaction {
 
     fun redact(text: String): String {
         if (text.isEmpty()) return text
-        var out = text
-        out = HEADER_LINE.replace(out) { m ->
-            if (m.groupValues[2].lowercase() in SECRET_HEADERS) m.groupValues[1] + MASK else m.value
-        }
+        var out = maskHeaderValues(text)
         out = HEADER_JSON.replace(out) { m -> m.groupValues[1] + MASK + m.groupValues[3] }
         out = QUERY_PAIR.replace(out) { m ->
             if (m.groupValues[2].lowercase() in SECRET_QUERY_KEYS) m.groupValues[1] + MASK else m.value
@@ -95,6 +96,34 @@ object SecretRedaction {
         out = KEY_HEX.replace(out, MASK)
         return out
     }
+
+    /**
+     * Masks the value of every credential pair on the line, wherever the pair
+     * sits. The value runs up to the next pair, because a real line carries a
+     * prefix (`console: Authorization: ...`) and often several pairs at once.
+     */
+    private fun maskHeaderValues(text: String): String =
+        text.split('\n').joinToString("\n") { line ->
+            val marks = HEADER_PAIR.findAll(line).toList()
+            if (marks.isEmpty()) {
+                line
+            } else {
+                buildString {
+                    var cursor = 0
+                    marks.forEachIndexed { index, mark ->
+                        val valueEnd = marks.getOrNull(index + 1)?.range?.first ?: line.length
+                        append(line, cursor, mark.range.last + 1)
+                        if (mark.groupValues[2].lowercase() in SECRET_HEADERS) {
+                            append(MASK)
+                        } else {
+                            append(line, mark.range.last + 1, valueEnd)
+                        }
+                        cursor = valueEnd
+                    }
+                    append(line, cursor, line.length)
+                }
+            }
+        }
 
     /** The markers stay, the key material between them goes. */
     private fun pemMasked(block: String): String {
