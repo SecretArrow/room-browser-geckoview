@@ -6,6 +6,7 @@ import com.roombrowser.engine.devtools.EngineInspector
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.setValue
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.builtins.ListSerializer
@@ -162,6 +163,65 @@ class InspectorSession(
         return runCatching { json.decodeFromString(PageOverview.serializer(), text) }.getOrNull()
     }
 
+    /**
+     * The Application panel's reads, started and then collected.
+     *
+     * TWO CALLS BECAUSE THE ENGINE AWAITS NOTHING. `evaluateJs` returns the
+     * value of its expression, so a probe whose value is a pending promise
+     * comes back as the empty object and there is no way to tell that from a
+     * page with nothing stored. The start script therefore returns immediately
+     * and records into a window global; this polls the global until it reports
+     * itself finished.
+     *
+     * Three outcomes, and they are deliberately different answers:
+     *  - the probe object, `done = true` -- the page answered;
+     *  - the probe object, `done = false` -- the page was still working when
+     *    [PROBE_DEADLINE_MS] ran out, so the panel says so and shows what it
+     *    did get rather than waiting or claiming an empty page;
+     *  - null -- no probe at all, so nothing was read.
+     */
+    suspend fun applicationProbe(): ApplicationProbe? {
+        if (rawEval(DeveloperToolsStorageScripts.applicationProbeStartJs()) == null) return null
+        val deadline = System.nanoTime() + PROBE_DEADLINE_MS * 1_000_000L
+        var last: ApplicationProbe? = null
+        while (true) {
+            rawEval(DeveloperToolsStorageScripts.applicationProbeReadJs())
+                ?.let { decode(it, ApplicationProbe.serializer()) }
+                ?.let { probe ->
+                    last = probe
+                    if (probe.done) return probe
+                }
+            if (System.nanoTime() >= deadline) return last
+            delay(POLL_MS)
+        }
+    }
+
+    /** The frame tree the same-origin policy allows. Null when the page did not answer. */
+    suspend fun frames(): FrameNode? {
+        val raw = rawEval(DeveloperToolsStorageScripts.framesProbeJs()) ?: return null
+        return decode(raw, FrameNode.serializer())
+    }
+
+    /**
+     * ONE storage value, for a row the user revealed.
+     *
+     * Read on demand rather than carried in the dump, so a site's stored values
+     * are never held in a feed, a buffer or a report this module can export.
+     */
+    suspend fun storageValue(area: String, key: String): String? {
+        val raw = rawEval(DeveloperToolsStorageScripts.storageValueJs(area, key)) ?: return null
+        val once = unquote(raw)
+        if (once == "null") return null
+        return runCatching { json.decodeFromString(String.serializer(), once) }.getOrNull()
+    }
+
+    /** Decodes one probe reply, which arrives JSON-encoded twice: once as the engine's result, once as the script's own `JSON.stringify`. */
+    private fun <T> decode(raw: String, serializer: kotlinx.serialization.DeserializationStrategy<T>): T? {
+        val text = unquote(raw)
+        if (text.isBlank() || text == "null" || text == "undefined") return null
+        return runCatching { json.decodeFromString(serializer, text) }.getOrNull()
+    }
+
     fun close() {
         runCatching { inspector.close() }
         console.clear()
@@ -180,6 +240,19 @@ class InspectorSession(
     companion object {
         /** How long one page probe may take before it is reported as unanswered. */
         const val PROBE_TIMEOUT_MS = 10_000L
+
+        /**
+         * How long the two-step Application probe may spend collecting.
+         *
+         * Shorter than [PROBE_TIMEOUT_MS] on purpose: a single unanswered call
+         * is one round trip, while this covers many, and the page's own script
+         * gives up after 6s. Running past that only delays the panel saying
+         * what it already has.
+         */
+        const val PROBE_DEADLINE_MS = 8_000L
+
+        /** How often the poll re-reads the probe global. */
+        const val POLL_MS = 200L
 
         /** Entries kept per feed. Shown in the panel, so the number is a promise. */
         const val CONSOLE_CAP = 2_000
