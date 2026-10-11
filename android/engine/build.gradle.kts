@@ -57,13 +57,6 @@ dependencies {
     // silently undo the whole facade.
     implementation(libs.geckoview)
 
-    // `implementation` for the same reason: the webview package in this module
-    // needs the DOCUMENT_START_SCRIPT API (WebViewCompat
-    // .addDocumentStartJavaScript), which is the only way the page-world
-    // scripts can be installed before the page's own first script. It is not
-    // `api` because no androidx.webkit type appears in a facade signature.
-    implementation(libs.androidx.webkit)
-
     // setProxy suspends until the engine acknowledges the change; a page loaded
     // before that point would go out over the real address.
     implementation(libs.kotlinx.coroutines.android)

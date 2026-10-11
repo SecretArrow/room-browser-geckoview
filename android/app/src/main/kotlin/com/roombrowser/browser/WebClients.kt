@@ -276,7 +276,8 @@ class RoomSessionListener(
      * parallel copy of it.
      *
      * ENGINE NOTE. In THIS edition nothing calls this method for a
-     * sub-resource: `WebViewEngineSession` is the only caller in the build, and
+     * sub-resource: the WebView edition's session implementation is the only
+     * caller in that build, and
      * `GeckoEngineSession` explains at its own site why it cannot supply one --
      * GeckoView 153 has no `shouldInterceptRequest` equivalent. What used to be
      * deferred to "when the extension lands" has landed: the bridge extension's
