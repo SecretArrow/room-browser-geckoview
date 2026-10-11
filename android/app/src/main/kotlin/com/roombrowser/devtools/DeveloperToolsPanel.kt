@@ -177,7 +177,8 @@ fun DeveloperToolsHost(
                             overview = overview,
                             answered = answered,
                             hasEngine = inspector != null || engineSession != null,
-                            onRefresh = { refreshKey++ }
+                            onRefresh = { refreshKey++ },
+                            onRunAgentTask = { prompt -> viewModel.agent.send(prompt, includePage = false) }
                         )
                         // One panel at a time, chosen from the strip. Nothing
                         // outside the registry is reachable, so a panel cannot

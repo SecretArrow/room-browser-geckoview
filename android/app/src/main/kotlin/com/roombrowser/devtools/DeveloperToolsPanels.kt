@@ -2,12 +2,11 @@ package com.roombrowser.devtools
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -36,6 +35,10 @@ import com.roombrowser.ui.common.SectionHeader
  * The page overview and the refresh callback are here because reading the page
  * is one pull owned by the host -- two panels that each pulled it would double
  * the cost of opening the surface and could disagree about the same page.
+ *
+ * [onRunAgentTask] is how a panel hands work to the agent rather than driving
+ * the page itself: replay leaves down the agent's own path, with its
+ * confirmations, or it does not leave at all.
  */
 internal class DevToolsPanelScope(
     val session: InspectorSession?,
@@ -46,7 +49,8 @@ internal class DevToolsPanelScope(
     val overview: PageOverview?,
     val answered: Boolean?,
     val hasEngine: Boolean,
-    val onRefresh: () -> Unit
+    val onRefresh: () -> Unit,
+    val onRunAgentTask: (String) -> Unit
 )
 
 /**
@@ -79,9 +83,9 @@ internal class DevToolsPanelEntry(
  * The order is not the enum's: Overview first (it is where a reader lands) and
  * then the built panels, with the ones a reader opens most often earliest.
  *
- * Console and Network stay third and fourth on purpose: the strip holds about
- * four chips at phone width, and the e2e suite can only tap a chip that is
- * partly on screen -- a panel pushed past the fourth is one no test can open.
+ * Every chip is on screen at phone width now that the strip wraps, so the order
+ * is no longer load-bearing for the e2e suite: any panel can be reached by a
+ * plain tap, which is the only way that suite can select one.
  */
 internal fun devToolsPanelEntries(): List<DevToolsPanelEntry> = listOf(
     DevToolsPanelEntry(DevToolsPanelId.OVERVIEW, { it.serves(DevToolsPanelId.OVERVIEW) }, { OverviewPanel(it) }),
@@ -118,6 +122,17 @@ internal fun devToolsPanelEntries(): List<DevToolsPanelEntry> = listOf(
                 NeedsEngine("The audit needs a live page to read.")
             }
         }
+    ),
+    DevToolsPanelEntry(
+        DevToolsPanelId.RECORDER,
+        { it.serves(DevToolsPanelId.RECORDER) },
+        { scope ->
+            if (scope.session != null) {
+                RecorderPanel(scope)
+            } else {
+                NeedsEngine("The recorder needs a live page to install its listeners in.")
+            }
+        }
     )
 )
 
@@ -138,6 +153,7 @@ internal fun availablePanels(capabilities: DeveloperToolsCapabilities): List<Dev
  * some later release turns it on, and for the panels an INSTALLED engine decides
  * -- which is most of them -- that promise is not ours to make.
  */
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 internal fun DevToolsPanelStrip(
     entries: List<DevToolsPanelEntry>,
@@ -145,12 +161,12 @@ internal fun DevToolsPanelStrip(
     onSelect: (DevToolsPanelId) -> Unit
 ) {
     val extras = LocalRoomExtras.current
-    Row(
+    FlowRow(
         Modifier
             .fillMaxWidth()
-            .horizontalScroll(rememberScrollState())
             .padding(horizontal = 16.dp, vertical = 4.dp),
-        horizontalArrangement = Arrangement.spacedBy(4.dp)
+        horizontalArrangement = Arrangement.spacedBy(4.dp),
+        verticalArrangement = Arrangement.spacedBy(4.dp)
     ) {
         entries.forEach { entry ->
             val isSelected = entry.id == selected
