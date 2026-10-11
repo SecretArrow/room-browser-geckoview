@@ -87,11 +87,16 @@ internal object DeveloperToolsCookiesText {
         else -> "(not reported)"
     }
 
-    private fun expiryAttribute(cookie: EngineCookie, known: Boolean): String = when {
-        !known -> UNKNOWN_ATTRIBUTE
-        cookie.session == true -> "session (no expiry)"
-        cookie.expiresAtMs != null -> datetime(cookie.expiresAtMs)
-        else -> "(not reported)"
+    private fun expiryAttribute(cookie: EngineCookie, known: Boolean): String {
+        // Read through a local: expiresAtMs comes from :engine, and Kotlin will
+        // not smart-cast a public property declared in another module.
+        val expiresAtMs = cookie.expiresAtMs
+        return when {
+            !known -> UNKNOWN_ATTRIBUTE
+            cookie.session == true -> "session (no expiry)"
+            expiresAtMs != null -> datetime(expiresAtMs)
+            else -> "(not reported)"
+        }
     }
 
     private fun datetime(epochMs: Long): String =
