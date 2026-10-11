@@ -328,6 +328,26 @@ jobs:
         continue-on-error: true
         run: ./gradlew ktlintCheck --console=plain
 
+      # TEMPORARY DIAGNOSTIC — removed in the same branch that makes the gate
+      # blocking. Produces ktlint's own canonical formatting for every source
+      # set as a patch, so the baseline is fixed to ktlint's answer instead of
+      # hand-guessed per violation.
+      - name: TEMP ktlint format patch (diagnostic)
+        if: always()
+        working-directory: android
+        run: |
+          ./gradlew ktlintFormat --continue --console=plain || true
+          git -C .. diff --stat | tail -30
+          git -C .. diff > "$RUNNER_TEMP/ktlint-format.patch"
+
+      - name: TEMP upload the format patch
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: ktlint-format-patch
+          path: ${{ runner.temp }}/ktlint-format.patch
+          if-no-files-found: error
+
       - name: Unit tests (domain + engine + app)
         working-directory: android
         # --continue so a failure in one module still reports the other's
