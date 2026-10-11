@@ -201,6 +201,13 @@ class BrowserActivity : FragmentActivity() {
         ) { result ->
             Log.d(TAG, "warning result: code=${result.resultCode}")
             networkWarningRunning = false
+            // A proxy chosen on the warning screen applies to this session only, so it is
+            // handed to the engine here rather than written to the profile. It is handed
+            // over BEFORE the decision below, because the decision is what releases the
+            // gate: queueing the engine's proxy change first is what keeps the load that
+            // release starts from being the one that still goes out on the old address.
+            NetworkWarningActivity.chosenProxyFrom(result.data)
+                ?.let { viewModel.applySessionProxy(it) }
             when (result.resultCode) {
                 NetworkWarningActivity.RESULT_CONTINUE ->
                     viewModel.resolveNetworkWarning(NetworkWarningDecision.CONTINUE)
@@ -210,10 +217,6 @@ class BrowserActivity : FragmentActivity() {
                     viewModel.resolveNetworkWarning(NetworkWarningDecision.SUPPRESS)
                 else -> Unit // Back / cancel: the decision is still pending.
             }
-            // A proxy chosen on the warning screen applies to this session only, so it is
-            // handed to the engine here rather than written to the profile.
-            NetworkWarningActivity.chosenProxyFrom(result.data)
-                ?.let { viewModel.applySessionProxy(it) }
             launchNetworkWarningIfNeeded()
         }
         lifecycleScope.launch {

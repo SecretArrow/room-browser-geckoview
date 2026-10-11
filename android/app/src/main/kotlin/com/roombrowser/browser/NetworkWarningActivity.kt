@@ -129,7 +129,7 @@ class NetworkWarningActivity : ComponentActivity() {
                 var refreshFailed by remember { mutableStateOf(false) }
                 var proxyScanning by remember { mutableStateOf(false) }
                 var proxyNote by remember { mutableStateOf<String?>(null) }
-                var proxyFailed by remember { mutableStateOf(false) }
+                var proxyError by remember { mutableStateOf<String?>(null) }
                 var proxyChoices by remember { mutableStateOf<List<FoundProxy>>(emptyList()) }
                 var pickerOpen by remember { mutableStateOf(false) }
                 val scope = rememberCoroutineScope()
@@ -142,7 +142,7 @@ class NetworkWarningActivity : ComponentActivity() {
                     lastSeenAt = lastSeenAt,
                     proxyScanning = proxyScanning,
                     proxyNote = proxyNote,
-                    proxyFailed = proxyFailed,
+                    proxyError = proxyError,
                     proxyChoices = proxyChoices,
                     pickerOpen = pickerOpen,
                     onRefresh = {
@@ -177,22 +177,26 @@ class NetworkWarningActivity : ComponentActivity() {
                         if (!proxyScanning) {
                             proxyScanning = true
                             proxyNote = null
-                            proxyFailed = false
+                            proxyError = null
                             proxyChoices = emptyList()
                             pickerOpen = false
+                            // A re-scan replaces the previous answer, so the pick it
+                            // produced goes with it: otherwise the screen can report that
+                            // no proxy was found while still carrying the old one back.
+                            chosenProxy = null
                             scope.launch {
                                 val outcome = scanForProxies(proxyCoordinator)
                                 proxyScanning = false
                                 when (outcome) {
-                                    ProxyScanOutcome.Failed, ProxyScanOutcome.Unsupported ->
-                                        proxyFailed = true
-                                    ProxyScanOutcome.None ->
-                                        proxyNote = NO_PROXY_FOUND
+                                    ProxyScanOutcome.Unsupported -> proxyError = ENGINE_NO_PROXY
+                                    ProxyScanOutcome.CannotCarry -> proxyError = ENGINE_CANNOT_CARRY
+                                    ProxyScanOutcome.Failed -> proxyError = SCAN_FAILED
+                                    ProxyScanOutcome.None -> proxyNote = NO_PROXY_FOUND
                                     is ProxyScanOutcome.Found ->
                                         if (outcome.proxies.size == 1) {
                                             val only = outcome.proxies.first()
                                             chosenProxy = only.candidate
-                                            proxyNote = "Using ${describeProxy(only)} for this session."
+                                            proxyNote = selectedNote(only)
                                         } else {
                                             proxyChoices = outcome.proxies
                                             pickerOpen = true
@@ -204,7 +208,7 @@ class NetworkWarningActivity : ComponentActivity() {
                     onPickProxy = { found ->
                         chosenProxy = found.candidate
                         pickerOpen = false
-                        proxyNote = "Using ${describeProxy(found)} for this session."
+                        proxyNote = selectedNote(found)
                     },
                     onClosePicker = { pickerOpen = false },
                     onContinue = { finishWith(RESULT_CONTINUE) },
@@ -218,6 +222,10 @@ class NetworkWarningActivity : ComponentActivity() {
     /**
      * Sweep the catalogue and keep only what a sweep verified as usable, filtered to the
      * schemes this engine can actually carry and ranked safest first.
+     *
+     * "Nothing usable was found" and "the engine cannot carry what was found" are kept
+     * apart: a WebView sweep that found only SOCKS endpoints found working proxies, and
+     * saying otherwise would be false.
      */
     private suspend fun scanForProxies(coordinator: ProxyCoordinator?): ProxyScanOutcome {
         if (coordinator == null) return ProxyScanOutcome.Failed
@@ -226,13 +234,15 @@ class NetworkWarningActivity : ComponentActivity() {
             coordinator.sweep(PROXY_SCAN_BUDGET_MS)
             val sweep = coordinator.state()
             val health = sweep.byId()
-            val found = ProxyHealthRules
-                .rankSafe(coordinator.candidates(), health, sweep.directIp)
+            val usable = ProxyHealthRules.rankSafe(coordinator.candidates(), health, sweep.directIp)
+            if (usable.isEmpty()) return ProxyScanOutcome.None
+            val carriable = usable
                 .filter { ProfileEngine.proxySupportsScheme(it.scheme) }
                 .mapNotNull { candidate ->
                     health[candidate.id]?.let { FoundProxy(candidate, it.latencyMs) }
                 }
-            if (found.isEmpty()) ProxyScanOutcome.None else ProxyScanOutcome.Found(found)
+            if (carriable.isEmpty()) ProxyScanOutcome.CannotCarry
+            else ProxyScanOutcome.Found(carriable)
         }.getOrElse { ProxyScanOutcome.Failed }
     }
 
@@ -279,6 +289,15 @@ class NetworkWarningActivity : ComponentActivity() {
         private const val NO_PROXY_FOUND =
             "No working proxy was found — staying on the direct connection."
 
+        private const val SCAN_FAILED =
+            "Could not look for a proxy. Check the connection and try again."
+
+        private const val ENGINE_NO_PROXY =
+            "This engine cannot route pages through a proxy, so there is nothing to find."
+
+        private const val ENGINE_CANNOT_CARRY =
+            "Proxies were found, but this engine cannot carry any of their schemes."
+
         /** Rebuilds the session-only proxy the screen carried back, if one was chosen. */
         fun chosenProxyFrom(data: Intent?): ProxyCandidate? {
             val host = data?.getStringExtra(EXTRA_CHOSEN_HOST)?.takeIf { it.isNotBlank() }
@@ -303,11 +322,19 @@ private sealed interface ProxyScanOutcome {
     data object None : ProxyScanOutcome
     data object Failed : ProxyScanOutcome
     data object Unsupported : ProxyScanOutcome
+    data object CannotCarry : ProxyScanOutcome
 }
 
 private fun describeProxy(found: FoundProxy): String =
     "${found.candidate.host}:${found.candidate.port} · " +
         "${found.candidate.scheme.id.uppercase()} · ${found.latencyMs} ms"
+
+/**
+ * Says a proxy was CHOSEN, not that it is in use: nothing is handed to the engine until the
+ * screen returns a decision, so a note claiming "using ..." would be wrong on Back.
+ */
+private fun selectedNote(found: FoundProxy): String =
+    "Selected ${describeProxy(found)} for this session."
 
 /**
  * Green for an address that has CHANGED since the warning was raised (user
@@ -329,7 +356,7 @@ private fun NetworkWarningScreen(
     lastSeenAt: Long,
     proxyScanning: Boolean,
     proxyNote: String?,
-    proxyFailed: Boolean,
+    proxyError: String?,
     proxyChoices: List<FoundProxy>,
     pickerOpen: Boolean,
     onRefresh: () -> Unit,
@@ -520,10 +547,10 @@ private fun NetworkWarningScreen(
                     }
                 )
             }
-            if (proxyFailed) {
+            if (proxyError != null) {
                 Spacer(Modifier.height(6.dp))
                 Text(
-                    "Could not look for a proxy. Check the connection and try again.",
+                    proxyError,
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.error,
                     textAlign = TextAlign.Center,

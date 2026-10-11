@@ -1079,6 +1079,11 @@ class BrowserViewModel(
      */
     fun reapplyProxy(override: ProfileSettings? = null) {
         viewModelScope.launch(Dispatchers.Main) {
+            // The settings screen has re-decided this profile's proxy, so a choice made on
+            // the network warning no longer speaks for it. Without this the session pick
+            // would keep outranking the user's own explicit change for the rest of the
+            // process, with no UI to clear it.
+            ProxySessionOverride.set(profileId.value, null)
             val stored = graph.profileRepo.getProfile(profileId) ?: return@launch
             val profile = override?.let { stored.copy(settings = it) } ?: stored
             applyProxyDecision(graph.proxyCoordinator.resolveForBind(profile))
@@ -1093,6 +1098,10 @@ class BrowserViewModel(
      * It records the session override and re-hands the engine its PAGES proxy through the same
      * path a bind uses — deliberately without persisting anything, so a choice made to get past
      * one warning never becomes a saved policy. A null clears the session choice.
+     *
+     * The override outranks the global finder switch for PAGES, and [ProxyCoordinator.resolveScope]
+     * resolves it the same way, so what is applied here is what a later rebind keeps. Changing
+     * the profile's proxy settings in [reapplyProxy] clears it.
      */
     fun applySessionProxy(candidate: ProxyCandidate?) {
         ProxySessionOverride.set(profileId.value, candidate)
