@@ -288,6 +288,53 @@ providers appear in the picker. YOLO is not a gate feature and is not
 restricted that way — it is a local decision, so it applies to every
 provider, Ollama included.
 
+## Developer Tools (Android)
+
+Developer Tools is a docked inspector that reads the **live** engine session.
+That makes it a privileged surface — it can see the page's own requests, and the
+URLs they carry can include the user's authenticated session — so its rules are
+stated here rather than left only in the app.
+
+- **It is app UI, never reachable from page content.** The panel composes above
+  the engine view in the app's own Compose tree; page script has no handle to
+  it. Because it sits above the engine view, it is also absent from
+  `EngineSession.capturePixels`, which captures the engine view only — a page
+  that screenshots itself cannot capture the panel.
+- **Redaction happens at data entry.** Before a console or network entry reaches
+  a buffer, a URL's `user:pass@` userinfo and credential query parameters
+  (`access_token`, `token`, `api_key`, `key`, `secret`, `password`) are masked,
+  and the same shared pass replaces the values of the header names
+  `Authorization`, `Proxy-Authorization`, `Cookie`, `Set-Cookie`, `x-api-key`,
+  `api-key`, `x-auth-token`, `x-csrf-token` and `www-authenticate` with
+  `<redacted>` wherever a header value is present — on this edition the network
+  feed carries no headers, so the URL masking is what a reader will actually see.
+  A page's own console TEXT is left as the page wrote it: this is the user's own
+  view of their own page, and rewriting it would make the panel lie about what
+  the page said.
+- **No remote-debugging endpoint is exposed.** The app opens no debug socket and
+  never enables GeckoView's remote-debugging support: nothing in the source sets
+  the Gecko runtime up to accept a debugger connection, and no inspector of this
+  app's pages is reachable over the network or from another app. This is a
+  property of the source as it stands — no such call exists anywhere in it — and
+  not merely a runtime toggle.
+- **Unavailable in private tabs.** The Developer Tools row is not offered on a
+  private tab and no inspector session is created for one; if a private tab is
+  opened while the panel is showing, the panel closes.
+
+### What the panel does not claim
+
+Its honesty is structural rather than editorial: the panel renders only the
+capabilities its engine actually reports, and each absent capability is
+explained with the reason the capability layer carries — where none exists, it
+says the capability is simply not built, never an invented cause. Its
+"Not Google Lighthouse" wording is pinned verbatim by a test, and no score or
+invented category number is produced. On GeckoView, the network feed is a
+WebExtension observer rather than a debugger: it reports each request's method,
+URL and frame together with the response status, completion and failure, but no
+header names or values — the observers are registered without requesting the
+header blocks, so headers are absent by design rather than by an engine limit,
+and the panel claims none. Heap snapshots are not shipped on either edition.
+
 ## Reporting
 
 Security issues should be reported privately to the repository owner. Please

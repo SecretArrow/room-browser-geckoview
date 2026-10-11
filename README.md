@@ -11,7 +11,9 @@ Privacy-first browser family by **Maragung** — one repository, two platforms.
 
 - **Android** — desktop-style multi-profile isolation (per-profile cookie jar,
   storage, history, permissions), privacy shields with a bundled offline
-  blocklist, DoH, QR sharing, theme studio, and an AI-agent layer that talks to
+  blocklist, DoH, QR sharing, theme studio, a Developer Tools inspector that
+  states per edition what its engine can and cannot inspect (and why), and an
+  AI-agent layer that talks to
   Ollama/OpenCode endpoints **or runs llama.cpp fully on-device**. See
   [`android/README.md`](android/README.md).
 - **Desktop** — a Brave-inspired dark browser chrome written in pure C: tab

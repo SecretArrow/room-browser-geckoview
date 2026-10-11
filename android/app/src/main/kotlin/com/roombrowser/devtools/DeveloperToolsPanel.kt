@@ -20,6 +20,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Fullscreen
 import androidx.compose.material.icons.filled.FullscreenExit
+import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.Refresh
@@ -50,6 +51,7 @@ import com.roombrowser.ui.common.LocalRoomExtras
 import com.roombrowser.ui.common.RoomBottomSheetShape
 import com.roombrowser.ui.common.RoomCopyButton
 import com.roombrowser.ui.common.SectionHeader
+import com.roombrowser.ui.common.SettingActionRow
 import com.roombrowser.ui.common.StatTile
 
 /**
@@ -92,6 +94,9 @@ fun DeveloperToolsHost(
     var overview by remember(tabId) { mutableStateOf<PageOverview?>(null) }
     var answered by remember(tabId) { mutableStateOf<Boolean?>(null) }
     var refreshKey by remember(tabId) { mutableIntStateOf(0) }
+    // The "what this cannot do, and why" page, opened from the inventory below.
+    // Keyed on the tab like the rest, so switching tabs returns to the feeds.
+    var showLimits by remember(tabId) { mutableStateOf(false) }
 
     LaunchedEffect(tabId, engineSession, refreshKey) {
         // `manager.tabId` is corrected by the focus effect above, which runs
@@ -161,30 +166,44 @@ fun DeveloperToolsHost(
                         }
                     }
                     val current = entries.firstOrNull { it.id == manager.panel }
-                    DevToolsPanelStrip(entries, current?.id) { manager.selectPanel(it) }
+                    // The limits page takes the whole slot, so the strip goes
+                    // with it: a chip still highlighted over a page that is not
+                    // that panel would be the panel lying about where it is.
+                    if (!showLimits) {
+                        DevToolsPanelStrip(entries, current?.id) { manager.selectPanel(it) }
+                    }
                     Column(
                         Modifier
                             .weight(1f)
                             .fillMaxWidth()
                             .verticalScroll(rememberScrollState())
                     ) {
-                        val scope = DevToolsPanelScope(
-                            session = inspector,
-                            engineName = engineName,
-                            capabilities = capabilities,
-                            tabUrl = viewModel.pageState.url,
-                            tabTitle = viewModel.pageState.title,
-                            overview = overview,
-                            answered = answered,
-                            hasEngine = inspector != null || engineSession != null,
-                            onRefresh = { refreshKey++ },
-                            onRunAgentTask = { prompt -> viewModel.agent.send(prompt, includePage = false) }
-                        )
-                        // One panel at a time, chosen from the strip. Nothing
-                        // outside the registry is reachable, so a panel cannot
-                        // be shown by a state the capability layer would refuse.
-                        current?.content?.invoke(scope)
-                        Spacer(Modifier.height(24.dp))
+                        if (showLimits) {
+                            DeveloperToolsLimitsPage(
+                                engineName = engineName,
+                                capabilities = capabilities,
+                                onBack = { showLimits = false }
+                            )
+                        } else {
+                            val scope = DevToolsPanelScope(
+                                session = inspector,
+                                engineName = engineName,
+                                capabilities = capabilities,
+                                tabUrl = viewModel.pageState.url,
+                                tabTitle = viewModel.pageState.title,
+                                overview = overview,
+                                answered = answered,
+                                hasEngine = inspector != null || engineSession != null,
+                                onRefresh = { refreshKey++ },
+                                onRunAgentTask = { prompt -> viewModel.agent.send(prompt, includePage = false) },
+                                onShowLimits = { showLimits = true }
+                            )
+                            // One panel at a time, chosen from the strip. Nothing
+                            // outside the registry is reachable, so a panel cannot
+                            // be shown by a state the capability layer would refuse.
+                            current?.content?.invoke(scope)
+                            Spacer(Modifier.height(24.dp))
+                        }
                     }
                 }
             }
@@ -198,8 +217,8 @@ fun DeveloperToolsHost(
  *
  * It is the strip's always-present entry, so it is where a reader lands when a
  * panel they were reading is gone -- and it is therefore also where "why is
- * there no certificate view" is answered, in the same place, without a second
- * screen to find.
+ * there no certificate view" is answered inline, with the full "what this
+ * cannot do, and why" page one row below it.
  */
 @Composable
 internal fun OverviewPanel(scope: DevToolsPanelScope) {
@@ -223,6 +242,13 @@ internal fun OverviewPanel(scope: DevToolsPanelScope) {
         )
     }
     CapabilityList(scope.capabilities)
+    Spacer(Modifier.height(12.dp))
+    SettingActionRow(
+        title = "What this cannot do, and why",
+        subtitle = "Every gap this edition has, with the reason for each",
+        leadingIcon = Icons.Filled.Info,
+        onClick = scope.onShowLimits
+    )
 }
 
 @Composable
@@ -535,7 +561,7 @@ internal fun capabilityDetail(capability: DevToolsCapability): String = when (ca
     DevToolsCapability.CONSOLE_CAPTURE -> "Messages the page itself logs."
     DevToolsCapability.ENGINE_CONSOLE -> "Messages the browser engine reports about the page."
     DevToolsCapability.NETWORK_REQUEST_LINE -> "Method, URL and request headers of each load."
-    DevToolsCapability.NETWORK_RESPONSE_HEADERS -> "Status and response headers, read without breaking streaming."
+    DevToolsCapability.NETWORK_RESPONSE_HEADERS -> "The response's header names and values for each load."
     DevToolsCapability.COOKIES -> "The cookies the engine would send to this origin — names and values."
     DevToolsCapability.COOKIE_ATTRIBUTES -> "HttpOnly / Secure / Expires / SameSite, not just name and value."
     DevToolsCapability.SECURITY_INFO -> "Protocol version, cipher and mixed-content state for this page."

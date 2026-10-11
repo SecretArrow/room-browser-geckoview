@@ -82,6 +82,21 @@ Research   →  1b7d…uuid  →  own cookie jar / storage / history
   prompt or a finished answer back on the clipboard, ready to paste into the
   composer and re-process. API keys are encrypted with AndroidKeyStore.
   See `docs/AI_AGENTS.md`.
+- **Developer Tools** — a docked inspector over the live page, opened from the
+  Page Actions menu (or **F12** / **Ctrl+Shift+I** on an external keyboard).
+  It states up front, per edition, exactly what its engine can and cannot
+  inspect — "this engine cannot" (carrying the engine's own reason) is kept
+  apart from "not built yet" (carrying only what the capability would be) —
+  with a **"What this cannot do, and why"** page carrying the same statement
+  per edition plus the limits that hold on both.
+  What is served is honest and live: a **Console** feed (the page's own
+  `console.*`, `onerror` and `unhandledrejection` — GeckoView exposes no engine
+  console callback, so this is the page's own output only) and a **Network**
+  feed (each request's method, URL and frame, plus the response status,
+  completion and failure) with URL credentials masked before they reach a
+  buffer. The panel composes above the engine view, so it is never part of a
+  page screenshot, and it is **unavailable in private tabs**. See `SECURITY.md`
+  for the security posture and the limits it states rather than hides.
 - **Local AI (Ollama)** — menu khusus untuk AI di perangkat sendiri:
   kelola model di server Ollama (Termux di ponsel ini atau PC di LAN) —
   koneksi + status server, katalog 19 preset model terbaik untuk ponsel
@@ -191,6 +206,16 @@ response is the remainder, not the file.
   microphone remain under explicit permission control.
 - Private tabs share the profile's cookie jar while open; session cookies are
   purged when private tabs close (documented in `PRIVACY.md`).
+- Developer Tools is not a full desktop inspector. It shows only what this
+  edition's engine can actually serve, and each panel names what it cannot:
+  GeckoView's network feed is a WebExtension observer, not a debugger, so it
+  reports each request's method, URL and frame with the response status,
+  completion and failure but never a header name or value — the observers are
+  registered without requesting the header blocks. **Heap snapshots are not
+  shipped** on either edition: a snapshot of a phone-sized page is hundreds of
+  megabytes. Its audit is **not Google Lighthouse** — it is an in-page audit
+  built only from signals the page can observe, with no score and no invented
+  category numbers.
 - **Room Browser is not an anonymity tool.**
 
 See `PROFILE_ISOLATION.md`, `SECURITY.md` and `PRIVACY.md` for full details.
