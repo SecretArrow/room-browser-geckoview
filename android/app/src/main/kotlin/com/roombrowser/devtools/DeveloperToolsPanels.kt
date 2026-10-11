@@ -39,6 +39,11 @@ import com.roombrowser.ui.common.SectionHeader
  * [onRunAgentTask] is how a panel hands work to the agent rather than driving
  * the page itself: replay leaves down the agent's own path, with its
  * confirmations, or it does not leave at all.
+ *
+ * [onShowLimits] is the host's own route to the "what this cannot do" page. It
+ * lives on the scope rather than on the one panel that offers the row, because
+ * the host owns the screen and a second panel offering it must not need a
+ * second implementation.
  */
 internal class DevToolsPanelScope(
     val session: InspectorSession?,
@@ -50,7 +55,8 @@ internal class DevToolsPanelScope(
     val answered: Boolean?,
     val hasEngine: Boolean,
     val onRefresh: () -> Unit,
-    val onRunAgentTask: (String) -> Unit
+    val onRunAgentTask: (String) -> Unit,
+    val onShowLimits: () -> Unit
 )
 
 /**
