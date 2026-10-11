@@ -7,6 +7,9 @@ plugins {
     alias(libs.plugins.kotlin.compose) apply false
     alias(libs.plugins.kotlin.serialization) apply false
     alias(libs.plugins.ksp) apply false
+    // Style gate for every Kotlin module; config lives in the root
+    // .editorconfig.  See the ktlintCheck step in .github/workflows/ci.yml.
+    alias(libs.plugins.ktlint) apply false
 }
 
 // Keep kotlin-stdlib at the version this project's own compiler is.
