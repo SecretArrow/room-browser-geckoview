@@ -26,6 +26,7 @@ import com.roombrowser.domain.agent.ToolResult
 import com.roombrowser.domain.agent.UntrustedContent
 import com.roombrowser.domain.engine.UrlIntelligence
 import com.roombrowser.domain.oct.OctUri
+import com.roombrowser.engine.EngineSession
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
