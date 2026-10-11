@@ -82,8 +82,8 @@ object DiagReportExport {
                 if (group.isEmpty()) return@forEach
                 appendLine("  ${labelText(label)}")
                 group.forEach { finding ->
-                    appendLine("    - ${rLine(finding.title)}")
-                    finding.evidence.forEach { appendLine("        ${rLine(it)}") }
+                    appendLine("    - ${r(finding.title)}")
+                    finding.evidence.forEach { appendLine("        ${r(it)}") }
                     finding.relatedElementRef?.let { appendLine("        element: [$it]") }
                 }
             }
@@ -144,23 +144,6 @@ object DiagReportExport {
 
     /** The single redaction point for every value that did not come from a constant. */
     private fun r(value: String): String = SecretRedaction.redact(value)
-
-    /**
-     * [r], plus the tail of a line that carries our own label.
-     *
-     * [SecretRedaction] masks a header pair at the START of a line, so a line we
-     * wrote a label in front of — "console: Authorization: Bearer x" — hides one
-     * from it. Redacting the text after the first ": " as well covers that
-     * without this file having to know which labels exist.
-     */
-    private fun rLine(line: String): String {
-        val once = r(line)
-        val cut = line.indexOf(": ")
-        if (cut <= 0 || cut + 2 >= line.length) return once
-        val tail = line.substring(cut + 2)
-        val twice = r(tail)
-        return if (twice == tail) once else line.take(cut + 2) + twice
-    }
 
     private fun stamp(epochMillis: Long): String =
         java.time.Instant.ofEpochMilli(epochMillis).toString()

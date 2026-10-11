@@ -94,6 +94,19 @@ class DiagReportFormatTest {
     }
 
     @Test
+    fun `a credential behind a prefix inside one line is redacted too`() {
+        // A captured line rarely starts with the header, and the prefix is what
+        // an export must not let a credential hide behind.
+        val text = DiagReportExport.format(
+            report(
+                console = listOf(ConsoleLine("error", "I/chromium: Authorization: Bearer SUPERSECRETTOKEN"))
+            )
+        )
+        assertThat(text).doesNotContain("SUPERSECRETTOKEN")
+        assertThat(text).contains("Authorization:")
+    }
+
+    @Test
     fun `an empty buffer is named as empty rather than left blank`() {
         val text = DiagReportExport.format(report())
         assertThat(text).contains("Console buffer (redacted)")
