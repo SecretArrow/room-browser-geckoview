@@ -45,10 +45,14 @@ webkit = "1.12.1"
 # see the pin in build.gradle.kts, and do not remove it without re-reading the
 # reasoning there.
 geckoview = "153.0.20260810162159"
-# The version the engine's own POM declares (see the note above). It is listed
-# separately because GeckoView carries it as a RUNTIME dependency, so it never
-# reaches `:engine`'s compile classpath on its own.
-annotation = "1.10.0"
+# androidx.annotation:annotation-experimental, NOT androidx.annotation:annotation
+# -- GeckoView's POM names both, and they are different artifacts.
+# `androidx.annotation.OptIn`, which marks the three calls into GeckoView's
+# experimental preference controller, is declared in THIS one. GeckoView carries
+# it as a RUNTIME dependency, so it never reaches `:engine`'s compile classpath
+# on its own; the WebView edition still gets it transitively from
+# androidx.webkit, and this edition has nothing else left to supply it.
+annotationExperimental = "1.6.0"
 camera = "1.4.1"
 # Guava, pinned to the same variant the engine already puts on the runtime
 # classpath (androidx.media3:media3-common depends on 33.3.1-android). See the
@@ -103,7 +107,7 @@ androidx-webkit = { module = "androidx.webkit:webkit", version.ref = "webkit" }
 
 geckoview = { module = "org.mozilla.geckoview:geckoview", version.ref = "geckoview" }
 
-androidx-annotation = { module = "androidx.annotation:annotation", version.ref = "annotation" }
+androidx-annotation-experimental = { module = "androidx.annotation:annotation-experimental", version.ref = "annotationExperimental" }
 
 guava = { module = "com.google.guava:guava", version.ref = "guava" }
 
