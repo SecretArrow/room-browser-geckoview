@@ -180,7 +180,7 @@ object AgentAppActions {
     /**
      * Every per-profile setting the agent may read or write, by name, together
      * with the accessors that do it. Deliberately a WHITELIST: the settings
-     * blob has ~40 fields, several of them enum-valued (theme, tab layout,
+     * blob has ~40 fields, several of them enum-valued (tab layout,
      * device, UA mode, DNS mode), and writing one from a name the model
      * guessed is corruption the user cannot see. Those stay in the settings
      * screen.

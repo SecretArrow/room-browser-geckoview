@@ -14,12 +14,14 @@ import android.os.SystemClock
 import android.provider.MediaStore
 import androidx.core.app.NotificationCompat
 import androidx.core.net.toUri
+import com.roombrowser.RoomBrowserApp
 import com.roombrowser.data.db.DownloadEntity
 import com.roombrowser.data.repo.BrowserRepository
 import com.roombrowser.data.repo.DownloadStatus
 import com.roombrowser.domain.download.DownloadFormat
 import com.roombrowser.domain.download.DownloadPlanner
 import com.roombrowser.domain.download.ResumePlan
+import com.roombrowser.domain.download.sanitiseDownloadSubfolder
 import com.roombrowser.domain.model.ProfileId
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -487,8 +489,13 @@ class DownloadEngine(
      * API 29+: MediaStore.Downloads with RELATIVE_PATH Download/<subfolder>.
      * API 28:  legacy public Downloads directory.
      */
-    private fun publish(entity: DownloadEntity, partFile: File): String {
-        val subfolder = "RoomBrowser"
+    private suspend fun publish(entity: DownloadEntity, partFile: File): String {
+        // Sanitised where the path is built: the value is user text and the
+        // agent can write it too, so the settings row is not the only writer.
+        val stored = runCatching {
+            (context.applicationContext as RoomBrowserApp).graph.profileRepo.getProfile(profileId)
+        }.getOrNull()?.settings?.downloadSubfolder
+        val subfolder = sanitiseDownloadSubfolder(stored.orEmpty())
         return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             val values = ContentValues().apply {
                 put(MediaStore.Downloads.DISPLAY_NAME, entity.fileName)

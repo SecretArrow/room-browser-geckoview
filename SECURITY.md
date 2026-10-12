@@ -392,6 +392,10 @@ stated here rather than left only in the app.
 - **Unavailable in private tabs.** The Developer Tools row is not offered on a
   private tab and no inspector session is created for one; if a private tab is
   opened while the panel is showing, the panel closes.
+- **The diagnostic report is gated on a setting that is off by default.** The
+  agent's `devtools_report` refuses unless the browser-wide "Enable network
+  diagnostics" setting is on, and it collects nothing before that refusal — so
+  no report is produced at all until the user turns it on.
 
 ### What the panel does not claim
 

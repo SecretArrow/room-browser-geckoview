@@ -4,12 +4,13 @@ import com.roombrowser.domain.model.ClaimedScreen
 import com.roombrowser.domain.model.Device
 import com.roombrowser.domain.model.FingerprintProfile
 import com.roombrowser.domain.model.WebRtcPolicy
+import kotlin.math.roundToInt
 
 /**
  * The JavaScript a profile runs before any page script, so the properties a
  * page reads agree with what the profile claims to be.
  *
- * Four independent parts, and each is installed only when the profile has
+ * Five independent parts, and each is installed only when the profile has
  * actually asked for it:
  *
  *  - the **identity** shim, for a profile presenting a device: the UA, the
@@ -28,6 +29,11 @@ import com.roombrowser.domain.model.WebRtcPolicy
  *    either the peer connection is taken away altogether, or the host
  *    candidates that carry a literal IP address are kept out of what the page
  *    can read. Both are described at the scripts themselves.
+ *
+ *  - the **text-size** shim, for a profile whose text scale is not 1.0: it sets
+ *    `-webkit-text-size-adjust` on the document root. Not `zoom`, which scales
+ *    the layout as well; the setting is how large the text is read, not how
+ *    wide the page is laid out.
  *
  * Screen geometry is left alone unless the profile asks for it. The default is
  * the phone's own screen, because the page really is laid out here. A profile
@@ -59,9 +65,9 @@ object DeviceShim {
 
     /**
      * The document-start script for a profile. Blank when the profile claims
-     * neither a device nor a screen size, derives no fingerprint surfaces and
-     * its WebRTC policy is [WebRtcPolicy.DEFAULT] — nothing absent is
-     * installed, and nothing asked for is changed.
+     * neither a device nor a screen size, derives no fingerprint surfaces, its
+     * WebRTC policy is [WebRtcPolicy.DEFAULT] and its text scale is 1.0 —
+     * nothing absent is installed, and nothing asked for is changed.
      *
      * The policy is a parameter with a default rather than something read
      * from a profile the way [Device] is, because the shim has never held
@@ -73,13 +79,16 @@ object DeviceShim {
      * profile's own value at every call site and never leans on this default.
      *
      * [fingerprint] defaults to [FingerprintProfile.legacy]; the engine passes
-     * the profile's own [FingerprintProfile.from] result.
+     * the profile's own [FingerprintProfile.from] result. [textScale] defaults
+     * to 1f, which contributes nothing, so a caller that omits it gets exactly
+     * the script it got before this parameter existed.
      */
     fun scriptFor(
         device: Device?,
         screen: ClaimedScreen? = null,
         webRtc: WebRtcPolicy = WebRtcPolicy.DEFAULT,
-        fingerprint: FingerprintProfile = FingerprintProfile.legacy()
+        fingerprint: FingerprintProfile = FingerprintProfile.legacy(),
+        textScale: Float = 1f
     ): String = buildString {
         if (device != null) append(identityScript(device))
         // A seed installs the derived surfaces even with no device.
@@ -88,6 +97,7 @@ object DeviceShim {
         }
         if (screen != null) append(screenScript(screen))
         append(webRtcScript(webRtc))
+        append(textScaleScript(textScale))
     }
 
     /** The identity shim: what the profile presents itself as. */
@@ -169,6 +179,18 @@ object DeviceShim {
             jsString(if (screen.isLandscape) "landscape-primary" else "portrait-primary")
         )
         .replace("__SCREEN_ANGLE__", if (screen.isLandscape) "90" else "0")
+
+    /**
+     * The text-size shim for a profile whose text scale is not 1.0, and nothing
+     * at all for one whose scale is. The percentage is clamped to 50..200, the
+     * range the setting offers, so a corrupt stored value cannot render a page
+     * unreadable.
+     */
+    private fun textScaleScript(textScale: Float): String {
+        if (textScale == 1f) return ""
+        val percent = (textScale * 100).roundToInt().coerceIn(50, 200)
+        return TEXT_SCALE.replace("__PERCENT__", percent.toString())
+    }
 
     /**
      * The WebRTC shim for a profile whose policy is not DEFAULT, and nothing
@@ -431,6 +453,57 @@ __DEFINES__
     } catch (e) {}
   } catch (e) {
     // A page must still load even if the platform refuses one of these.
+  }
+})();
+"""
+
+    // Installed only for a profile whose text scale is not 1.0. The property is
+    // `-webkit-text-size-adjust` and not `zoom`: zoom scales the layout too,
+    // which changes how wide the page is, and that is not what a text-size
+    // setting means.
+    private val TEXT_SCALE = """
+(function () {
+  'use strict';
+  try {
+    var PERCENT = __PERCENT__ + '%';
+
+    function apply() {
+      var root = document.documentElement;
+      if (!root || !root.style) return false;
+      root.style.setProperty('-webkit-text-size-adjust', PERCENT);
+      return true;
+    }
+
+    // The root element is present at document-start on Chromium but is not
+    // guaranteed on every engine, so a missing one is waited for rather than
+    // assumed away: a page must not be left unscaled. The watch ends the moment
+    // the value is set — or when the document finishes loading, since a root
+    // that has not appeared by then never will — so nothing observes the page
+    // afterwards and the property is never written twice.
+    var observer = null;
+    var done = false;
+    function stop() {
+      if (done) return;
+      done = true;
+      try { if (observer) observer.disconnect(); } catch (e) {}
+      try { document.removeEventListener('readystatechange', attempt); } catch (e) {}
+    }
+    function attempt() {
+      if (done) return;
+      if (apply() || document.readyState === 'complete') stop();
+    }
+
+    if (apply()) return;
+    if (typeof MutationObserver === 'function') {
+      try {
+        observer = new MutationObserver(attempt);
+        observer.observe(document, { childList: true, subtree: true });
+      } catch (e) {}
+    }
+    try { document.addEventListener('readystatechange', attempt); } catch (e) {}
+    attempt();
+  } catch (e) {
+    // A page must still load even if the platform refuses this.
   }
 })();
 """

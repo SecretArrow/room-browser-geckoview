@@ -44,8 +44,6 @@ data class ProfileId(val value: String) {
     }
 }
 
-enum class ThemeMode { SYSTEM, LIGHT, DARK, AMOLED }
-
 enum class TabLayout { GRID, LIST }
 
 @Serializable
@@ -120,7 +118,6 @@ enum class NetworkRetention(val days: Int) {
 @Serializable
 data class ProfileSettings(
     // Appearance
-    val theme: ThemeMode = ThemeMode.SYSTEM,
     val fontScale: Float = 1.0f,
     val tabLayout: TabLayout = TabLayout.GRID,
     // Search & homepage

@@ -21,6 +21,7 @@ import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withTimeoutOrNull
 import org.json.JSONArray
 import org.json.JSONObject
+import org.mozilla.geckoview.ContentBlocking
 import org.mozilla.geckoview.ExperimentalGeckoViewApi
 import org.mozilla.geckoview.GeckoPreferenceController
 import org.mozilla.geckoview.GeckoResult
@@ -296,6 +297,36 @@ internal class GeckoEngineHost : EngineHost {
             }
         }
         if (settled == null) Log.w(TAG, "proxy pref not acknowledged before the timeout")
+    }
+
+    // These live on the runtime, not on a session, so they are re-applied on every
+    // configure rather than set once: a profile switch must not leave two profiles
+    // disagreeing, and GeckoView has no per-session equivalent.
+    private fun applyEngineWideSettings(profile: Profile) {
+        applyCookieBehavior(profile.settings.blockThirdPartyCookies)
+        applyMixedContentBlocking(profile.settings.blockMixedContent)
+    }
+
+    /** Both jars: GeckoView keeps a separate cookie behavior for private sessions. */
+    private fun applyCookieBehavior(blockThirdParty: Boolean) {
+        val active = runtime ?: return
+        val behavior = if (blockThirdParty) {
+            ContentBlocking.CookieBehavior.ACCEPT_FIRST_PARTY
+        } else {
+            ContentBlocking.CookieBehavior.ACCEPT_ALL
+        }
+        val contentBlocking = active.settings.contentBlocking
+        contentBlocking.setCookieBehavior(behavior)
+        contentBlocking.setCookieBehaviorPrivateMode(behavior)
+    }
+
+    @androidx.annotation.OptIn(ExperimentalGeckoViewApi::class)
+    private fun applyMixedContentBlocking(block: Boolean) {
+        GeckoPreferenceController.setGeckoPref(
+            MIXED_CONTENT_PREF,
+            block,
+            GeckoPreferenceController.PREF_BRANCH_USER
+        )
     }
 
     /**
@@ -782,6 +813,7 @@ internal class GeckoEngineHost : EngineHost {
     }
 
     override fun configure(session: EngineSession, profile: Profile) {
+        applyEngineWideSettings(profile)
         (session as? GeckoEngineSession)?.configure(profile)
     }
 
@@ -897,6 +929,9 @@ internal class GeckoEngineHost : EngineHost {
 
         /** WebAuthn's master switch, `[Pref=...]` on the WebIDL interfaces. */
         const val WEBAUTHN_PREF = "security.webauth.webauthn"
+
+        /** Passive/display mixed content; active content is already blocked by default. */
+        const val MIXED_CONTENT_PREF = "security.mixed_content.block_display_content"
 
         /** 0 = no proxy, 1 = manual. Set LAST, so the endpoint is in place before it is read. */
         const val PROXY_TYPE = "network.proxy.type"

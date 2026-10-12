@@ -44,6 +44,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.MenuAnchorType
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.RadioButton
+import androidx.compose.material3.Slider
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
@@ -452,7 +453,8 @@ fun BrowserSettingsScreen(viewModel: BrowserViewModel, onClose: () -> Unit) {
         SettingsGroup {
             SettingSwitchRow(
                 title = "Enable network diagnostics",
-                subtitle = "Allows the About/Diagnostics screens to show the observed public IP",
+                subtitle = "Allows the About/Diagnostics screens to show the observed public IP, " +
+                    "and lets the agent's diagnostic report tool run",
                 checked = global.diagnosticsEnabled,
                 onCheckedChange = {
                     global = global.copy(diagnosticsEnabled = it)
@@ -601,6 +603,10 @@ fun ProfileSettingsScreen(viewModel: BrowserViewModel, onClose: () -> Unit) {
                     onSelect = { update(settings.copy(tabLayout = layout)) }
                 )
             }
+            TextSizeRow(
+                value = settings.fontScale,
+                onCommit = { update(settings.copy(fontScale = it)) }
+            )
         }
 
         SectionHeader("Search")
@@ -1008,6 +1014,14 @@ fun ProfileSettingsScreen(viewModel: BrowserViewModel, onClose: () -> Unit) {
             SettingSwitchRow(title = "Show privacy statistics", checked = settings.showPrivacyStats, onCheckedChange = { update(settings.copy(showPrivacyStats = it)) })
             SettingSwitchRow(title = "Show recent sites", checked = settings.showRecentSites, onCheckedChange = { update(settings.copy(showRecentSites = it)) })
             SettingSwitchRow(title = "Show clock", checked = settings.showClock, onCheckedChange = { update(settings.copy(showClock = it)) })
+        }
+
+        SectionHeader("Downloads")
+        SettingsGroup {
+            DownloadFolderField(
+                initial = settings.downloadSubfolder,
+                onCommit = { update(settings.copy(downloadSubfolder = it)) }
+            )
         }
 
         SectionHeader("Language & Translate")
@@ -1825,6 +1839,69 @@ private fun DotHostField(initial: String, onCommit: (String) -> Unit) {
             },
             modifier = Modifier.align(Alignment.End)
         ) { Text("Apply") }
+    }
+}
+
+/**
+ * The profile's folder under Downloads, written as typed — the value is
+ * sanitised where the download path is built, because the agent can write it too.
+ */
+@Composable
+private fun DownloadFolderField(initial: String, onCommit: (String) -> Unit) {
+    val extras = LocalRoomExtras.current
+    var value by remember(initial) { mutableStateOf(initial) }
+    Column(Modifier.padding(horizontal = 16.dp, vertical = 4.dp)) {
+        OutlinedTextField(
+            value = value,
+            onValueChange = { value = it },
+            label = { Text("Download folder") },
+            singleLine = true,
+            shape = RoundedCornerShape((extras.radius * 0.6f).dp),
+            modifier = Modifier.fillMaxWidth()
+        )
+        Text(
+            "The folder under Downloads that this profile's downloads are saved to. " +
+                "Anything that is not a plain folder name is replaced by the default, RoomBrowser.",
+            style = MaterialTheme.typography.bodySmall,
+            color = extras.textSecondary,
+            modifier = Modifier.padding(top = 4.dp, bottom = 8.dp)
+        )
+        TextButton(
+            onClick = { onCommit(value) },
+            modifier = Modifier.align(Alignment.End)
+        ) { Text("Apply") }
+    }
+}
+
+/** Page text scale; committed on release so a drag is one settings write, not many. */
+@Composable
+private fun TextSizeRow(value: Float, onCommit: (Float) -> Unit) {
+    val extras = LocalRoomExtras.current
+    var local by remember(value) { mutableStateOf(value) }
+    Column(Modifier.padding(horizontal = 16.dp, vertical = 6.dp)) {
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text("Text size", style = MaterialTheme.typography.bodyLarge, color = extras.textPrimary)
+                Text(
+                    "Scales text inside pages only — this app's own interface keeps its size.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = extras.textSecondary
+                )
+            }
+            Spacer(Modifier.width(12.dp))
+            Text(
+                "${(local * 100).roundToInt()}%",
+                style = MaterialTheme.typography.labelMedium,
+                color = extras.primary
+            )
+        }
+        Slider(
+            value = local,
+            onValueChange = { local = it },
+            onValueChangeFinished = { onCommit(local) },
+            valueRange = 0.5f..2.0f,
+            steps = 14
+        )
     }
 }
 

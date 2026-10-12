@@ -98,6 +98,7 @@ import com.roombrowser.ui.common.LocalRoomExtras
 import com.roombrowser.ui.common.RoomBrowserTheme
 import com.roombrowser.ui.common.RoomPreviewTheme
 import com.roombrowser.ui.common.SectionHeader
+import com.roombrowser.ui.common.SettingSwitchRow
 
 /**
  * Theme Studio — its OWN activity (own window / back stack / IME handling).
@@ -421,6 +422,13 @@ private fun ThemeStudioRoot(controller: ThemeStudioController, onDone: () -> Uni
                 steps = 19,
                 suffix = " %",
                 onValueChange = { v -> controller.update { it.copy(contrast = v.toInt()) } }
+            )
+            SettingSwitchRow(
+                title = "Reduce motion",
+                subtitle = "Speeds up this app's own animations. Does not affect Material's " +
+                    "ripple or the system's animation scale.",
+                checked = controller.working.reducedMotion,
+                onCheckedChange = { v -> controller.update { it.copy(reducedMotion = v) } }
             )
 
             // ---------- Save / import / export ------------------------------

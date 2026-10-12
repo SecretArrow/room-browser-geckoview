@@ -460,13 +460,17 @@ private fun Homepage(
             .padding(24.dp),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
-        if (settings.showClock) {
-            Text(
-                greeting,
-                style = MaterialTheme.typography.headlineSmall,
-                color = extras.textPrimary
-            )
-            Spacer(Modifier.height(20.dp))
+        // Master switch over every homepage block. The private-tab notice
+        // below stays outside it: that is a safety message, not start-page content.
+        if (settings.homepageEnabled) {
+            if (settings.showClock) {
+                Text(
+                    greeting,
+                    style = MaterialTheme.typography.headlineSmall,
+                    color = extras.textPrimary
+                )
+                Spacer(Modifier.height(20.dp))
+            }
         }
         if (viewModel.pageState.isPrivate) {
             RoomCard {
@@ -492,122 +496,124 @@ private fun Homepage(
             Spacer(Modifier.height(20.dp))
         }
 
-        if (settings.showPrivacyStats) {
-            val stats = viewModel.privacyStats
-            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                StatTile(
-                    value = (stats[StatCategories.AD] ?: 0).toString(),
-                    label = "ads blocked",
-                    modifier = Modifier.weight(1f)
-                )
-                StatTile(
-                    value = ((stats[StatCategories.TRACKER] ?: 0) + (stats[StatCategories.CROSS_SITE_TRACKER] ?: 0)).toString(),
-                    label = "trackers blocked",
-                    modifier = Modifier.weight(1f)
-                )
-                StatTile(
-                    value = (stats[StatCategories.HTTPS_UPGRADE] ?: 0).toString(),
-                    label = "HTTPS upgrades",
-                    modifier = Modifier.weight(1f)
-                )
+        if (settings.homepageEnabled) {
+            if (settings.showPrivacyStats) {
+                val stats = viewModel.privacyStats
+                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    StatTile(
+                        value = (stats[StatCategories.AD] ?: 0).toString(),
+                        label = "ads blocked",
+                        modifier = Modifier.weight(1f)
+                    )
+                    StatTile(
+                        value = ((stats[StatCategories.TRACKER] ?: 0) + (stats[StatCategories.CROSS_SITE_TRACKER] ?: 0)).toString(),
+                        label = "trackers blocked",
+                        modifier = Modifier.weight(1f)
+                    )
+                    StatTile(
+                        value = (stats[StatCategories.HTTPS_UPGRADE] ?: 0).toString(),
+                        label = "HTTPS upgrades",
+                        modifier = Modifier.weight(1f)
+                    )
+                }
+                TextButton(onClick = onOpenPrivacyDashboard) { Text("Privacy Dashboard") }
+                Spacer(Modifier.height(20.dp))
             }
-            TextButton(onClick = onOpenPrivacyDashboard) { Text("Privacy Dashboard") }
-            Spacer(Modifier.height(20.dp))
-        }
 
-        if (settings.homepageShortcuts.isNotEmpty()) {
-            Text(
-                "Quick Access",
-                style = MaterialTheme.typography.labelMedium,
-                color = extras.primary,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(bottom = 10.dp)
-            )
-            Row(
-                Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(12.dp)
-            ) {
-                settings.homepageShortcuts.take(4).forEach { url ->
-                    val host = UrlIntelligence.hostOf(url) ?: url
-                    Column(
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                        modifier = Modifier
-                            .weight(1f, fill = false)
+            if (settings.homepageShortcuts.isNotEmpty()) {
+                Text(
+                    "Quick Access",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = extras.primary,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(bottom = 10.dp)
+                )
+                Row(
+                    Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    settings.homepageShortcuts.take(4).forEach { url ->
+                        val host = UrlIntelligence.hostOf(url) ?: url
+                        Column(
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            modifier = Modifier
+                                .weight(1f, fill = false)
+                                .clip(RoomCardShape)
+                                .clickable { viewModel.loadUrl(url) }
+                                .padding(6.dp)
+                        ) {
+                            Box(
+                                Modifier
+                                    .size(54.dp)
+                                    .clip(CircleShape)
+                                    .background(extras.surfaceAlt)
+                                    .border(0.5.dp, extras.border, CircleShape),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Text(
+                                    host.substringBefore('.').take(1).uppercase(),
+                                    style = MaterialTheme.typography.titleLarge,
+                                    color = extras.primary
+                                )
+                            }
+                            Spacer(Modifier.height(6.dp))
+                            Text(
+                                host.substringBefore('.'),
+                                style = MaterialTheme.typography.labelMedium,
+                                color = extras.textSecondary,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                    }
+                }
+            }
+
+            if (settings.showRecentSites && viewModel.recentHistory.isNotEmpty()) {
+                Spacer(Modifier.height(20.dp))
+                Text(
+                    "Recent",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = extras.primary,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(bottom = 6.dp)
+                )
+                viewModel.recentHistory.take(5).forEach { item ->
+                    Row(
+                        Modifier
+                            .fillMaxWidth()
+                            // The one card radius, like every other row surface in
+                            // the app — this was a hardcoded 14dp, the odd one out
+                            // against the library rows and the quick-access tiles.
                             .clip(RoomCardShape)
-                            .clickable { viewModel.loadUrl(url) }
-                            .padding(6.dp)
+                            .clickable { viewModel.loadUrl(item.url) }
+                            .padding(horizontal = 8.dp, vertical = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
                         Box(
                             Modifier
-                                .size(54.dp)
+                                .size(34.dp)
                                 .clip(CircleShape)
-                                .background(extras.surfaceAlt)
-                                .border(0.5.dp, extras.border, CircleShape),
+                                .background(extras.surfaceAlt),
                             contentAlignment = Alignment.Center
                         ) {
                             Text(
-                                host.substringBefore('.').take(1).uppercase(),
-                                style = MaterialTheme.typography.titleLarge,
+                                (item.title.ifBlank { item.url }).take(1).uppercase(),
+                                style = MaterialTheme.typography.labelLarge,
                                 color = extras.primary
                             )
                         }
-                        Spacer(Modifier.height(6.dp))
+                        Spacer(Modifier.width(12.dp))
                         Text(
-                            host.substringBefore('.'),
-                            style = MaterialTheme.typography.labelMedium,
-                            color = extras.textSecondary,
+                            item.title.ifBlank { item.url },
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = extras.textPrimary,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis
                         )
                     }
-                }
-            }
-        }
-
-        if (settings.showRecentSites && viewModel.recentHistory.isNotEmpty()) {
-            Spacer(Modifier.height(20.dp))
-            Text(
-                "Recent",
-                style = MaterialTheme.typography.labelMedium,
-                color = extras.primary,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(bottom = 6.dp)
-            )
-            viewModel.recentHistory.take(5).forEach { item ->
-                Row(
-                    Modifier
-                        .fillMaxWidth()
-                        // The one card radius, like every other row surface in
-                        // the app — this was a hardcoded 14dp, the odd one out
-                        // against the library rows and the quick-access tiles.
-                        .clip(RoomCardShape)
-                        .clickable { viewModel.loadUrl(item.url) }
-                        .padding(horizontal = 8.dp, vertical = 10.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Box(
-                        Modifier
-                            .size(34.dp)
-                            .clip(CircleShape)
-                            .background(extras.surfaceAlt),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Text(
-                            (item.title.ifBlank { item.url }).take(1).uppercase(),
-                            style = MaterialTheme.typography.labelLarge,
-                            color = extras.primary
-                        )
-                    }
-                    Spacer(Modifier.width(12.dp))
-                    Text(
-                        item.title.ifBlank { item.url },
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = extras.textPrimary,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
                 }
             }
         }

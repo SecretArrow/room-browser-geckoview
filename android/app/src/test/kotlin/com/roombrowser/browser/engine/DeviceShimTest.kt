@@ -342,6 +342,62 @@ class DeviceShimTest {
     }
 
     @Test
+    fun `a text scale of 1 contributes no script`() {
+        // The untouched setting. 1.0 must add nothing, and nothing even to a
+        // script that has other parts: the block is spliced in only when the
+        // profile asked for a scale other than the default.
+        assertThat(DeviceShim.scriptFor(null, null, textScale = 1f)).isEmpty()
+        val js = DeviceShim.scriptFor(device, textScale = 1f)
+        assertThat(js).contains(device.userAgent)
+        assertThat(js).doesNotContain("text-size-adjust")
+    }
+
+    @Test
+    fun `a text scale of 1 point 5 asks for 150 percent`() {
+        // The scale times 100, rounded, written as the percentage the property
+        // takes. `zoom` is deliberately not used — it would scale the layout,
+        // not just the text. The root may be missing at document-start, so the
+        // value is set at once when it exists and otherwise on the first
+        // mutation or readystatechange, and the watch stops once it is set.
+        val js = DeviceShim.scriptFor(null, null, textScale = 1.5f)
+        assertThat(js).contains("-webkit-text-size-adjust")
+        assertThat(js).contains("var PERCENT = 150 + '%';")
+        assertThat(js).doesNotContain("zoom")
+        assertThat(js).contains("document.documentElement")
+        assertThat(js).contains("MutationObserver")
+        assertThat(js).contains("readystatechange")
+        assertThat(js).contains("observer.disconnect()")
+        assertThat(js).doesNotContain("__")
+    }
+
+    @Test
+    fun `the text scale is clamped to the range the setting offers`() {
+        // A stored value below the floor or above the ceiling lands on the
+        // bound rather than rendering the page microscopic or unreadable.
+        assertThat(DeviceShim.scriptFor(null, null, textScale = 0.1f))
+            .contains("var PERCENT = 50 + '%';")
+        assertThat(DeviceShim.scriptFor(null, null, textScale = 0.5f))
+            .contains("var PERCENT = 50 + '%';")
+        assertThat(DeviceShim.scriptFor(null, null, textScale = 2f))
+            .contains("var PERCENT = 200 + '%';")
+        assertThat(DeviceShim.scriptFor(null, null, textScale = 5f))
+            .contains("var PERCENT = 200 + '%';")
+    }
+
+    @Test
+    fun `a text scale of 1 leaves the script exactly as it was`() {
+        // The parameter must be invisible at its default, for a device and for
+        // the empty case alike — and a scale that is not 1 must add something,
+        // so the equality above is not vacuous.
+        assertThat(DeviceShim.scriptFor(device, textScale = 1f))
+            .isEqualTo(DeviceShim.scriptFor(device))
+        assertThat(DeviceShim.scriptFor(null, null, textScale = 1f))
+            .isEqualTo(DeviceShim.scriptFor(null, null))
+        assertThat(DeviceShim.scriptFor(device, textScale = 1.5f))
+            .isNotEqualTo(DeviceShim.scriptFor(device))
+    }
+
+    @Test
     fun `no script block carries a dollar sign`() {
         // The blocks are spliced into Kotlin raw strings, where a "$" is read
         // as interpolation: the build would fail rather than the page, so the
@@ -350,7 +406,8 @@ class DeviceShimTest {
             DeviceShim.scriptFor(device, ClaimedScreen(393, 852), WebRtcPolicy.DEFAULT),
             DeviceShim.scriptFor(null, null, WebRtcPolicy.DISABLED),
             DeviceShim.scriptFor(null, null, WebRtcPolicy.RESTRICT_LOCAL_IP),
-            DeviceShim.scriptFor(device, ClaimedScreen(393, 852), WebRtcPolicy.RESTRICT_LOCAL_IP)
+            DeviceShim.scriptFor(device, ClaimedScreen(393, 852), WebRtcPolicy.RESTRICT_LOCAL_IP),
+            DeviceShim.scriptFor(null, null, textScale = 1.5f)
         )
         for (js in blocks) {
             assertThat(js).doesNotContain("\$")

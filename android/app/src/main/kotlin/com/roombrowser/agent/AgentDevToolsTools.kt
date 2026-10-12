@@ -61,6 +61,11 @@ class AgentDevToolsTools(
     private val boundTabId: () -> String?,
     private val onStatus: (String) -> Unit = {},
     /**
+     * The browser-wide "Enable network diagnostics" switch, read live. Off —
+     * the default — means [report] refuses without collecting anything.
+     */
+    private val diagnosticsEnabled: () -> Boolean = { false },
+    /**
      * The gate for actions that cannot be undone. A page patch goes through it
      * unconditionally — the Confirm actions switch and YOLO do not reach it.
      */
@@ -474,6 +479,14 @@ class AgentDevToolsTools(
     // ----------------------------------------------------------------- report
 
     private suspend fun report(): ToolResult {
+        if (!diagnosticsEnabled()) {
+            return ToolResult(
+                false,
+                "devtools_report is switched off — turn on \"Enable network diagnostics\" in " +
+                    "Browser Settings → Diagnostics to let the agent collect or export a diagnostic " +
+                    "report about this device."
+            )
+        }
         val tabId = boundTabId() ?: return ToolResult(false, noTab())
         val dom = domEvidence(tabId)
         onStatus("Building the diagnostic report…")

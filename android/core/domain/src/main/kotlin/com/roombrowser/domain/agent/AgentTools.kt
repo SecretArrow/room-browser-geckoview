@@ -326,7 +326,7 @@ object AgentTools {
         ),
         def(
             DEVTOOLS_REPORT,
-            "Produce a diagnostic report for the user to share with a site's developer or keep: the engine, the app and Android versions, the profile's label (never its id), the active URL, and the redacted console and network buffers with correlated findings. Nothing secret goes into it — headers, tokens and URLs are redacted before they leave the device. Say where you saved it.",
+            "Produce a diagnostic report for the user to share with a site's developer or keep: the engine, the app and Android versions, the profile's label (never its id), the active URL, and the redacted console and network buffers with correlated findings. Nothing secret goes into it — headers, tokens and URLs are redacted before they leave the device. Say where you saved it. Gated by the browser-wide \"Enable network diagnostics\" setting (Browser Settings → Diagnostics): with it off the tool refuses and collects nothing, so ask the user to turn it on first.",
             SCHEMA_NO_PARAMS
         ),
         def(

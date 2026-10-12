@@ -318,6 +318,9 @@ Honest limits:
   be withheld on its own. The certificate section says which edition it is on:
   WebView cannot read a certificate and prints that, GeckoView prints the real
   one.
+* **`devtools_report` is gated on the browser-wide "Enable network diagnostics"
+  setting, which is off by default.** With it off the tool is refused and
+  collects nothing, so turn it on in Browser Settings → Diagnostics first.
 
 **Status in this build:** implemented — `devtools_storage`, `devtools_security`
 and `devtools_elements` read the panels' own inspector session, and

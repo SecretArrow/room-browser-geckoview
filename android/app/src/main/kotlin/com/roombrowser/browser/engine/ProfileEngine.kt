@@ -205,7 +205,8 @@ object ProfileEngine {
      * screen claim is not an Android client hint and stays — a desktop browser
      * window on a screen of a stated size is an ordinary thing — and the WebRTC
      * policy has nothing to do with which identity is being presented, so it
-     * stays too.
+     * stays too, as does the text scale, which is about the reader rather than
+     * the identity.
      */
     fun applyDesktopMode(session: EngineSession, profile: Profile, desktop: Boolean) {
         val settings = profile.settings
@@ -217,7 +218,8 @@ object ProfileEngine {
                 device = null,
                 screen = screen,
                 webRtc = settings.webRtcPolicy,
-                fingerprint = FingerprintProfile.legacy()
+                fingerprint = FingerprintProfile.legacy(),
+                textScale = settings.fontScale
             )
         } else {
             deviceShimScript(settings)
@@ -234,8 +236,9 @@ object ProfileEngine {
 
     /**
      * The shim for one profile, or null when there is nothing to install. The
-     * test covers all four parts: a screen claim or a non-default WebRTC
-     * policy installs something even with no device and no seed.
+     * test covers all five parts: a screen claim, a non-default WebRTC policy
+     * or a text scale other than 1.0 installs something even with no device and
+     * no seed.
      */
     private fun deviceShimScript(settings: ProfileSettings): String? {
         val device = UserAgents.device(settings)
@@ -243,7 +246,8 @@ object ProfileEngine {
             device = device,
             screen = settings.claimedScreen(),
             webRtc = settings.webRtcPolicy,
-            fingerprint = FingerprintProfile.from(settings.fingerprintSeed, device)
+            fingerprint = FingerprintProfile.from(settings.fingerprintSeed, device),
+            textScale = settings.fontScale
         )
     }
 
@@ -251,14 +255,15 @@ object ProfileEngine {
         device: Device?,
         screen: ClaimedScreen?,
         webRtc: WebRtcPolicy,
-        fingerprint: FingerprintProfile
+        fingerprint: FingerprintProfile,
+        textScale: Float
     ): String? {
         if (device == null && !fingerprint.isSeeded && screen == null &&
-            webRtc == WebRtcPolicy.DEFAULT
+            webRtc == WebRtcPolicy.DEFAULT && textScale == 1f
         ) {
             return null
         }
-        return DeviceShim.scriptFor(device, screen, webRtc, fingerprint)
+        return DeviceShim.scriptFor(device, screen, webRtc, fingerprint, textScale)
     }
 
     /**

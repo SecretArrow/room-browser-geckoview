@@ -169,6 +169,7 @@ class AgentToolExecutor(
             control = control,
             boundTabId = { tabId },
             onStatus = onStatus,
+            diagnosticsEnabled = { vm.globalSettings.diagnosticsEnabled },
             destructiveGate = destructiveGate
         )
     }

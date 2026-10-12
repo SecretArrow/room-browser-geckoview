@@ -61,6 +61,7 @@ data class RoomExtras(
     val surfaceAlpha: Float, // derived from transparency
     val blurRadiusPx: Float, // derived from blur
     val dark: Boolean,
+    val reducedMotion: Boolean,
     val gradientStyle: GradientStyle,
     val gradientDirection: GradientDirection,
     val gradient: Brush?
@@ -77,6 +78,7 @@ val LocalRoomExtras = staticCompositionLocalOf {
         icon = Color(0xFFA5A3B4), selection = Color(0x47A78BFA),
         onButton = Color(0xFF0B0B0F), radius = 20, transparency = 0, blur = 0,
         surfaceAlpha = 1f, blurRadiusPx = 0f, dark = true,
+        reducedMotion = false,
         gradientStyle = GradientStyle.NONE, gradientDirection = GradientDirection.TOP_BOTTOM,
         gradient = null
     )
@@ -167,6 +169,7 @@ private fun resolveExtras(spec: RoomThemeSpec, systemDark: Boolean): RoomExtras 
             com.roombrowser.domain.theme.RoomThemeMode.LIGHT -> false
             else -> spec.mode != com.roombrowser.domain.theme.RoomThemeMode.AUTO || systemDark
         },
+        reducedMotion = spec.reducedMotion,
         gradientStyle = spec.gradientStyle,
         gradientDirection = spec.gradientDirection,
         gradient = gradient

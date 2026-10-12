@@ -343,6 +343,9 @@ internal class GeckoEngineSession(
                 // every live session until the process restarted.
                 s.setUserAgentOverride(UserAgents.effectiveUserAgent(profile.settings))
             }
+            // Android autofill participation, the lever the WebView edition pulls
+            // with `importantForAutofill`; it is a View setting, not a session one.
+            geckoView.setAutofillEnabled(profile.settings.autofillEnabled)
         }
         reapplyPageScripts()
     }
@@ -1419,6 +1422,7 @@ internal class GeckoEngineSession(
         session.setPromptDelegate(promptDelegate)
         session.open(runtime)
         geckoView.setSession(session)
+        geckoView.setAutofillEnabled(profile.settings.autofillEnabled)
     }
 
     private fun runOnMain(block: () -> Unit) {

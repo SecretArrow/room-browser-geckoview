@@ -116,7 +116,9 @@ internal fun sharedLimits(): List<LimitsSection> = listOf(
             LimitsRow(
                 "Deeper Developer Tools reach",
                 "The new agent tools read the same buffers the panels show, not a second " +
-                    "capture, so the agent and the panel cannot disagree — redaction included."
+                    "capture, so the agent and the panel cannot disagree — redaction included. " +
+                    "The diagnostic report is not produced at all unless the browser-wide " +
+                    "\"Enable network diagnostics\" setting is on, and that setting is off by default."
             )
         )
     )

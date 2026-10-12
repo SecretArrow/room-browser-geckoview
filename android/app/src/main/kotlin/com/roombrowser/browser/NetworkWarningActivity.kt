@@ -2,6 +2,7 @@ package com.roombrowser.browser
 
 import android.content.Intent
 import android.os.Bundle
+import android.provider.Settings
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -27,6 +28,7 @@ import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.AirplanemodeActive
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.SwapHoriz
 import androidx.compose.material.icons.filled.WarningAmber
@@ -40,6 +42,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -58,6 +61,7 @@ import com.roombrowser.browser.engine.ProfileEngine
 import com.roombrowser.data.net.fetchExitIp
 import com.roombrowser.data.proxy.ProxyCoordinator
 import com.roombrowser.data.repo.IpCache
+import com.roombrowser.domain.model.BrowserGlobalSettings
 import com.roombrowser.domain.proxy.ProxyCandidate
 import com.roombrowser.domain.proxy.ProxyHealthRules
 import com.roombrowser.domain.proxy.ProxyPicker
@@ -66,6 +70,7 @@ import com.roombrowser.ui.common.LocalRoomExtras
 import com.roombrowser.ui.common.PagingFooter
 import com.roombrowser.ui.common.RoomBrowserTheme
 import com.roombrowser.ui.common.RoomCardShape
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.launch
 import okhttp3.OkHttpClient
 import java.text.SimpleDateFormat
@@ -123,8 +128,12 @@ class NetworkWarningActivity : ComponentActivity() {
         val graph = runCatching { (application as RoomBrowserApp).graph }.getOrNull()
         val appState = graph?.appState
         val proxyCoordinator = graph?.proxyCoordinator
+        // BrowserGlobalSettings is app-wide (not per-profile); the ':browser'
+        // graph carries it, and the same flow the settings screen writes feeds it.
+        val globalSettingsFlow = appState?.globalSettings ?: flowOf(BrowserGlobalSettings())
         setContent {
             RoomBrowserTheme {
+                val globalSettings by globalSettingsFlow.collectAsState(BrowserGlobalSettings())
                 var refreshing by remember { mutableStateOf(false) }
                 var observedIp by remember { mutableStateOf<String?>(null) }
                 var refreshFailed by remember { mutableStateOf(false) }
@@ -133,6 +142,7 @@ class NetworkWarningActivity : ComponentActivity() {
                 var proxyError by remember { mutableStateOf<String?>(null) }
                 var proxyChoices by remember { mutableStateOf<List<FoundProxy>>(emptyList()) }
                 var pickerOpen by remember { mutableStateOf(false) }
+                var airplaneShortcutUnavailable by remember { mutableStateOf(false) }
                 val scope = rememberCoroutineScope()
                 NetworkWarningScreen(
                     ip = ip,
@@ -146,6 +156,9 @@ class NetworkWarningActivity : ComponentActivity() {
                     proxyError = proxyError,
                     proxyChoices = proxyChoices,
                     pickerOpen = pickerOpen,
+                    offerNetworkChangeOptions = globalSettings.offerNetworkChangeOptions,
+                    offerAirplaneModeShortcut = globalSettings.offerAirplaneModeShortcut,
+                    airplaneShortcutUnavailable = airplaneShortcutUnavailable,
                     onRefresh = {
                         if (!refreshing) {
                             refreshing = true
@@ -175,7 +188,9 @@ class NetworkWarningActivity : ComponentActivity() {
                         }
                     },
                     onRefreshProxy = {
-                        if (!proxyScanning) {
+                        // The picker has no other way in, so gating the button alone
+                        // would leave a dialog that nothing could have opened.
+                        if (globalSettings.offerNetworkChangeOptions && !proxyScanning) {
                             proxyScanning = true
                             proxyNote = null
                             proxyError = null
@@ -212,6 +227,17 @@ class NetworkWarningActivity : ComponentActivity() {
                         proxyNote = selectedNote(found)
                     },
                     onClosePicker = { pickerOpen = false },
+                    onOpenAirplaneMode = {
+                        val airplaneSettings = Intent(Settings.ACTION_AIRPLANE_MODE_SETTINGS)
+                        // Android forbids toggling Airplane Mode directly, so this is
+                        // only ever the settings screen — and some devices ship none.
+                        if (airplaneSettings.resolveActivity(packageManager) == null) {
+                            airplaneShortcutUnavailable = true
+                        } else {
+                            airplaneShortcutUnavailable =
+                                runCatching { startActivity(airplaneSettings) }.isFailure
+                        }
+                    },
                     onContinue = { finishWith(RESULT_CONTINUE) },
                     onSwitchProfile = { finishWith(RESULT_SWITCH) },
                     onDontWarnAgain = { finishWith(RESULT_SUPPRESS) }
@@ -360,10 +386,14 @@ private fun NetworkWarningScreen(
     proxyError: String?,
     proxyChoices: List<FoundProxy>,
     pickerOpen: Boolean,
+    offerNetworkChangeOptions: Boolean,
+    offerAirplaneModeShortcut: Boolean,
+    airplaneShortcutUnavailable: Boolean,
     onRefresh: () -> Unit,
     onRefreshProxy: () -> Unit,
     onPickProxy: (FoundProxy) -> Unit,
     onClosePicker: () -> Unit,
+    onOpenAirplaneMode: () -> Unit,
     onContinue: () -> Unit,
     onSwitchProfile: () -> Unit,
     onDontWarnAgain: () -> Unit
@@ -512,53 +542,84 @@ private fun NetworkWarningScreen(
                     )
                 }
             }
-            Spacer(Modifier.height(12.dp))
-            OutlinedButton(
-                onClick = onRefreshProxy,
-                enabled = !proxyScanning,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .semantics { contentDescription = "net_warning_refresh_proxy" }
-            ) {
-                if (proxyScanning) {
-                    CircularProgressIndicator(
-                        modifier = Modifier.size(16.dp),
-                        strokeWidth = 2.dp,
-                        color = extras.primary
+            if (offerNetworkChangeOptions) {
+                Spacer(Modifier.height(12.dp))
+                OutlinedButton(
+                    onClick = onRefreshProxy,
+                    enabled = !proxyScanning,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .semantics { contentDescription = "net_warning_refresh_proxy" }
+                ) {
+                    if (proxyScanning) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(16.dp),
+                            strokeWidth = 2.dp,
+                            color = extras.primary
+                        )
+                    } else {
+                        Icon(
+                            Icons.Filled.SwapHoriz,
+                            contentDescription = null,
+                            modifier = Modifier.size(16.dp)
+                        )
+                    }
+                    Spacer(Modifier.width(6.dp))
+                    Text("Refresh Proxy")
+                }
+                if (proxyNote != null) {
+                    Spacer(Modifier.height(6.dp))
+                    Text(
+                        proxyNote,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = extras.textSecondary,
+                        textAlign = TextAlign.Center,
+                        modifier = Modifier.semantics {
+                            contentDescription = "net_warning_proxy_note"
+                        }
                     )
-                } else {
+                }
+                if (proxyError != null) {
+                    Spacer(Modifier.height(6.dp))
+                    Text(
+                        proxyError,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.error,
+                        textAlign = TextAlign.Center,
+                        modifier = Modifier.semantics {
+                            contentDescription = "net_warning_proxy_failed"
+                        }
+                    )
+                }
+            }
+            if (offerAirplaneModeShortcut) {
+                Spacer(Modifier.height(12.dp))
+                OutlinedButton(
+                    onClick = onOpenAirplaneMode,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .semantics { contentDescription = "net_warning_airplane_mode" }
+                ) {
                     Icon(
-                        Icons.Filled.SwapHoriz,
+                        Icons.Filled.AirplanemodeActive,
                         contentDescription = null,
                         modifier = Modifier.size(16.dp)
                     )
+                    Spacer(Modifier.width(6.dp))
+                    Text("Open Airplane Mode settings")
                 }
-                Spacer(Modifier.width(6.dp))
-                Text("Refresh Proxy")
-            }
-            if (proxyNote != null) {
-                Spacer(Modifier.height(6.dp))
-                Text(
-                    proxyNote,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = extras.textSecondary,
-                    textAlign = TextAlign.Center,
-                    modifier = Modifier.semantics {
-                        contentDescription = "net_warning_proxy_note"
-                    }
-                )
-            }
-            if (proxyError != null) {
-                Spacer(Modifier.height(6.dp))
-                Text(
-                    proxyError,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.error,
-                    textAlign = TextAlign.Center,
-                    modifier = Modifier.semantics {
-                        contentDescription = "net_warning_proxy_failed"
-                    }
-                )
+                if (airplaneShortcutUnavailable) {
+                    Spacer(Modifier.height(6.dp))
+                    Text(
+                        "This device has no Airplane Mode settings screen.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.error,
+                        textAlign = TextAlign.Center,
+                        modifier = Modifier.semantics {
+                            contentDescription = "net_warning_airplane_mode_unavailable"
+                        }
+                    )
+                }
             }
             Spacer(Modifier.height(16.dp))
             Text(
@@ -581,7 +642,7 @@ private fun NetworkWarningScreen(
                 Text("Don't Warn Again for This IP")
             }
         }
-        if (pickerOpen && proxyChoices.isNotEmpty()) {
+        if (offerNetworkChangeOptions && pickerOpen && proxyChoices.isNotEmpty()) {
             ProxyPickerDialog(
                 choices = proxyChoices,
                 onPick = onPickProxy,
