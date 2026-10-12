@@ -16,7 +16,7 @@
     <path
         android:pathData="M76.8,46.6 A24,9 -18 0 1 31.2,61.4 A24,9 -18 0 1 76.8,46.6"
         android:fillColor="#00000000"
-        android:strokeColor="#B9A6FF"
+        android:strokeColor="#FDBA74"
         android:strokeWidth="3.2" />
 
     <!-- satellite dot riding the orbit -->
@@ -47,6 +47,6 @@
 
     <!-- small room-window cut inside the bowl -->
     <path
-        android:fillColor="#6D28D9"
+        android:fillColor="#C2410C"
         android:pathData="M50,45.5 h2.6 a4.4,4.4 0 0 1 0,8.8 h-2.6 z" />
 </vector>

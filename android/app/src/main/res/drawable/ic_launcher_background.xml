@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
   Room Browser 2026 launcher mark — BACKGROUND layer.
-  Deep-indigo → violet → magenta premium gradient (original identity,
+  Burnt-orange → orange → amber gradient (original identity,
   not derived from any other product's assets).
 -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
@@ -14,9 +14,9 @@
         <aapt:attr name="android:fillColor">
             <gradient
                 android:type="linear"
-                android:startColor="#2E2A72"
-                android:centerColor="#6D28D9"
-                android:endColor="#B5309F"
+                android:startColor="#7C2D12"
+                android:centerColor="#EA580C"
+                android:endColor="#F59E0B"
                 android:startX="0"
                 android:startY="0"
                 android:endX="108"

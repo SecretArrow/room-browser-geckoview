@@ -65,6 +65,13 @@ env:
   # instead of paying JVM start plus cold JIT on each one. It exits with the
   # runner. --console=plain is already passed on every gradle command.
   GRADLE_OPTS: -Dorg.gradle.console=plain
+  # SHA-256 of the DER-encoded release signing certificate, shared by both
+  # editions because both sign with the same keystore. The signature gate in
+  # the release job compares against it: "apksigner says this APK verifies" is
+  # not enough on its own, since a keystore that was swapped, regenerated or
+  # mistyped also produces an APK that verifies — just not one that can ever
+  # upgrade an installed build.
+  RELEASE_CERT_SHA256: 0ea926c1075213a9e04420fadca34d0c763ffe6c9e765d470ccf8c217318fec8
 
 jobs:
   # ---------------------------------------------------------------------
@@ -468,6 +475,29 @@ jobs:
               || { echo "::error::${abi} release APK has no libxul.so — the bundled engine is missing"; unzip -l "$apk" | grep 'lib/' || echo "(no lib/ entries at all)"; exit 1; }
             echo "$(basename "$apk"): lib/${abi}/libxul.so present ($(du -h "$apk" | cut -f1))"
           done
+
+      - name: Check the release APKs' archive packaging
+        working-directory: android
+        # What Android requires of the ZIP itself, not of the code inside it:
+        # every lib/**/*.so Stored and page-aligned (16 KB — the page size
+        # arm64 devices are moving to), resources.arsc Stored and 4-byte
+        # aligned. AGP gets this right today and every way it can break is
+        # SILENT: the APK builds, installs and runs, and only the Play upload
+        # or a 16 KB device ever notices. Nothing else in this pipeline looks
+        # at it. Runs on the unsigned release APKs, which is the right place
+        # for it — alignment is a property of the archive and signing does not
+        # move entry data, so a break is caught here on every PR rather than
+        # after the 50-minute e2e gate.
+        #
+        # The self-test runs first, on every pipeline, because a gate that has
+        # never been seen to reject anything is indistinguishable from a gate
+        # that cannot: it feeds the checker synthetic archives, including the
+        # padded-local-extra layout the real build produces and the three ways
+        # it can be wrong.
+        run: |
+          set -euo pipefail
+          python3 "$GITHUB_WORKSPACE/tools/verify_apk_packaging.py" --self-test
+          python3 "$GITHUB_WORKSPACE/tools/verify_apk_packaging.py" app/build/outputs/apk/release/*.apk
 
       - name: Upload lint report
         if: always()
@@ -1044,22 +1074,51 @@ jobs:
           [ ${#apks[@]} -gt 0 ] || { echo "::error::no release APKs were produced"; exit 1; }
           BUILD_TOOLS=$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)
           for apk in "${apks[@]}"; do
-            "$BUILD_TOOLS/apksigner" verify --print-certs "$apk" > /tmp/apk-certs.txt 2>&1 || true
-            cat /tmp/apk-certs.txt
+            # NO `|| true`, and the exit code IS the verdict. This step used to
+            # swallow it and then grep for a "certificate DN:" line — but
+            # apksigner prints the certificate it could not verify, so that
+            # version of the gate asserted only that SOME certificate had been
+            # printed and would have published an APK with a broken signature.
+            if ! "$BUILD_TOOLS/apksigner" verify --verbose --print-certs "$apk" > "$RUNNER_TEMP/apk-certs.txt" 2>&1; then
+              cat "$RUNNER_TEMP/apk-certs.txt"
+              echo "::error::apksigner verify FAILED for $(basename "$apk") — refusing to publish"
+              exit 1
+            fi
+            cat "$RUNNER_TEMP/apk-certs.txt"
             # The label depends on the build-tools version: older ones print
             # "Signer #1 certificate DN:", current ones print
             # "V2 Signer: certificate DN:". Match the tail both share, so a
             # routine SDK bump cannot turn a correctly signed APK into a
             # failed release.
-            DN=$(grep -m1 -E 'certificate DN:' /tmp/apk-certs.txt || true)
+            DN=$(grep -m1 -E 'certificate DN:' "$RUNNER_TEMP/apk-certs.txt" || true)
             [ -n "$DN" ] || { echo "::error::$apk is not signed"; exit 1; }
             # The debug key here means the release signing config was never
             # created — a missing or mistyped signing secret. Never publish it.
             case "$DN" in
               *"CN=Android Debug"*) echo "::error::$apk is signed with the DEBUG key"; exit 1 ;;
             esac
-            echo "$(basename "$apk"): $DN"
+            # A signature that verifies is not yet the RIGHT signature: a
+            # swapped or regenerated keystore also verifies, and produces an
+            # APK that cannot upgrade anything already installed under this
+            # applicationId. Pin the certificate by digest.
+            # Matched on the tail the label shares, like the DN above: the
+            # prefix differs between build-tools ("Signer #1 certificate …" vs
+            # "V2 Signer: certificate …") and only the suffix is stable.
+            SHA=$(awk -F': ' '/SHA-256 digest/{print $NF; exit}' "$RUNNER_TEMP/apk-certs.txt" | tr 'A-Z' 'a-z')
+            [ -n "$SHA" ] || { echo "::error::could not read the signing certificate's SHA-256 for $apk"; exit 1; }
+            [ "$SHA" = "$RELEASE_CERT_SHA256" ] || {
+              echo "::error::$apk is signed by the wrong key: certificate SHA-256 is $SHA, expected $RELEASE_CERT_SHA256"
+              exit 1
+            }
+            echo "$(basename "$apk"): $DN (cert sha256 $SHA)"
           done
+
+      - name: Check the signed APKs' archive packaging
+        # Same rules as the quality job, re-run on the artifact that actually
+        # ships: this is the last point before upload, and it costs seconds.
+        run: |
+          set -euo pipefail
+          python3 tools/verify_apk_packaging.py android/app/build/outputs/apk/release/*.apk
 
       - name: Download desktop artifacts (this run, if any)
         uses: actions/download-artifact@v8
@@ -1158,6 +1217,25 @@ jobs:
             built on a TAG only, so a build from `main` will not carry it.
             When a tag release does, its files appear in the asset list above.
 
+            ### Before you install
+
+            The arm64-v8a APK is about **211 MB**, because the rendering engine
+            is bundled into the APK rather than taken from the phone. Two things
+            follow, and both are the usual reason an install fails:
+
+            1. **Leave at least 1 GB free.** Android stages a copy while
+               installing, so a nearly-full device rejects an APK that is
+               perfectly valid.
+            2. **Let the download finish.** Android reports a truncated
+               download as *"package appears to be invalid"* — the same wording
+               as a broken build, which is why it is worth checking the file
+               rather than the app. Compare the download against the published
+               checksum before installing:
+
+               ```bash
+               sha256sum -c checksums.sha256 --ignore-missing
+               ```
+
             The APKs are signed by CI with the project's release keystore and
             verified with `apksigner` before publishing, so they upgrade in
             place over any earlier release from this repository. Confirm the
@@ -1173,6 +1251,8 @@ jobs:
             - Android Lint (with auto-fix stage)
             - Unit tests (domain + app)
             - E2E instrumented tests on emulator (profile CRUD, cross-process browsing, storage isolation)
+            - APK signature verified (v1 + v2 + v3) and pinned to the release certificate
+            - Native libraries and resources.arsc checked for Stored + page alignment
 
             > Note: this repository moved — releases are signed with the NEW
             > repository keystore. Updating over an APK from the previous
