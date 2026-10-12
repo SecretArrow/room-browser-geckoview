@@ -283,11 +283,9 @@ class SettingsEffectsE2eTest {
             device.waitForIdle(800)
             var typed = waitUntil(5_000) { device.hasObject(By.textContains(value)) }
             if (!typed) {
-                typed = runCatching { field.setText(value) }.getOrDefault(false)
-                if (typed) {
-                    device.waitForIdle(600)
-                    typed = waitUntil(5_000) { device.hasObject(By.textContains(value)) }
-                }
+                runCatching { field.setText(value) }
+                device.waitForIdle(600)
+                typed = waitUntil(5_000) { device.hasObject(By.textContains(value)) }
             }
             if (typed) {
                 hideImeIfNeeded()
