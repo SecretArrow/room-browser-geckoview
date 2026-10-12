@@ -120,13 +120,21 @@ class TextScaleE2eTest {
         return Probe(width, height, applied, zoom, adjust)
     }
 
+    // Two consecutive samples agreeing: a single `width > 0` can be a partial
+    // layout, which at 1.0 would make the 2.0 reading look like growth.
     private fun waitForMeasured(timeoutMs: Long): Probe? {
         val deadline = System.currentTimeMillis() + timeoutMs
+        var previous: Probe? = null
         var last: Probe? = null
         while (System.currentTimeMillis() < deadline) {
             val p = probe()
-            if (p != null && p.width > 0) return p
-            if (p != null) last = p
+            if (p != null && p.width > 0) {
+                last = p
+                if (previous != null && previous.width == p.width && previous.height == p.height) {
+                    return p
+                }
+                previous = p
+            }
             try {
                 Thread.sleep(300)
             } catch (_: InterruptedException) {
@@ -135,14 +143,18 @@ class TextScaleE2eTest {
         return last
     }
 
-    private fun waitForScaled(timeoutMs: Long): Probe? {
+    // The gate is the rendered size, not the mechanism behind it: a WebView too
+    // old for DOCUMENT_START_SCRIPT cannot receive the shared shim, so the
+    // engine's own text scaler carries the setting there instead. `applied`,
+    // `zoom` and `adjust` stay in the failure message as diagnostics.
+    private fun waitForWidthAbove(floor: Int, timeoutMs: Long): Probe? {
         val deadline = System.currentTimeMillis() + timeoutMs
         var last: Probe? = null
         while (System.currentTimeMillis() < deadline) {
             val p = probe()
             if (p != null) {
                 last = p
-                if (p.width > 0 && p.applied) return p
+                if (p.width > floor) return p
             }
             try {
                 Thread.sleep(300)
@@ -207,9 +219,9 @@ class TextScaleE2eTest {
 
         setFontScale(2.0f)
         launchEngineAt(url)
-        val scaled = waitForScaled(90_000)
+        val scaled = waitForWidthAbove(widthAtOne + 8, 90_000)
         assertTrue(
-            "The page must load and apply the text scale at fontScale=2.0\n${uiTree()}",
+            "The page must come back up at fontScale=2.0\n${uiTree()}",
             scaled != null
         )
         val widthAtTwo = scaled!!.width
@@ -220,7 +232,7 @@ class TextScaleE2eTest {
                 "probe getBoundingClientRect() was ${widthAtOne}x$heightAtOne px at fontScale=1.0 and " +
                 "${widthAtTwo}x$heightAtTwo px at fontScale=2.0 (scale applied=${scaled.applied}, " +
                 "zoom=${scaled.zoom}, text-size-adjust=${scaled.adjust})",
-            scaled.applied && widthAtTwo > widthAtOne + 8
+            widthAtTwo > widthAtOne + 8
         )
         device.waitForIdle(200)
     }

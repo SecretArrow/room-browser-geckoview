@@ -64,11 +64,17 @@ class SettingsEffectsE2eTest {
     private fun engineHomeUp(timeoutMs: Long): Boolean {
         val deadline = System.currentTimeMillis() + timeoutMs
         while (System.currentTimeMillis() < deadline) {
-            if (hasText("Search or type URL", 400)) return true
+            if (homeChromeUp(400)) return true
             try { Thread.sleep(250) } catch (_: InterruptedException) { }
         }
-        return hasText("Search or type URL", 1_000)
+        return homeChromeUp(1_000)
     }
+
+    // The URL-bar pill merges its placeholder into one semantics node whose
+    // contentDescription is "Address bar: search or type URL"; the inner TEXT
+    // node is not what the a11y tree exposes.
+    private fun homeChromeUp(timeoutMs: Long): Boolean =
+        device.wait(Until.hasObject(By.descContains("Address bar")), timeoutMs)
 
     private fun activeProfileId(): ProfileId? = runBlocking {
         graph.appState.activeProfileIdSnapshot()?.let { ProfileId(it) }
@@ -259,28 +265,31 @@ class SettingsEffectsE2eTest {
                     }
                     .minByOrNull { kotlin.math.abs(it.visibleBounds.top - labelBounds.top) }
             }.getOrNull() ?: continue
-            clickCenter(field)
-            if (!waitImeShown(5_000)) continue
-            var typed = false
-            try {
-                field.setText(value)
-                typed = true
-            } catch (_: Exception) {
-                typed = false
+            var imeUp = false
+            for (attempt in 1..3) {
+                clickCenter(field)
+                imeUp = waitImeShown(5_000)
+                if (imeUp) break
+                device.waitForIdle(400)
             }
+            if (!imeUp) continue
+            // Shell key events, IME-gated: ACTION_SET_TEXT can return false here
+            // without typing anything, and a cached node's `.text` is stale, so
+            // the read-back is a global text search.
+            device.executeShellCommand("input keyevent KEYCODE_MOVE_END")
+            device.clearFocusedField()
+            device.waitForIdle(300)
+            device.executeShellCommand("input text $value")
+            device.waitForIdle(800)
+            var typed = waitUntil(5_000) { device.hasObject(By.textContains(value)) }
             if (!typed) {
-                device.executeShellCommand("input keyevent KEYCODE_MOVE_END")
-                device.clearFocusedField()
-                device.waitForIdle(300)
-                device.executeShellCommand("input text $value")
-                device.waitForIdle(800)
+                typed = runCatching { field.setText(value) }.getOrDefault(false)
+                if (typed) {
+                    device.waitForIdle(600)
+                    typed = waitUntil(5_000) { device.hasObject(By.textContains(value)) }
+                }
             }
-            val committed = waitUntil(5_000) {
-                device.findObjects(By.clazz("android.widget.EditText"))
-                    .mapNotNull { it.text }
-                    .any { it == value }
-            }
-            if (committed) {
+            if (typed) {
                 hideImeIfNeeded()
                 return true
             }
