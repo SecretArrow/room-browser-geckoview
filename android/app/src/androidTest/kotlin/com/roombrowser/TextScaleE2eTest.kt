@@ -5,6 +5,7 @@ import android.content.Intent
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import androidx.test.uiautomator.By
+import androidx.test.uiautomator.StaleObjectException
 import androidx.test.uiautomator.UiDevice
 import com.roombrowser.di.AppGraph
 import com.roombrowser.domain.model.ProfileId
@@ -113,8 +114,14 @@ class TextScaleE2eTest {
     private data class Probe(val width: Int, val height: Int, val applied: Boolean, val zoom: String, val adjust: String)
 
     private fun probe(): Probe? {
-        val node = device.findObjects(By.textContains("ROOMTEXT")).firstOrNull() ?: return null
-        val text = node.text ?: return null
+        // The page rewrites this node every 150ms, so the handle the lookup
+        // returned can be stale before it is read. A missed sample is not a
+        // result: the callers poll, so drop it and let them ask again.
+        val text = try {
+            device.findObjects(By.textContains("ROOMTEXT")).firstOrNull()?.text
+        } catch (_: StaleObjectException) {
+            null
+        } ?: return null
         val width = Regex("w=(\\d+)").find(text)?.groupValues?.get(1)?.toIntOrNull() ?: return null
         val height = Regex("h=(\\d+)").find(text)?.groupValues?.get(1)?.toIntOrNull() ?: 0
         val applied = Regex("a=(\\d)").find(text)?.groupValues?.get(1) == "1"
