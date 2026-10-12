@@ -2,8 +2,9 @@
 
 ## Data Room Browser collects
 
-**None.** Telemetry is OFF by default and no telemetry code path exists that
-could be silently enabled. Specifically, Room Browser does **not** collect:
+**None.** There is no telemetry switch, because there is no telemetry code path
+for one to control: nothing in this app reports anywhere. Specifically, Room
+Browser does **not** collect:
 URLs, browsing history, page contents, profile identity, cookies, IP history,
 search queries, or any identifier.
 

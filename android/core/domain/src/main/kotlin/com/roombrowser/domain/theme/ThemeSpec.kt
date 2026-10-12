@@ -67,7 +67,16 @@ data class RoomThemeSpec(
     /** Blur/glass intensity in percent (0..100) — affects floating bars. */
     val blur: Int = 0,
     /** Contrast level in percent (50..150; 100 = neutral). */
-    val contrast: Int = 100
+    val contrast: Int = 100,
+    /**
+     * Turn off the app's own panel and sheet animations.
+     *
+     * It lives in the theme because it is an appearance choice, and because
+     * this is the only place the app already resolves one per profile. It does
+     * NOT reach Material's ripple or the system's animator scale — the settings
+     * row says so where it is set.
+     */
+    val reducedMotion: Boolean = false
 ) {
     init {
         require(id.isNotBlank()) { "theme id must not be blank" }

@@ -213,8 +213,6 @@ object AgentAppActions {
         boolSwitch("showPrivacyStats", { it.showPrivacyStats }) { s, v -> s.copy(showPrivacyStats = v) },
         boolSwitch("showRecentSites", { it.showRecentSites }) { s, v -> s.copy(showRecentSites = v) },
         boolSwitch("showClock", { it.showClock }) { s, v -> s.copy(showClock = v) },
-        boolSwitch("reducedMotion", { it.reducedMotion }) { s, v -> s.copy(reducedMotion = v) },
-        boolSwitch("highContrast", { it.highContrast }) { s, v -> s.copy(highContrast = v) },
         text("searchEngineId", { it.searchEngineId }) { s, v -> s.copy(searchEngineId = v) },
         text("translateTargetLanguage", { it.translateTargetLanguage }) { s, v ->
             s.copy(translateTargetLanguage = v)

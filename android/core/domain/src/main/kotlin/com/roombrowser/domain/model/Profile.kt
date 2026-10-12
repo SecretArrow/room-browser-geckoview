@@ -121,10 +121,7 @@ enum class NetworkRetention(val days: Int) {
 data class ProfileSettings(
     // Appearance
     val theme: ThemeMode = ThemeMode.SYSTEM,
-    val accentArgb: Long = 0xFF6750A4,
     val fontScale: Float = 1.0f,
-    val reducedMotion: Boolean = false,
-    val highContrast: Boolean = false,
     val tabLayout: TabLayout = TabLayout.GRID,
     // Search & homepage
     val searchEngineId: String = "duckduckgo",
@@ -205,7 +202,6 @@ data class ProfileSettings(
     val desktopModeDefault: Boolean = false,
     // Language
     val translateTargetLanguage: String = "id",
-    val neverTranslateSites: List<String> = emptyList(),
     // Network protection (profile IP conflict warning)
     val networkProtectionUseGlobal: Boolean = true,
     val networkProtectionEnabled: Boolean = true,
@@ -310,7 +306,6 @@ data class BrowserGlobalSettings(
     val retention: NetworkRetention = NetworkRetention.THIRTY_DAYS,
     val warningBehavior: WarningBehavior = WarningBehavior.ASK_EVERY_TIME,
     val conflictSeverity: ConflictSeverity = ConflictSeverity.INFORMATIONAL,
-    val telemetryEnabled: Boolean = false, // OFF by default; no data is collected anyway
     val diagnosticsEnabled: Boolean = false,
     // The app-wide master switch for the proxy finder. A profile that opted in still
     // gets no proxy while this is off, so one control can turn the whole feature off.
