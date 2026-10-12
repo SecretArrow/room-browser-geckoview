@@ -480,8 +480,20 @@ __DEFINES__
     function apply() {
       var root = document.documentElement;
       if (!root || !root.style) return false;
-      if (percentWorks) root.style.setProperty('-webkit-text-size-adjust', PERCENT);
-      else root.style.zoom = SCALE;
+      if (percentWorks) {
+        root.style.setProperty('-webkit-text-size-adjust', PERCENT);
+        // A parser that accepts the value is not a promise that the engine uses
+        // it, so it is read back. Only a real percentage counts as applied; an
+        // initial `auto` or an empty answer means the declaration was dropped
+        // and the page would otherwise be left exactly as it was.
+        var kept = '';
+        try {
+          kept = getComputedStyle(root).getPropertyValue('-webkit-text-size-adjust');
+        } catch (e) {}
+        if (kept && kept !== 'auto' && kept !== 'none') return true;
+        root.style.removeProperty('-webkit-text-size-adjust');
+      }
+      root.style.zoom = SCALE;
       return true;
     }
 

@@ -365,6 +365,8 @@ class DeviceShimTest {
         assertThat(js).contains("-webkit-text-size-adjust")
         assertThat(js).contains("var PERCENT = 150 + '%';")
         assertThat(js).contains("CSS.supports")
+        assertThat(js).contains("getComputedStyle")
+        assertThat(js).contains("removeProperty")
         assertThat(js).contains("root.style.zoom = SCALE")
         assertThat(js).contains("document.documentElement")
         assertThat(js).contains("MutationObserver")
