@@ -161,6 +161,16 @@ class NetworkWarningActivityE2eTest {
         device.waitForIdle(600)
     }
 
+    /** The reverse of [dragUpQuarter], for putting a scrolled screen back at the
+     *  top before a click that needs it. Extra drags at the top are no-ops. */
+    private fun dragDownQuarter() {
+        device.swipe(
+            device.displayWidth / 2, device.displayHeight / 4,
+            device.displayWidth / 2, device.displayHeight * 3 / 4, 100
+        )
+        device.waitForIdle(600)
+    }
+
     /** Scroll-aware presence check (off-screen sheet rows are not in the
      *  a11y tree — same lesson as the other e2e suites). */
     private fun hasTextWithScroll(text: String, attempts: Int = 24): Boolean {
@@ -299,6 +309,10 @@ class NetworkWarningActivityE2eTest {
         assertTrue("Engine must come up on a fresh profile", bootstrapFreshEngine())
         val profileId = activeProfileId()
 
+        // Pinned rather than inherited: the sibling tests below turn these off,
+        // and this one is about the screen with every option offered.
+        setGlobalFlags(offerNetworkChangeOptions = true, offerAirplaneModeShortcut = true)
+
         // ================= Cycle 1: Continue ==============================
         armPendingDecision(profileId)
         relaunchEngine()
@@ -314,7 +328,16 @@ class NetworkWarningActivityE2eTest {
         )
         assertTrue("All three decisions must be offered", hasText("Continue", 2_000))
         assertTrue("'Switch Profile' must be offered", hasText("Switch Profile", 2_000))
-        assertTrue("'Don't Warn Again for This IP' must be offered", hasText("Don't Warn Again for This IP", 2_000))
+        // The warning screen scrolls and the CI emulator is 320x640 mdpi: the
+        // last decision sits at the fold there, so a fourth control (the proxy
+        // or the Airplane Mode row) can push it out of the a11y tree entirely.
+        // Presence is therefore checked the same way the click below reaches it.
+        assertTrue(
+            "'Don't Warn Again for This IP' must be offered",
+            hasTextWithScroll("Don't Warn Again for This IP", attempts = 6)
+        )
+        // ...which left the screen scrolled down; the click below needs the top.
+        repeat(8) { dragDownQuarter() }
 
         assertTrue("'Continue' must be clickable", clickTextScrolled("Continue"))
         assertTrue(
@@ -426,5 +449,119 @@ class NetworkWarningActivityE2eTest {
             "Continue must clear the persisted pending decision",
             waitUntil(6_000) { pendingDecisionOrNull() == null }
         )
+    }
+
+    private fun setGlobalFlags(
+        offerNetworkChangeOptions: Boolean? = null,
+        offerAirplaneModeShortcut: Boolean? = null
+    ) = runBlocking<Unit> {
+        val current = appGraph.appState.globalSettingsSnapshot()
+        appGraph.appState.saveGlobalSettings(
+            current.copy(
+                offerNetworkChangeOptions =
+                    offerNetworkChangeOptions ?: current.offerNetworkChangeOptions,
+                offerAirplaneModeShortcut =
+                    offerAirplaneModeShortcut ?: current.offerAirplaneModeShortcut
+            )
+        )
+    }
+
+    private fun hasDescWithScroll(desc: String, attempts: Int = 12): Boolean {
+        for (i in 1..attempts) {
+            if (hasDesc(desc, 1_000)) return true
+            dragUpQuarter()
+        }
+        return hasDesc(desc, 1_000)
+    }
+
+    private fun clickDescScrolled(desc: String, attempts: Int = 12): Boolean {
+        for (i in 1..attempts) {
+            val node = device.wait(Until.findObject(By.desc(desc)), 1_000)
+            if (node != null && clickSmart(node)) return true
+            dragUpQuarter()
+        }
+        return false
+    }
+
+    @Test
+    fun network_warning_hides_proxy_controls_when_network_options_are_off() {
+        E2eDeterminism.suppressOrganicNetworkWarnings()
+        assertTrue("Engine must come up on a fresh profile", bootstrapFreshEngine())
+        val profileId = activeProfileId()
+
+        setGlobalFlags(offerNetworkChangeOptions = false, offerAirplaneModeShortcut = false)
+        armPendingDecision(profileId)
+        relaunchEngine()
+        assertTrue(
+            "The warning must come up over the gated engine\n${uiTree()}",
+            hasText(warningTitle, 20_000)
+        )
+        assertTrue("The warned address must be shown", hasText("Current IP: $ip", 5_000))
+        assertTrue(
+            "The IP refresh control must still be offered, so the screen rendered",
+            hasDesc("net_warning_refresh", 5_000)
+        )
+
+        var proxySeen = hasDesc("net_warning_refresh_proxy", 800) ||
+            hasText("Refresh Proxy", 800) ||
+            hasDesc("net_warning_proxy_note", 400) ||
+            hasDesc("net_warning_proxy_failed", 400)
+        repeat(6) {
+            dragUpQuarter()
+            proxySeen = proxySeen ||
+                hasDesc("net_warning_refresh_proxy", 400) ||
+                hasText("Refresh Proxy", 400) ||
+                hasDesc("net_warning_proxy_note", 300) ||
+                hasDesc("net_warning_proxy_failed", 300)
+        }
+        assertTrue(
+            "The proxy controls must be absent from the whole warning screen\n${uiTree()}",
+            !proxySeen
+        )
+        assertTrue(
+            "The decision surface must still be reachable after the sweep",
+            hasText("Don't Warn Again for This IP", 3_000)
+        )
+
+        assertTrue(
+            "'Don't Warn Again for This IP' must be clickable",
+            clickTextScrolled("Don't Warn Again for This IP")
+        )
+        assertTrue("Suppress must release the engine", engineUiUp(15_000))
+        assertTrue(
+            "Suppress must clear the persisted pending decision",
+            waitUntil(6_000) { pendingDecisionOrNull() == null }
+        )
+        setGlobalFlags(offerNetworkChangeOptions = true, offerAirplaneModeShortcut = true)
+    }
+
+    @Test
+    fun network_warning_offers_airplane_mode_shortcut_when_enabled() {
+        E2eDeterminism.suppressOrganicNetworkWarnings()
+        assertTrue("Engine must come up on a fresh profile", bootstrapFreshEngine())
+        val profileId = activeProfileId()
+
+        setGlobalFlags(offerNetworkChangeOptions = true, offerAirplaneModeShortcut = true)
+        armPendingDecision(profileId)
+        relaunchEngine()
+        assertTrue(
+            "The warning must come up over the gated engine\n${uiTree()}",
+            hasText(warningTitle, 20_000)
+        )
+        assertTrue("The warned address must be shown", hasText("Current IP: $ip", 5_000))
+        assertTrue(
+            "The Airplane Mode shortcut must be offered\n${uiTree()}",
+            hasDescWithScroll("net_warning_airplane_mode")
+        )
+        assertTrue(
+            "The Airplane Mode shortcut must be clickable",
+            clickDescScrolled("net_warning_airplane_mode")
+        )
+        assertTrue(
+            "Tapping the shortcut must leave the warning screen for the system settings\n${uiTree()}",
+            waitGone(warningTitle, 20_000)
+        )
+        device.pressHome()
+        device.waitForIdle(1_000)
     }
 }
