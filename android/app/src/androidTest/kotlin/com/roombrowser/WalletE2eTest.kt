@@ -608,7 +608,12 @@ class WalletE2eTest {
         val deadline = System.currentTimeMillis() + timeoutMs
         while (System.currentTimeMillis() < deadline) {
             if (verify()) return true
-            val node = device.wait(Until.findObject(By.text(text)), 1_500)
+            // The row sits far down a list the a11y tree only reports while it is
+            // on screen, so the scroll IS the search and every iteration has to
+            // carry one. A miss is known immediately -- the row is either in the
+            // tree or it is not -- so the wait is short: at 1.5s it was most of
+            // the budget and the last rows were simply never reached.
+            val node = device.wait(Until.findObject(By.text(text)), 400)
             if (node != null) {
                 clickSmart(node)
                 device.waitForIdle(1_000)

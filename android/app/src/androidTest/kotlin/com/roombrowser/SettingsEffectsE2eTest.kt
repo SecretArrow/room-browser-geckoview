@@ -24,6 +24,7 @@ import com.roombrowser.domain.model.ProfileSettings
 import com.roombrowser.engine.EngineSession
 import com.roombrowser.engine.devtools.DeveloperToolsCapabilities
 import kotlinx.coroutines.runBlocking
+import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -42,6 +43,9 @@ class SettingsEffectsE2eTest {
     private val tag = (System.currentTimeMillis() % 1000000).toString()
     private val typedSubfolder = "../room-dl-$tag"
     private val sanitisedSubfolder = "room-dl-$tag"
+
+    /** The active profile's settings as this test found them, so it can put them back. */
+    private var restoreSettings: Pair<ProfileId, ProfileSettings>? = null
 
     private fun launchEngineHome() {
         targetContext.startActivity(
@@ -86,7 +90,25 @@ class SettingsEffectsE2eTest {
             .create("E2ESetFx${System.nanoTime()}", "👤", 0xFF7C4DFFL)
             .id.value
         graph.appState.setActiveProfile(id)
-        ProfileId(id)
+        val profileId = ProfileId(id)
+        if (restoreSettings == null) {
+            graph.profileRepo.getProfile(profileId)?.settings?.let { restoreSettings = profileId to it }
+        }
+        profileId
+    }
+
+    /**
+     * These are persisted profile settings and the suite shares one process, so a
+     * homepage left disabled or a download folder left changed is what every later
+     * suite would see. Put back what was found.
+     */
+    @After
+    fun restoreActiveProfileSettings() {
+        val (id, settings) = restoreSettings ?: return
+        runBlocking<Unit> {
+            if (graph.profileRepo.getProfile(id) == null) return@runBlocking
+            graph.profileManager.updateSettings(id, settings)
+        }
     }
 
     private fun setActiveProfileSettings(transform: (ProfileSettings) -> ProfileSettings) {

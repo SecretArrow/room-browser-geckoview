@@ -30,6 +30,9 @@ class TextScaleE2eTest {
 
     private lateinit var server: MockWebServer
 
+    /** The scale this test found on the profile, so it can put it back. */
+    private var restoreScale: Pair<ProfileId, Float>? = null
+
     @Before
     fun setUp() {
         E2eDeterminism.suppressOrganicNetworkWarnings()
@@ -181,6 +184,21 @@ class TextScaleE2eTest {
         runBlocking<Unit> {
             val id = activeProfileId() ?: return@runBlocking
             val current = graph.profileRepo.getProfile(id)?.settings ?: ProfileSettings()
+            if (restoreScale == null) restoreScale = id to current.fontScale
+            graph.profileManager.updateSettings(id, current.copy(fontScale = scale))
+        }
+    }
+
+    /**
+     * The scale is a persisted profile setting and the suite shares one process,
+     * so leaving it at 2.0 would scale every later suite's pages: the shim is
+     * appended to each load after this one. Put back what was found.
+     */
+    @After
+    fun restoreFontScale() {
+        val (id, scale) = restoreScale ?: return
+        runBlocking<Unit> {
+            val current = graph.profileRepo.getProfile(id)?.settings ?: return@runBlocking
             graph.profileManager.updateSettings(id, current.copy(fontScale = scale))
         }
     }
