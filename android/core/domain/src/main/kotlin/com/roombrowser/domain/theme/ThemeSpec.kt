@@ -69,7 +69,7 @@ data class RoomThemeSpec(
     /** Contrast level in percent (50..150; 100 = neutral). */
     val contrast: Int = 100,
     /**
-     * Turn off the app's own panel and sheet animations.
+     * Turn off the app's own page-load progress animation.
      *
      * It lives in the theme because it is an appearance choice, and because
      * this is the only place the app already resolves one per profile. It does
