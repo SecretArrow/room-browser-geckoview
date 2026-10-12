@@ -425,8 +425,8 @@ private fun ThemeStudioRoot(controller: ThemeStudioController, onDone: () -> Uni
             )
             SettingSwitchRow(
                 title = "Reduce motion",
-                subtitle = "Speeds up this app's own animations. Does not affect Material's " +
-                    "ripple or the system's animation scale.",
+                subtitle = "Removes the page-load progress animation. Material's ripple, the " +
+                    "system's animation scale and the rest of the interface are unaffected.",
                 checked = controller.working.reducedMotion,
                 onCheckedChange = { v -> controller.update { it.copy(reducedMotion = v) } }
             )

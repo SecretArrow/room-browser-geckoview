@@ -453,8 +453,8 @@ fun BrowserSettingsScreen(viewModel: BrowserViewModel, onClose: () -> Unit) {
         SettingsGroup {
             SettingSwitchRow(
                 title = "Enable network diagnostics",
-                subtitle = "Allows the About/Diagnostics screens to show the observed public IP, " +
-                    "and lets the agent's diagnostic report tool run",
+                subtitle = "Lets the agent's diagnostic report tool collect and export a report " +
+                    "about this device. The What's My IP screen is separate and is not affected.",
                 checked = global.diagnosticsEnabled,
                 onCheckedChange = {
                     global = global.copy(diagnosticsEnabled = it)
