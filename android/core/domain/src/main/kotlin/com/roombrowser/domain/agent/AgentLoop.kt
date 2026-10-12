@@ -156,7 +156,10 @@ class AgentLoop(
                         ToolResult(ok = false, output = "tool crashed: ${t.message ?: t.javaClass.simpleName}")
                     }
                     val content = result.asMessageContent().take(MAX_TOOL_RESULT_CHARS)
-                    val summary = result.output.replace('\n', ' ').trim().take(SUMMARY_CHARS)
+                    // The model sees `content`, fence and all; the user sees
+                    // this summary, so the fence comes off here.
+                    val summary = UntrustedContent.payload(result.output)
+                        .replace('\n', ' ').trim().take(SUMMARY_CHARS)
                     listener(AgentEvent.ToolFinished(call.id, call.function.name, result.ok, summary))
                     history.add(
                         ChatMessage(role = "tool", content = content, toolCallId = call.id)

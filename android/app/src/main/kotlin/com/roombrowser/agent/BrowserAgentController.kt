@@ -30,6 +30,7 @@ import com.roombrowser.domain.agent.AutoModelPicker
 import com.roombrowser.domain.agent.ChatMessage
 import com.roombrowser.domain.agent.LocalAiTuning
 import com.roombrowser.domain.agent.ToolExecutor
+import com.roombrowser.domain.agent.UntrustedContent
 import com.roombrowser.domain.agent.formatDurationMs
 import com.roombrowser.domain.model.ProfileId
 import com.roombrowser.domain.model.SearchEngines
@@ -737,14 +738,21 @@ class BrowserAgentController(
 
     private fun entryFromRow(row: AgentMessageEntity): AgentEntry? = when (row.role) {
         "user" -> AgentEntry.User(row.content, row.createdAt)
-        "assistant" -> AgentEntry.Assistant(row.content, "", streaming = false, row.createdAt)
+        "assistant" -> AgentEntry.Assistant(
+            text = UntrustedContent.stripMarkers(row.content),
+            thinking = "",
+            streaming = false,
+            at = row.createdAt
+        )
         "tool" -> AgentEntry.Tool(
             callId = "row_${row.id}",
             name = row.toolName ?: "tool",
             label = AgentTools.describeTool(row.toolName ?: "", row.toolArgs),
             running = false,
             ok = !row.content.startsWith("ERROR:"),
-            summary = row.content.take(200),
+            // Rows written before the fence stopped leaking still carry it,
+            // cut off mid-sentence.
+            summary = UntrustedContent.payload(row.content).take(200),
             at = row.createdAt
         )
         else -> null
@@ -1164,13 +1172,16 @@ class BrowserAgentController(
                     }
                     is AgentEvent.FinalAnswer -> {
                         streamingIndex = finalizeAssistant(streamingIndex)
+                        // The model sometimes copies the fence's frame back out
+                        // of the tool result it just read.
+                        val answer = UntrustedContent.stripMarkers(event.text)
                         entries = entries + AgentEntry.Assistant(
-                            text = event.text,
+                            text = answer,
                             thinking = "",
                             streaming = false,
                             at = System.currentTimeMillis()
                         )
-                        repo.addMessage(sessionId, "assistant", event.text)
+                        repo.addMessage(sessionId, "assistant", answer)
                         repo.touchSession(sessionId)
                         setStatus(null)
                     }
@@ -1297,7 +1308,13 @@ class BrowserAgentController(
         if (index >= 0 && index < entries.size) {
             val entry = entries[index]
             if (entry is AgentEntry.Assistant && entry.streaming) {
-                entries = entries.toMutableList().apply { set(index, entry.copy(streaming = false)) }
+                // Tokens arrive one at a time, so the fence can only come off
+                // once the whole answer is in.
+                val done = entry.copy(
+                    streaming = false,
+                    text = UntrustedContent.stripMarkers(entry.text)
+                )
+                entries = entries.toMutableList().apply { set(index, done) }
             }
         }
         return -1

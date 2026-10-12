@@ -194,6 +194,30 @@ class AgentLoopTest {
     }
 
     @Test
+    fun `the user-visible tool summary never carries the fence`() = runTest {
+        val page = "Sign in to continue."
+        val executor = object : ToolExecutor {
+            override suspend fun execute(name: String, argsJson: String): ToolResult =
+                ToolResult(true, UntrustedContent.wrap(page))
+        }
+        val toolTurn = ChatMessage(
+            role = "assistant",
+            toolCalls = listOf(ToolCall(id = "c", function = FunctionCall(AgentTools.READ_PAGE, "{}")))
+        )
+        val gateway = FakeGateway(listOf(toolTurn, ChatMessage(role = "assistant", content = "ok")))
+        val loop = AgentLoop(gateway, executor, config())
+        val events = mutableListOf<AgentEvent>()
+
+        loop.runTurn(mutableListOf(ChatMessage(role = "user", content = "go"))) { events.add(it) }
+
+        assertThat(events.filterIsInstance<AgentEvent.ToolFinished>().single().summary)
+            .isEqualTo(page)
+        // The model's copy keeps the fence: that half is the defence.
+        val toolMsg = gateway.requests[1].messages.first { it.role == "tool" }
+        assertThat(toolMsg.content).contains(UntrustedContent.BEGIN)
+    }
+
+    @Test
     fun `history trimming keeps the system message and newest turns`() = runTest {
         val loopTurn = ChatMessage(
             role = "assistant",

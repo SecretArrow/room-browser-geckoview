@@ -1,6 +1,7 @@
 package com.roombrowser.agent
 
 import com.google.common.truth.Truth.assertThat
+import com.roombrowser.domain.agent.UntrustedContent
 import org.junit.After
 import org.junit.Before
 import org.junit.Test
@@ -156,6 +157,32 @@ class AgentChatExportTest {
         )
 
         assertThat(text).contains("  line one\n  line two")
+    }
+
+    @Test
+    fun `a tool result is exported without the fence`() {
+        val text = AgentChatExport.render(
+            header(),
+            listOf(
+                AgentChatExport.Session(
+                    title = "Read it",
+                    model = "m",
+                    updatedAt = at,
+                    messages = listOf(
+                        AgentChatExport.Message(
+                            role = "tool",
+                            at = at,
+                            content = "Sign in to continue.",
+                            toolName = "read_page",
+                            toolResult = UntrustedContent.wrap("Sign in to continue.")
+                        )
+                    )
+                )
+            )
+        )
+
+        assertThat(text).contains("    result: Sign in to continue.")
+        assertThat(text).doesNotContain(UntrustedContent.BEGIN)
     }
 
     @Test
