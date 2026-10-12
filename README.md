@@ -45,6 +45,7 @@ android/        Android app (Gradle project: app/, core/, tools/, docs/)
 desktop/        Desktop browser in C11 (src/core, src/win, src/gtk, scripts, assets)
 .github/        CI/CD workflows
 SECURITY.md     Responsible-disclosure policy
+PRIVACY.md      What the app collects (nothing) and what can leave the device
 ```
 
 ## License
