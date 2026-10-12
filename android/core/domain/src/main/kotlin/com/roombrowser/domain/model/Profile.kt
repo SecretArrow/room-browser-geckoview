@@ -204,16 +204,16 @@ data class ProfileSettings(
     val networkProtectionEnabled: Boolean = true,
     // Proxy (this profile)
     //
-    // [ProxyMode.AUTO] by default, because the master switch is NOT here: turning the
-    // finder on has to make every profile work immediately, including the ones that
-    // already exist, or the setting only applies to profiles created after it. OFF is
-    // the per-profile opt-out.
+    // OFF by default: a free proxy is an untrusted middlebox, so nothing is routed
+    // through one until this profile asks for it. The finder's master switch is
+    // global; this field is the per-profile choice, and a profile that already
+    // stored AUTO keeps it.
     //
-    // The scope list defaults to pages alone: a free proxy is an untrusted middlebox, so
-    // it starts where it hides page content from the operator and not on the traffic that
-    // carries API keys and wallet RPC payloads. AUTO resolves on every bind, so switching
-    // a profile is what re-applies its proxy.
-    val proxyMode: ProxyMode = ProxyMode.AUTO,
+    // The scope list defaults to pages alone: it starts where it hides page content
+    // from the operator, not on the traffic that carries API keys and wallet RPC
+    // payloads. AUTO resolves on every bind, so switching a profile is what
+    // re-applies its proxy.
+    val proxyMode: ProxyMode = ProxyMode.OFF,
     val proxyHost: String? = null,
     val proxyPort: Int = 0,
     val proxyScheme: ProxyScheme = ProxyScheme.HTTP,

@@ -11,18 +11,18 @@ import org.junit.Test
  * The proxy rides in `profiles.settings_json`, so these fields must be addable without a
  * migration: a blob written before they existed has to keep decoding.
  *
- * The default is AUTO, not OFF, and that is the whole of "turning the finder on works for
- * every profile": the master switch is the global setting, and a per-profile default of OFF
- * would have meant the switch applied only to profiles created after it was flipped.
+ * The default is OFF: a fresh profile routes nothing through a proxy until the user asks
+ * for one. A profile that already stored AUTO keeps it — the default only decides what a
+ * profile created from now on starts as.
  */
 class ProfileProxySettingsTest {
 
     private val json = Json { ignoreUnknownKeys = true; encodeDefaults = true }
 
     @Test
-    fun `a fresh profile follows the finder and routes pages only`() {
+    fun `a fresh profile routes nothing and starts on pages only`() {
         val settings = ProfileSettings()
-        assertThat(settings.proxyMode).isEqualTo(ProxyMode.AUTO)
+        assertThat(settings.proxyMode).isEqualTo(ProxyMode.OFF)
         assertThat(settings.proxyHost).isNull()
         assertThat(settings.proxyPinnedId).isNull()
         assertThat(settings.proxyScopes).containsExactly(ProxyScope.PAGES)
@@ -39,7 +39,7 @@ class ProfileProxySettingsTest {
 
         val decoded = json.decodeFromString(ProfileSettings.serializer(), stripped)
         assertThat(decoded.searchEngineId).isEqualTo("startpage")
-        assertThat(decoded.proxyMode).isEqualTo(ProxyMode.AUTO)
+        assertThat(decoded.proxyMode).isEqualTo(ProxyMode.OFF)
         assertThat(decoded.proxyScopes).containsExactly(ProxyScope.PAGES)
         assertThat(decoded.proxyPort).isEqualTo(0)
     }
