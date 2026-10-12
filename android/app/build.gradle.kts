@@ -143,13 +143,10 @@ android {
                 storePassword = envStorePassword
                 keyAlias = envKeyAlias
                 keyPassword = envKeyPassword
-                // All three schemes, stated rather than inherited. AGP's
-                // default for minSdk 28 is v2 alone: v1 is the JAR signature
-                // that installers and vendor ROMs which never learned v2 still
-                // read, and v3 is what Android 11+ prefers because it carries
-                // the signing lineage. v4 stays off — it writes a separate
-                // .idsig sidecar that nothing here ships, so enabling it would
-                // only add a file to the build output.
+                // Stated rather than inherited: AGP's default here is v2
+                // alone. v1 is the JAR signature third-party installers still
+                // read, v3 is the scheme Android 9+ prefers, and v4 only
+                // writes a .idsig sidecar that nothing here ships.
                 enableV1Signing = true
                 enableV2Signing = true
                 enableV3Signing = true

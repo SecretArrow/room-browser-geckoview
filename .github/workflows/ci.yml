@@ -65,12 +65,9 @@ env:
   # instead of paying JVM start plus cold JIT on each one. It exits with the
   # runner. --console=plain is already passed on every gradle command.
   GRADLE_OPTS: -Dorg.gradle.console=plain
-  # SHA-256 of the DER-encoded release signing certificate, shared by both
-  # editions because both sign with the same keystore. The signature gate in
-  # the release job compares against it: "apksigner says this APK verifies" is
-  # not enough on its own, since a keystore that was swapped, regenerated or
-  # mistyped also produces an APK that verifies — just not one that can ever
-  # upgrade an installed build.
+  # SHA-256 of the release signing certificate, same keystore in both editions.
+  # "apksigner says it verifies" is not enough: a swapped keystore also
+  # verifies, and produces an APK that can never upgrade an installed one.
   RELEASE_CERT_SHA256: 0ea926c1075213a9e04420fadca34d0c763ffe6c9e765d470ccf8c217318fec8
 
 jobs:
@@ -478,22 +475,13 @@ jobs:
 
       - name: Check the release APKs' archive packaging
         working-directory: android
-        # What Android requires of the ZIP itself, not of the code inside it:
-        # every lib/**/*.so Stored and page-aligned (16 KB — the page size
-        # arm64 devices are moving to), resources.arsc Stored and 4-byte
-        # aligned. AGP gets this right today and every way it can break is
-        # SILENT: the APK builds, installs and runs, and only the Play upload
-        # or a 16 KB device ever notices. Nothing else in this pipeline looks
-        # at it. Runs on the unsigned release APKs, which is the right place
-        # for it — alignment is a property of the archive and signing does not
-        # move entry data, so a break is caught here on every PR rather than
-        # after the 50-minute e2e gate.
-        #
-        # The self-test runs first, on every pipeline, because a gate that has
-        # never been seen to reject anything is indistinguishable from a gate
-        # that cannot: it feeds the checker synthetic archives, including the
-        # padded-local-extra layout the real build produces and the three ways
-        # it can be wrong.
+        # The rules `zipalign -c -P 16` enforces: every Stored entry on a
+        # 4-byte boundary, every lib/**/*.so Stored and 16 KB aligned,
+        # resources.arsc Stored. AGP gets this right today, and every way it
+        # can break is silent — the APK still builds, installs and runs; only
+        # a Play upload or a 16 KB-page device notices. The self-test runs
+        # first: a gate never seen to reject anything is indistinguishable
+        # from one that cannot.
         run: |
           set -euo pipefail
           python3 "$GITHUB_WORKSPACE/tools/verify_apk_packaging.py" --self-test
@@ -1074,11 +1062,9 @@ jobs:
           [ ${#apks[@]} -gt 0 ] || { echo "::error::no release APKs were produced"; exit 1; }
           BUILD_TOOLS=$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)
           for apk in "${apks[@]}"; do
-            # NO `|| true`, and the exit code IS the verdict. This step used to
-            # swallow it and then grep for a "certificate DN:" line — but
-            # apksigner prints the certificate it could not verify, so that
-            # version of the gate asserted only that SOME certificate had been
-            # printed and would have published an APK with a broken signature.
+            # NO `|| true`: the exit code IS the verdict. The old version
+            # swallowed it and only grepped for a "certificate DN:" line —
+            # which catches a broken signature but not the wrong keystore.
             if ! "$BUILD_TOOLS/apksigner" verify --verbose --print-certs "$apk" > "$RUNNER_TEMP/apk-certs.txt" 2>&1; then
               cat "$RUNNER_TEMP/apk-certs.txt"
               echo "::error::apksigner verify FAILED for $(basename "$apk") — refusing to publish"
@@ -1252,7 +1238,7 @@ jobs:
             - Unit tests (domain + app)
             - E2E instrumented tests on emulator (profile CRUD, cross-process browsing, storage isolation)
             - APK signature verified (v1 + v2 + v3) and pinned to the release certificate
-            - Native libraries and resources.arsc checked for Stored + page alignment
+            - Archive packaging checked against the `zipalign -c -P 16` rules
 
             > Note: this repository moved — releases are signed with the NEW
             > repository keystore. Updating over an APK from the previous

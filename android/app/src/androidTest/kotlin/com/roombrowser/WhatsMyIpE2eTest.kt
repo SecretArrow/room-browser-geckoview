@@ -265,9 +265,11 @@ class WhatsMyIpE2eTest {
         return false
     }
 
-    private fun ipv4Value(): String? = runCatching {
-        device.findObject(By.desc("whatsmyip_ipv4"))?.text
+    private fun descValue(desc: String): String? = runCatching {
+        device.findObject(By.desc(desc))?.text
     }.getOrNull()
+
+    private fun ipv4Value(): String? = descValue("whatsmyip_ipv4")
 
     private fun looksLikeAddress(value: String): Boolean {
         val text = value.trim()
@@ -364,10 +366,18 @@ class WhatsMyIpE2eTest {
             }
         )
 
-        // A refresh must not take the screen away or blank the other rows.
+        // A refresh must not take the screen away or blank the other rows. Both
+        // rows sit below the fold on the CI emulator, so they are found the way
+        // the rest of this file finds them: look, then drag.
         assertTrue("The screen must still be up after a refresh", hasText(screenTitle, 3_000))
-        assertTrue("The identity rows must survive a refresh", hasDesc("whatsmyip_user_agent", 5_000))
-        assertTrue("The proxy row must survive a refresh", hasDesc("whatsmyip_proxy", 5_000))
+        assertTrue(
+            "The identity row must survive a refresh with a value",
+            hasDescWithScroll("whatsmyip_user_agent") && !descValue("whatsmyip_user_agent").isNullOrBlank()
+        )
+        assertTrue(
+            "The proxy row must survive a refresh with a value",
+            hasDescWithScroll("whatsmyip_proxy") && !descValue("whatsmyip_proxy").isNullOrBlank()
+        )
 
         assertTrue("The screen must close", clickDesc("Close", 5_000))
         assertTrue("Closing must return to the engine\n${uiTree()}", engineUiUp(20_000))

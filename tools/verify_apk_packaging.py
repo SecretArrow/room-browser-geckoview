@@ -1,11 +1,12 @@
 """Archive-level gates for the release APKs.
 
-Android cares about how the zip is BUILT, not only about what is inside it: a
-native library must be Stored so the loader can mmap it, its data must sit on a
-page boundary (16 KB, the size arm64 devices are moving to), and resources.arsc
-must be Stored and 4-byte aligned. AGP gets all of this right today, and every
-way it can go wrong is silent -- the APK still builds, installs and runs, and
-only the Play upload or a 16 KB device notices.
+Android cares about how the zip is BUILT, not only about what is inside it, and
+these are the rules `zipalign -c -P 16 -v 4` enforces: every Stored,
+non-directory entry sits on a 4-byte boundary; every native library is Stored
+(so the loader can mmap it) and page-aligned to 16 KB; resources.arsc is Stored.
+AGP gets all of this right today, and every way it can go wrong is silent --
+the APK still builds, installs and runs, and only the Play upload or a 16 KB
+device notices.
 
 Exit 0 clean, 1 gate failure, 2 could not run. `--self-test` exercises the
 checker against synthetic archives; run it before trusting a verdict.
@@ -38,12 +39,19 @@ def local_data_offset(handle, info):
     return info.header_offset + 30 + name_len + extra_len
 
 
-def rules_for(name):
-    """(label, modulus) each entry must satisfy; 0 means Stored."""
+def rules_for(name, compress_type):
+    """(label, modulus) each entry must satisfy; 0 means Stored.
+
+    Compressed entries and directory entries are exempt from the 4-byte rule,
+    which is zipalign's own split: it prints "OK - compressed" and
+    "OK - directory" without ever measuring them.
+    """
     if name.startswith("lib/") and name.endswith(".so"):
         return (("Stored", 0), (f"page-aligned ({PAGE})", PAGE))
     if name == "resources.arsc":
         return (("Stored", 0), ("4-byte aligned", 4))
+    if compress_type == 0 and not name.endswith("/"):
+        return (("4-byte aligned", 4),)
     return ()
 
 
@@ -52,7 +60,7 @@ def check(path, page=PAGE):
     problems = []
     with open(path, "rb") as handle:
         for info in zipfile.ZipFile(handle).infolist():
-            rules = rules_for(info.filename)
+            rules = rules_for(info.filename, info.compress_type)
             if not rules:
                 continue
             offset = local_data_offset(handle, info)
@@ -135,10 +143,12 @@ def self_test():
     cases.append(("resources.arsc stored and 4-byte aligned", arsc, []))
 
     # A Stored entry whose payload is not 4-byte aligned, reached by offsetting
-    # it behind a filler. The filler length is searched rather than hardcoded
-    # so a rename cannot quietly turn this into an aligned archive that passes.
-    for filler in range(4):
-        arsc_off = build_zip([("a", b"z" * filler, 0, False), ("resources.arsc", b"y" * 512, 0, False)])
+    # it behind a directory entry. The directory is exempt from the rule, so
+    # resources.arsc is the only entry this fixture can blame; the name length
+    # is searched rather than hardcoded so a rename cannot quietly turn this
+    # into an aligned archive that passes.
+    for n in range(1, 5):
+        arsc_off = build_zip([("r" * n + "/", b"", 0, False), ("resources.arsc", b"y" * 512, 0, False)])
         with zipfile.ZipFile(io.BytesIO(arsc_off)) as z:
             off = local_data_offset(io.BytesIO(arsc_off), z.infolist()[1])
         if off % 4:
@@ -147,8 +157,16 @@ def self_test():
         raise AssertionError("could not build a misaligned resources.arsc fixture")
     cases.append(("resources.arsc stored but misaligned", arsc_off, [("resources.arsc", "4-byte aligned")]))
 
-    cases.append(("unrelated entry is not gated",
-                  build_zip([("classes.dex", b"d" * 7, 0, False)]), []))
+    # The baseline rule zipalign reports most often, plus its exemptions.
+    cases.append(("stored entry on a 4-byte boundary",
+                  build_zip([("classes.dex", b"d" * 7, 4, False)]), []))
+    cases.append(("stored entry off a 4-byte boundary",
+                  build_zip([("classes.dex", b"d" * 7, 0, False)]),
+                  [("classes.dex", "4-byte aligned")]))
+    cases.append(("compressed entry is not alignment-gated",
+                  deflated_zip("classes.dex", b"d" * 7, 0), []))
+    cases.append(("directory entry is not alignment-gated",
+                  build_zip([("res/", b"", 0, False)]), []))
 
     failures = 0
     for label, blob, expected in cases:
@@ -201,7 +219,7 @@ def main():
             for name, problem in problems:
                 print(f"  {name}: {problem}")
         else:
-            print(f"{apk}: native libraries and resources.arsc are packaged correctly")
+            print(f"{apk}: archive packaging is correct (Stored + aligned, zipalign -P 16 rules)")
     return 1 if failed else 0
 
 
