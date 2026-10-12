@@ -57,6 +57,14 @@ dependencies {
     // silently undo the whole facade.
     implementation(libs.geckoview)
 
+    // `@androidx.annotation.OptIn` marks the three calls into GeckoView's
+    // experimental preference controller. The engine's POM carries
+    // androidx.annotation as a runtime dependency, so it was only ever on this
+    // module's compile classpath because the WebView implementation (and with
+    // it androidx.webkit) used to sit here. Removing that package removed the
+    // provider, and the compile failed on the three annotation lines.
+    implementation(libs.androidx.annotation)
+
     // setProxy suspends until the engine acknowledges the change; a page loaded
     // before that point would go out over the real address.
     implementation(libs.kotlinx.coroutines.android)

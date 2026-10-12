@@ -30,10 +30,9 @@ import kotlin.math.roundToInt
  *    candidates that carry a literal IP address are kept out of what the page
  *    can read. Both are described at the scripts themselves.
  *
- *  - the **text-size** shim, for a profile whose text scale is not 1.0: it sets
- *    `-webkit-text-size-adjust` on the document root. Not `zoom`, which scales
- *    the layout as well; the setting is how large the text is read, not how
- *    wide the page is laid out.
+ *  - the **text-size** shim, for a profile whose text scale is not 1.0: it
+ *    scales the text, and where the engine cannot scale text alone it scales
+ *    the page. Both are described at the script itself.
  *
  * Screen geometry is left alone unless the profile asks for it. The default is
  * the phone's own screen, because the page really is laid out here. A profile
@@ -457,20 +456,32 @@ __DEFINES__
 })();
 """
 
-    // Installed only for a profile whose text scale is not 1.0. The property is
-    // `-webkit-text-size-adjust` and not `zoom`: zoom scales the layout too,
-    // which changes how wide the page is, and that is not what a text-size
-    // setting means.
+    // Installed only for a profile whose text scale is not 1.0.
+    //
+    // `-webkit-text-size-adjust` with a percentage is the right primitive -- it
+    // scales text without scaling the layout -- but Gecko does not accept the
+    // percentage form (it only knows `auto` and `none`), so on an engine that
+    // refuses it the whole page is zoomed instead. That fallback scales the
+    // layout too, which is why it is the fallback: a setting that does nothing
+    // on one of the two editions is the bug this whole shim exists to avoid.
     private val TEXT_SCALE = """
 (function () {
   'use strict';
   try {
     var PERCENT = __PERCENT__ + '%';
+    var SCALE = __PERCENT__ / 100;
+
+    var percentWorks = false;
+    try {
+      percentWorks = !!(window.CSS && CSS.supports &&
+        CSS.supports('-webkit-text-size-adjust', '150%'));
+    } catch (e) {}
 
     function apply() {
       var root = document.documentElement;
       if (!root || !root.style) return false;
-      root.style.setProperty('-webkit-text-size-adjust', PERCENT);
+      if (percentWorks) root.style.setProperty('-webkit-text-size-adjust', PERCENT);
+      else root.style.zoom = SCALE;
       return true;
     }
 

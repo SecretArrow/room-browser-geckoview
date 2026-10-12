@@ -1883,7 +1883,8 @@ private fun TextSizeRow(value: Float, onCommit: (Float) -> Unit) {
             Column(Modifier.weight(1f)) {
                 Text("Text size", style = MaterialTheme.typography.bodyLarge, color = extras.textPrimary)
                 Text(
-                    "Scales text inside pages only — this app's own interface keeps its size.",
+                    "Scales the text in pages; this app's own interface keeps its size. Where the " +
+                        "engine cannot scale text on its own, the whole page is scaled instead.",
                     style = MaterialTheme.typography.bodySmall,
                     color = extras.textSecondary
                 )

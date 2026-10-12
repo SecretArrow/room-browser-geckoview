@@ -355,14 +355,17 @@ class DeviceShimTest {
     @Test
     fun `a text scale of 1 point 5 asks for 150 percent`() {
         // The scale times 100, rounded, written as the percentage the property
-        // takes. `zoom` is deliberately not used — it would scale the layout,
-        // not just the text. The root may be missing at document-start, so the
-        // value is set at once when it exists and otherwise on the first
-        // mutation or readystatechange, and the watch stops once it is set.
+        // takes. Gecko does not accept that form, so the script asks the engine
+        // first and zooms the page when the answer is no -- a setting that did
+        // nothing on one of the two editions is the bug being fixed here. The
+        // root may be missing at document-start, so the value is set at once
+        // when it exists and otherwise on the first mutation or
+        // readystatechange, and the watch stops once it is set.
         val js = DeviceShim.scriptFor(null, null, textScale = 1.5f)
         assertThat(js).contains("-webkit-text-size-adjust")
         assertThat(js).contains("var PERCENT = 150 + '%';")
-        assertThat(js).doesNotContain("zoom")
+        assertThat(js).contains("CSS.supports")
+        assertThat(js).contains("root.style.zoom = SCALE")
         assertThat(js).contains("document.documentElement")
         assertThat(js).contains("MutationObserver")
         assertThat(js).contains("readystatechange")
