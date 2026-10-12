@@ -65,6 +65,7 @@ import com.roombrowser.domain.wallet.chains.octra.OctDocument
 import com.roombrowser.domain.wallet.chains.octra.RpcCircleSource
 import com.roombrowser.domain.wallet.model.ChainType
 import com.roombrowser.engine.BlockedResourceSink
+import com.roombrowser.engine.EngineCertificate
 import com.roombrowser.engine.EngineProxyConfig
 import com.roombrowser.engine.EngineSession
 import com.roombrowser.engine.PageErrorKind
@@ -101,7 +102,18 @@ data class PageState(
 sealed interface PageError {
     data class NoInternet(val url: String) : PageError
     data class Unreachable(val url: String) : PageError
-    data class Ssl(val url: String, val message: String) : PageError
+
+    /**
+     * [certificate] is what the connection presented, when the engine could
+     * report it. Null is "the engine did not say", which the error page prints
+     * as such — never as an empty certificate.
+     */
+    data class Ssl(
+        val url: String,
+        val message: String,
+        val certificate: EngineCertificate? = null
+    ) : PageError
+
     data class DnsFailure(val url: String) : PageError
     data class Generic(val url: String, val message: String?) : PageError
 }
@@ -665,9 +677,15 @@ class BrowserViewModel(
             pageState = pageState.copy(loading = false)
         }
 
-        override fun onSslError(session: EngineSession, url: String, errorCode: Int, description: String?) {
+        override fun onSslError(
+            session: EngineSession,
+            url: String,
+            errorCode: Int,
+            description: String?,
+            certificate: EngineCertificate?
+        ) {
             if (session !== activeSession) return
-            pageError = PageError.Ssl(url, sslErrorText(errorCode))
+            pageError = PageError.Ssl(url, sslErrorText(errorCode), certificate)
             pageState = pageState.copy(loading = false)
         }
 

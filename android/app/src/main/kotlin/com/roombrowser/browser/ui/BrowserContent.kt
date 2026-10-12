@@ -72,9 +72,11 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import com.roombrowser.browser.BrowserViewModel
+import com.roombrowser.browser.CertificateNotice
 import com.roombrowser.browser.PageError
 import com.roombrowser.browser.StatCategories
 import com.roombrowser.domain.engine.UrlIntelligence
+import com.roombrowser.engine.EngineCertificate
 import com.roombrowser.ui.common.LoadingBar
 import com.roombrowser.ui.common.LocalRoomExtras
 import com.roombrowser.ui.common.RoomCard
@@ -389,12 +391,56 @@ private fun ErrorPage(error: PageError, onRetry: () -> Unit) {
             color = extras.textSecondary,
             modifier = Modifier.padding(horizontal = 8.dp)
         )
+        if (error is PageError.Ssl) {
+            Spacer(Modifier.height(16.dp))
+            CertificateBlock(error.certificate)
+        }
         Spacer(Modifier.height(24.dp))
         Button(onClick = onRetry) { Text("Try Again") }
         Spacer(Modifier.height(8.dp))
         OutlinedButton(onClick = {
             runCatching { context.openWirelessSettings() }
         }) { Text("Network Settings") }
+    }
+}
+
+/**
+ * The certificate the connection presented, or the sentence saying the engine
+ * did not report one. Drawn only on the certificate error page — see
+ * [CertificateNotice] for why those two shapes are never merged.
+ */
+@Composable
+private fun CertificateBlock(certificate: EngineCertificate?) {
+    val extras = LocalRoomExtras.current
+    val rows = CertificateNotice.rows(certificate)
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .clip(RoomCardShape)
+            .background(extras.surfaceAlt)
+            .padding(12.dp)
+    ) {
+        if (rows.isEmpty()) {
+            Text(
+                CertificateNotice.NOT_REPORTED,
+                style = MaterialTheme.typography.bodySmall,
+                color = extras.textSecondary
+            )
+            return@Column
+        }
+        rows.forEach { row ->
+            Text(
+                row.label,
+                style = MaterialTheme.typography.labelSmall,
+                color = extras.textSecondary
+            )
+            Text(
+                row.value,
+                style = MaterialTheme.typography.bodySmall,
+                color = extras.textPrimary
+            )
+            Spacer(Modifier.height(6.dp))
+        }
     }
 }
 
