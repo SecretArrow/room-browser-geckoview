@@ -228,15 +228,14 @@ class NetworkWarningActivity : ComponentActivity() {
                     },
                     onClosePicker = { pickerOpen = false },
                     onOpenAirplaneMode = {
-                        val airplaneSettings = Intent(Settings.ACTION_AIRPLANE_MODE_SETTINGS)
-                        // Android forbids toggling Airplane Mode directly, so this is
-                        // only ever the settings screen — and some devices ship none.
-                        if (airplaneSettings.resolveActivity(packageManager) == null) {
-                            airplaneShortcutUnavailable = true
-                        } else {
-                            airplaneShortcutUnavailable =
-                                runCatching { startActivity(airplaneSettings) }.isFailure
-                        }
+                        // startActivity, not resolveActivity: on API 30+ package
+                        // visibility filtering can hide com.android.settings from
+                        // resolveActivity even though the launch itself works, and a
+                        // spurious null would tell the user this device has no such
+                        // screen. The launch is the only honest test of that.
+                        airplaneShortcutUnavailable = runCatching {
+                            startActivity(Intent(Settings.ACTION_AIRPLANE_MODE_SETTINGS))
+                        }.isFailure
                     },
                     onContinue = { finishWith(RESULT_CONTINUE) },
                     onSwitchProfile = { finishWith(RESULT_SWITCH) },
