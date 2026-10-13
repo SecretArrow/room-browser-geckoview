@@ -17,7 +17,26 @@ What is committed here is **ciphertext only**. The archive is sealed with
 AES-256 (gpg symmetric, SHA-512 S2K) under `BACKUP_PASSPHRASE`, so this file
 cannot sign anything on its own. No plaintext keystore, password, or
 `keystore.properties` is ever written into the tree — the workflow uploads and
-commits the `.gpg` and nothing else.
+commits the `.gpg` and nothing else. The hand-added `key-sign-apk.zip` below is
+the one other container in this directory.
+
+## A second container: `key-sign-apk.zip`
+
+`key-sign-apk.zip` holds the same three files in a WinZip **AES-256** archive,
+added by hand so the key can be opened on a machine that has no `gpg`. Its
+password is not in this repository and is not a repository secret; it exists
+only with the owner, beside `BACKUP_PASSPHRASE`.
+
+Say the weak part plainly, because it is the reason the `.gpg` is still the copy
+that matters: WinZip AES derives its key with PBKDF2-HMAC-SHA1 at **1000
+iterations**, where the `.gpg` above uses an iterated SHA-512 S2K, so a guess
+against this archive costs a small fraction of a guess against that one. It is
+here for convenience, not as a second lock. Anyone who can read this repository
+can attack it offline, exactly as the section above describes.
+
+Opening it needs a reader that supports WinZip AES: Info-ZIP `unzip` refuses it
+with `unsupported compression method 99`, which means the archive is intact
+rather than corrupt.
 
 ## The passphrase is the whole security of this file
 
