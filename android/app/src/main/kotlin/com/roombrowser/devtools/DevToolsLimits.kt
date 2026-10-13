@@ -103,9 +103,9 @@ internal fun sharedLimits(): List<LimitsSection> = listOf(
             LimitsRow(
                 "Vision (see_page) — a screenshot leaves the device",
                 "Sends a picture of the page, including anything you are signed in to, to the " +
-                    "model provider. It is off by default, it cannot redact pixels, it is " +
-                    "refused in a private tab, and it is unavailable on text-only providers — " +
-                    "the on-device engine and the opencode server."
+                    "model provider. It is ON by default and can be turned off per profile, it " +
+                    "cannot redact pixels, it is refused in a private tab, and it is unavailable " +
+                    "on text-only providers — the on-device engine and the opencode server."
             ),
             LimitsRow(
                 "Site memory — origin-keyed notes",

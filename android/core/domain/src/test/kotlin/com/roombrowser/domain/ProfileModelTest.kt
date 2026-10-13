@@ -233,12 +233,12 @@ class ProfileModelTest {
     }
 
     @Test
-    fun `the agent vision switch is off on a profile that predates it`() {
+    fun `the agent vision switch is on by default`() {
         // A field, not a withheld permission: that set is a deny-list, where a
-        // permission added later is granted by default and so cannot express
-        // "off". A defaulted field is off for a profile written before the field
-        // existed, with no migration.
-        assertThat(ProfileSettings().agentVisionEnabled).isFalse()
+        // permission added later is granted by default and so cannot express a
+        // default at all. A defaulted field needs no migration — a profile
+        // written before the field existed reads as ON, which is intended.
+        assertThat(ProfileSettings().agentVisionEnabled).isTrue()
         // And the tool carries no permission, so this switch is its only gate.
         assertThat(AgentPermissions.required(AgentTools.SEE_PAGE)).isEmpty()
     }

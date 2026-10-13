@@ -230,9 +230,11 @@ data class ProfileSettings(
     // nothing else — the settings row says so where it is made. The user's own
     // typing in the DevTools Console panel is never gated by this.
     val agentConsoleApprovalRequired: Boolean = true,
-    // OFF by default; a field rather than a withheld permission because that
-    // set is a DENY-list, where a permission added later is granted by default.
-    val agentVisionEnabled: Boolean = false,
+    // ON by default. A page whose content exists only as layout, an image, a
+    // chart or a canvas reads as nothing, and the agent used to stop there; the
+    // switch takes see_page away again for anyone who would rather it did.
+    // A field rather than a withheld permission because that set is a DENY-list.
+    val agentVisionEnabled: Boolean = true,
     // The agent's per-site memory, OFF until the user turns it on.
     //
     // A Boolean rather than an entry in agentWithheldPermissions: that set is a

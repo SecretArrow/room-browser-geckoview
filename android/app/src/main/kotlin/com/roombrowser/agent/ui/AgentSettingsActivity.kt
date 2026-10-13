@@ -570,7 +570,9 @@ private fun AgentSettingsRoot(
                     "are signed in to — while the browser's own screens, and the Developer Tools " +
                     "overlay, are never in it. Nothing is redacted, so anything drawn on the " +
                     "page, including a secret in a canvas, goes with it. It is refused in a " +
-                    "private tab, and it is unavailable on providers that take text only.",
+                    "private tab, and it is unavailable on providers that take text only. On by " +
+                    "default, because a page that reads as nothing is a task the agent would " +
+                    "otherwise give up on; turning this off takes see_page away.",
                 checked = controller.profileSettings.agentVisionEnabled,
                 onCheckedChange = { checked -> controller.setAgentVision(checked) }
             )
