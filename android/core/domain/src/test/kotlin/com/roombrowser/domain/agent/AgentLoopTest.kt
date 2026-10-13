@@ -157,6 +157,22 @@ class AgentLoopTest {
     }
 
     @Test
+    fun `the step budget is clamped to the guard rails`() {
+        assertThat(config().steps).isEqualTo(8)
+        // A stored value below the floor or above the ceiling is clamped, not
+        // trusted: the ceiling is what stops a typed or migrated number from
+        // turning one turn into an unbounded run of provider calls.
+        assertThat(config(maxSteps = 0).steps).isEqualTo(AgentConfig.MIN_STEPS)
+        assertThat(config(maxSteps = -4).steps).isEqualTo(AgentConfig.MIN_STEPS)
+        assertThat(config(maxSteps = AgentConfig.MAX_STEPS + 1).steps)
+            .isEqualTo(AgentConfig.MAX_STEPS)
+        // The default is the one a fresh profile gets, and it has to survive
+        // the clamp or the setting would mean nothing.
+        assertThat(AgentConfig(model = "m", systemPrompt = "s").steps)
+            .isEqualTo(AgentConfig.DEFAULT_STEPS)
+    }
+
+    @Test
     fun `provider failure surfaces as fatal agent error`() = runTest {
         val gateway = object : AgentGateway {
             override suspend fun chat(request: ChatRequest, events: suspend (StreamEvent) -> Unit): ChatMessage =

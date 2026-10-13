@@ -378,9 +378,11 @@ change is picked up by the running browser instantly.
 * **Include current page by default** — attaches a page snapshot to the
   first message of each turn (the switch shows green when on, matching the
   panel chip's included state).
-* **Temperature** (0–1) and **max steps per turn** (5–50, default 25) —
-  the step budget bounds cost and runaway loops; when exhausted the agent
-  is asked once more, without tools, to produce a final answer.
+* **Temperature** (0–1) and **max steps per turn** (1–200, default 75,
+  typed rather than slid) — the step budget bounds cost and runaway loops;
+  when exhausted the agent is asked once more, without tools, to produce a
+  final answer. The stored value is clamped by the loop, so the ceiling is a
+  guard rather than a preference.
 * **System prompt override** — replace the built-in browsing-agent prompt.
 * **Data & privacy** — delete all agent chats (every profile; providers
   are kept).

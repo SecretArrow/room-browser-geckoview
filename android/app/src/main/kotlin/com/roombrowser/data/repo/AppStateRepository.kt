@@ -2,6 +2,7 @@ package com.roombrowser.data.repo
 
 import com.roombrowser.data.db.AppStateDao
 import com.roombrowser.data.db.AppStateEntity
+import com.roombrowser.domain.agent.AgentConfig
 import com.roombrowser.domain.agent.ContextPreset
 import com.roombrowser.domain.agent.LocalAiTuning
 import com.roombrowser.domain.agent.RetryPolicy
@@ -122,7 +123,12 @@ data class AgentSettings(
      */
     val chatOnly: Boolean = true,
     val temperature: Double = 0.2,
-    val maxSteps: Int = 25,
+    /**
+     * Steps one turn may take. Long enough for a real multi-page task — the
+     * old 25 ran out mid-task on exactly the jobs an agent is for — and the
+     * loop clamps whatever is stored here, so a typed value cannot run away.
+     */
+    val maxSteps: Int = AgentConfig.DEFAULT_STEPS,
     /** On by default, so an action is never taken without the user seeing it. */
     val confirmActions: Boolean = true,
     /**

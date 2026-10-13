@@ -50,10 +50,23 @@ data class ToolResult(
 
 data class AgentConfig(
     val model: String,
-    val maxSteps: Int = 25,
+    val maxSteps: Int = DEFAULT_STEPS,
     val temperature: Double = 0.2,
     val systemPrompt: String
-)
+) {
+    /**
+     * The step budget the loop actually honours. A stored value is clamped
+     * rather than trusted: the ceiling is what keeps a typed or migrated
+     * number from turning one turn into an unbounded run of provider calls.
+     */
+    val steps: Int get() = maxSteps.coerceIn(MIN_STEPS, MAX_STEPS)
+
+    companion object {
+        const val MIN_STEPS = 1
+        const val MAX_STEPS = 200
+        const val DEFAULT_STEPS = 75
+    }
+}
 
 /** Events surfaced to the chat UI. */
 sealed interface AgentEvent {
@@ -109,7 +122,7 @@ class AgentLoop(
     ) {
         try {
             var step = 0
-            while (step < config.maxSteps) {
+            while (step < config.steps) {
                 if (!currentCoroutineContext().isActive) return
                 beforeStep()
                 if (!currentCoroutineContext().isActive) return
@@ -122,7 +135,7 @@ class AgentLoop(
                 step++
 
                 trimHistory(history)
-                val useTools = step < config.maxSteps // last attempt: plain answer
+                val useTools = step < config.steps // last attempt: plain answer
                 val request = ChatRequest(
                     model = config.model,
                     messages = history.toList(),
@@ -180,7 +193,7 @@ class AgentLoop(
                 }
             }
 
-            listener(AgentEvent.Notice("Step limit reached (${config.maxSteps}) — wrapping up."))
+            listener(AgentEvent.Notice("Step limit reached (${config.steps}) — wrapping up."))
             trimHistory(history)
             val final = gateway.chat(
                 ChatRequest(
