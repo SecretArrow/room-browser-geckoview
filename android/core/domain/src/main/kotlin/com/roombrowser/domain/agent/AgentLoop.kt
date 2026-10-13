@@ -122,6 +122,9 @@ class AgentLoop(
     ) {
         try {
             var step = 0
+            // One turn's worth: a tool that failed twice in a previous turn is
+            // not a loop in this one.
+            val failures = AgentFailureWatch()
             while (step < config.steps) {
                 if (!currentCoroutineContext().isActive) return
                 beforeStep()
@@ -161,12 +164,23 @@ class AgentLoop(
                 val turnImages = mutableListOf<AgentImage>()
                 for (call in calls) {
                     listener(AgentEvent.ToolStarted(call.id, call.function.name, call.function.arguments))
-                    val result = try {
-                        tools.execute(call.function.name, call.function.arguments)
-                    } catch (ce: CancellationException) {
-                        throw ce
-                    } catch (t: Throwable) {
-                        ToolResult(ok = false, output = "tool crashed: ${t.message ?: t.javaClass.simpleName}")
+                    // A repeat of a call that just failed twice is answered with
+                    // a correction rather than executed again: the model reads
+                    // it as the result of its own call, which is the one place
+                    // it is certain to look.
+                    val blocked = failures.refusal(call.function.name)
+                    val result = if (blocked != null) {
+                        ToolResult(ok = false, output = blocked)
+                    } else {
+                        val executed = try {
+                            tools.execute(call.function.name, call.function.arguments)
+                        } catch (ce: CancellationException) {
+                            throw ce
+                        } catch (t: Throwable) {
+                            ToolResult(ok = false, output = "tool crashed: ${t.message ?: t.javaClass.simpleName}")
+                        }
+                        failures.record(call.function.name, executed.ok, executed.output)
+                        executed
                     }
                     val content = result.asMessageContent().take(MAX_TOOL_RESULT_CHARS)
                     // The model sees `content`, fence and all; the user sees

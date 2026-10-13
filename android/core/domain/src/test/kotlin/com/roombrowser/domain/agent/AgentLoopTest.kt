@@ -173,6 +173,27 @@ class AgentLoopTest {
     }
 
     @Test
+    fun `a tool that failed twice is answered with a correction, not run again`() = runTest {
+        val executor = FakeExecutor(mapOf(AgentTools.CLICK to ToolResult(false, "no such element")))
+        val turns = List(4) { executor.toolCall("c$it", AgentTools.CLICK, """{"ref":3}""") } +
+            listOf(ChatMessage(role = "assistant", content = "Giving up."))
+        val gateway = FakeGateway(turns)
+        val loop = AgentLoop(gateway, executor, config(maxSteps = 5))
+        val history = mutableListOf(ChatMessage(role = "user", content = "click it"))
+        val events = mutableListOf<AgentEvent>()
+
+        loop.runTurn(history) { events.add(it) }
+
+        // Steps 1 and 2 ran and failed; from then on the call is refused before
+        // it reaches the executor, so the page is not touched again.
+        assertThat(executor.executed).hasSize(2)
+        val summaries = events.filterIsInstance<AgentEvent.ToolFinished>().map { it.summary }
+        assertThat(summaries[0]).contains("no such element")
+        assertThat(summaries[2]).contains("failed 2 times in a row")
+        assertThat(history.last().content).isEqualTo("Giving up.")
+    }
+
+    @Test
     fun `provider failure surfaces as fatal agent error`() = runTest {
         val gateway = object : AgentGateway {
             override suspend fun chat(request: ChatRequest, events: suspend (StreamEvent) -> Unit): ChatMessage =
