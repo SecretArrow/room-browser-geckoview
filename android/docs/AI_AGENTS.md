@@ -119,7 +119,8 @@ listed below; the two that must have their tab on screen are marked.
 | `wait(ms)` | Waits for post-submit animations / infinite-scroll loading before reading again |
 | `compute_js(script)` | Evaluates JavaScript in a **detached scratchpad page**, never the user's page — for local calculation and text work (see **Local compute, vision, site memory** below) |
 | `data_transform(op, input, …)` | Pure host-side transform of data the agent already has — `json_path`, `csv_rows`, `aggregate`, `diff` — with no page and no engine (see below) |
-| `see_page(question?)` | Screenshots this chat's tab and sends the image to the provider — *off unless the profile enables it; refused on text-only providers and in a private tab* (see below) |
+| `see_page(question?, full_page?, annotate?)` | Screenshots this chat's tab and sends the image to the provider. `full_page` captures the whole document instead of the part on screen; `annotate` boxes and numbers every element `read_page` tagged, with the **same** `[ref]` numbers — *off unless the profile enables it; refused on text-only providers and in a private tab; a whole-page shot is refused on an engine that cannot render one* (see below) |
+| `compare_screenshots()` | Captures this tab now and compares it with the last screenshot taken of it, and reports whether anything visible changed, by how much and where — the way to confirm an action actually worked. Refuses honestly when there is no earlier frame of this tab (see below) |
 | `site_memory(op, key, …)` | Reads, writes or forgets a per-site note kept for this profile — *off unless the profile enables it* (see below) |
 | `plan(items)` | The agent's own step list, shown to you as a checklist card with what it has finished and what it is on now. It sends the **whole list every call** (it replaces the previous one), touches no page and stores nothing — see **The step list** below |
 | `download_file(url, name?)` | Hands a link that leads to a **file** (an invoice PDF, a CSV export, an image) to the browser's own download engine, so it lands in Downloads/RoomBrowser and the transfer outlives the turn. It queues the file and returns — the file is not ready when the call answers, so the agent checks `app_data kind=downloads`. Confirmed like a click, refused in plan mode, and refused in a scheduled run (see below) |
@@ -276,6 +277,49 @@ The honest limits are the point of the feature, not a footnote:
 **Status in this build:** implemented — the `see_page` tool, the
 `agentVisionEnabled` switch and its settings row, the per-gateway image bodies
 and the text-only refusal are all present.
+
+#### Whole-page shots and numbered refs (`full_page`, `annotate`)
+
+Two optional arguments to `see_page`:
+
+* **`full_page=true`** captures the whole document rather than the part on
+  screen — for a long page the agent would otherwise have to scroll through.
+  The result states its own extent and whether it was truncated, so a shot that
+  stopped short is never described as "the page". **This browser's engine may
+  not be able to do it:** on the WebView edition the whole document is drawn
+  into one bitmap (capped, and the cap is reported rather than silently
+  applied); the GeckoView edition has no whole-page capture in its engine
+  version, so it refuses with a sentence naming the route that does work —
+  scroll and take another shot.
+* **`annotate=true`** boxes and numbers every element `read_page` already
+  tagged, using the **same** `[ref]` numbers, so a `[ref]` the model can see in
+  the picture is the `[ref]` it can click. The overlay is drawn into the user's
+  own document and is **always taken off again** in a `finally`, including when
+  the capture throws or the turn is cancelled — it never survives the call.
+
+#### Confirming an action (`compare_screenshots`)
+
+`compare_screenshots` captures the tab now and compares it against the last
+screenshot the agent took of **that tab**, and answers in words: nothing visible
+changed, or a percentage of pixels differ, in a named region. It exists to close
+the "I clicked and do not know whether it worked" loop without the model having
+to hold two pictures.
+
+Honest limits:
+
+* **It compares frames, not meaning.** "The page changed" is not "my click
+  worked" — a banner animating into place reports as a change too. The result
+  says so.
+* **The frames need not be adjacent.** The "before" frame is whatever was last
+  captured of that tab, so a gap of minutes is the difference between "my click
+  worked" and "the page changed on its own while I was away"; both timestamps
+  are stated.
+* **A restart forgets everything.** The frames are held in memory, per tab, and
+  a frame that does not survive a restart is the honest behaviour — the tool
+  says there is nothing to compare with rather than comparing against a picture
+  from an earlier run.
+* **Gated exactly like `see_page`** — the profile's vision switch, no private
+  tab, no text-only provider.
 
 ### Site memory (`site_memory`) — an origin-keyed memory
 

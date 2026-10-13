@@ -226,6 +226,7 @@ class AgentDtosTest {
             AgentTools.RUN_JS, AgentTools.SELECT_OPTION, AgentTools.PRESS_KEYS, AgentTools.WAIT_FOR,
             AgentTools.DOWNLOAD_FILE,
             AgentTools.SAVE_PDF,
+            AgentTools.SEE_PAGE, AgentTools.COMPARE_SCREENSHOTS,
             AgentTools.APP_OPEN, AgentTools.APP_TABS, AgentTools.APP_DATA,
             AgentTools.APP_SETTINGS, AgentTools.APP_SHIELDS,
             AgentTools.APP_SITE_PERMISSION, AgentTools.APP_PAGE

@@ -21,6 +21,7 @@ import com.roombrowser.domain.agent.PageSnapshotDto
 import com.roombrowser.domain.agent.PageSnapshotFormatter
 import com.roombrowser.domain.agent.ReadinessSample
 import com.roombrowser.domain.agent.ReadinessVerdict
+import com.roombrowser.domain.agent.ScreenshotDiff
 import com.roombrowser.domain.agent.SecretRedaction
 import com.roombrowser.domain.agent.SiteMemory
 import com.roombrowser.domain.agent.SiteMemoryStore
@@ -214,6 +215,7 @@ class AgentToolExecutor(
                     AgentTools.SEARCH_WEB -> searchWeb(str(args, "query"))
                     AgentTools.READ_PAGE -> readPage()
                     AgentTools.SEE_PAGE -> seePage(args)
+                    AgentTools.COMPARE_SCREENSHOTS -> compareScreenshots()
                     AgentTools.CLICK -> click(int(args, "ref"))
                     AgentTools.FILL_INPUT -> fillInput(int(args, "ref"), str(args, "text"))
                     AgentTools.PRESS_ENTER -> pressEnter(intOrNull(args, "ref"))
@@ -359,13 +361,77 @@ class AgentToolExecutor(
             )
         }
         val session = boundSession() ?: return ToolResult(false, "no page is loaded in this chat's tab")
-        val shot = PageScreenshot.capture(session).getOrElse {
+        val shot = if (flag(args, "full_page")) {
+            PageScreenshot.captureFullPage(session, annotate = flag(args, "annotate"))
+        } else {
+            PageScreenshot.capture(session, annotate = flag(args, "annotate"))
+        }.getOrElse {
             return ToolResult(false, "could not capture the page: ${it.message ?: "unknown error"}")
         }
+        // Kept so `compare_screenshots` has something to compare against: the
+        // model should not have to take a picture twice to find out whether the
+        // page moved.
+        ScreenshotMemory.remember(session.id, shot)
         return ToolResult(
             true,
             screenshotSummary(shot, str(args, "question"), str(args, "reason")),
             images = listOf(shot.image)
+        )
+    }
+
+    /**
+     * Compares the page as it is now with the last frame the agent captured of
+     * this tab, which is the only honest answer to "did that do anything".
+     *
+     * It reports a verdict and sends the current picture, so a change the model
+     * needs to look at is already in front of it. A tab with no earlier frame
+     * is refused with the route that produces one rather than compared against
+     * nothing.
+     */
+    private suspend fun compareScreenshots(): ToolResult {
+        if (!vm.profileSettings().agentVisionEnabled) {
+            return ToolResult(
+                false,
+                "compare_screenshots is turned off for this profile — turn on \"Agent can see the page\" in AI Agent settings."
+            )
+        }
+        visionUnsupportedReason()?.let { why ->
+            return ToolResult(
+                false,
+                "compare_screenshots is not available on this provider — $why. Switch to a provider that accepts images."
+            )
+        }
+        val id = tabId
+        if (id != null && vm.tabs.firstOrNull { it.id == id }?.isPrivate == true) {
+            return ToolResult(
+                false,
+                "compare_screenshots is not available in a private tab: a screenshot of a private session is never sent to the model provider."
+            )
+        }
+        val session = boundSession() ?: return ToolResult(false, "no page is loaded in this chat's tab")
+        val before = ScreenshotMemory.last(session.id)
+            ?: return ToolResult(
+                false,
+                "there is no earlier screenshot of this tab to compare with. Take one with see_page, " +
+                    "do the thing you want to check, then call compare_screenshots."
+            )
+        val after = PageScreenshot.capture(session).getOrElse {
+            return ToolResult(false, "could not capture the page: ${it.message ?: "unknown error"}")
+        }
+        val beforeGrid = before.signature
+        val afterGrid = after.signature
+        if (beforeGrid == null || afterGrid == null) {
+            return ToolResult(false, "one of the two frames was not reduced, so they cannot be compared")
+        }
+        val diff = ScreenshotDiff.compare(
+            beforeGrid.pixels, beforeGrid.width, beforeGrid.height,
+            afterGrid.pixels, afterGrid.width, afterGrid.height
+        )
+        ScreenshotMemory.remember(session.id, after)
+        return ToolResult(
+            true,
+            comparisonSummary(before, after, diff),
+            images = listOf(after.image)
         )
     }
 
@@ -1168,6 +1234,19 @@ class AgentToolExecutor(
 
     private fun intOrNull(args: Map<String, Any?>, key: String): Int? =
         (args[key] as? Number)?.toInt() ?: (args[key] as? String)?.toIntOrNull()
+
+    /**
+     * A boolean argument. Absent, or anything that is not a recognisable
+     * boolean, is false — so an optional flag the model left out never turns a
+     * behaviour on by accident. The string forms are accepted because models
+     * write `"true"` as readily as `true`.
+     */
+    private fun flag(args: Map<String, Any?>, key: String): Boolean =
+        when (val value = args[key]) {
+            is Boolean -> value
+            is String -> value.equals("true", ignoreCase = true)
+            else -> false
+        }
 
     companion object {
         private const val SETTLE_MS = 350L

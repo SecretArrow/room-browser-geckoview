@@ -41,6 +41,10 @@ data class AiTaskPermissions(
     fun groupOf(toolName: String): ToolGroup? = when (toolName) {
         AgentTools.READ_PAGE, AgentTools.SEE_PAGE, AgentTools.SCROLL, AgentTools.WAIT,
         AgentTools.WAIT_FOR, AgentTools.COMPUTE_JS, AgentTools.DATA_TRANSFORM,
+        // A screenshot comparison reads this run's own page and writes nothing,
+        // so it belongs with the other reads — the vision gate is the sharper
+        // one, and this group is only the coarse unattended grant.
+        AgentTools.COMPARE_SCREENSHOTS,
         // site_memory touches no page and starts no navigation: like the two
         // local tools above, it is bookkeeping the agent does on the device, so
         // it rides with the read group. Its own per-profile opt-in is the real

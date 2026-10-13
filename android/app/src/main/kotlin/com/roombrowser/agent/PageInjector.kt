@@ -540,4 +540,84 @@ object PageInjector {
           };
         })()
     """.trimIndent()
+
+    // ------------------------------------------------------------------
+    //  Numbered overlay for annotated screenshots
+    // ------------------------------------------------------------------
+
+    /** The overlay's own id, so installing it twice replaces rather than stacks. */
+    const val MARKS_ID = "__room_agent_marks"
+
+    /**
+     * Draws a numbered box over every element [snapshotJs] tagged.
+     *
+     * THE NUMBERS ARE THE SNAPSHOT'S OWN, not a fresh count: the point of an
+     * annotated picture is that the model can read `[7]` off the image and call
+     * `click` with 7, which only works while both come from the same
+     * `data-agent-ref` values. So this marks what is already tagged and assigns
+     * nothing — a page that was never snapshotted gets an empty overlay, which
+     * is the honest answer rather than numbers the model cannot use.
+     *
+     * The overlay is ONE fixed-position layer appended to the document element,
+     * so the boxes travel with the page when it scrolls and land in the right
+     * place in a whole-document capture as well as a viewport one. It takes no
+     * pointer events, so it cannot intercept a click, and it is always removed
+     * by [clearMarksJs] — a page the user is left looking at must not carry the
+     * agent's markings.
+     *
+     * Returns how many boxes were drawn, and how many were skipped, so a caller
+     * can say when the picture is incomplete.
+     */
+    fun annotateJs(maxLabels: Int = 120): String = """
+        (function(){
+          var existing = document.getElementById('$MARKS_ID');
+          if (existing && existing.parentNode) existing.parentNode.removeChild(existing);
+          var nodes = document.querySelectorAll('[$REF_ATTR]');
+          var layer = document.createElement('div');
+          layer.id = '$MARKS_ID';
+          layer.setAttribute('style',
+            'position:absolute;left:0;top:0;margin:0;padding:0;border:0;' +
+            'z-index:2147483647;pointer-events:none;');
+          var sx = window.scrollX || document.documentElement.scrollLeft || 0;
+          var sy = window.scrollY || document.documentElement.scrollTop || 0;
+          var drawn = 0;
+          var skipped = 0;
+          for (var i = 0; i < nodes.length; i++) {
+            var el = nodes[i];
+            var r = el.getBoundingClientRect();
+            if (r.width <= 0 || r.height <= 0) { skipped++; continue; }
+            if (drawn >= $maxLabels) { skipped++; continue; }
+            var ref = el.getAttribute('$REF_ATTR');
+            var x = Math.round(r.left + sx);
+            var y = Math.round(r.top + sy);
+            var w = Math.round(r.width);
+            var h = Math.round(r.height);
+            var box = document.createElement('div');
+            box.setAttribute('style',
+              'position:absolute;margin:0;padding:0;pointer-events:none;box-sizing:border-box;' +
+              'left:' + x + 'px;top:' + y + 'px;width:' + w + 'px;height:' + h + 'px;' +
+              'border:2px solid rgba(220,30,30,0.95);');
+            var chip = document.createElement('div');
+            chip.textContent = ref;
+            chip.setAttribute('style',
+              'position:absolute;left:0;top:0;margin:0;padding:0 3px;pointer-events:none;' +
+              'font:bold 12px/14px monospace;color:#fff;background:rgba(220,30,30,0.95);' +
+              'white-space:nowrap;');
+            box.appendChild(chip);
+            layer.appendChild(box);
+            drawn++;
+          }
+          document.documentElement.appendChild(layer);
+          return {drawn: drawn, skipped: skipped};
+        })()
+    """.trimIndent()
+
+    /** Removes the overlay [annotateJs] installed. A no-op when there is none. */
+    fun clearMarksJs(): String = """
+        (function(){
+          var existing = document.getElementById('$MARKS_ID');
+          if (existing && existing.parentNode) { existing.parentNode.removeChild(existing); return 'cleared'; }
+          return 'nothing to clear';
+        })()
+    """.trimIndent()
 }

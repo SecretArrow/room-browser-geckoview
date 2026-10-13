@@ -45,6 +45,10 @@ class AgentToolForegroundPolicyTest {
         // it does not have to wait for the tab. A tab that is not attached to a
         // display has no frame and the tool fails honestly rather than waiting.
         AgentTools.SEE_PAGE,
+        // Comparing against the last frame captures this chat's own engine and
+        // starts no load — the same shape as SEE_PAGE, and it refuses honestly
+        // when there is no earlier frame of this tab to compare with.
+        AgentTools.COMPARE_SCREENSHOTS,
         AgentTools.SCROLL,
         AgentTools.OPEN_NEW_TAB,
         AgentTools.LIST_TABS,

@@ -18,6 +18,7 @@ object AgentTools {
     const val SEARCH_WEB = "search_web"
     const val READ_PAGE = "read_page"
     const val SEE_PAGE = "see_page"
+    const val COMPARE_SCREENSHOTS = "compare_screenshots"
     const val CLICK = "click"
     const val FILL_INPUT = "fill_input"
     const val PRESS_ENTER = "press_enter"
@@ -107,7 +108,8 @@ object AgentTools {
     private val SCHEMA_TAB_INDEX = """{"type":"object","properties":{"index":{"type":"integer","description":"Tab index from list_tabs"}},"required":["index"]}"""
     private val SCHEMA_TEXT = """{"type":"object","properties":{"text":{"type":"string","description":"Text to send"}},"required":["text"]}"""
     private val SCHEMA_WAIT = """{"type":"object","properties":{"ms":{"type":"integer","description":"Milliseconds to wait, 200-20000, default 1500"}}}"""
-    private val SCHEMA_SEE_PAGE = """{"type":"object","properties":{"question":{"type":"string","description":"Optional: what you want to know about the page, so the picture is looked at with that in mind"},"reason":{"type":"string","description":"Optional: why a picture is needed rather than the text read_page returns"}}}"""
+    private val SCHEMA_SEE_PAGE = """{"type":"object","properties":{"question":{"type":"string","description":"Optional: what you want to know about the page, so the picture is looked at with that in mind"},"reason":{"type":"string","description":"Optional: why a picture is needed rather than the text read_page returns"},"full_page":{"type":"boolean","description":"Optional: capture the WHOLE page rather than only the part on screen, for a long article, a receipt or a table. Not every engine can, and the result says so when it cannot."},"annotate":{"type":"boolean","description":"Optional: draw a numbered box over every element read_page tagged, so a [ref] you can see in the picture is the [ref] you can click. Call read_page first, since only tagged elements are numbered."}}}"""
+    private val SCHEMA_COMPARE_SCREENSHOTS = OBJ
     private val SCHEMA_REQUEST_ID = """{"type":"object","properties":{"request_id":{"type":"string","description":"Request id from wallet_requests"}},"required":["request_id"]}"""
     private val SCHEMA_NETWORK_ID = """{"type":"object","properties":{"network_id":{"type":"string","description":"Network id from wallet_state, e.g. EVM:137. The wallet must already know it."}},"required":["network_id"]}"""
     private val SCHEMA_RUN_JS = """{"type":"object","properties":{"script":{"type":"string","description":"JavaScript to run in the page. Synchronous only: the value of the last expression comes back as text, and a returned Promise is not awaited."}},"required":["script"]}"""
@@ -220,6 +222,16 @@ object AgentTools {
                 "along with whatever the user is signed in to on this page. Refused in a private " +
                 "tab. Prefer read_page when text answers the question.",
             SCHEMA_SEE_PAGE
+        ),
+        def(
+            COMPARE_SCREENSHOTS,
+            "Compare the page as it is now with the last screenshot taken of it in this chat, and say " +
+                "whether anything visibly changed and in which part of the page. Use it to check that " +
+                "an action actually worked when the page's text does not make that clear: take a " +
+                "screenshot with see_page, do the thing, then call this. It answers with the share of " +
+                "pixels that differ, and sends the current picture too. If nothing was captured yet it " +
+                "says so instead of guessing. Refused in a private tab.",
+            SCHEMA_COMPARE_SCREENSHOTS
         ),
         def(CLICK, "Click an interactive element identified by its [ref] number from read_page.", SCHEMA_REF),
         def(FILL_INPUT, "Type text into an input/textarea field identified by its [ref] number from read_page.", SCHEMA_FILL),
@@ -408,6 +420,7 @@ object AgentTools {
             SEARCH_WEB -> "Search \"${str("query") ?: ""}\""
             READ_PAGE -> "Read current page"
             SEE_PAGE -> "See the page"
+            COMPARE_SCREENSHOTS -> "Compare with the last screenshot"
             CLICK -> "Click [${int("ref") ?: "?"}]"
             FILL_INPUT -> "Type into [${int("ref") ?: "?"}]"
             PRESS_ENTER -> "Press Enter"

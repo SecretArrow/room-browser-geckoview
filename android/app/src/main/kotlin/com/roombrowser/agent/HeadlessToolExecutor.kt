@@ -10,6 +10,7 @@ import com.roombrowser.domain.agent.DataTransform
 import com.roombrowser.domain.agent.KeyChord
 import com.roombrowser.domain.agent.PageSnapshotDto
 import com.roombrowser.domain.agent.PageSnapshotFormatter
+import com.roombrowser.domain.agent.ScreenshotDiff
 import com.roombrowser.domain.agent.SecretRedaction
 import com.roombrowser.domain.agent.SiteMemory
 import com.roombrowser.domain.agent.SiteMemoryStore
@@ -171,7 +172,8 @@ class HeadlessToolExecutor(
                     AgentTools.NAVIGATE -> navigate(str(args, "url"))
                     AgentTools.SEARCH_WEB -> searchWeb(str(args, "query"))
                     AgentTools.READ_PAGE -> readPage()
-                    AgentTools.SEE_PAGE -> seePage(str(args, "question"), str(args, "reason"))
+                    AgentTools.SEE_PAGE -> seePage(args)
+                    AgentTools.COMPARE_SCREENSHOTS -> compareScreenshots()
                     AgentTools.CLICK -> click(int(args, "ref"))
                     AgentTools.FILL_INPUT -> fillInput(int(args, "ref"), str(args, "text"))
                     AgentTools.PRESS_ENTER -> pressEnter(intOrNull(args, "ref"))
@@ -339,7 +341,7 @@ class HeadlessToolExecutor(
      * there is no private-tab refusal here; the profile's own switch and the
      * provider's ability to carry an image are the caller's to supply.
      */
-    private suspend fun seePage(question: String?, reason: String?): ToolResult {
+    private suspend fun seePage(args: Map<String, Any?>): ToolResult {
         if (!visionEnabled()) {
             return ToolResult(
                 false,
@@ -352,13 +354,65 @@ class HeadlessToolExecutor(
                 "see_page is not available on this provider — $why. Switch to a provider that accepts images."
             )
         }
-        val shot = PageScreenshot.capture(session).getOrElse {
+        val shot = if (flag(args, "full_page")) {
+            PageScreenshot.captureFullPage(session, annotate = flag(args, "annotate"))
+        } else {
+            PageScreenshot.capture(session, annotate = flag(args, "annotate"))
+        }.getOrElse {
             return ToolResult(false, "could not capture the page: ${it.message ?: "unknown error"}")
         }
+        ScreenshotMemory.remember(session.id, shot)
         return ToolResult(
             true,
-            screenshotSummary(shot, question, reason),
+            screenshotSummary(shot, str(args, "question"), str(args, "reason")),
             images = listOf(shot.image)
+        )
+    }
+
+    /**
+     * The same comparison a chat turn gets, against the last frame of this
+     * run's page.
+     *
+     * A headless run has one page and no tab list, so the key is the session's
+     * own id — which is the same key the chat executor uses for the same tab,
+     * so a run that follows a chat compares against what the chat last saw.
+     */
+    private suspend fun compareScreenshots(): ToolResult {
+        if (!visionEnabled()) {
+            return ToolResult(
+                false,
+                "compare_screenshots is turned off for this profile — turn on \"Agent can see the page\" in AI Agent settings."
+            )
+        }
+        visionUnsupportedReason()?.let { why ->
+            return ToolResult(
+                false,
+                "compare_screenshots is not available on this provider — $why. Switch to a provider that accepts images."
+            )
+        }
+        val before = ScreenshotMemory.last(session.id)
+            ?: return ToolResult(
+                false,
+                "there is no earlier screenshot of this page to compare with. Take one with see_page, " +
+                    "do the thing you want to check, then call compare_screenshots."
+            )
+        val after = PageScreenshot.capture(session).getOrElse {
+            return ToolResult(false, "could not capture the page: ${it.message ?: "unknown error"}")
+        }
+        val beforeGrid = before.signature
+        val afterGrid = after.signature
+        if (beforeGrid == null || afterGrid == null) {
+            return ToolResult(false, "one of the two frames was not reduced, so they cannot be compared")
+        }
+        val diff = ScreenshotDiff.compare(
+            beforeGrid.pixels, beforeGrid.width, beforeGrid.height,
+            afterGrid.pixels, afterGrid.width, afterGrid.height
+        )
+        ScreenshotMemory.remember(session.id, after)
+        return ToolResult(
+            true,
+            comparisonSummary(before, after, diff),
+            images = listOf(after.image)
         )
     }
 
@@ -733,6 +787,14 @@ class HeadlessToolExecutor(
     private fun intOrNull(args: Map<String, Any?>, key: String): Int? =
         (args[key] as? Number)?.toInt() ?: (args[key] as? String)?.toIntOrNull()
 
+    /** A boolean argument; absent or unrecognised is false. */
+    private fun flag(args: Map<String, Any?>, key: String): Boolean =
+        when (val value = args[key]) {
+            is Boolean -> value
+            is String -> value.equals("true", ignoreCase = true)
+            else -> false
+        }
+
     companion object {
         private const val SETTLE_MS = 350L
         private const val NAV_START_WINDOW_MS = 1800L
@@ -761,6 +823,10 @@ class HeadlessToolExecutor(
         internal val SUPPORTED_TOOLS: Set<String> = setOf(
             AgentTools.NAVIGATE, AgentTools.SEARCH_WEB, AgentTools.READ_PAGE,
             AgentTools.SEE_PAGE,
+            // Reads this run's own page and starts no load, so it means the
+            // same thing here as in a chat turn — the comparison is arithmetic
+            // over two frames, with no tab to choose and nothing to confirm.
+            AgentTools.COMPARE_SCREENSHOTS,
             AgentTools.CLICK, AgentTools.FILL_INPUT, AgentTools.PRESS_ENTER,
             AgentTools.SCROLL, AgentTools.GO_BACK, AgentTools.RELOAD, AgentTools.FORWARD,
             AgentTools.AUTO_LIKE,
