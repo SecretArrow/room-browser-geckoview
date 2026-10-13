@@ -144,6 +144,7 @@ import com.roombrowser.data.repo.AgentMode
 import com.roombrowser.domain.agent.AgentPause
 import com.roombrowser.domain.agent.AgentPauseLabels
 import com.roombrowser.domain.agent.AgentTools
+import com.roombrowser.domain.agent.SessionApprovals
 import com.roombrowser.domain.paging.Paging
 import com.roombrowser.ui.common.LocalRoomExtras
 import com.roombrowser.ui.common.PagingFooter
@@ -1029,6 +1030,14 @@ private fun ApprovalCard(approval: com.roombrowser.agent.AgentApproval, agent: B
                     }
                 }
             }
+            // The narrow answer, on its own line: it is the one a person
+            // reaches for when the same question has arrived three times, and
+            // it must be readable rather than the button pushed off the edge.
+            if (remembersSite(approval)) {
+                TextButton(onClick = { agent.respondApproval(ApprovalAnswer.AllowForSite) }) {
+                    Text("Allow on this site")
+                }
+            }
             Spacer(Modifier.height(2.dp))
             Text(
                 approvalFootnote(approval),
@@ -1037,6 +1046,19 @@ private fun ApprovalCard(approval: com.roombrowser.agent.AgentApproval, agent: B
         }
     }
 }
+
+/**
+ * Whether the prompt may offer the site-scoped answer at all. It is the one
+ * answer that has to be kept honestly, so it is withheld where it could not be:
+ * an action that cannot be undone, a wallet request, a tool whose own prompt is
+ * the point (a live authenticator code typed into a login form), and a page
+ * with no origin to file the answer under.
+ */
+private fun remembersSite(approval: com.roombrowser.agent.AgentApproval): Boolean =
+    approval.origin != null &&
+        !approval.destructive &&
+        approval.name != BrowserAgentController.WALLET_APPROVAL_NAME &&
+        approval.name !in SessionApprovals.NEVER_REMEMBERED
 
 /**
  * What the third answer does, which is not one thing: for a wallet request
@@ -1050,6 +1072,10 @@ private fun approvalFootnote(approval: com.roombrowser.agent.AgentApproval): Str
     approval.name == BrowserAgentController.WALLET_APPROVAL_NAME ->
         "\"Always allow\" covers this request only — wallet requests always ask, and " +
             "the next one asks again."
+    remembersSite(approval) ->
+        "\"Allow on this site\" stops this one tool asking again on ${approval.origin} " +
+            "until the chat ends; \"Always allow\" stops the agent asking about " +
+            "anything, until you turn it off in AI Agent settings."
     else ->
         "\"Always allow\" stops the agent asking about anything, until you turn it " +
             "off in AI Agent settings."
@@ -1112,6 +1138,11 @@ private fun AgentApprovalDialog(
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
                 verticalArrangement = Arrangement.spacedBy(4.dp)
             ) {
+                if (remembersSite(approval)) {
+                    TextButton(onClick = { agent.respondApproval(ApprovalAnswer.AllowForSite) }) {
+                        Text("Allow on this site")
+                    }
+                }
                 if (!approval.destructive) {
                     TextButton(onClick = { agent.respondApproval(ApprovalAnswer.AlwaysAllow) }) {
                         Text("Always allow")

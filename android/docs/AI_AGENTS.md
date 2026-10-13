@@ -368,7 +368,8 @@ change is picked up by the running browser instantly.
   default; also switchable from Browser Settings).
 * **Confirm actions** — require Allow/Deny approval before every click,
   type or submit (off by default = fully autonomous within the step budget).
-  The prompt has a third answer, **Always allow**, which turns YOLO on.
+  The prompt also offers **Allow on this site** — this tool, on this origin,
+  until the chat ends — and **Always allow**, which turns YOLO on.
 * **Local decision gate** — hand the *which* actions need a human to a local
   Ollama decision model, so Confirm actions stops interrupting you for
   routine work. See below.
@@ -465,6 +466,13 @@ they go to your own machine. Nothing about the gate leaves the device.
 Every prompt in the agent has a third answer next to Allow and Deny:
 **Always allow**. It is not "allow this one too" — it switches the asking
 off, for every action, from that moment until you turn it back on.
+
+Between the two sits **Allow on this site**: the same tool, on the same
+origin, until the chat ends. It is what a person means when the same prompt
+has arrived for the third time on the same form, and it is deliberately
+narrower than YOLO. It is withheld for an action that cannot be undone, for
+a wallet request, for a live authenticator code, and for a page with no
+origin — the cases where "this site" would be a promise about nothing.
 
 It exists because the alternative is worse. A person who is being interrupted
 by a prompt they do not want to read has two options without it: tap Allow

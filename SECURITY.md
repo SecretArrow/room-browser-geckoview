@@ -246,13 +246,22 @@ state-changing tool call — clicking, typing, submitting, and the four social
    label, the page's URL and title, and the user's own policy text. It runs
    on the user's own machine (`POST /v1/systemone`, Ollama 0.35+), so the
    action text never leaves it.
-2. **Confirm actions** — the blanket Allow/Deny prompt, off by default. It
-   has a third answer, **Always allow**, which turns rule 0 on.
+2. **The session memory** — an answer the user already gave for this tool on
+   this site, in this chat ("Allow on this site"). It sits below the local
+   gate, so a policy denial still denies; a deny never interrupts anyone, so
+   remembering an answer cannot take one away. It is offered only where it can
+   honestly be kept: never for an action that cannot be undone, never for a
+   wallet request, never for a tool whose own prompt is the point (a live
+   authenticator code typed into a login form), and never for a page with no
+   origin to file it under. It is cleared when the chat changes.
+3. **Confirm actions** — the blanket Allow/Deny prompt, off by default. It
+   has a third answer, **Always allow**, which turns rule 0 on, and the
+   narrower **Allow on this site**, which is written into rule 2.
 
 The gate only ever **adds** a decision. An `allow` lets an action the blanket
 rule would have asked about proceed unasked; a `deny` refuses it and returns
 the reason to the model as the tool result, so it changes course instead of
-retrying; a `confirm` — and every failure — falls through to rule 2.
+retrying; a `confirm` — and every failure — falls through to rule 3.
 
 **None of these is a security boundary, and this document will not pretend
 otherwise.** Confirm actions is a UI prompt: it protects the user from an
