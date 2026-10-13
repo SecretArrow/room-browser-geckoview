@@ -1,6 +1,7 @@
 package com.roombrowser.agent.ui
 
 import com.roombrowser.data.db.AiTaskEntity
+import com.roombrowser.domain.agent.UntrustedContent
 import com.roombrowser.domain.task.AiTaskRunStatus
 import com.roombrowser.domain.task.ScheduleKind
 import com.roombrowser.domain.task.ScheduleMath
@@ -48,14 +49,28 @@ fun nextRunText(s: TaskSchedule, nowMs: Long, zone: ZoneId): String =
         ?.let { "Next run: ${formatInstant(it, zone)}" }
         ?: "This schedule can never fire — check its interval or day of month."
 
-/** One line for the last delivery, honest about a run that only deferred. */
+/**
+ * One line for the last delivery, honest about a run that only deferred.
+ *
+ * [AiTaskEntity.lastResultSummary] holds the model's own answer, which it
+ * sometimes writes with the page-content frame still in it. The producer takes
+ * that frame off, and this takes it off again: rows written before it did are
+ * already on disk, flattened to one line and cut off mid-frame, and
+ * [UntrustedContent.payload] is what recognises that shape. It is a no-op on a
+ * summary that never had a fence, so the second pass costs nothing.
+ */
 fun lastRunText(task: AiTaskEntity, zone: ZoneId): String? {
     val at = task.lastRunAtMs ?: return null
     val whenText = formatInstant(at, zone)
+    // A stored row that was nothing but the frame comes back empty, and the
+    // status word is the honest thing to show for it.
+    val summary = task.lastResultSummary
+        ?.let { UntrustedContent.payload(it) }
+        ?.takeIf { it.isNotBlank() }
     return when (AiTaskRunStatus.fromStored(task.lastRunStatus)) {
-        AiTaskRunStatus.COMPLETED -> "Last run $whenText: ${task.lastResultSummary ?: "done"}"
-        AiTaskRunStatus.DEFERRED -> "Last attempt $whenText: ${task.lastResultSummary ?: "deferred"}"
-        AiTaskRunStatus.FAILED -> "Last run $whenText failed: ${task.lastResultSummary ?: "unknown error"}"
+        AiTaskRunStatus.COMPLETED -> "Last run $whenText: ${summary ?: "done"}"
+        AiTaskRunStatus.DEFERRED -> "Last attempt $whenText: ${summary ?: "deferred"}"
+        AiTaskRunStatus.FAILED -> "Last run $whenText failed: ${summary ?: "unknown error"}"
         null -> "Last run $whenText"
     }
 }
