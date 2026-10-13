@@ -1064,6 +1064,8 @@ class BrowserAgentController(
                 siteMemory = GraphSiteMemoryStore(graph, profileId),
                 siteMemoryEnabled = { vm.profileSettings().agentSiteMemoryEnabled },
                 scratchpad = pad,
+                nodeRuntime = AgentNodeRuntime(appContext, vm.profile),
+                nodePackages = AgentNodePackages(appContext),
                 onPause = { state -> applyPauseState(state) },
                 awaitChallengeResume = { awaitChallengeDone() },
                 visionUnsupportedReason = {
@@ -1102,6 +1104,8 @@ class BrowserAgentController(
                     siteMemory = GraphSiteMemoryStore(graph, profileId),
                     siteMemoryEnabled = { vm.profileSettings().agentSiteMemoryEnabled },
                     scratchpad = pad,
+                    nodeRuntime = AgentNodeRuntime(appContext, vm.profile),
+                    nodePackages = AgentNodePackages(appContext),
                     // The browser is up behind this hidden page, so a download
                     // goes to the user's own Downloads and outlives the turn.
                     download = { url, name -> visibleExecutor.startDownload(url, name) }

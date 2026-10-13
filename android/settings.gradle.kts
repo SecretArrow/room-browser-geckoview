@@ -40,3 +40,4 @@ include(":core:wallet")
 // depends on it as `implementation`, so no engine type reaches :app's compile
 // classpath -- enforced by EngineBoundaryTest rather than by convention.
 include(":engine")
+include(":node")

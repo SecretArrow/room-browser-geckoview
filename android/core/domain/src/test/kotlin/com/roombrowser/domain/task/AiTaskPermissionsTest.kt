@@ -100,7 +100,7 @@ class AiTaskPermissionsTest {
         listOf(
             ToolGroup.READ_PAGE, ToolGroup.NAVIGATE, ToolGroup.INTERACT,
             ToolGroup.POST, ToolGroup.WALLET, ToolGroup.APP,
-            ToolGroup.TOTP, ToolGroup.NOTES, ToolGroup.DEVTOOLS
+            ToolGroup.TOTP, ToolGroup.NOTES, ToolGroup.DEVTOOLS, ToolGroup.NODE
         ).forEach { group ->
             assertThat(catalogue.filter { all.groupOf(it) == group }).isNotEmpty()
         }
@@ -148,6 +148,25 @@ class AiTaskPermissionsTest {
             assertThat(refusal).isNotNull()
             assertThat(refusal).contains(tool)
             assertThat(refusal).doesNotContain("unknown tool")
+        }
+    }
+
+    @Test
+    fun `the node tools are denied to a scheduled run however it is granted`() {
+        val everything = AiTaskPermissions(
+            allowReadPage = true,
+            allowNavigate = true,
+            allowInteract = true,
+            allowPost = true
+        )
+        listOf(AgentTools.NODE_RUN, AgentTools.NODE_PACKAGES).forEach { tool ->
+            assertThat(all.groupOf(tool)).isEqualTo(ToolGroup.NODE)
+            assertThat(all.allows(tool)).isFalse()
+            assertThat(everything.allows(tool)).isFalse()
+            // A real refusal, not "unknown tool": the run is offered the whole
+            // catalogue, so a silent miss would read as a tool that just works.
+            assertThat(everything.refusal(tool)).isNotNull()
+            assertThat(everything.refusal(tool)).doesNotContain("unknown tool")
         }
     }
 

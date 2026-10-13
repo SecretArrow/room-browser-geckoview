@@ -1158,6 +1158,12 @@ fun ProfileSettingsScreen(viewModel: BrowserViewModel, onClose: () -> Unit) {
                 onCheckedChange = { update(setPermission(settings, AgentPermissions.EXPORT_DIAGNOSTICS, it)) }
             )
             SettingSwitchRow(
+                title = AgentPermissions.label(AgentPermissions.AGENT_NODE),
+                subtitle = AgentPermissions.description(AgentPermissions.AGENT_NODE),
+                checked = AgentPermissions.AGENT_NODE !in settings.agentWithheldPermissions,
+                onCheckedChange = { update(setPermission(settings, AgentPermissions.AGENT_NODE, it)) }
+            )
+            SettingSwitchRow(
                 title = "Agent can see the page",
                 subtitle = "Lets the agent send a screenshot of the page it is working on to the " +
                     "model provider. The picture is of the page itself — including anything you " +

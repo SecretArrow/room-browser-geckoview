@@ -119,8 +119,10 @@ listed below; the two that must have their tab on screen are marked.
 | `wait(ms)` | Waits for post-submit animations / infinite-scroll loading before reading again |
 | `compute_js(script)` | Evaluates JavaScript in a **detached scratchpad page**, never the user's page — for local calculation and text work (see **Local compute, vision, site memory** below) |
 | `data_transform(op, input, …)` | Pure host-side transform of data the agent already has — `json_path`, `csv_rows`, `aggregate`, `diff` — with no page and no engine (see below) |
-| `see_page(question?, full_page?, annotate?)` | Screenshots this chat's tab and sends the image to the provider. `full_page` captures the whole document instead of the part on screen; `annotate` boxes and numbers every element `read_page` tagged, with the **same** `[ref]` numbers — *off unless the profile enables it; refused on text-only providers and in a private tab; a whole-page shot is refused on an engine that cannot render one* (see below) |
-| `compare_screenshots()` | Captures this tab now and compares it with the last screenshot taken of it, and reports whether anything visible changed, by how much and where — the way to confirm an action actually worked. Refuses honestly when there is no earlier frame of this tab (see below) |
+| `node_run(script)` | Runs a JavaScript program in the **embedded Node.js runtime**, in a process of its own, with Node's real APIs behind it — *not about the open page; refused to a scheduled run and in Plan mode* (see below) |
+| `node_packages(action, name?, spec?)` | Manages the npm packages installed beside that runtime — `list`, `install`, `remove` — for `node_run` to `require`. It never executes package code — *refused to a scheduled run and in Plan mode* (see below) |
+| `see_page(question?, full_page?, annotate?)` | Screenshots this chat's tab and sends the image to the provider; `full_page` stitches the whole document (scaled down) and `annotate` draws the `[ref]` numbers onto the elements — *off unless the profile enables it; refused on text-only providers and in a private tab* (see below) |
+| `compare_screenshots(tolerance?)` | Captures the page and reports how much of it changed, and where, against the last screenshot taken in this turn — the cheap "did that click do anything?" check that sends the provider no second image |
 | `site_memory(op, key, …)` | Reads, writes or forgets a per-site note kept for this profile — *off unless the profile enables it* (see below) |
 | `plan(items)` | The agent's own step list, shown to you as a checklist card with what it has finished and what it is on now. It sends the **whole list every call** (it replaces the previous one), touches no page and stores nothing — see **The step list** below |
 | `download_file(url, name?)` | Hands a link that leads to a **file** (an invoice PDF, a CSV export, an image) to the browser's own download engine, so it lands in Downloads/RoomBrowser and the transfer outlives the turn. It queues the file and returns — the file is not ready when the call answers, so the agent checks `app_data kind=downloads`. Confirmed like a click, refused in plan mode, and refused in a scheduled run (see below) |
@@ -187,10 +189,15 @@ is a deny-list, so a permission added later is granted until the profile
 withholds it, and an empty set (a fresh or upgraded profile) grants everything.
 So the two capabilities that leave the device or persist new data — vision
 (`see_page`) and site memory (`site_memory`) — are instead gated by a
-per-profile Boolean (`agentVisionEnabled`, `agentSiteMemoryEnabled`) that is
-**false on every profile, new and old**, with its own settings row. The two
+per-profile Boolean (`agentVisionEnabled`, `agentSiteMemoryEnabled`) with its
+own settings row: site memory is **false on every profile, new and old**, and
+vision is **true**, because a page that reads as nothing is a task the agent
+would otherwise give up on. The two
 local ones — `compute_js` and `data_transform` — are governed by the withheld
-`agent.compute` permission and are therefore on until the profile withholds it.
+`agent.compute` permission and are therefore on until the profile withholds it;
+`node_run` and `node_packages` have a permission of their own, `agent.node`, for
+the same reason — they reach wider than a scratchpad in every direction, so they
+should not ride another tool's switch.
 
 ### Tool catalogue shape
 
@@ -247,6 +254,92 @@ Honest limits:
   not tell "no rows" from "not CSV" would answer the user with the wrong thing.
 * It shares the `agent.compute` permission with `compute_js`.
 
+### `node_run` — the embedded Node.js runtime
+
+A Node runtime ships inside the APK (`libnode.so`, arm64-v8a / armeabi-v7a /
+x86_64) and `node_run` sends it one JavaScript program, as the body of an async
+function: `return` sends a value back, `await` works, and `require` resolves
+whatever is installed beside the runtime. It runs in a **process of its own**
+(`:node`), started for the call and gone when the call ends, so a chat that
+never runs a script never pays for a runtime.
+
+The identity is the whole point of the plumbing. Node's own client announces
+`node` — the one thing on this device that is not the profile — so every request
+a script makes carries the identity the profile's pages send: the profile's own
+user agent, or the engine's default when the profile chose none. A script cannot
+supply one of its own — the profile's identity replaces whatever it sets, on
+`fetch`, on `http`/`https`, and on the request's own header setters alike. The
+rule covers those APIs and not the layer under them: a script that opens a raw
+`net`/`tls` socket, writes HTTP by hand, or calls the request classes'
+prototypes directly is outside the wrappers, so it is a rule rather than a
+sandbox. A profile with no identity at all makes no request: the tool refuses
+before the script runs rather than letting Node introduce itself.
+
+Honest limits — these are the feature, not a footnote:
+
+* **It is not a sandbox.** The `:node` process has its own memory and can be
+  killed on its own, but it shares this app's UID and data directory, so a
+  program it runs can read and write this profile's own files. That is a limit
+  to state, not to paper over.
+* **Node 18, which is end-of-life.** There is no newer nodejs-mobile release;
+  the runtime reports its own version and the honest answer is v18.20.4.
+* **No native modules.** A package that needs to compile C++ cannot be built
+  for Android here: it installs, and then fails when a script requires it, with a
+  message rather than a hang.
+* **A script gets a budget** (30s by default). The runtime stops it itself and
+  says so, so a wedged script arrives as a readable answer rather than a
+  connection that went quiet.
+* **Its output is data.** What a program prints can be a server's answer or a
+  package's own words, so it is fenced as untrusted content exactly like page
+  text.
+* **Never a scheduled run**, and never in Plan mode. It is governed by the
+  per-profile `agent.node` permission, and it is on the Confirm-actions /
+  YOLO axis like every other state-changing call: in YOLO it runs without
+  asking.
+
+**Status in this build:** implemented — `node_run` runs a script and returns
+its result, with the per-profile identity attached to every request, a budget
+the runtime enforces itself, and the `agent.node` permission and settings row.
+
+### `node_packages` — the packages `node_run` can `require`
+
+`node_run`'s `require` resolves whatever is installed beside the runtime, and
+`node_packages` is how a package gets there: `action=list` shows what is
+installed, `install` fetches a package and its dependencies from the public npm
+registry, and `remove` deletes one. It prepares what a later `node_run` will
+run — it never runs code itself.
+
+Honest limits:
+
+* **Nothing from a package is ever executed.** No `scripts` field is read and no
+  lifecycle script runs, at install time or afterwards; a package's `postinstall`
+  is inert here. That is a deliberate difference from `npm install`, and it is
+  why a package that needs a build step will not work.
+* **Plain JavaScript only.** A package with native code installs but fails to
+  load, because there is no way to build C++ for Android here — the same limit
+  `node_run` states.
+* **Only `dependencies` are installed.** A package's `devDependencies`,
+  `optionalDependencies` and `peerDependencies` are left alone, and the result
+  says which were skipped. Dependencies are nested under their parent rather
+  than hoisted, so two packages can each keep their own copy of a dependency and
+  a version conflict cannot arise.
+* **One registry.** Packuments and tarballs come from `registry.npmjs.org`
+  alone; a tarball from any other host is refused and redirects are not
+  followed. Each tarball is checked against the registry's own digest before it
+  is unpacked.
+* **One shared tree.** The packages live in the app's own data directory, which
+  every profile shares, so a package installed under one profile is visible to
+  every profile's agent. That is the directory `node_run` requires from.
+* **Never a scheduled run**, and never in Plan mode. It rides the `agent.node`
+  permission, and it is on the Confirm-actions / YOLO axis: the user is asked
+  before a package is installed or removed — with the package named in the
+  prompt — and in YOLO it happens without asking. `list` only reads the
+  directory, so it does not ask.
+
+**Status in this build:** implemented — `node_packages` lists, installs and
+removes packages, with the settings screen's "Installed packages" row to see
+and delete them.
+
 ### Vision (`see_page`) — a screenshot to the provider
 
 Captures a screenshot of the current page and sends it to the model provider.
@@ -271,55 +364,53 @@ The honest limits are the point of the feature, not a footnote:
   `OPENCODE` server take text prompts only, so the tool is refused for them
   **before capture**, with the reason (`AgentVisionSupport`). [OI]-compatible,
   Anthropic and Ollama providers can carry an image.
-* **Off by default.** `agentVisionEnabled` is false on every profile, and the
-  setting's own description states the consequence in full.
+* **On by default.** `agentVisionEnabled` is true on every profile, because a
+  page that reads as nothing is a task the agent would otherwise give up on.
+  The setting's own description states the consequence in full, and turning it
+  off takes `see_page` away.
 
-**Status in this build:** implemented — the `see_page` tool, the
-`agentVisionEnabled` switch and its settings row, the per-gateway image bodies
-and the text-only refusal are all present.
+#### Full page, numbered elements, comparing two captures
 
-#### Whole-page shots and numbered refs (`full_page`, `annotate`)
+`see_page` takes two optional flags, and `compare_screenshots` is a second tool
+built on the same capture. All three live **above the engine facade**, so there
+is no engine-specific code in any of them.
 
-Two optional arguments to `see_page`:
+* **`full_page=true`** stitches the whole document from viewport captures. It is
+  deliberately **not** a single document-sized draw, because the engine this
+  edition pins cannot make one: its screenshot builder has no whole-page mode and
+  every size it accepts is bounded by the viewport the display renders (the
+  verified detail is in `AGENTS.md`). So the tool scrolls, captures each strip
+  through the engine's asynchronous `capturePixels`, and stitches them with pure
+  arithmetic (`ScrollStitch` in `:core:domain`, JVM-tested). Honest limits: at
+  most **6 strips** per shot, so a very long page is **truncated and says so** in
+  the result rather than passing as complete; the stitched image is **scaled
+  down** to the size that is sent, so treat it as an overview and take a plain
+  viewport shot when you need to read text; the page's own scroll position is
+  restored afterwards.
+* **`annotate=true`** draws `read_page`'s `[ref]` numbers onto the elements they
+  belong to, as a fixed overlay capped at **120 labels** so a dense page does not
+  become a wall of digits. The overlay is installed before the capture and
+  removed in a `finally` block, so the page is left as the user had it even when
+  the capture fails. The result states how many labels were drawn — otherwise
+  "no numbers in the picture" and "numbers drawn then removed" look identical to
+  the model.
+* **`compare_screenshots`** captures the page and compares it against the last
+  screenshot taken **in this turn** — the history is scoped to the turn, so a
+  comparison can never reach back to a page from an earlier conversation — and
+  reports the changed fraction plus a coarse location ("upper left area"). The
+  **first** call in a turn has nothing to compare against; it records the frame,
+  says so, and becomes the baseline, so the sequence is screenshot → act →
+  compare. The comparison runs on the pixels that were actually sent, so it
+  measures what the model was shown. `tolerance` (default 12, coerced to 0–255)
+  is the per-channel difference below which a pixel is not counted as changed.
+* `compare_screenshots` shares the vision gate: it is refused when
+  `agentVisionEnabled` is off, on a text-only provider and in a private tab,
+  because it is the same capture.
 
-* **`full_page=true`** captures the whole document rather than the part on
-  screen — for a long page the agent would otherwise have to scroll through.
-  The result states its own extent and whether it was truncated, so a shot that
-  stopped short is never described as "the page". **This browser's engine may
-  not be able to do it:** on the WebView edition the whole document is drawn
-  into one bitmap (capped, and the cap is reported rather than silently
-  applied); the GeckoView edition has no whole-page capture in its engine
-  version, so it refuses with a sentence naming the route that does work —
-  scroll and take another shot.
-* **`annotate=true`** boxes and numbers every element `read_page` already
-  tagged, using the **same** `[ref]` numbers, so a `[ref]` the model can see in
-  the picture is the `[ref]` it can click. The overlay is drawn into the user's
-  own document and is **always taken off again** in a `finally`, including when
-  the capture throws or the turn is cancelled — it never survives the call.
-
-#### Confirming an action (`compare_screenshots`)
-
-`compare_screenshots` captures the tab now and compares it against the last
-screenshot the agent took of **that tab**, and answers in words: nothing visible
-changed, or a percentage of pixels differ, in a named region. It exists to close
-the "I clicked and do not know whether it worked" loop without the model having
-to hold two pictures.
-
-Honest limits:
-
-* **It compares frames, not meaning.** "The page changed" is not "my click
-  worked" — a banner animating into place reports as a change too. The result
-  says so.
-* **The frames need not be adjacent.** The "before" frame is whatever was last
-  captured of that tab, so a gap of minutes is the difference between "my click
-  worked" and "the page changed on its own while I was away"; both timestamps
-  are stated.
-* **A restart forgets everything.** The frames are held in memory, per tab, and
-  a frame that does not survive a restart is the honest behaviour — the tool
-  says there is nothing to compare with rather than comparing against a picture
-  from an earlier run.
-* **Gated exactly like `see_page`** — the profile's vision switch, no private
-  tab, no text-only provider.
+**Status in this build:** implemented — the `see_page` tool with its
+`full_page` / `annotate` flags, `compare_screenshots`, the `agentVisionEnabled`
+switch and its settings row, the per-gateway image bodies and the text-only
+refusal are all present.
 
 ### Site memory (`site_memory`) — an origin-keyed memory
 
@@ -637,6 +728,15 @@ and YOLO is what you get when you ask for the prompt to stop.
   decide for yourself whether that is acceptable for the sites you visit.
 * The agent inherits the profile's ad/tracker blocking: blocked requests
   never reach the provider or the page.
+* `node_run` is the one tool that runs a program rather than reading a page,
+  and its process is not a sandbox: it shares this app's UID and data
+  directory. What it sends to the network is whatever the script chooses,
+  under this profile's identity — so the honest statement is that it can reach
+  anything this app can, not that it is contained.
+* `node_packages` installs what that program can `require`. It talks to the
+  public npm registry and nothing else, never runs a package's own install
+  script, and writes into the app's shared data directory rather than a
+  per-profile one.
 
 ## Architecture
 
@@ -650,7 +750,7 @@ core:domain (pure JVM, 100% unit-tested)
 ├── AgentLoop          plan → act → observe → repeat (bounded by maxSteps)
 └── SystemOne          decision-model wire (POST /v1/systemone) + ActionGate
 
-app (:browser process — owns the WebView)
+app (:browser process — owns the rendering engine)
 ├── OkHttpAgentGateway     SSE streaming, tool-call delta assembly, /models
 ├── OpenCodeAgentGateway   `opencode serve` bridge (sessions + polling)
 ├── AgentGateways          picks the transport from the provider protocol
@@ -661,12 +761,22 @@ app (:browser process — owns the WebView)
 ├── KeyStoreCrypto         AES-256-GCM for API keys
 └── agent/ui/*             AgentPanel (pill + chat)
 
-app (default process — agent settings activities, no WebView)
+app (default process — agent settings activities, no rendering engine)
 ├── AgentProviderStore     shared provider validation + encryption
 ├── AgentSettingsController settings/providers persistence via Room
 └── agent/ui/*             AgentSettingsActivity, AgentProviderEditorActivity,
                           AgentSessionsActivity (own windows)
+
+node (libnode.so + the bridge; its own `:node` process at run time)
+├── NodeBridge             JNI entry into node::Start
+├── NodeRuntime            copies the entry script out of the APK and runs it
+├── NodeClient             starts the process, connects, one JSON line per call
+├── NodeRunner             one call at a time, as this profile's identity
+└── assets/node/bridge.js  the runtime side: status + run, and the UA rule
 ```
+
+`node/` names no engine type, so it is shared between the editions byte for
+byte; only the packaging in `app/build.gradle.kts` is engine-specific.
 
 Room schema **v3** added the `protocol` column to `agent_providers`
 (`OPENAI` | `OPENCODE`, default `OPENAI`); **v10** added
@@ -698,6 +808,13 @@ sessions are scoped to a profile and a tab.
   `OpenCodeAgentGatewayTest` — session creation, delta-only messaging,
   polled assistant replies with tool-call extraction, `/provider` model
   listing with endpoint fallback, timeout mapping.
+* **Node (JVM)**: `NodeProtocolTest` — the wire format, hand-written in the
+  shape `bridge.js` writes it rather than produced by the encoder under test:
+  the identity travelling with every command and a blank one being left out
+  rather than sent empty, the runtime's own refusal raised with its words, an
+  answer to another request being refused, and a script that threw arriving
+  inside a *successful* reply, because the envelope's outcome is the runtime's
+  and the script's is its own.
 * **E2E (emulator)**: `AgentSettingsE2eTest` — drives the real app UI
   across both processes: opens the agent panel from the page menu (the
   pill is hidden by default), adds a provider via the settings/editor
@@ -712,6 +829,14 @@ sessions are scoped to a profile and a tab.
   detached chat staying in the history list, adopting a chat moving it off
   the tab that had it, the same tab id under two profiles staying two
   conversations, and a blank tab id never resolving to an unbound chat.
+  `NodeRuntimeE2eTest` — the embedded runtime in the APK that ships it: the
+  process starts and boots, it echoes the identity it was handed, a script's
+  value comes back, a throw arrives as a readable failure rather than a broken
+  runtime, a script that outlives its budget is stopped and says so, and a
+  script's own HTTP request to a loopback server inside the script carries the
+  profile's user agent on the wire. Nothing there asserts on an ABI the APK
+  carries no `libnode.so` for — the release ships arm64-v8a, armeabi-v7a and
+  x86_64, so a 32-bit x86 device gets the honest "unavailable" answer.
 
 ## Tips
 

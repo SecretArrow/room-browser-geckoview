@@ -43,7 +43,13 @@ object PlanModePolicy {
         // user's storage — work carried out, which is what this mode promises
         // not to do. Saving a page as a PDF is the same act on the same device.
         AgentTools.DOWNLOAD_FILE,
-        AgentTools.SAVE_PDF
+        AgentTools.SAVE_PDF,
+        // A program with the network and this profile's files behind it: a mode
+        // that promised nothing is carried out cannot leave that open.
+        AgentTools.NODE_RUN,
+        // Installing a package reaches the registry and writes to disk, which
+        // is a change a plan-only turn has no business making.
+        AgentTools.NODE_PACKAGES
     )
 
     /**

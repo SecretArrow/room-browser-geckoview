@@ -120,6 +120,18 @@ class AgentToolExecutor(
      */
     private val scratchpad: AgentScratchpad? = null,
     /**
+     * The embedded Node runtime `node_run` drives. Null — a build whose
+     * device ABI carries no runtime, or a caller that supplied none — leaves
+     * the tool unavailable rather than pretending a program ran.
+     */
+    private val nodeRuntime: AgentNodeRuntime? = null,
+    /**
+     * The npm packages `node_packages` installs for that runtime, in the one
+     * directory `require` resolves from. Null leaves the tool unavailable
+     * rather than pretending a package was installed.
+     */
+    private val nodePackages: AgentNodePackages? = null,
+    /**
      * The agent's per-site memory, scoped to this turn's profile. Null leaves
      * the tool unavailable rather than writing under the wrong profile.
      */
@@ -150,6 +162,14 @@ class AgentToolExecutor(
 
     /** Why the last failed readiness wait gave up; null when it did not fail. */
     private var lastReadinessMessage: String? = null
+
+    /**
+     * The last frame this turn captured, for `compare_screenshots`. Held here
+     * rather than in a store because the executor is built per turn: the
+     * comparison is only ever against the page as it was a moment ago, never
+     * against a page from an earlier conversation.
+     */
+    private val screenshotHistory = ScreenshotHistory()
 
     private val appTools by lazy {
         AgentAppTools(
@@ -215,7 +235,7 @@ class AgentToolExecutor(
                     AgentTools.SEARCH_WEB -> searchWeb(str(args, "query"))
                     AgentTools.READ_PAGE -> readPage()
                     AgentTools.SEE_PAGE -> seePage(args)
-                    AgentTools.COMPARE_SCREENSHOTS -> compareScreenshots()
+                    AgentTools.COMPARE_SCREENSHOTS -> compareScreenshots(args)
                     AgentTools.CLICK -> click(int(args, "ref"))
                     AgentTools.FILL_INPUT -> fillInput(int(args, "ref"), str(args, "text"))
                     AgentTools.PRESS_ENTER -> pressEnter(intOrNull(args, "ref"))
@@ -239,6 +259,8 @@ class AgentToolExecutor(
                     AgentTools.WALLET_SWITCH_NETWORK -> walletTools.switchNetwork(str(args, "network_id"))
                     AgentTools.RUN_JS -> runJs(str(args, "script"))
                     AgentTools.COMPUTE_JS -> computeJs(str(args, "script"))
+                    AgentTools.NODE_RUN -> runNode(str(args, "script"))
+                    AgentTools.NODE_PACKAGES -> runNodePackages(args)
                     AgentTools.DATA_TRANSFORM -> dataTransform(args)
                     AgentTools.SITE_MEMORY -> siteMemoryTool(args)
                     AgentTools.SELECT_OPTION -> selectOption(int(args, "ref"), str(args, "value"))
@@ -361,17 +383,17 @@ class AgentToolExecutor(
             )
         }
         val session = boundSession() ?: return ToolResult(false, "no page is loaded in this chat's tab")
-        val shot = if (flag(args, "full_page")) {
-            PageScreenshot.captureFullPage(session, annotate = flag(args, "annotate"))
+        val annotate = bool(args, "annotate")
+        val shot = (if (bool(args, "full_page")) {
+            PageScreenshot.captureFullPage(session, annotate)
         } else {
-            PageScreenshot.capture(session, annotate = flag(args, "annotate"))
-        }.getOrElse {
+            PageScreenshot.capture(session, annotate)
+        }).getOrElse {
             return ToolResult(false, "could not capture the page: ${it.message ?: "unknown error"}")
         }
-        // Kept so `compare_screenshots` has something to compare against: the
-        // model should not have to take a picture twice to find out whether the
-        // page moved.
-        ScreenshotMemory.remember(session.id, shot)
+        // Every capture is a candidate baseline, so the model can take one
+        // before an action and ask compare_screenshots about it afterwards.
+        shot.frame?.let { screenshotHistory.record(it) }
         return ToolResult(
             true,
             screenshotSummary(shot, str(args, "question"), str(args, "reason")),
@@ -379,59 +401,35 @@ class AgentToolExecutor(
         )
     }
 
-    /**
-     * Compares the page as it is now with the last frame the agent captured of
-     * this tab, which is the only honest answer to "did that do anything".
-     *
-     * It reports a verdict and sends the current picture, so a change the model
-     * needs to look at is already in front of it. A tab with no earlier frame
-     * is refused with the route that produces one rather than compared against
-     * nothing.
-     */
-    private suspend fun compareScreenshots(): ToolResult {
-        if (!vm.profileSettings().agentVisionEnabled) {
-            return ToolResult(
-                false,
-                "compare_screenshots is turned off for this profile — turn on \"Agent can see the page\" in AI Agent settings."
-            )
-        }
+    private suspend fun compareScreenshots(args: Map<String, Any?>): ToolResult {
         visionUnsupportedReason()?.let { why ->
             return ToolResult(
                 false,
-                "compare_screenshots is not available on this provider — $why. Switch to a provider that accepts images."
+                "compare_screenshots is not available on this provider — $why. Switch to a " +
+                    "provider that accepts images."
+            )
+        }
+        if (!vm.profileSettings().agentVisionEnabled) {
+            return ToolResult(
+                false,
+                "compare_screenshots is turned off for this profile — turn on \"Agent can see " +
+                    "the page\" in AI Agent settings."
             )
         }
         val id = tabId
         if (id != null && vm.tabs.firstOrNull { it.id == id }?.isPrivate == true) {
             return ToolResult(
                 false,
-                "compare_screenshots is not available in a private tab: a screenshot of a private session is never sent to the model provider."
+                "compare_screenshots is not available in a private tab: the frames are compared " +
+                    "on the device and never sent, but this refuses for the same reason see_page " +
+                    "does — a private session is never captured."
             )
         }
         val session = boundSession() ?: return ToolResult(false, "no page is loaded in this chat's tab")
-        val before = ScreenshotMemory.last(session.id)
-            ?: return ToolResult(
-                false,
-                "there is no earlier screenshot of this tab to compare with. Take one with see_page, " +
-                    "do the thing you want to check, then call compare_screenshots."
-            )
-        val after = PageScreenshot.capture(session).getOrElse {
-            return ToolResult(false, "could not capture the page: ${it.message ?: "unknown error"}")
-        }
-        val beforeGrid = before.signature
-        val afterGrid = after.signature
-        if (beforeGrid == null || afterGrid == null) {
-            return ToolResult(false, "one of the two frames was not reduced, so they cannot be compared")
-        }
-        val diff = ScreenshotDiff.compare(
-            beforeGrid.pixels, beforeGrid.width, beforeGrid.height,
-            afterGrid.pixels, afterGrid.width, afterGrid.height
-        )
-        ScreenshotMemory.remember(session.id, after)
-        return ToolResult(
-            true,
-            comparisonSummary(before, after, diff),
-            images = listOf(after.image)
+        return compareWithLastScreenshot(
+            session,
+            screenshotHistory,
+            intOrNull(args, "tolerance") ?: ScreenshotDiff.DEFAULT_TOLERANCE
         )
     }
 
@@ -678,6 +676,51 @@ class AgentToolExecutor(
             true,
             "Scratchpad result (a detached page — the user's page was not touched):\n" + clip(unquote(raw))
         )
+    }
+
+    /**
+     * Runs a program in the embedded Node runtime. Unlike [computeJs] this one
+     * has Node's own APIs behind it — the network and this profile's files — so
+     * it is an interactive tool: the user is asked before it runs, unless YOLO
+     * was chosen. The runtime's own output is fenced as data by
+     * [AgentNodeRuntime]; nothing here needs to fence it again.
+     */
+    private suspend fun runNode(script: String?): ToolResult {
+        val code = nonBlank(script) ?: return ToolResult(false, "missing 'script' argument")
+        val runtime = nodeRuntime
+            ?: return ToolResult(false, "node_run is not available in this run")
+        return runtime.run(code)
+    }
+
+    /**
+     * Manages the packages `node_run` can `require`. Installing reaches the
+     * registry and writes under the runtime's own directory, so it asks first —
+     * with a label naming the package — unless YOLO was chosen; listing only
+     * reads that directory, so it does not ask. [AgentNodePackages] fences
+     * everything a package or the registry supplied.
+     */
+    private suspend fun runNodePackages(args: Map<String, Any?>): ToolResult {
+        val packages = nodePackages
+            ?: return ToolResult(false, "node_packages is not available in this run")
+        return when (val action = str(args, "action")?.lowercase()) {
+            "list" -> packages.list()
+            "install" -> {
+                val name = nonBlank(str(args, "name"))
+                    ?: return ToolResult(false, "action=install needs a 'name' argument")
+                val spec = str(args, "spec")
+                val label = "install package $name" + (spec?.let { "@$it" } ?: "")
+                refuse(AgentTools.NODE_PACKAGES, label)?.let { return it }
+                packages.install(name, spec)
+            }
+            "remove" -> {
+                val name = nonBlank(str(args, "name"))
+                    ?: return ToolResult(false, "action=remove needs a 'name' argument")
+                refuse(AgentTools.NODE_PACKAGES, "remove package $name")?.let { return it }
+                packages.remove(name)
+            }
+            null -> ToolResult(false, "missing 'action' argument")
+            else -> ToolResult(false, "unknown node_packages action: $action")
+        }
     }
 
     /**
@@ -1232,21 +1275,12 @@ class AgentToolExecutor(
 
     private fun int(args: Map<String, Any?>, key: String): Int? = intOrNull(args, key)
 
+    /** Optional booleans default to false: an absent flag is the cheaper behaviour. */
+    private fun bool(args: Map<String, Any?>, key: String): Boolean =
+        (args[key] as? Boolean) ?: (args[key] as? String)?.toBooleanStrictOrNull() ?: false
+
     private fun intOrNull(args: Map<String, Any?>, key: String): Int? =
         (args[key] as? Number)?.toInt() ?: (args[key] as? String)?.toIntOrNull()
-
-    /**
-     * A boolean argument. Absent, or anything that is not a recognisable
-     * boolean, is false — so an optional flag the model left out never turns a
-     * behaviour on by accident. The string forms are accepted because models
-     * write `"true"` as readily as `true`.
-     */
-    private fun flag(args: Map<String, Any?>, key: String): Boolean =
-        when (val value = args[key]) {
-            is Boolean -> value
-            is String -> value.equals("true", ignoreCase = true)
-            else -> false
-        }
 
     companion object {
         private const val SETTLE_MS = 350L
