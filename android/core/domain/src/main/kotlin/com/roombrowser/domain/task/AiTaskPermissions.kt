@@ -55,7 +55,12 @@ data class AiTaskPermissions(
         AgentTools.SWITCH_TAB, AgentTools.CLOSE_TAB,
         AgentTools.RELOAD, AgentTools.FORWARD -> ToolGroup.NAVIGATE
         AgentTools.CLICK, AgentTools.FILL_INPUT, AgentTools.PRESS_ENTER,
-        AgentTools.SELECT_OPTION, AgentTools.PRESS_KEYS, AgentTools.RUN_JS -> ToolGroup.INTERACT
+        AgentTools.SELECT_OPTION, AgentTools.PRESS_KEYS, AgentTools.RUN_JS,
+        // A download is the same kind of act as a click — it follows a link —
+        // and it is allowed at the same tier. A run has no download engine of
+        // its own and refuses it in the executor; this is only the coarse
+        // grant, and the run's own gate is the sharper one.
+        AgentTools.DOWNLOAD_FILE -> ToolGroup.INTERACT
         AgentTools.AUTO_LIKE, AgentTools.AUTO_REPOST,
         AgentTools.AUTO_REPLY, AgentTools.AUTO_POST -> ToolGroup.POST
         in AgentTools.WALLET_TOOLS -> ToolGroup.WALLET

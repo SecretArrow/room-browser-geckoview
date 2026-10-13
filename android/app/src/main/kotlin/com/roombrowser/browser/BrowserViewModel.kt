@@ -2179,10 +2179,13 @@ class BrowserViewModel(
 
     // ---------- Downloads ----------
 
-    fun download(url: String, suggestedName: String, mime: String, userAgent: String? = null) {
+    /** Queues a download; false when this profile has no engine yet, so a caller does not report a file that was never queued. */
+    fun download(url: String, suggestedName: String, mime: String, userAgent: String? = null): Boolean {
         if (::downloadEngine.isInitialized) {
             downloadEngine.enqueue(url, suggestedName, mime, userAgent)
+            return true
         }
+        return false
     }
 
     fun pauseDownload(id: Long) { if (::downloadEngine.isInitialized) downloadEngine.pause(id) }

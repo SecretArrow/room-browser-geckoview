@@ -51,6 +51,9 @@ object AgentTools {
     const val PRESS_KEYS = "press_keys"
     const val WAIT_FOR = "wait_for"
 
+    // ---- files: a link that is a file rather than a page ----
+    const val DOWNLOAD_FILE = "download_file"
+
     // ---- local compute (a detached scratchpad, never the user's page) ----
     const val COMPUTE_JS = "compute_js"
     const val DATA_TRANSFORM = "data_transform"
@@ -112,6 +115,7 @@ object AgentTools {
     private val SCHEMA_PRESS_KEYS = """{"type":"object","properties":{"keys":{"type":"string","description":"Key chord: Enter, Escape, Tab, ArrowDown, PageDown, F1-F12, or a combination like Control+a"},"ref":{"type":"integer","description":"Optional element reference to focus first; defaults to whatever is focused"}},"required":["keys"]}"""
     private val SCHEMA_WAIT_FOR = """{"type":"object","properties":{"text":{"type":"string","description":"Text to wait for in the visible page"},"timeout_ms":{"type":"integer","description":"How long to wait, 500-30000, default 10000"}},"required":["text"]}"""
     private val SCHEMA_PLAN = """{"type":"object","properties":{"items":{"type":"array","description":"The COMPLETE step list in order. It replaces the previous one, so steps already finished stay in it, marked done.","items":{"type":"object","properties":{"text":{"type":"string","description":"One short step, in the user's words"},"status":{"type":"string","enum":["pending","in_progress","done"]}},"required":["text","status"]}}},"required":["items"]}"""
+    private val SCHEMA_DOWNLOAD = """{"type":"object","properties":{"url":{"type":"string","description":"Full URL of the file, https://... — the link's real href, not its visible text"},"name":{"type":"string","description":"Optional file name to save it as; the URL and the server's own name decide it when this is left out"}},"required":["url"]}"""
 
     private val SCHEMA_DEVTOOLS_AUDIT = OBJ
     private val SCHEMA_DEVTOOLS_CONSOLE = """{"type":"object","properties":{"action":{"type":"string","enum":["read","clear","preserve"],"description":"read lists the buffered entries; clear empties the buffer; preserve sets whether the buffer keeps its entries across navigations (needs 'enabled')"},"enabled":{"type":"boolean","description":"For action=preserve: true to keep entries across navigations, false to drop them on each load"},"level":{"type":"string","description":"read filter: only entries at this level, e.g. error, warning, log"},"contains":{"type":"string","description":"read filter: only entries whose text contains this"}}}"""
@@ -162,6 +166,10 @@ object AgentTools {
         APP_OPEN, APP_TABS, APP_DATA, APP_SETTINGS, APP_SHIELDS,
         APP_SITE_PERMISSION, APP_PAGE,
         APP_2FA, APP_NOTES,
+        // A download writes a file into the user's own storage, which is a
+        // change to their device rather than a read — so it goes through the
+        // same confirmation chain as a click.
+        DOWNLOAD_FILE,
         DEVTOOLS_PATCH
     )
 
@@ -264,6 +272,11 @@ object AgentTools {
         def(SELECT_OPTION, "Choose an option in a dropdown (<select>) by its value or by its visible text.", SCHEMA_SELECT_OPTION),
         def(PRESS_KEYS, "Send a key chord to the focused element (or to one by [ref]): Enter, Escape to close a dialog, Tab, ArrowDown, PageDown, F1-F12, or a combination like Control+a.", SCHEMA_PRESS_KEYS),
         def(WAIT_FOR, "Wait until the given text appears in the visible page. Cheaper than polling with read_page when a page loads its content late.", SCHEMA_WAIT_FOR),
+        def(
+            DOWNLOAD_FILE,
+            "Download a file to the user's Downloads, from a link that leads to a file rather than to a page — an invoice PDF, a CSV export, an image, an archive. Give it the link's real URL (read_page shows it, or read the href with run_js) and the browser's own download engine fetches it, so the transfer keeps going and shows up in the downloads list. It queues the file and returns at once: the file is NOT ready when this call answers, so check its progress with app_data kind=downloads before telling the user it is there. Use it when a click would leave the browser, and never for something the page can show you as text.",
+            SCHEMA_DOWNLOAD
+        ),
         def(
             PLAN,
             "Keep the step list for this task and show it to the user as a checklist. Send the WHOLE list every time — it REPLACES the previous one, so a step you have finished stays in it, marked done, and the step you are working on now is marked in_progress. Use it for any task that takes more than two or three actions, and keep it updated as you go; skip it for a question that needs one step. It changes nothing on the page and nothing is stored.",
@@ -374,6 +387,10 @@ object AgentTools {
         // A UUID, shortened for the label; the model still passes the whole id.
         fun shortId(id: String?): String = id?.take(8) ?: "?"
 
+        // The last URL segment is the best guess at a file name before the
+        // server answers; a URL that names none falls back to "file".
+        fun lastSegment(url: String?): String? =
+            url?.substringAfterLast('/')?.takeIf { it.isNotBlank() }?.take(40)
         when (name) {
             NAVIGATE -> "Open ${str("url") ?: "page"}"
             SEARCH_WEB -> "Search \"${str("query") ?: ""}\""
@@ -405,6 +422,8 @@ object AgentTools {
             SELECT_OPTION -> "Select \"${(str("value") ?: "").take(30)}\" in [${int("ref") ?: "?"}]"
             PRESS_KEYS -> "Press ${str("keys") ?: "?"}"
             WAIT_FOR -> "Wait for \"${(str("text") ?: "").take(30)}\""
+            // The file's own name reads better than the URL.
+            DOWNLOAD_FILE -> "Download \"${str("name") ?: lastSegment(str("url")) ?: "file"}\""
             PLAN -> when (val parsed = AgentPlan.parse(argsJson.orEmpty())) {
                 is AgentPlan.Parsed.Ok ->
                     "Plan — ${parsed.items.count { it.status == AgentPlan.Status.DONE }} of ${parsed.items.size} done"

@@ -53,6 +53,10 @@ class AgentToolForegroundPolicyTest {
         AgentTools.WAIT,
         AgentTools.RUN_JS,
         AgentTools.WAIT_FOR,
+        // A download takes a URL and hands it to the profile's own download
+        // engine; it never touches this chat's page and starts no navigation,
+        // so it keeps working while the user is on another tab.
+        AgentTools.DOWNLOAD_FILE,
         // compute_js runs in a detached scratchpad, not on this chat's tab, so
         // it needs no tab on screen and starts no navigation.
         AgentTools.COMPUTE_JS,

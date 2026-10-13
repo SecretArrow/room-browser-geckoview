@@ -1,6 +1,7 @@
 package com.roombrowser.browser
 
 import android.content.Context
+import com.roombrowser.browser.engine.DownloadEngine
 import com.roombrowser.browser.engine.ProfileEngine
 import com.roombrowser.data.net.SystemFacts
 import com.roombrowser.devtools.DeveloperToolsManager
@@ -12,6 +13,7 @@ import com.roombrowser.domain.agent.DiagnosisInput
 import com.roombrowser.domain.agent.DomEvidence
 import com.roombrowser.domain.agent.NetworkRow
 import com.roombrowser.domain.model.Profile
+import com.roombrowser.domain.model.UserAgents
 import com.roombrowser.engine.EngineSession
 import com.roombrowser.engine.devtools.DeveloperToolsCapabilities
 import java.io.File
@@ -105,6 +107,17 @@ class BrowserControlApiImpl(
     override fun openDevToolsPanel(tabId: String?) {
         val id = tabId ?: vm.activeTabId ?: return
         devtools.open(id)
+    }
+
+    // ---- files ----
+
+    override fun startDownload(url: String, name: String?): String? {
+        // The profile's own user agent, the same identity the page presents,
+        // so a server that serves the file only to a real browser still does.
+        val userAgent = UserAgents.effectiveUserAgent(vm.profileSettings())
+        val suggested = name?.trim()?.takeIf { it.isNotBlank() }
+            ?: DownloadEngine.guessFileName(url, null, "")
+        return if (vm.download(url, suggested, "", userAgent)) suggested else null
     }
 
     // ---- tab identity ----

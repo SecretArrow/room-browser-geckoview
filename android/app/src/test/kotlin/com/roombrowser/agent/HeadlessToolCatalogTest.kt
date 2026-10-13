@@ -28,6 +28,7 @@ class HeadlessToolCatalogTest {
         val everyTool = AgentTools.toolDefs().map { it.function.name }
         val classified = HeadlessToolExecutor.SUPPORTED_TOOLS +
             HeadlessToolExecutor.TAB_TOOLS +
+            HeadlessToolExecutor.DOWNLOAD_TOOLS +
             HeadlessToolExecutor.APP_TOOLS +
             HeadlessToolExecutor.DEVELOPER_TOOLS +
             AgentTools.WALLET_TOOLS
@@ -41,6 +42,7 @@ class HeadlessToolCatalogTest {
         val sets = listOf(
             HeadlessToolExecutor.SUPPORTED_TOOLS,
             HeadlessToolExecutor.TAB_TOOLS,
+            HeadlessToolExecutor.DOWNLOAD_TOOLS,
             HeadlessToolExecutor.APP_TOOLS,
             HeadlessToolExecutor.DEVELOPER_TOOLS,
             AgentTools.WALLET_TOOLS
@@ -79,10 +81,22 @@ class HeadlessToolCatalogTest {
         // to hold back. The app and wallet tools answer differently (a run
         // cannot use them at all), which is why the union is the set to check.
         val classified = HeadlessToolExecutor.SUPPORTED_TOOLS +
+            HeadlessToolExecutor.DOWNLOAD_TOOLS +
             HeadlessToolExecutor.APP_TOOLS +
             HeadlessToolExecutor.DEVELOPER_TOOLS +
             AgentTools.WALLET_TOOLS
         assertThat(classified).containsAtLeastElementsIn(AgentTools.INTERACTIVE_TOOLS)
         assertThat(AgentTools.INTERACTIVE_TOOLS).isNotEmpty()
+    }
+
+    @Test
+    fun `the download tool is the one a run has nowhere to put`() {
+        // A run has a hidden page and no download engine, so a download it
+        // started would land in the user's Downloads unwatched. It is refused
+        // rather than silently performed — and it must NOT be on the supported
+        // list, or the refusal would never be reached.
+        assertThat(HeadlessToolExecutor.DOWNLOAD_TOOLS).containsExactly(AgentTools.DOWNLOAD_FILE)
+        assertThat(HeadlessToolExecutor.SUPPORTED_TOOLS).containsNoneIn(HeadlessToolExecutor.DOWNLOAD_TOOLS)
+        assertThat(HeadlessToolExecutor.TAB_TOOLS).containsNoneIn(HeadlessToolExecutor.DOWNLOAD_TOOLS)
     }
 }

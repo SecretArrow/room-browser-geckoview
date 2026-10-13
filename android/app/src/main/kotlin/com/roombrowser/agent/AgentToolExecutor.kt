@@ -242,6 +242,7 @@ class AgentToolExecutor(
                     AgentTools.SELECT_OPTION -> selectOption(int(args, "ref"), str(args, "value"))
                     AgentTools.PRESS_KEYS -> pressKeys(str(args, "keys"), intOrNull(args, "ref"))
                     AgentTools.WAIT_FOR -> waitFor(str(args, "text"), intOrNull(args, "timeout_ms"))
+                    AgentTools.DOWNLOAD_FILE -> downloadFile(str(args, "url"), strOrNull(args, "name"))
                     // The agent's own step list: nothing on the page, nothing
                     // stored, and no gate — it changes only what the user reads.
                     AgentTools.PLAN -> AgentPlan.execute(argsJson)
@@ -266,6 +267,16 @@ class AgentToolExecutor(
      */
     suspend fun executeAppTool(name: String, argsJson: String): ToolResult? =
         appTools.execute(name, argsJson)
+
+    /**
+     * Queue a download through the browser's own engine, for a HEADLESS CHAT
+     * whose page is hidden but whose browser is up. Null when this profile has
+     * no download engine yet, so the caller never reports a file that was not
+     * queued.
+     */
+    suspend fun startDownload(url: String, name: String?): String? = withContext(Dispatchers.Main) {
+        control.startDownload(url, name)
+    }
 
     /** Snapshot text used for the "include current page" context feature. */
     suspend fun snapshotContext(): String? = withContext(Dispatchers.Main) {
@@ -719,6 +730,39 @@ class AgentToolExecutor(
                     "load it later, show it only after a click, or never show it at all."
             )
         }
+    }
+
+    /**
+     * Queue a download of a link that leads to a FILE rather than to a page.
+     *
+     * Nothing on the page moves, so it needs no tab on screen — but it writes a
+     * file into the user's storage, so it goes through the same confirmation
+     * chain as a click. The transfer runs after this returns, which is why the
+     * answer says "queued" and names where its progress is read: a model that
+     * reports the file as saved here would be describing something that has not
+     * happened.
+     */
+    private suspend fun downloadFile(rawUrl: String?, name: String?): ToolResult {
+        val url = normalizeUrl(rawUrl)
+            ?: return ToolResult(false, "missing or invalid 'url' argument")
+        if (!url.startsWith("http://") && !url.startsWith("https://")) {
+            return ToolResult(false, "download_file needs an http(s) URL, and '$url' is not one")
+        }
+        val label = "download \"" + (name?.takeIf { it.isNotBlank() }
+            ?: url.substringAfterLast('/').takeIf { it.isNotBlank() } ?: url) + "\""
+        refuse(AgentTools.DOWNLOAD_FILE, label)?.let { return it }
+        val saved = control.startDownload(url, name)
+            ?: return ToolResult(
+                false,
+                "this profile's download engine is not up yet, so nothing was queued — open a page in " +
+                    "the browser and try again."
+            )
+        return ToolResult(
+            true,
+            "Queued the download as \"$saved\". It is NOT saved yet: the transfer runs in the " +
+                "background, so read app_data kind=downloads to see when it finishes before " +
+                "telling the user the file is there."
+        )
     }
 
     // ------------------------------------------------------------- page safety

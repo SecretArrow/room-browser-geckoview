@@ -122,6 +122,7 @@ listed below; the two that must have their tab on screen are marked.
 | `see_page(question?)` | Screenshots this chat's tab and sends the image to the provider — *off unless the profile enables it; refused on text-only providers and in a private tab* (see below) |
 | `site_memory(op, key, …)` | Reads, writes or forgets a per-site note kept for this profile — *off unless the profile enables it* (see below) |
 | `plan(items)` | The agent's own step list, shown to you as a checklist card with what it has finished and what it is on now. It sends the **whole list every call** (it replaces the previous one), touches no page and stores nothing — see **The step list** below |
+| `download_file(url, name?)` | Hands a link that leads to a **file** (an invoice PDF, a CSV export, an image) to the browser's own download engine, so it lands in Downloads/RoomBrowser and the transfer outlives the turn. It queues the file and returns — the file is not ready when the call answers, so the agent checks `app_data kind=downloads`. Confirmed like a click, refused in plan mode, and refused in a scheduled run (see below) |
 
 A tool marked *needs the tab on screen* waits up to 8 seconds for its tab to
 come to the front, then refuses with an explanation. The reason is concrete:
@@ -317,6 +318,30 @@ Honest limits:
 
 **Status in this build:** implemented — the tool is in the catalogue for chat
 turns and scheduled runs alike, and the card is `PlanCard` in the agent panel.
+
+### Downloads (`download_file`) — a link that is a file
+
+When a task ends in a file rather than a page — an invoice PDF, a CSV export,
+an image — the agent hands the link to the **browser's own download engine**
+rather than trying to read the bytes itself. The file lands where your own
+downloads do (Downloads/RoomBrowser), the transfer survives the turn, and it
+appears in the downloads list with pause, resume and open.
+
+Honest limits:
+
+* **It queues, it does not fetch.** The call returns as soon as the download is
+  queued, so the file is not on disk when the tool answers. The tool's own
+  result says so, and the agent is told to check `app_data kind=downloads`
+  before reporting the file as saved.
+* **A write, not a read.** It goes through the same confirmation chain as a
+  click (Confirm actions, or YOLO), and plan mode refuses it, because it carries
+  work out rather than proposing it.
+* **Refused in a scheduled run.** A run has one hidden page and no download
+  engine, so it cannot queue a file; the refusal says so and names the route
+  that works. A headless **chat** is different — the browser is up behind it, so
+  a chat turn on a hidden page does queue the file normally.
+* **Only `http(s)`.** A URL that is not one is refused rather than handed to the
+  engine.
 
 ### Deeper Developer Tools reach
 

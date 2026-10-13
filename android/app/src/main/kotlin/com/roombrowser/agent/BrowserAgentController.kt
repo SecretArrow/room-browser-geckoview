@@ -1101,7 +1101,10 @@ class BrowserAgentController(
                     },
                     siteMemory = GraphSiteMemoryStore(graph, profileId),
                     siteMemoryEnabled = { vm.profileSettings().agentSiteMemoryEnabled },
-                    scratchpad = pad
+                    scratchpad = pad,
+                    // The browser is up behind this hidden page, so a download
+                    // goes to the user's own Downloads and outlives the turn.
+                    download = { url, name -> visibleExecutor.startDownload(url, name) }
                 )
             } else {
                 null
