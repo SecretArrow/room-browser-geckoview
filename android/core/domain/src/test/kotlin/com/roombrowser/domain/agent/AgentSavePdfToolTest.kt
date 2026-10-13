@@ -28,7 +28,7 @@ class AgentSavePdfToolTest {
         assertThat(properties.keys).containsExactly("name")
         // No required argument: the page is whatever this chat's tab is on, and
         // the browser names the file from it when the model suggests nothing.
-        assertThat(params.keys).containsNoneOf("required")
+        assertThat(params.keys).doesNotContain("required")
     }
 
     @Test
