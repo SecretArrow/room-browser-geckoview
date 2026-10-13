@@ -45,7 +45,11 @@ data class AiTaskPermissions(
         // local tools above, it is bookkeeping the agent does on the device, so
         // it rides with the read group. Its own per-profile opt-in is the real
         // gate; this group is only the coarse unattended one.
-        AgentTools.SITE_MEMORY -> ToolGroup.READ_PAGE
+        AgentTools.SITE_MEMORY,
+        // plan is the model's own step list — no page, no profile, nothing
+        // stored — so it rides here for the same reason and is never worth
+        // refusing: it is how a run reports where it has got to.
+        AgentTools.PLAN -> ToolGroup.READ_PAGE
         AgentTools.NAVIGATE, AgentTools.SEARCH_WEB, AgentTools.GO_BACK,
         AgentTools.OPEN_NEW_TAB, AgentTools.LIST_TABS,
         AgentTools.SWITCH_TAB, AgentTools.CLOSE_TAB,

@@ -28,6 +28,9 @@ object AgentTools {
     const val SWITCH_TAB = "switch_tab"
     const val CLOSE_TAB = "close_tab"
 
+    // ---- the agent's own working state (nothing on the page, nothing stored) ----
+    const val PLAN = "plan"
+
     // ---- social automation (auto reply / like / repost / post) ----
     const val AUTO_LIKE = "auto_like"
     const val AUTO_REPOST = "auto_repost"
@@ -108,6 +111,7 @@ object AgentTools {
     private val SCHEMA_SELECT_OPTION = """{"type":"object","properties":{"ref":{"type":"integer","description":"<select> element reference number from read_page"},"value":{"type":"string","description":"The option's value, or its visible text"}},"required":["ref","value"]}"""
     private val SCHEMA_PRESS_KEYS = """{"type":"object","properties":{"keys":{"type":"string","description":"Key chord: Enter, Escape, Tab, ArrowDown, PageDown, F1-F12, or a combination like Control+a"},"ref":{"type":"integer","description":"Optional element reference to focus first; defaults to whatever is focused"}},"required":["keys"]}"""
     private val SCHEMA_WAIT_FOR = """{"type":"object","properties":{"text":{"type":"string","description":"Text to wait for in the visible page"},"timeout_ms":{"type":"integer","description":"How long to wait, 500-30000, default 10000"}},"required":["text"]}"""
+    private val SCHEMA_PLAN = """{"type":"object","properties":{"items":{"type":"array","description":"The COMPLETE step list in order. It replaces the previous one, so steps already finished stay in it, marked done.","items":{"type":"object","properties":{"text":{"type":"string","description":"One short step, in the user's words"},"status":{"type":"string","enum":["pending","in_progress","done"]}},"required":["text","status"]}}},"required":["items"]}"""
 
     private val SCHEMA_DEVTOOLS_AUDIT = OBJ
     private val SCHEMA_DEVTOOLS_CONSOLE = """{"type":"object","properties":{"action":{"type":"string","enum":["read","clear","preserve"],"description":"read lists the buffered entries; clear empties the buffer; preserve sets whether the buffer keeps its entries across navigations (needs 'enabled')"},"enabled":{"type":"boolean","description":"For action=preserve: true to keep entries across navigations, false to drop them on each load"},"level":{"type":"string","description":"read filter: only entries at this level, e.g. error, warning, log"},"contains":{"type":"string","description":"read filter: only entries whose text contains this"}}}"""
@@ -260,6 +264,11 @@ object AgentTools {
         def(SELECT_OPTION, "Choose an option in a dropdown (<select>) by its value or by its visible text.", SCHEMA_SELECT_OPTION),
         def(PRESS_KEYS, "Send a key chord to the focused element (or to one by [ref]): Enter, Escape to close a dialog, Tab, ArrowDown, PageDown, F1-F12, or a combination like Control+a.", SCHEMA_PRESS_KEYS),
         def(WAIT_FOR, "Wait until the given text appears in the visible page. Cheaper than polling with read_page when a page loads its content late.", SCHEMA_WAIT_FOR),
+        def(
+            PLAN,
+            "Keep the step list for this task and show it to the user as a checklist. Send the WHOLE list every time — it REPLACES the previous one, so a step you have finished stays in it, marked done, and the step you are working on now is marked in_progress. Use it for any task that takes more than two or three actions, and keep it updated as you go; skip it for a question that needs one step. It changes nothing on the page and nothing is stored.",
+            SCHEMA_PLAN
+        ),
         def(APP_OPEN, "Open one of the browser's own screens, by name: settings, history, bookmarks, downloads, tabs, privacy, wallet, theme, ai_tasks and the rest. The page stays loaded and the page tools keep working afterwards.", SCHEMA_APP_OPEN),
         def(APP_TABS, "Work with the browser's tabs: list them, pin or unpin, duplicate, reopen the last closed one, put one in a named group, move it, open a private tab, or close every other tab.", SCHEMA_APP_TABS),
         def(APP_DATA, "Read or change what the browser has saved: bookmarks, history and downloads. Ids come from action=list, not from the page.", SCHEMA_APP_DATA),
@@ -396,6 +405,11 @@ object AgentTools {
             SELECT_OPTION -> "Select \"${(str("value") ?: "").take(30)}\" in [${int("ref") ?: "?"}]"
             PRESS_KEYS -> "Press ${str("keys") ?: "?"}"
             WAIT_FOR -> "Wait for \"${(str("text") ?: "").take(30)}\""
+            PLAN -> when (val parsed = AgentPlan.parse(argsJson.orEmpty())) {
+                is AgentPlan.Parsed.Ok ->
+                    "Plan — ${parsed.items.count { it.status == AgentPlan.Status.DONE }} of ${parsed.items.size} done"
+                is AgentPlan.Parsed.Failure -> "Update the plan"
+            }
             APP_OPEN -> "Open ${str("screen") ?: "?"} screen"
             APP_TABS -> "Tabs: ${str("action") ?: "list"}${int("index")?.let { " [$it]" } ?: ""}"
             APP_DATA -> "${str("kind") ?: "data"}: ${str("action") ?: "list"}"

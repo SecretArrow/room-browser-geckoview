@@ -23,6 +23,7 @@ import com.roombrowser.domain.agent.AgentHttpException
 import com.roombrowser.domain.agent.AgentLoop
 import com.roombrowser.domain.agent.AgentPause
 import com.roombrowser.domain.agent.AgentPauseLabels
+import com.roombrowser.domain.agent.AgentPlan
 import com.roombrowser.domain.agent.AgentPrompts
 import com.roombrowser.domain.agent.AgentTools
 import com.roombrowser.domain.agent.AgentVisionSupport
@@ -274,6 +275,17 @@ class BrowserAgentController(
     var approval by mutableStateOf<AgentApproval?>(null)
         private set
     var activeSessionId by mutableStateOf<Long?>(null)
+        private set
+
+    /**
+     * The step list the model last wrote with `plan`, empty until it writes
+     * one. Held here rather than in the transcript because it is a view of the
+     * work in progress: the tool rows already record that a list was set, and
+     * what the user needs on screen is the CURRENT list, not every revision of
+     * it. It belongs to the chat, so a new chat, another chat and another tab
+     * all start empty.
+     */
+    var plan by mutableStateOf<List<AgentPlan.Item>>(emptyList())
         private set
 
     /**
@@ -674,6 +686,8 @@ class BrowserAgentController(
         activeSessionId = null
         // A site-scoped approval belongs to the chat it was given in.
         sessionApprovals.clear()
+        // So does the step list: the next chat plans its own work.
+        plan = emptyList()
         entries = emptyList()
         // A failed turn belongs to the chat it was asked in; a fresh chat is
         // not where its Retry button should still be waiting.
@@ -707,6 +721,7 @@ class BrowserAgentController(
             }
             activeSessionId = session.id
             sessionApprovals.clear()
+            plan = emptyList()
             entries = repo.messages(id).mapNotNull(::entryFromRow)
             retryable = null
         }
@@ -732,6 +747,7 @@ class BrowserAgentController(
         activeSessionId = session?.id
         // Another tab is another conversation, and usually another site.
         sessionApprovals.clear()
+        plan = emptyList()
         entries = session?.let { repo.messages(it.id).mapNotNull(::entryFromRow) } ?: emptyList()
     }
 
@@ -1207,6 +1223,7 @@ class BrowserAgentController(
                             toolResult = event.summary
                         )
                     }
+                    is AgentEvent.PlanUpdated -> plan = event.items
                     is AgentEvent.FinalAnswer -> {
                         streamingIndex = finalizeAssistant(streamingIndex)
                         // The model sometimes copies the fence's frame back out

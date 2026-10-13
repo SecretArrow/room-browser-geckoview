@@ -43,7 +43,13 @@ data class ToolResult(
      * turn of their own — see [AgentLoop.runTurn] — because a tool result
      * message carries text only.
      */
-    val images: List<AgentImage> = emptyList()
+    val images: List<AgentImage> = emptyList(),
+    /**
+     * A step list this tool just set, empty for every tool that is not
+     * `plan`. Carried on the result rather than parsed again by the loop, so
+     * the list the user is shown is the one the executor already validated.
+     */
+    val plan: List<AgentPlan.Item> = emptyList()
 ) {
     fun asMessageContent(): String = (if (ok) "" else "ERROR: ") + output
 }
@@ -74,6 +80,12 @@ sealed interface AgentEvent {
     data class AssistantThinking(val text: String) : AgentEvent
     data class ToolStarted(val id: String, val name: String, val argsJson: String) : AgentEvent
     data class ToolFinished(val id: String, val name: String, val ok: Boolean, val summary: String) : AgentEvent
+
+    /**
+     * The whole step list, as `plan` just set it. Sent on every call rather
+     * than as a delta, so a surface that missed one still shows the truth.
+     */
+    data class PlanUpdated(val items: List<AgentPlan.Item>) : AgentEvent
     data class FinalAnswer(val text: String) : AgentEvent
     data class AgentError(val message: String, val fatal: Boolean) : AgentEvent
     data class Notice(val text: String) : AgentEvent
@@ -187,6 +199,9 @@ class AgentLoop(
                     // this summary, so the fence comes off here.
                     val summary = UntrustedContent.payload(result.output)
                         .replace('\n', ' ').trim().take(SUMMARY_CHARS)
+                    // Before the card, so the checklist the step belongs to is
+                    // already on screen when the step lands in it.
+                    if (result.plan.isNotEmpty()) listener(AgentEvent.PlanUpdated(result.plan))
                     listener(AgentEvent.ToolFinished(call.id, call.function.name, result.ok, summary))
                     history.add(
                         ChatMessage(role = "tool", content = content, toolCallId = call.id)

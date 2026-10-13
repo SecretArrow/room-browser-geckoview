@@ -121,6 +121,7 @@ listed below; the two that must have their tab on screen are marked.
 | `data_transform(op, input, …)` | Pure host-side transform of data the agent already has — `json_path`, `csv_rows`, `aggregate`, `diff` — with no page and no engine (see below) |
 | `see_page(question?)` | Screenshots this chat's tab and sends the image to the provider — *off unless the profile enables it; refused on text-only providers and in a private tab* (see below) |
 | `site_memory(op, key, …)` | Reads, writes or forgets a per-site note kept for this profile — *off unless the profile enables it* (see below) |
+| `plan(items)` | The agent's own step list, shown to you as a checklist card with what it has finished and what it is on now. It sends the **whole list every call** (it replaces the previous one), touches no page and stores nothing — see **The step list** below |
 
 A tool marked *needs the tab on screen* waits up to 8 seconds for its tab to
 come to the front, then refuses with an explanation. The reason is concrete:
@@ -292,6 +293,30 @@ Honest limits:
 per-profile table keyed by the tab's real origin, `AgentMemoryActivity` lists what
 has been kept with per-entry and per-site delete, and the whole store stays off
 until the user turns on "Let the agent remember this site".
+
+### The step list (`plan`) — what a long run is doing
+
+A long autonomous run is otherwise a scroll of tool cards: it says what
+happened, and nothing says what the agent set out to do. `plan` is the agent's
+own checklist, rendered in the panel as a card with each step marked done,
+in progress or pending.
+
+Honest limits:
+
+* **Nothing is stored.** The list lives in the chat on screen; it is not written
+  to the transcript and it is gone when the chat is. The tool rows still record
+  that a list was set, so a reloaded chat is not silent about it.
+* **Every call carries the whole list** — the tool REPLACES the previous one.
+  A call that cannot be read (no items, an unknown status word, more than 24
+  steps) is refused and the list the user is watching stays as it was, rather
+  than being cleared by a malformed call.
+* **Nothing here is page-derived**, so the card is not fenced: the steps are the
+  model's own sentences about the task.
+* **A refusal names the words that work**, so a model that misspells a status
+  fixes it instead of retrying the same call.
+
+**Status in this build:** implemented — the tool is in the catalogue for chat
+turns and scheduled runs alike, and the card is `PlanCard` in the agent panel.
 
 ### Deeper Developer Tools reach
 

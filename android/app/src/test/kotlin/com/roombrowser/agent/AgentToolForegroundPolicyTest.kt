@@ -63,6 +63,9 @@ class AgentToolForegroundPolicyTest {
         // page, so it needs no tab on screen and starts no navigation. Its
         // per-profile opt-in is the gate, not this list.
         AgentTools.SITE_MEMORY,
+        // plan is the model's own step list: it touches no page and starts no
+        // navigation, so it keeps working while the user is on another tab.
+        AgentTools.PLAN,
         AgentTools.APP_OPEN,
         AgentTools.APP_TABS,
         AgentTools.APP_DATA,

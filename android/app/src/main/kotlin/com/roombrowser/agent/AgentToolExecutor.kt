@@ -7,6 +7,7 @@ import com.roombrowser.browser.PageEvent
 import com.roombrowser.domain.agent.ActionVerdict
 import com.roombrowser.domain.agent.AgentJson
 import com.roombrowser.domain.agent.AgentPause
+import com.roombrowser.domain.agent.AgentPlan
 import com.roombrowser.domain.agent.AgentStepVerifier
 import com.roombrowser.domain.agent.AgentTools
 import com.roombrowser.domain.agent.ChallengeDetector
@@ -241,6 +242,9 @@ class AgentToolExecutor(
                     AgentTools.SELECT_OPTION -> selectOption(int(args, "ref"), str(args, "value"))
                     AgentTools.PRESS_KEYS -> pressKeys(str(args, "keys"), intOrNull(args, "ref"))
                     AgentTools.WAIT_FOR -> waitFor(str(args, "text"), intOrNull(args, "timeout_ms"))
+                    // The agent's own step list: nothing on the page, nothing
+                    // stored, and no gate — it changes only what the user reads.
+                    AgentTools.PLAN -> AgentPlan.execute(argsJson)
                     else -> ToolResult(false, "unknown tool: $name")
                 }
                 val withEvidence = before?.let { appendEvidence(raw, it) } ?: raw
