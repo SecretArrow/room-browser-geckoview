@@ -849,13 +849,20 @@ internal class GeckoEngineSession(
             // A failure on an app-supplied document carries that document as
             // its URI, so the error surface is handed the reported address
             // rather than the bytes; see [reportedUrl].
+            //
+            // The certificate is the evidence behind a certificate refusal, and
+            // GeckoView hands it over on the error itself. Only the CERTIFICATE
+            // kind reports it: the facade's contract is that the field is
+            // non-null exactly there, and the error surface reads it as "this is
+            // what the connection presented" rather than as a decoration.
             listener?.onPageError(
                 this@GeckoEngineSession,
                 reportedUrl(uri),
                 kind,
                 true,
                 pageErrorCode(error, kind),
-                "category=" + error.category + " code=" + error.code
+                "category=" + error.category + " code=" + error.code,
+                if (kind == PageErrorKind.CERTIFICATE) error.certificate?.toEngineCertificate() else null
             )
             // Always null: that hands the failure to GeckoView's own error page.
             //
