@@ -54,6 +54,9 @@ object AgentTools {
     // ---- files: a link that is a file rather than a page ----
     const val DOWNLOAD_FILE = "download_file"
 
+    // ---- files: the page itself as a document ----
+    const val SAVE_PDF = "save_pdf"
+
     // ---- local compute (a detached scratchpad, never the user's page) ----
     const val COMPUTE_JS = "compute_js"
     const val DATA_TRANSFORM = "data_transform"
@@ -116,6 +119,7 @@ object AgentTools {
     private val SCHEMA_WAIT_FOR = """{"type":"object","properties":{"text":{"type":"string","description":"Text to wait for in the visible page"},"timeout_ms":{"type":"integer","description":"How long to wait, 500-30000, default 10000"}},"required":["text"]}"""
     private val SCHEMA_PLAN = """{"type":"object","properties":{"items":{"type":"array","description":"The COMPLETE step list in order. It replaces the previous one, so steps already finished stay in it, marked done.","items":{"type":"object","properties":{"text":{"type":"string","description":"One short step, in the user's words"},"status":{"type":"string","enum":["pending","in_progress","done"]}},"required":["text","status"]}}},"required":["items"]}"""
     private val SCHEMA_DOWNLOAD = """{"type":"object","properties":{"url":{"type":"string","description":"Full URL of the file, https://... — the link's real href, not its visible text"},"name":{"type":"string","description":"Optional file name to save it as; the URL and the server's own name decide it when this is left out"}},"required":["url"]}"""
+    private val SCHEMA_SAVE_PDF = """{"type":"object","properties":{"name":{"type":"string","description":"Optional file name to save it as, e.g. invoice-acme.pdf; the browser names it from the page when this is left out"}}}"""
 
     private val SCHEMA_DEVTOOLS_AUDIT = OBJ
     private val SCHEMA_DEVTOOLS_CONSOLE = """{"type":"object","properties":{"action":{"type":"string","enum":["read","clear","preserve"],"description":"read lists the buffered entries; clear empties the buffer; preserve sets whether the buffer keeps its entries across navigations (needs 'enabled')"},"enabled":{"type":"boolean","description":"For action=preserve: true to keep entries across navigations, false to drop them on each load"},"level":{"type":"string","description":"read filter: only entries at this level, e.g. error, warning, log"},"contains":{"type":"string","description":"read filter: only entries whose text contains this"}}}"""
@@ -170,6 +174,9 @@ object AgentTools {
         // change to their device rather than a read — so it goes through the
         // same confirmation chain as a click.
         DOWNLOAD_FILE,
+        // Saving a page as a PDF writes a file to the user's Downloads for the
+        // same reason, so it is confirmed the same way.
+        SAVE_PDF,
         DEVTOOLS_PATCH
     )
 
@@ -276,6 +283,11 @@ object AgentTools {
             DOWNLOAD_FILE,
             "Download a file to the user's Downloads, from a link that leads to a file rather than to a page — an invoice PDF, a CSV export, an image, an archive. Give it the link's real URL (read_page shows it, or read the href with run_js) and the browser's own download engine fetches it, so the transfer keeps going and shows up in the downloads list. It queues the file and returns at once: the file is NOT ready when this call answers, so check its progress with app_data kind=downloads before telling the user it is there. Use it when a click would leave the browser, and never for something the page can show you as text.",
             SCHEMA_DOWNLOAD
+        ),
+        def(
+            SAVE_PDF,
+            "Save the page in this chat's tab as a PDF file in the user's Downloads — for a receipt, a ticket, a statement or any page worth keeping as it looked. Use it when the user asks to keep, print or save the page itself, rather than for a link that already points at a file (that is download_file). It is a write to the user's device, so it is confirmed first, and not every engine can render a page to PDF: when this browser's cannot, the result says so and names the route that works.",
+            SCHEMA_SAVE_PDF
         ),
         def(
             PLAN,
@@ -424,6 +436,8 @@ object AgentTools {
             WAIT_FOR -> "Wait for \"${(str("text") ?: "").take(30)}\""
             // The file's own name reads better than the URL.
             DOWNLOAD_FILE -> "Download \"${str("name") ?: lastSegment(str("url")) ?: "file"}\""
+            SAVE_PDF -> str("name")?.takeIf { it.isNotBlank() }
+                ?.let { "Save the page as \"$it\"" } ?: "Save the page as PDF"
             PLAN -> when (val parsed = AgentPlan.parse(argsJson.orEmpty())) {
                 is AgentPlan.Parsed.Ok ->
                     "Plan — ${parsed.items.count { it.status == AgentPlan.Status.DONE }} of ${parsed.items.size} done"

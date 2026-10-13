@@ -60,7 +60,10 @@ data class AiTaskPermissions(
         // and it is allowed at the same tier. A run has no download engine of
         // its own and refuses it in the executor; this is only the coarse
         // grant, and the run's own gate is the sharper one.
-        AgentTools.DOWNLOAD_FILE -> ToolGroup.INTERACT
+        AgentTools.DOWNLOAD_FILE,
+        // Saving a page as a PDF writes a file to the user's Downloads, so it
+        // rides here for the same reason and is refused by a run's own gate.
+        AgentTools.SAVE_PDF -> ToolGroup.INTERACT
         AgentTools.AUTO_LIKE, AgentTools.AUTO_REPOST,
         AgentTools.AUTO_REPLY, AgentTools.AUTO_POST -> ToolGroup.POST
         in AgentTools.WALLET_TOOLS -> ToolGroup.WALLET

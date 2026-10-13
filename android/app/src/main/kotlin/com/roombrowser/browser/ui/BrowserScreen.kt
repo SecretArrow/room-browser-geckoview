@@ -1,8 +1,11 @@
 package com.roombrowser.browser.ui
 
 import android.app.Activity
+import android.content.Context
 import android.content.Intent
 import android.net.Uri
+import android.print.PrintAttributes
+import android.print.PrintManager
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -143,6 +146,19 @@ fun BrowserScreen(
         if (launchedChooser.value === request) return@LaunchedEffect
         launchedChooser.value = request
         filePicker.launch(request.intent)
+    }
+
+    val printRequest = viewModel.pendingPrint
+    LaunchedEffect(printRequest) {
+        val request = printRequest ?: return@LaunchedEffect
+        viewModel.answerPrint()
+        val adapter = viewModel.tabSession(request.tabId)?.printAdapter(request.jobName)
+        val printManager = activity.getSystemService(Context.PRINT_SERVICE) as? PrintManager
+        if (adapter == null || printManager == null) {
+            viewModel.showMessage("Could not save this page as PDF")
+            return@LaunchedEffect
+        }
+        printManager.print(request.jobName, adapter, PrintAttributes.Builder().build())
     }
 
     val agentMessage by viewModel.agent.messages.collectAsState()

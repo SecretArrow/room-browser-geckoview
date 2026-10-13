@@ -191,6 +191,29 @@ interface EngineSession {
      */
     fun saveAsPdf(onResult: (java.io.InputStream?) -> Unit)
 
+    /**
+     * Why this session cannot render a page to PDF, or null when it can.
+     *
+     * Asked BEFORE [saveAsPdf], because null from that call means either "this
+     * engine has no renderer" or "this renderer failed just now" -- and those
+     * want different answers: the first is a route that will never work here,
+     * the second is worth trying again. A caller that reports the wrong one
+     * sends the model round a loop it cannot leave.
+     */
+    fun pdfUnsupportedReason(): String? = null
+
+    /**
+     * A print adapter for the current document, or null when this engine has
+     * no print route of its own.
+     *
+     * This is the second half of the same story as [pdfUnsupportedReason]:
+     * where the engine cannot render a PDF itself, the platform's own print
+     * sheet is the route that does work, and the adapter is what the print
+     * service needs from the engine. Both belong to the engine rather than to
+     * the caller, because only the engine knows whether it has either.
+     */
+    fun printAdapter(jobName: String): android.print.PrintDocumentAdapter? = null
+
     // NOTE: there is deliberately no setDesktopMode() here. Switching desktop
     // mode is not something a session can do to itself -- it needs the
     // profile, because leaving desktop mode means restoring the profile's own

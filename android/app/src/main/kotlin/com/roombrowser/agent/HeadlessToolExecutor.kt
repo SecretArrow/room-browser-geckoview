@@ -249,6 +249,14 @@ class HeadlessToolExecutor(
                     "them and shows up in the downloads list."
             )
         }
+        if (name in PDF_TOOLS) {
+            return ToolResult(
+                false,
+                "'$name' renders the page that is on screen, and this turn drives a hidden page " +
+                    "with no display — so there is nothing here for the browser to render. Switch " +
+                    "this chat to the browser tab and ask again there, where the page is visible."
+            )
+        }
         // Reading a generated code asks nobody; writing a note does. The app
         // tools are judged by what they change rather than by being app tools.
         val needsTheUser = if (name in AgentAppActions.PROFILE_TOOLS) {
@@ -744,7 +752,7 @@ class HeadlessToolExecutor(
         /**
          * The tools a headless run performs, declared rather than inferred so
          * [HeadlessToolCatalogTest] can hold the WHOLE catalogue to
-         * [SUPPORTED_TOOLS] ∪ [TAB_TOOLS] ∪ [DOWNLOAD_TOOLS] ∪ [APP_TOOLS] ∪
+         * [SUPPORTED_TOOLS] ∪ [TAB_TOOLS] ∪ [DOWNLOAD_TOOLS] ∪ [PDF_TOOLS] ∪ [APP_TOOLS] ∪
          * [DEVELOPER_TOOLS] ∪ [AgentTools.WALLET_TOOLS]: a tool added to the
          * catalogue later must be classified deliberately, because the wrong
          * answer is either a tool the model is offered and refused, or one
@@ -798,6 +806,19 @@ class HeadlessToolExecutor(
          * with a message that names the route that works rather than a bare no.
          */
         internal val DOWNLOAD_TOOLS: Set<String> = setOf(AgentTools.DOWNLOAD_FILE)
+
+        /**
+         * The one tool no hidden page can perform at all.
+         *
+         * A PDF is rendered by the page that is on screen and written by the
+         * profile's download engine, and a headless turn has neither: the
+         * session it drives is not attached to a display, and its download sink
+         * takes a URL rather than a stream. It is refused for a scheduled run
+         * AND for a headless chat, which is why it is not on
+         * [DOWNLOAD_TOOLS] — that set is about who is watching, and this is
+         * about what a hidden page can do.
+         */
+        internal val PDF_TOOLS: Set<String> = setOf(AgentTools.SAVE_PDF)
 
         /**
          * The tools that act on the BROWSER rather than on the page — its

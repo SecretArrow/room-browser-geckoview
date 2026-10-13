@@ -123,6 +123,7 @@ listed below; the two that must have their tab on screen are marked.
 | `site_memory(op, key, …)` | Reads, writes or forgets a per-site note kept for this profile — *off unless the profile enables it* (see below) |
 | `plan(items)` | The agent's own step list, shown to you as a checklist card with what it has finished and what it is on now. It sends the **whole list every call** (it replaces the previous one), touches no page and stores nothing — see **The step list** below |
 | `download_file(url, name?)` | Hands a link that leads to a **file** (an invoice PDF, a CSV export, an image) to the browser's own download engine, so it lands in Downloads/RoomBrowser and the transfer outlives the turn. It queues the file and returns — the file is not ready when the call answers, so the agent checks `app_data kind=downloads`. Confirmed like a click, refused in plan mode, and refused in a scheduled run (see below) |
+| `save_pdf(name?)` | Keeps the **page itself** — a receipt, a ticket, a statement — as a PDF in Downloads/RoomBrowser. Use it when the user wants the page they are on kept, and `download_file` when a link already points at a file. Queues the same way a download does, confirmed like a click, refused in plan mode, and refused where there is no page on screen to render (see below) |
 
 A tool marked *needs the tab on screen* waits up to 8 seconds for its tab to
 come to the front, then refuses with an explanation. The reason is concrete:
@@ -342,6 +343,33 @@ Honest limits:
   a chat turn on a hidden page does queue the file normally.
 * **Only `http(s)`.** A URL that is not one is refused rather than handed to the
   engine.
+
+### Saving a page (`save_pdf`) — the page itself, not a link
+
+For a receipt, a ticket, a statement or any page worth keeping as it looked,
+`save_pdf` renders the page in this chat's tab and publishes the result through
+the same download engine, so it lands in Downloads/RoomBrowser beside a
+retrieved file. It takes an optional `name`; the browser names the file from the
+page when the model suggests nothing.
+
+The one to reach for is decided by the user's wording: `download_file` when a
+link already points at a file, `save_pdf` when the page itself is what is being
+kept.
+
+Honest limits:
+
+* **It renders, it does not fetch.** Like a download, the call returns as soon
+  as the work is queued, so the tool's own result says the file is not there yet
+  and tells the agent to check `app_data kind=downloads` first.
+* **A write, not a read.** It goes through the same confirmation chain as a
+  click (Confirm actions, or YOLO), and plan mode refuses it.
+* **Refused in a scheduled run and in a headless chat.** Rendering a PDF needs a
+  page that is on screen; a turn driving a hidden page has nothing to render, so
+  the refusal says so and names the route that works.
+* **Engine-dependent.** GeckoView renders the page itself and the file is real.
+  WebView has no PDF writer of its own, so the tool refuses there and names the
+  route that does work — the **Save as PDF** row in the page-actions sheet,
+  which opens the system print dialog with Save as PDF among its destinations.
 
 ### Deeper Developer Tools reach
 

@@ -491,6 +491,8 @@ class SettingsEffectsE2eTest {
 
         override fun startDownload(url: String, name: String?): String? = null
 
+        override fun savePdf(tabId: String?, name: String?): String? = null
+
         override fun activeTabId(): String? = "e2e-tab"
 
         override fun tabIds(): List<String> = listOf("e2e-tab")

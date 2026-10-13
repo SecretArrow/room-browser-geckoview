@@ -120,6 +120,8 @@ class BrowserControlApiImpl(
         return if (vm.download(url, suggested, "", userAgent)) suggested else null
     }
 
+    override fun savePdf(tabId: String?, name: String?): String? = vm.saveTabAsPdf(tabId, name)
+
     // ---- tab identity ----
 
     override fun activeTabId(): String? = vm.activeTabId

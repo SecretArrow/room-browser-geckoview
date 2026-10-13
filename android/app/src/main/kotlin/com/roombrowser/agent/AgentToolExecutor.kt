@@ -243,6 +243,7 @@ class AgentToolExecutor(
                     AgentTools.PRESS_KEYS -> pressKeys(str(args, "keys"), intOrNull(args, "ref"))
                     AgentTools.WAIT_FOR -> waitFor(str(args, "text"), intOrNull(args, "timeout_ms"))
                     AgentTools.DOWNLOAD_FILE -> downloadFile(str(args, "url"), strOrNull(args, "name"))
+                    AgentTools.SAVE_PDF -> savePdf(strOrNull(args, "name"))
                     // The agent's own step list: nothing on the page, nothing
                     // stored, and no gate — it changes only what the user reads.
                     AgentTools.PLAN -> AgentPlan.execute(argsJson)
@@ -762,6 +763,35 @@ class AgentToolExecutor(
             "Queued the download as \"$saved\". It is NOT saved yet: the transfer runs in the " +
                 "background, so read app_data kind=downloads to see when it finishes before " +
                 "telling the user the file is there."
+        )
+    }
+
+    /**
+     * Saves the page in this chat's tab as a PDF, through the browser's own
+     * download engine, so it lands beside the user's other downloads.
+     *
+     * The engine's own answer comes first: an engine with no PDF renderer of
+     * its own says WHY, in words that name the route that does work, rather
+     * than this tool reporting a failure the model would retry unchanged.
+     */
+    private suspend fun savePdf(name: String?): ToolResult {
+        val session = boundSession() ?: return ToolResult(false, "no page is loaded in this chat's tab")
+        session.pdfUnsupportedReason()?.let { return ToolResult(false, it) }
+        val label = name?.takeIf { it.isNotBlank() }
+            ?.let { "save the page as \"$it\"" }
+            ?: "save the page as a PDF"
+        refuse(AgentTools.SAVE_PDF, label)?.let { return it }
+        val saved = control.savePdf(tabId, name)
+            ?: return ToolResult(
+                false,
+                "this profile's download engine is not up yet, so nothing was saved — open a page " +
+                    "in the browser and try again."
+            )
+        return ToolResult(
+            true,
+            "Asked the browser to save this page as \"$saved\". It is NOT there yet: rendering and " +
+                "writing happen in the background, so read app_data kind=downloads before telling " +
+                "the user the file exists — and if it never appears, the render failed."
         )
     }
 

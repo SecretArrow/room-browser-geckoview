@@ -41,8 +41,9 @@ object PlanModePolicy {
         AgentTools.DEVTOOLS_PATCH,
         // A download is not a submission, but it does WRITE a file into the
         // user's storage — work carried out, which is what this mode promises
-        // not to do.
-        AgentTools.DOWNLOAD_FILE
+        // not to do. Saving a page as a PDF is the same act on the same device.
+        AgentTools.DOWNLOAD_FILE,
+        AgentTools.SAVE_PDF
     )
 
     /**

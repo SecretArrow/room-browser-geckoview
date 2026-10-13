@@ -427,6 +427,29 @@ class BrowserViewModel(
         pendingFileChooser = null
     }
 
+    /**
+     * A page the user asked to keep, waiting for the browser UI to print it.
+     *
+     * The print sheet belongs to the Activity and the engine module only ever
+     * holds an Application context, so the request travels to the UI as state
+     * rather than being carried out here. [nonce] makes asking twice for the
+     * same page a new request: two identical requests would compare equal and
+     * the second print would never be raised.
+     */
+    data class PrintRequest(
+        val tabId: String,
+        val jobName: String,
+        val nonce: Long = System.nanoTime()
+    )
+
+    var pendingPrint by mutableStateOf<PrintRequest?>(null)
+        private set
+
+    /** Clears the outstanding print request once the UI has raised the sheet. */
+    fun answerPrint() {
+        pendingPrint = null
+    }
+
     /** Answers the outstanding challenge with credentials. */
     fun submitHttpAuth(user: String, password: String) {
         val pending = pendingHttpAuth ?: return
@@ -2434,33 +2457,76 @@ class BrowserViewModel(
     // ---------- Save as PDF ----------
 
     /**
-     * Render the active page to PDF and publish it through the download engine,
-     * so it lands in Download/RoomBrowser beside a retrieved file. A null
-     * stream means the engine could not produce one.
+     * Keep the page the user is looking at as a PDF.
+     *
+     * An engine that renders PDFs itself is asked directly and the file lands
+     * in Downloads/RoomBrowser; one that does not is routed to the platform
+     * print sheet, whose destinations include Save as PDF. The print sheet
+     * belongs to the Activity and the engine module only holds an Application
+     * context, so that route travels to the UI as state — see [PrintRequest].
      */
     fun savePageAsPdf() {
         val session = activeSession
-        if (session == null) {
+        val id = activeTabId
+        if (session == null || id == null) {
             showMessage("No page to save")
             return
         }
-        session.saveAsPdf { stream ->
-            if (stream == null) {
-                showMessage("Could not save this page as PDF")
-                return@saveAsPdf
-            }
-            downloadEngine.saveStream(
-                suggestedName = "page-${System.currentTimeMillis()}.pdf",
-                mime = "application/pdf",
-                source = stream,
-                limitBytes = DownloadEngine.MAX_INLINE_BYTES
-            ) { ok ->
+        if (session.pdfUnsupportedReason() == null) {
+            saveTabAsPdf(id, null) { ok ->
                 showMessage(
                     if (ok) "Saved to Downloads/RoomBrowser"
                     else "Could not save this page as PDF"
                 )
             }
+            return
         }
+        pendingPrint = PrintRequest(id, session.title?.takeIf { it.isNotBlank() } ?: "page")
+    }
+
+    /**
+     * Render [tabId]'s page to PDF and publish it through the download engine,
+     * answering the name it will be saved as — or null when this engine has no
+     * PDF renderer, or no download engine is up yet, so a caller never reports
+     * a file that was not queued.
+     *
+     * The rendering and the write happen in the background, so returning is
+     * not the file arriving; [onResult] reports whether it did.
+     */
+    fun saveTabAsPdf(tabId: String?, name: String?, onResult: (Boolean) -> Unit = {}): String? {
+        val session = tabId?.let { tabSession(it) } ?: activeSession ?: return null
+        if (session.pdfUnsupportedReason() != null) return null
+        if (!::downloadEngine.isInitialized) return null
+        val suggested = pdfFileName(name ?: session.title)
+        session.saveAsPdf { stream ->
+            if (stream == null) {
+                onResult(false)
+                return@saveAsPdf
+            }
+            downloadEngine.saveStream(
+                suggestedName = suggested,
+                mime = "application/pdf",
+                source = stream,
+                limitBytes = DownloadEngine.MAX_INLINE_BYTES,
+                onResult = onResult
+            )
+        }
+        return suggested
+    }
+
+    /**
+     * A file name from a page title or a model's suggestion, either of which is
+     * arbitrary text: a `/` in it would otherwise become a directory in the
+     * Downloads path rather than a character in a name.
+     */
+    private fun pdfFileName(raw: String?): String {
+        val cleaned = raw.orEmpty()
+            .replace(Regex("""[\\/:*?"<>|\p{Cntrl}]"""), " ")
+            .trim()
+            .take(80)
+            .trim()
+        val base = cleaned.takeIf { it.isNotBlank() } ?: "page-${System.currentTimeMillis()}"
+        return if (base.endsWith(".pdf", ignoreCase = true)) base else "$base.pdf"
     }
 
     // ---------- Clear data ----------

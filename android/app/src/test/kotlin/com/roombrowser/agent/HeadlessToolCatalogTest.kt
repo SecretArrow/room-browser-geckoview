@@ -29,6 +29,7 @@ class HeadlessToolCatalogTest {
         val classified = HeadlessToolExecutor.SUPPORTED_TOOLS +
             HeadlessToolExecutor.TAB_TOOLS +
             HeadlessToolExecutor.DOWNLOAD_TOOLS +
+            HeadlessToolExecutor.PDF_TOOLS +
             HeadlessToolExecutor.APP_TOOLS +
             HeadlessToolExecutor.DEVELOPER_TOOLS +
             AgentTools.WALLET_TOOLS
@@ -43,6 +44,7 @@ class HeadlessToolCatalogTest {
             HeadlessToolExecutor.SUPPORTED_TOOLS,
             HeadlessToolExecutor.TAB_TOOLS,
             HeadlessToolExecutor.DOWNLOAD_TOOLS,
+            HeadlessToolExecutor.PDF_TOOLS,
             HeadlessToolExecutor.APP_TOOLS,
             HeadlessToolExecutor.DEVELOPER_TOOLS,
             AgentTools.WALLET_TOOLS
@@ -82,6 +84,7 @@ class HeadlessToolCatalogTest {
         // cannot use them at all), which is why the union is the set to check.
         val classified = HeadlessToolExecutor.SUPPORTED_TOOLS +
             HeadlessToolExecutor.DOWNLOAD_TOOLS +
+            HeadlessToolExecutor.PDF_TOOLS +
             HeadlessToolExecutor.APP_TOOLS +
             HeadlessToolExecutor.DEVELOPER_TOOLS +
             AgentTools.WALLET_TOOLS
@@ -90,13 +93,16 @@ class HeadlessToolCatalogTest {
     }
 
     @Test
-    fun `the download tool is the one a run has nowhere to put`() {
-        // A run has a hidden page and no download engine, so a download it
-        // started would land in the user's Downloads unwatched. It is refused
-        // rather than silently performed — and it must NOT be on the supported
-        // list, or the refusal would never be reached.
+    fun `the file-writing tools are the ones a run has nowhere to put`() {
+        // A run has a hidden page and no download engine, so a file it produced
+        // would land in the user's Downloads unwatched. It is refused rather
+        // than silently performed — and it must NOT be on the supported list,
+        // or the refusal would never be reached.
         assertThat(HeadlessToolExecutor.DOWNLOAD_TOOLS).containsExactly(AgentTools.DOWNLOAD_FILE)
-        assertThat(HeadlessToolExecutor.SUPPORTED_TOOLS).containsNoneIn(HeadlessToolExecutor.DOWNLOAD_TOOLS)
-        assertThat(HeadlessToolExecutor.TAB_TOOLS).containsNoneIn(HeadlessToolExecutor.DOWNLOAD_TOOLS)
+        assertThat(HeadlessToolExecutor.PDF_TOOLS).containsExactly(AgentTools.SAVE_PDF)
+        assertThat(HeadlessToolExecutor.SUPPORTED_TOOLS)
+            .containsNoneIn(HeadlessToolExecutor.DOWNLOAD_TOOLS + HeadlessToolExecutor.PDF_TOOLS)
+        assertThat(HeadlessToolExecutor.TAB_TOOLS)
+            .containsNoneIn(HeadlessToolExecutor.DOWNLOAD_TOOLS + HeadlessToolExecutor.PDF_TOOLS)
     }
 }

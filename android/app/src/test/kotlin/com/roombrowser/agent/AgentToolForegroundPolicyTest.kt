@@ -57,6 +57,11 @@ class AgentToolForegroundPolicyTest {
         // engine; it never touches this chat's page and starts no navigation,
         // so it keeps working while the user is on another tab.
         AgentTools.DOWNLOAD_FILE,
+        // Saving a PDF renders this chat's own engine and starts no load, so it
+        // needs no tab on screen — the same shape as SEE_PAGE. An engine that
+        // cannot render, or a session with no frame to render from, refuses
+        // honestly rather than waiting for a tab that would not help.
+        AgentTools.SAVE_PDF,
         // compute_js runs in a detached scratchpad, not on this chat's tab, so
         // it needs no tab on screen and starts no navigation.
         AgentTools.COMPUTE_JS,

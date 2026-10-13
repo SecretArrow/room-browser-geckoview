@@ -73,6 +73,18 @@ interface BrowserControlApi {
      */
     fun startDownload(url: String, name: String?): String?
 
+    /**
+     * Render [tabId]'s page — or the page on screen — to PDF and publish it
+     * through the profile's own download engine, returning the name it will be
+     * saved as, or null when this engine has no PDF renderer or no download
+     * engine is up yet.
+     *
+     * Like [startDownload], returning is the file being queued rather than the
+     * file arriving: the render and the write happen in the background and
+     * report through the downloads list.
+     */
+    fun savePdf(tabId: String?, name: String?): String?
+
     // ---- tab identity ----
 
     fun activeTabId(): String?
