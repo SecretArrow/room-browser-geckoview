@@ -436,8 +436,7 @@ object AgentTools {
             WAIT_FOR -> "Wait for \"${(str("text") ?: "").take(30)}\""
             // The file's own name reads better than the URL.
             DOWNLOAD_FILE -> "Download \"${str("name") ?: lastSegment(str("url")) ?: "file"}\""
-            SAVE_PDF -> str("name")?.takeIf { it.isNotBlank() }
-                ?.let { "Save the page as \"$it\"" } ?: "Save the page as PDF"
+            SAVE_PDF -> str("name")?.let { "Save the page as \"$it\"" } ?: "Save the page as PDF"
             PLAN -> when (val parsed = AgentPlan.parse(argsJson.orEmpty())) {
                 is AgentPlan.Parsed.Ok ->
                     "Plan — ${parsed.items.count { it.status == AgentPlan.Status.DONE }} of ${parsed.items.size} done"
