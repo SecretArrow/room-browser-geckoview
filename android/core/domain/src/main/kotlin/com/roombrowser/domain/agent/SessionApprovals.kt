@@ -51,13 +51,15 @@ class SessionApprovals {
         /**
          * Tools that keep asking however the user answered. `app_2fa` types a
          * live code into a login form, which is the one action where the prompt
-         * IS the point; the wallet names are here as a second lock, since their
-         * own prompt never routes through the session memory anyway.
+         * IS the point.
+         *
+         * The whole wallet group is here as a second lock, taken from
+         * [AgentTools.WALLET_TOOLS] rather than spelled out so a wallet tool
+         * added later cannot slip past it. Their own prompt never routes through
+         * the session memory anyway, but a wallet answer is the one kind that
+         * must not be reachable from a remembered one, however that changes.
          */
-        val NEVER_REMEMBERED: Set<String> = setOf(
-            AgentTools.APP_2FA,
-            AgentTools.WALLET_APPROVE,
-            AgentTools.WALLET_SWITCH_NETWORK
-        )
+        val NEVER_REMEMBERED: Set<String> =
+            setOf(AgentTools.APP_2FA) + AgentTools.WALLET_TOOLS
     }
 }
