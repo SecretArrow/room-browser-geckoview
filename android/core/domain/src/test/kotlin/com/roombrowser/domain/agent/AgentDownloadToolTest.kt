@@ -1,6 +1,7 @@
 package com.roombrowser.domain.agent
 
 import com.google.common.truth.Truth.assertThat
+import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import org.junit.Test
@@ -28,8 +29,9 @@ class AgentDownloadToolTest {
         assertThat(properties.keys).containsExactly("url", "name")
         // A name the model invents is a suggestion the engine de-duplicates;
         // a URL is the one thing the call cannot work without.
-        assertThat(params.getValue("required").jsonPrimitive.content).contains("url")
-        assertThat(params.getValue("required").jsonPrimitive.content).doesNotContain("name")
+        val required = params.getValue("required").jsonArray.map { it.jsonPrimitive.content }
+        assertThat(required).containsExactly("url")
+        assertThat(required).doesNotContain("name")
     }
 
     @Test
