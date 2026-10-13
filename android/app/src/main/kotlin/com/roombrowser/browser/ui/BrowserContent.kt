@@ -293,7 +293,9 @@ fun BrowserContent(
             when {
                 error != null -> ErrorPage(
                     error = error,
-                    onRetry = { viewModel.reload() }
+                    proxy = viewModel.pageProxyLabel,
+                    onRetry = { viewModel.reload() },
+                    onDisableProxy = { viewModel.disableProxyForProfile() }
                 )
                 page.isHomepage -> Homepage(
                     viewModel = viewModel,
@@ -339,11 +341,26 @@ private suspend fun PointerInputScope.detectDoubleTap(onDoubleTap: () -> Unit) {
     }
 }
 
-/** Error pages (spec section 52): No Internet / SSL / DNS / generic. */
+/**
+ * Error pages (spec section 52): No Internet / SSL / DNS / generic.
+ *
+ * [proxy] and [onDisableProxy] belong to the certificate page alone: a proxy is
+ * the one cause of a refused connection this app can see and undo, so it is
+ * named there and offered as an action. Both are ignored on every other page.
+ */
 @Composable
-private fun ErrorPage(error: PageError, onRetry: () -> Unit) {
+private fun ErrorPage(
+    error: PageError,
+    onRetry: () -> Unit,
+    proxy: String? = null,
+    onDisableProxy: () -> Unit = {}
+) {
     val context = LocalContext.current
     val extras = LocalRoomExtras.current
+    // Resolved once: the certificate page both prints this and offers the
+    // button that answers it, and the two must never disagree about whether
+    // there is a proxy to turn off.
+    val proxyLine = if (error is PageError.Ssl) CertificateNotice.proxyLine(proxy) else null
     Column(
         Modifier
             .fillMaxSize()
@@ -358,12 +375,7 @@ private fun ErrorPage(error: PageError, onRetry: () -> Unit) {
             is PageError.Unreachable ->
                 "Site Unreachable" to "Your connection is working, but this site did not answer. It may be down right now, or this network may be blocking it."
             is PageError.Ssl ->
-                "Connection Not Secure" to (
-                    error.message +
-                        " An expired certificate, a wrong device date and time, or a public" +
-                        " Wi-Fi sign-in page in the way all look like this. Room Browser will" +
-                        " not bypass it for you."
-                    )
+                "Connection Not Secure" to (error.message + " " + CertificateNotice.WHY)
             is PageError.DnsFailure ->
                 "DNS Resolution Failed" to "Your connection is working, but this site's address could not be resolved. A private DNS setting or a Wi-Fi sign-in page may be in the way."
             is PageError.Generic -> "Page Problem" to (error.message ?: "The page could not be loaded.")
@@ -394,9 +406,29 @@ private fun ErrorPage(error: PageError, onRetry: () -> Unit) {
         if (error is PageError.Ssl) {
             Spacer(Modifier.height(16.dp))
             CertificateBlock(error.certificate)
+            if (proxyLine != null) {
+                Spacer(Modifier.height(12.dp))
+                Text(
+                    proxyLine,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = extras.textSecondary,
+                    modifier = Modifier.padding(horizontal = 8.dp)
+                )
+            }
+            Spacer(Modifier.height(12.dp))
+            Text(
+                CertificateNotice.TRUST_HINT,
+                style = MaterialTheme.typography.bodySmall,
+                color = extras.textSecondary,
+                modifier = Modifier.padding(horizontal = 8.dp)
+            )
         }
         Spacer(Modifier.height(24.dp))
         Button(onClick = onRetry) { Text("Try Again") }
+        if (proxyLine != null) {
+            Spacer(Modifier.height(8.dp))
+            OutlinedButton(onClick = onDisableProxy) { Text(CertificateNotice.DISABLE_PROXY) }
+        }
         Spacer(Modifier.height(8.dp))
         OutlinedButton(onClick = {
             runCatching { context.openWirelessSettings() }

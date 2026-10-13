@@ -662,6 +662,14 @@ fun ProfileSettingsScreen(viewModel: BrowserViewModel, onClose: () -> Unit) {
             )
             SettingSwitchRow(title = "JavaScript enabled", checked = settings.javascriptEnabled, onCheckedChange = { update(settings.copy(javascriptEnabled = it)) })
         }
+        InfoNote(
+            "Certificate validation is never bypassed, here or anywhere else in the app. " +
+                "This profile accepts the certificate authorities Android ships plus any you " +
+                "installed yourself in Android Settings — the second is what lets a site open " +
+                "on a network whose traffic is inspected, because that network's own authority " +
+                "is then a real authority to this device. A certificate that is not trusted " +
+                "under those authorities is still refused."
+        )
 
         SectionHeader("WebRTC")
         SettingsGroup {

@@ -213,6 +213,18 @@ class BrowserViewModel(
         private set
 
     /**
+     * The proxy the engine's page traffic is going through right now, as
+     * `host:port`, or null when it is going direct.
+     *
+     * Read by the certificate error page, which is the one screen where the
+     * cause of the failure is a question the user can act on. Set where the
+     * decision is handed to the engine, so it says what is in force and not
+     * what was requested.
+     */
+    var pageProxyLabel by mutableStateOf<String?>(null)
+        private set
+
+    /**
      * Short identity for THIS ViewModel, carried on every RoomNav line.
      *
      * WHY (CI 36949239247/36944983033): one BrowserActivity lifecycle can
@@ -1077,6 +1089,7 @@ class BrowserViewModel(
             emitMessage("This engine cannot use a ${decided.candidate.scheme.id.uppercase()} proxy")
         }
         ProfileEngine.setProxy(candidate?.let { EngineProxyConfig(it.host, it.port, it.scheme) })
+        pageProxyLabel = candidate?.let { "${it.host}:${it.port}" }
         if (decided is ProxyDecision.Unavailable) {
             emitMessage("No working proxy found — loading directly")
         }
@@ -2648,6 +2661,28 @@ class BrowserViewModel(
         }
     }
 
+    /**
+     * Turn this profile's proxy off for good, from the certificate page.
+     *
+     * Writes exactly what the Privacy screen's own switch writes, so the two
+     * cannot disagree, and goes through [reapplyProxy] so the session pick a
+     * network warning may have recorded is cleared and the engine is re-handed
+     * its page proxy before the page is retried.
+     */
+    fun disableProxyForProfile() {
+        val updated = profileSettings().copy(
+            proxyMode = ProxyMode.OFF,
+            proxyHost = null,
+            proxyPort = 0,
+            proxyPinnedId = null
+        )
+        viewModelScope.launch(Dispatchers.Main) {
+            updateSettings(updated)
+            reapplyProxy(updated)
+            reload()
+        }
+    }
+
     // ---------- Device identity ----------
 
     /**
@@ -3283,7 +3318,11 @@ class BrowserViewModel(
      */
     private fun sslErrorText(errorCode: Int): String = when (errorCode) {
         SSL_EXPIRED, SSL_DATE_INVALID -> "The site's certificate has expired."
-        SSL_IDMISMATCH -> "The site's certificate does not match its hostname."
+        // NOT "the site's certificate". A network that intercepts TLS presents
+        // its own certificate for the host that was asked for, and this is the
+        // code the platform reports for that — so the certificate is named as
+        // the thing that does not match, never the site as the thing at fault.
+        SSL_IDMISMATCH -> "The certificate does not match the site's hostname."
         SSL_NOTYETVALID -> "The site's certificate is not valid yet."
         SSL_UNTRUSTED -> "The site's certificate is not trusted."
         SSL_INVALID -> "The site's certificate is invalid."

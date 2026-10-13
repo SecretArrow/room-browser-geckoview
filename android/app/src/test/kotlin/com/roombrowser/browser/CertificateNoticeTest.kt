@@ -47,4 +47,26 @@ class CertificateNoticeTest {
 
         assertThat(rows.map { it.label }).containsExactly("Subject")
     }
+
+    /**
+     * The page must name the cause the user can act on without ever offering a
+     * way past the refusal, and it must say what the fix actually is — the
+     * Android setting, not a button in this app.
+     */
+    @Test
+    fun `the page names an inspecting network and points at the Android setting`() {
+        assertThat(CertificateNotice.WHY).contains("network that inspects encrypted traffic")
+        assertThat(CertificateNotice.WHY).contains("will not bypass it for you")
+        assertThat(CertificateNotice.TRUST_HINT).contains("Android Settings")
+    }
+
+    @Test
+    fun `a proxy is named only when one is actually in force`() {
+        assertThat(CertificateNotice.proxyLine("127.0.0.1:8080"))
+            .isEqualTo(
+                "This profile is browsing through the proxy 127.0.0.1:8080, which can be the cause."
+            )
+        assertThat(CertificateNotice.proxyLine(null)).isNull()
+        assertThat(CertificateNotice.proxyLine("   ")).isNull()
+    }
 }
