@@ -561,6 +561,23 @@ internal class GeckoEngineSession(
     }
 
     /**
+     * No whole-document capture, so [captureFullPage] keeps the facade's
+     * default and this is what the agent is told instead.
+     *
+     * VERIFIED AGAINST THE ARTIFACT, NOT THE JAVADOC. Mozilla's published
+     * `GeckoDisplay.ScreenshotBuilder` page documents a `captureFullPage` and a
+     * `ContentMetrics`, but the version this repo pins (153.0.4) ships neither:
+     * its builder has exactly nine methods -- `source`, `aspectPreservingSize`,
+     * `scale`, `size`, `bitmap`, `capture`, `checkAndSetSizeType` -- and every
+     * one of them is bounded by the viewport the display renders. The javadoc
+     * tracks a newer GeckoView, so it is not evidence about this one.
+     */
+    override fun fullPageUnsupportedReason(): String =
+        "GeckoView, the engine this edition runs on, captures only the part of the page that " +
+            "is on screen, so there is no whole-page screenshot here. Scroll and take another " +
+            "shot instead."
+
+    /**
      * Render the current document to PDF.
      *
      * `saveAsPdf` is @HandlerThread -- an IO-dispatcher thread with no Looper
