@@ -36,6 +36,26 @@ data class EnginePageScripts(
 )
 
 /**
+ * A capture of the whole document, and the truth about what it covers.
+ *
+ * [image] alone would be a claim the engine cannot support: a long page cannot
+ * be rendered into one bitmap without a size limit, so the honest answer is the
+ * picture AND the document's real size AND whether the picture is all of it.
+ * A caller handed only the bitmap would describe a truncated capture as the
+ * page, which is the failure this type exists to prevent.
+ *
+ * [documentHeight] is in the same pixels as [image], so a caller can say what
+ * fraction of the page it is looking at without knowing anything about the
+ * engine's scale.
+ */
+data class EngineFullPageShot(
+    val image: Bitmap,
+    val documentWidth: Int,
+    val documentHeight: Int,
+    val truncated: Boolean
+)
+
+/**
  * One browsing session: a tab.
  *
  * DELIBERATELY NOT A DATA CLASS, and implementations must not override
@@ -182,6 +202,32 @@ interface EngineSession {
     fun capturePixels(onResult: (Bitmap?) -> Unit)
 
     /**
+     * Capture the WHOLE document rather than the part of it on screen.
+     *
+     * [capturePixels] answers "what is the user looking at"; this answers "what
+     * does the page say", which is the question a model reading a long article,
+     * a receipt or a table actually has. The two are not interchangeable and
+     * the result carries its own dimensions so a caller can tell them apart.
+     *
+     * The default reports null and [fullPageUnsupportedReason] says why, so an
+     * engine without this capability refuses rather than handing back a
+     * viewport image under a full-page name.
+     */
+    fun captureFullPage(onResult: (EngineFullPageShot?) -> Unit) = onResult(null)
+
+    /**
+     * Why [captureFullPage] cannot work on this engine, or null when it can.
+     *
+     * The default is a REFUSAL rather than null, unlike [pdfUnsupportedReason]:
+     * an engine that overrides neither member simply has no full-page capture,
+     * and a caller must be told that instead of receiving a screenshot of the
+     * wrong size. An engine that can do it overrides this to null.
+     */
+    fun fullPageUnsupportedReason(): String? =
+        "This browser's engine can only capture the part of the page that is on screen, " +
+            "so it cannot take a whole-page screenshot. Scroll and take another shot instead."
+
+    /**
      * Render the current document to PDF and hand the raw bytes to [onResult].
      *
      * [onResult] receives null when the engine cannot produce one -- a session
@@ -190,6 +236,29 @@ interface EngineSession {
      * read and close off the main thread.
      */
     fun saveAsPdf(onResult: (java.io.InputStream?) -> Unit)
+
+    /**
+     * Why this session cannot render a page to PDF, or null when it can.
+     *
+     * Asked BEFORE [saveAsPdf], because null from that call means either "this
+     * engine has no renderer" or "this renderer failed just now" -- and those
+     * want different answers: the first is a route that will never work here,
+     * the second is worth trying again. A caller that reports the wrong one
+     * sends the model round a loop it cannot leave.
+     */
+    fun pdfUnsupportedReason(): String? = null
+
+    /**
+     * A print adapter for the current document, or null when this engine has
+     * no print route of its own.
+     *
+     * This is the second half of the same story as [pdfUnsupportedReason]:
+     * where the engine cannot render a PDF itself, the platform's own print
+     * sheet is the route that does work, and the adapter is what the print
+     * service needs from the engine. Both belong to the engine rather than to
+     * the caller, because only the engine knows whether it has either.
+     */
+    fun printAdapter(jobName: String): android.print.PrintDocumentAdapter? = null
 
     // NOTE: there is deliberately no setDesktopMode() here. Switching desktop
     // mode is not something a session can do to itself -- it needs the

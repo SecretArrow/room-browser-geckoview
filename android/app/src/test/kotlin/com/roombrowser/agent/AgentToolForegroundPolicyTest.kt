@@ -45,6 +45,10 @@ class AgentToolForegroundPolicyTest {
         // it does not have to wait for the tab. A tab that is not attached to a
         // display has no frame and the tool fails honestly rather than waiting.
         AgentTools.SEE_PAGE,
+        // Comparing against the last frame captures this chat's own engine and
+        // starts no load — the same shape as SEE_PAGE, and it refuses honestly
+        // when there is no earlier frame of this tab to compare with.
+        AgentTools.COMPARE_SCREENSHOTS,
         AgentTools.SCROLL,
         AgentTools.OPEN_NEW_TAB,
         AgentTools.LIST_TABS,
@@ -53,6 +57,15 @@ class AgentToolForegroundPolicyTest {
         AgentTools.WAIT,
         AgentTools.RUN_JS,
         AgentTools.WAIT_FOR,
+        // A download takes a URL and hands it to the profile's own download
+        // engine; it never touches this chat's page and starts no navigation,
+        // so it keeps working while the user is on another tab.
+        AgentTools.DOWNLOAD_FILE,
+        // Saving a PDF renders this chat's own engine and starts no load, so it
+        // needs no tab on screen — the same shape as SEE_PAGE. An engine that
+        // cannot render, or a session with no frame to render from, refuses
+        // honestly rather than waiting for a tab that would not help.
+        AgentTools.SAVE_PDF,
         // compute_js runs in a detached scratchpad, not on this chat's tab, so
         // it needs no tab on screen and starts no navigation.
         AgentTools.COMPUTE_JS,
@@ -63,6 +76,9 @@ class AgentToolForegroundPolicyTest {
         // page, so it needs no tab on screen and starts no navigation. Its
         // per-profile opt-in is the gate, not this list.
         AgentTools.SITE_MEMORY,
+        // plan is the model's own step list: it touches no page and starts no
+        // navigation, so it keeps working while the user is on another tab.
+        AgentTools.PLAN,
         AgentTools.APP_OPEN,
         AgentTools.APP_TABS,
         AgentTools.APP_DATA,

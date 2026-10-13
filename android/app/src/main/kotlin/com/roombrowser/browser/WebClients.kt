@@ -13,6 +13,7 @@ import com.roombrowser.domain.engine.HttpsUpgradeFallbackPolicy
 import com.roombrowser.domain.engine.UrlIntelligence
 import com.roombrowser.domain.model.Profile
 import com.roombrowser.domain.oct.OctNavigation
+import com.roombrowser.engine.EngineCertificate
 import com.roombrowser.engine.EngineSession
 import com.roombrowser.engine.EngineSessionListener
 import com.roombrowser.engine.HttpAuthResponder
@@ -125,8 +126,18 @@ class RoomSessionListener(
          * than a dedicated callback (the WebView edition's
          * `onReceivedSslError`), so [errorCode] is the ENGINE's security code
          * and not a `SslError` primary error.
+         *
+         * [certificate] is the certificate the connection presented, when the
+         * engine could report it. Null means "the engine did not say", never
+         * "there was none" — the error page prints those two differently.
          */
-        fun onSslError(session: EngineSession, url: String, errorCode: Int, description: String?)
+        fun onSslError(
+            session: EngineSession,
+            url: String,
+            errorCode: Int,
+            description: String?,
+            certificate: EngineCertificate?
+        )
 
         /**
          * A site asked for HTTP Basic/Digest credentials. The host shows a
@@ -379,7 +390,8 @@ class RoomSessionListener(
         kind: PageErrorKind,
         isTopLevel: Boolean,
         errorCode: Int,
-        description: String?
+        description: String?,
+        certificate: EngineCertificate?
     ): Boolean {
         // HTTPS-First fallback: an https endpoint without working TLS behind
         // one of OUR upgrades -> retry the original http URL once, silently
@@ -413,7 +425,7 @@ class RoomSessionListener(
         if (kind == PageErrorKind.CERTIFICATE) {
             // Sub-resource certificate failures are not the page's failure.
             if (!isTopLevel) return true
-            callbacks.onSslError(session, url.orEmpty(), errorCode, description)
+            callbacks.onSslError(session, url.orEmpty(), errorCode, description, certificate)
             return true
         }
         if (!isTopLevel) return true

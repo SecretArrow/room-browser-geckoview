@@ -43,17 +43,36 @@ data class ToolResult(
      * turn of their own — see [AgentLoop.runTurn] — because a tool result
      * message carries text only.
      */
-    val images: List<AgentImage> = emptyList()
+    val images: List<AgentImage> = emptyList(),
+    /**
+     * A step list this tool just set, empty for every tool that is not
+     * `plan`. Carried on the result rather than parsed again by the loop, so
+     * the list the user is shown is the one the executor already validated.
+     */
+    val plan: List<AgentPlan.Item> = emptyList()
 ) {
     fun asMessageContent(): String = (if (ok) "" else "ERROR: ") + output
 }
 
 data class AgentConfig(
     val model: String,
-    val maxSteps: Int = 25,
+    val maxSteps: Int = DEFAULT_STEPS,
     val temperature: Double = 0.2,
     val systemPrompt: String
-)
+) {
+    /**
+     * The step budget the loop actually honours. A stored value is clamped
+     * rather than trusted: the ceiling is what keeps a typed or migrated
+     * number from turning one turn into an unbounded run of provider calls.
+     */
+    val steps: Int get() = maxSteps.coerceIn(MIN_STEPS, MAX_STEPS)
+
+    companion object {
+        const val MIN_STEPS = 1
+        const val MAX_STEPS = 200
+        const val DEFAULT_STEPS = 75
+    }
+}
 
 /** Events surfaced to the chat UI. */
 sealed interface AgentEvent {
@@ -61,6 +80,12 @@ sealed interface AgentEvent {
     data class AssistantThinking(val text: String) : AgentEvent
     data class ToolStarted(val id: String, val name: String, val argsJson: String) : AgentEvent
     data class ToolFinished(val id: String, val name: String, val ok: Boolean, val summary: String) : AgentEvent
+
+    /**
+     * The whole step list, as `plan` just set it. Sent on every call rather
+     * than as a delta, so a surface that missed one still shows the truth.
+     */
+    data class PlanUpdated(val items: List<AgentPlan.Item>) : AgentEvent
     data class FinalAnswer(val text: String) : AgentEvent
     data class AgentError(val message: String, val fatal: Boolean) : AgentEvent
     data class Notice(val text: String) : AgentEvent
@@ -109,7 +134,10 @@ class AgentLoop(
     ) {
         try {
             var step = 0
-            while (step < config.maxSteps) {
+            // One turn's worth: a tool that failed twice in a previous turn is
+            // not a loop in this one.
+            val failures = AgentFailureWatch()
+            while (step < config.steps) {
                 if (!currentCoroutineContext().isActive) return
                 beforeStep()
                 if (!currentCoroutineContext().isActive) return
@@ -122,7 +150,7 @@ class AgentLoop(
                 step++
 
                 trimHistory(history)
-                val useTools = step < config.maxSteps // last attempt: plain answer
+                val useTools = step < config.steps // last attempt: plain answer
                 val request = ChatRequest(
                     model = config.model,
                     messages = history.toList(),
@@ -148,15 +176,32 @@ class AgentLoop(
                 val turnImages = mutableListOf<AgentImage>()
                 for (call in calls) {
                     listener(AgentEvent.ToolStarted(call.id, call.function.name, call.function.arguments))
-                    val result = try {
-                        tools.execute(call.function.name, call.function.arguments)
-                    } catch (ce: CancellationException) {
-                        throw ce
-                    } catch (t: Throwable) {
-                        ToolResult(ok = false, output = "tool crashed: ${t.message ?: t.javaClass.simpleName}")
+                    // A repeat of a call that just failed twice is answered with
+                    // a correction rather than executed again: the model reads
+                    // it as the result of its own call, which is the one place
+                    // it is certain to look.
+                    val blocked = failures.refusal(call.function.name)
+                    val result = if (blocked != null) {
+                        ToolResult(ok = false, output = blocked)
+                    } else {
+                        val executed = try {
+                            tools.execute(call.function.name, call.function.arguments)
+                        } catch (ce: CancellationException) {
+                            throw ce
+                        } catch (t: Throwable) {
+                            ToolResult(ok = false, output = "tool crashed: ${t.message ?: t.javaClass.simpleName}")
+                        }
+                        failures.record(call.function.name, executed.ok, executed.output)
+                        executed
                     }
                     val content = result.asMessageContent().take(MAX_TOOL_RESULT_CHARS)
-                    val summary = result.output.replace('\n', ' ').trim().take(SUMMARY_CHARS)
+                    // The model sees `content`, fence and all; the user sees
+                    // this summary, so the fence comes off here.
+                    val summary = UntrustedContent.payload(result.output)
+                        .replace('\n', ' ').trim().take(SUMMARY_CHARS)
+                    // Before the card, so the checklist the step belongs to is
+                    // already on screen when the step lands in it.
+                    if (result.plan.isNotEmpty()) listener(AgentEvent.PlanUpdated(result.plan))
                     listener(AgentEvent.ToolFinished(call.id, call.function.name, result.ok, summary))
                     history.add(
                         ChatMessage(role = "tool", content = content, toolCallId = call.id)
@@ -177,7 +222,7 @@ class AgentLoop(
                 }
             }
 
-            listener(AgentEvent.Notice("Step limit reached (${config.maxSteps}) — wrapping up."))
+            listener(AgentEvent.Notice("Step limit reached (${config.steps}) — wrapping up."))
             trimHistory(history)
             val final = gateway.chat(
                 ChatRequest(

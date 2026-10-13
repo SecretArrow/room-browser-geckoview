@@ -15,6 +15,7 @@ import com.roombrowser.domain.agent.AgentLoop
 import com.roombrowser.domain.agent.AgentPrompts
 import com.roombrowser.domain.agent.AgentVisionSupport
 import com.roombrowser.domain.agent.AutoModelPicker
+import com.roombrowser.domain.agent.UntrustedContent
 import com.roombrowser.domain.model.ProfileId
 import com.roombrowser.domain.model.SearchEngines
 import com.roombrowser.domain.task.AiTaskExecutionMode
@@ -190,7 +191,17 @@ class HeadlessAiTaskRunner(
                         else -> Unit
                     }
                 }
-                val text = answer?.takeIf { it.isNotBlank() }
+                // The answer becomes the row's lastResultSummary, which the task
+                // list renders, so the fence's frame comes off here exactly as it
+                // does on the chat path — the model sometimes copies it back out
+                // of the tool result it just read. The empty check stays on the
+                // answer the model gave, so an answer that was nothing but the
+                // frame is still a completed run and says so on the row.
+                val answerText = answer?.takeIf { it.isNotBlank() }
+                val text = answerText?.let {
+                    UntrustedContent.stripMarkers(it)
+                        .ifBlank { "(the answer was only the page-content frame)" }
+                }
                 when {
                     text != null -> AiTaskRunOutcome.Completed(text)
                     failure != null -> AiTaskRunOutcome.Failed(failure!!)

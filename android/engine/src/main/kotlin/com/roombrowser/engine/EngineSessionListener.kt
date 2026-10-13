@@ -2,6 +2,16 @@ package com.roombrowser.engine
 
 import android.content.Intent
 import android.net.Uri
+import com.roombrowser.engine.devtools.EngineSecurityInfo
+
+/**
+ * The certificate a connection presented, as the engine reported it.
+ *
+ * The DevTools Security panel's own type, reused rather than mirrored: a
+ * second model with the same five fields would be one more thing to keep in
+ * step, and both surfaces answer the same question.
+ */
+typealias EngineCertificate = EngineSecurityInfo.Certificate
 
 /**
  * What to do about a navigation the engine is about to start.
@@ -306,6 +316,16 @@ interface EngineSessionListener {
      * error and no failing test to catch it. [description] is the engine's
      * own free-form text and is never parsed; it is passed for the diagnostics
      * screen only.
+     *
+     * [certificate] is the certificate the connection actually presented, and
+     * is non-null only on the CERTIFICATE path, where an engine that has the
+     * material to fill it in should. It is what turns "not secure" into
+     * evidence: a network intercepting TLS presents a certificate signed by
+     * something that is not a public CA, and the issuer is the thing that shows
+     * it. An engine with no way to reach the certificate reports null, and the
+     * caller says so rather than drawing an empty block -- a blank certificate
+     * reads as "this page has none", which is the opposite of the truth on a
+     * refused connection.
      */
     fun onPageError(
         session: EngineSession,
@@ -313,7 +333,8 @@ interface EngineSessionListener {
         kind: PageErrorKind,
         isTopLevel: Boolean,
         errorCode: Int,
-        description: String?
+        description: String?,
+        certificate: EngineCertificate? = null
     ): Boolean = false
 
     /**

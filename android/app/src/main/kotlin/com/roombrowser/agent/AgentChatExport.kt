@@ -1,6 +1,7 @@
 package com.roombrowser.agent
 
 import com.roombrowser.domain.agent.SecretRedaction
+import com.roombrowser.domain.agent.UntrustedContent
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -109,7 +110,7 @@ object AgentChatExport {
                         appendLine("    args: $it")
                     }
                     message.toolResult?.takeIf { it.isNotBlank() }?.let {
-                        appendLine("    result: $it")
+                        appendLine("    result: ${UntrustedContent.payload(it)}")
                     }
                 }
             }

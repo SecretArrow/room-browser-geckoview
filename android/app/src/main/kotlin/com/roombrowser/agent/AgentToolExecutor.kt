@@ -7,6 +7,7 @@ import com.roombrowser.browser.PageEvent
 import com.roombrowser.domain.agent.ActionVerdict
 import com.roombrowser.domain.agent.AgentJson
 import com.roombrowser.domain.agent.AgentPause
+import com.roombrowser.domain.agent.AgentPlan
 import com.roombrowser.domain.agent.AgentStepVerifier
 import com.roombrowser.domain.agent.AgentTools
 import com.roombrowser.domain.agent.ChallengeDetector
@@ -20,6 +21,7 @@ import com.roombrowser.domain.agent.PageSnapshotDto
 import com.roombrowser.domain.agent.PageSnapshotFormatter
 import com.roombrowser.domain.agent.ReadinessSample
 import com.roombrowser.domain.agent.ReadinessVerdict
+import com.roombrowser.domain.agent.ScreenshotDiff
 import com.roombrowser.domain.agent.SecretRedaction
 import com.roombrowser.domain.agent.SiteMemory
 import com.roombrowser.domain.agent.SiteMemoryStore
@@ -213,6 +215,7 @@ class AgentToolExecutor(
                     AgentTools.SEARCH_WEB -> searchWeb(str(args, "query"))
                     AgentTools.READ_PAGE -> readPage()
                     AgentTools.SEE_PAGE -> seePage(args)
+                    AgentTools.COMPARE_SCREENSHOTS -> compareScreenshots()
                     AgentTools.CLICK -> click(int(args, "ref"))
                     AgentTools.FILL_INPUT -> fillInput(int(args, "ref"), str(args, "text"))
                     AgentTools.PRESS_ENTER -> pressEnter(intOrNull(args, "ref"))
@@ -241,6 +244,11 @@ class AgentToolExecutor(
                     AgentTools.SELECT_OPTION -> selectOption(int(args, "ref"), str(args, "value"))
                     AgentTools.PRESS_KEYS -> pressKeys(str(args, "keys"), intOrNull(args, "ref"))
                     AgentTools.WAIT_FOR -> waitFor(str(args, "text"), intOrNull(args, "timeout_ms"))
+                    AgentTools.DOWNLOAD_FILE -> downloadFile(str(args, "url"), strOrNull(args, "name"))
+                    AgentTools.SAVE_PDF -> savePdf(strOrNull(args, "name"))
+                    // The agent's own step list: nothing on the page, nothing
+                    // stored, and no gate — it changes only what the user reads.
+                    AgentTools.PLAN -> AgentPlan.execute(argsJson)
                     else -> ToolResult(false, "unknown tool: $name")
                 }
                 val withEvidence = before?.let { appendEvidence(raw, it) } ?: raw
@@ -262,6 +270,16 @@ class AgentToolExecutor(
      */
     suspend fun executeAppTool(name: String, argsJson: String): ToolResult? =
         appTools.execute(name, argsJson)
+
+    /**
+     * Queue a download through the browser's own engine, for a HEADLESS CHAT
+     * whose page is hidden but whose browser is up. Null when this profile has
+     * no download engine yet, so the caller never reports a file that was not
+     * queued.
+     */
+    suspend fun startDownload(url: String, name: String?): String? = withContext(Dispatchers.Main) {
+        control.startDownload(url, name)
+    }
 
     /** Snapshot text used for the "include current page" context feature. */
     suspend fun snapshotContext(): String? = withContext(Dispatchers.Main) {
@@ -343,13 +361,77 @@ class AgentToolExecutor(
             )
         }
         val session = boundSession() ?: return ToolResult(false, "no page is loaded in this chat's tab")
-        val shot = PageScreenshot.capture(session).getOrElse {
+        val shot = if (flag(args, "full_page")) {
+            PageScreenshot.captureFullPage(session, annotate = flag(args, "annotate"))
+        } else {
+            PageScreenshot.capture(session, annotate = flag(args, "annotate"))
+        }.getOrElse {
             return ToolResult(false, "could not capture the page: ${it.message ?: "unknown error"}")
         }
+        // Kept so `compare_screenshots` has something to compare against: the
+        // model should not have to take a picture twice to find out whether the
+        // page moved.
+        ScreenshotMemory.remember(session.id, shot)
         return ToolResult(
             true,
             screenshotSummary(shot, str(args, "question"), str(args, "reason")),
             images = listOf(shot.image)
+        )
+    }
+
+    /**
+     * Compares the page as it is now with the last frame the agent captured of
+     * this tab, which is the only honest answer to "did that do anything".
+     *
+     * It reports a verdict and sends the current picture, so a change the model
+     * needs to look at is already in front of it. A tab with no earlier frame
+     * is refused with the route that produces one rather than compared against
+     * nothing.
+     */
+    private suspend fun compareScreenshots(): ToolResult {
+        if (!vm.profileSettings().agentVisionEnabled) {
+            return ToolResult(
+                false,
+                "compare_screenshots is turned off for this profile — turn on \"Agent can see the page\" in AI Agent settings."
+            )
+        }
+        visionUnsupportedReason()?.let { why ->
+            return ToolResult(
+                false,
+                "compare_screenshots is not available on this provider — $why. Switch to a provider that accepts images."
+            )
+        }
+        val id = tabId
+        if (id != null && vm.tabs.firstOrNull { it.id == id }?.isPrivate == true) {
+            return ToolResult(
+                false,
+                "compare_screenshots is not available in a private tab: a screenshot of a private session is never sent to the model provider."
+            )
+        }
+        val session = boundSession() ?: return ToolResult(false, "no page is loaded in this chat's tab")
+        val before = ScreenshotMemory.last(session.id)
+            ?: return ToolResult(
+                false,
+                "there is no earlier screenshot of this tab to compare with. Take one with see_page, " +
+                    "do the thing you want to check, then call compare_screenshots."
+            )
+        val after = PageScreenshot.capture(session).getOrElse {
+            return ToolResult(false, "could not capture the page: ${it.message ?: "unknown error"}")
+        }
+        val beforeGrid = before.signature
+        val afterGrid = after.signature
+        if (beforeGrid == null || afterGrid == null) {
+            return ToolResult(false, "one of the two frames was not reduced, so they cannot be compared")
+        }
+        val diff = ScreenshotDiff.compare(
+            beforeGrid.pixels, beforeGrid.width, beforeGrid.height,
+            afterGrid.pixels, afterGrid.width, afterGrid.height
+        )
+        ScreenshotMemory.remember(session.id, after)
+        return ToolResult(
+            true,
+            comparisonSummary(before, after, diff),
+            images = listOf(after.image)
         )
     }
 
@@ -715,6 +797,68 @@ class AgentToolExecutor(
                     "load it later, show it only after a click, or never show it at all."
             )
         }
+    }
+
+    /**
+     * Queue a download of a link that leads to a FILE rather than to a page.
+     *
+     * Nothing on the page moves, so it needs no tab on screen — but it writes a
+     * file into the user's storage, so it goes through the same confirmation
+     * chain as a click. The transfer runs after this returns, which is why the
+     * answer says "queued" and names where its progress is read: a model that
+     * reports the file as saved here would be describing something that has not
+     * happened.
+     */
+    private suspend fun downloadFile(rawUrl: String?, name: String?): ToolResult {
+        val url = normalizeUrl(rawUrl)
+            ?: return ToolResult(false, "missing or invalid 'url' argument")
+        if (!url.startsWith("http://") && !url.startsWith("https://")) {
+            return ToolResult(false, "download_file needs an http(s) URL, and '$url' is not one")
+        }
+        val label = "download \"" + (name?.takeIf { it.isNotBlank() }
+            ?: url.substringAfterLast('/').takeIf { it.isNotBlank() } ?: url) + "\""
+        refuse(AgentTools.DOWNLOAD_FILE, label)?.let { return it }
+        val saved = control.startDownload(url, name)
+            ?: return ToolResult(
+                false,
+                "this profile's download engine is not up yet, so nothing was queued — open a page in " +
+                    "the browser and try again."
+            )
+        return ToolResult(
+            true,
+            "Queued the download as \"$saved\". It is NOT saved yet: the transfer runs in the " +
+                "background, so read app_data kind=downloads to see when it finishes before " +
+                "telling the user the file is there."
+        )
+    }
+
+    /**
+     * Saves the page in this chat's tab as a PDF, through the browser's own
+     * download engine, so it lands beside the user's other downloads.
+     *
+     * The engine's own answer comes first: an engine with no PDF renderer of
+     * its own says WHY, in words that name the route that does work, rather
+     * than this tool reporting a failure the model would retry unchanged.
+     */
+    private suspend fun savePdf(name: String?): ToolResult {
+        val session = boundSession() ?: return ToolResult(false, "no page is loaded in this chat's tab")
+        session.pdfUnsupportedReason()?.let { return ToolResult(false, it) }
+        val label = name?.takeIf { it.isNotBlank() }
+            ?.let { "save the page as \"$it\"" }
+            ?: "save the page as a PDF"
+        refuse(AgentTools.SAVE_PDF, label)?.let { return it }
+        val saved = control.savePdf(tabId, name)
+            ?: return ToolResult(
+                false,
+                "this profile's download engine is not up yet, so nothing was saved — open a page " +
+                    "in the browser and try again."
+            )
+        return ToolResult(
+            true,
+            "Asked the browser to save this page as \"$saved\". It is NOT there yet: rendering and " +
+                "writing happen in the background, so read app_data kind=downloads before telling " +
+                "the user the file exists — and if it never appears, the render failed."
+        )
     }
 
     // ------------------------------------------------------------- page safety
@@ -1090,6 +1234,19 @@ class AgentToolExecutor(
 
     private fun intOrNull(args: Map<String, Any?>, key: String): Int? =
         (args[key] as? Number)?.toInt() ?: (args[key] as? String)?.toIntOrNull()
+
+    /**
+     * A boolean argument. Absent, or anything that is not a recognisable
+     * boolean, is false — so an optional flag the model left out never turns a
+     * behaviour on by accident. The string forms are accepted because models
+     * write `"true"` as readily as `true`.
+     */
+    private fun flag(args: Map<String, Any?>, key: String): Boolean =
+        when (val value = args[key]) {
+            is Boolean -> value
+            is String -> value.equals("true", ignoreCase = true)
+            else -> false
+        }
 
     companion object {
         private const val SETTLE_MS = 350L

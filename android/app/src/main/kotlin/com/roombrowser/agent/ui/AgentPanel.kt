@@ -56,6 +56,8 @@ import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.BookmarkBorder
 import androidx.compose.material.icons.filled.BugReport
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.Checklist
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Description
@@ -67,6 +69,7 @@ import androidx.compose.material.icons.filled.KeyboardReturn
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Public
+import androidx.compose.material.icons.filled.RadioButtonUnchecked
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
@@ -143,7 +146,9 @@ import com.roombrowser.data.db.AgentProviderEntity
 import com.roombrowser.data.repo.AgentMode
 import com.roombrowser.domain.agent.AgentPause
 import com.roombrowser.domain.agent.AgentPauseLabels
+import com.roombrowser.domain.agent.AgentPlan
 import com.roombrowser.domain.agent.AgentTools
+import com.roombrowser.domain.agent.SessionApprovals
 import com.roombrowser.domain.paging.Paging
 import com.roombrowser.ui.common.LocalRoomExtras
 import com.roombrowser.ui.common.PagingFooter
@@ -686,14 +691,17 @@ private fun AgentConversation(
 ) {
     val listState = rememberLazyListState()
     val entries = agent.entries
+    val plan = agent.plan
 
     // Live auto-scroll: instant while streaming, animated for new entries.
-    // The ApprovalCard is composed as the item AFTER the last entry — when it
-    // is showing it is the true last item, so scroll past the last entry
-    // (index = entries.size) to keep the approval card above the fold.
-    LaunchedEffect(entries.size, entries.lastOrNull(), agent.approval) {
+    // The plan card and the ApprovalCard are composed as items AFTER the last
+    // entry, so when either is showing it is the true last item and the list
+    // has to scroll past the last entry to keep it above the fold.
+    LaunchedEffect(entries.size, entries.lastOrNull(), agent.approval, plan.size) {
         if (entries.isNotEmpty()) {
-            val lastItem = if (agent.approval != null) entries.size else entries.size - 1
+            var lastItem = entries.size - 1
+            if (plan.isNotEmpty()) lastItem++
+            if (agent.approval != null) lastItem++
             listState.scrollToItem(lastItem)
         }
     }
@@ -750,7 +758,75 @@ private fun AgentConversation(
                 is AgentEntry.Notice -> NoticeLine(entry)
             }
         }
+        if (plan.isNotEmpty()) item { PlanCard(plan) }
         agent.approval?.let { approval -> item { ApprovalCard(approval, agent) } }
+    }
+}
+
+/**
+ * The agent's own step list, as the model last wrote it.
+ *
+ * It is the one surface that shows the SHAPE of a long run rather than its
+ * individual steps: a scroll of tool cards says what happened, and this says
+ * what the agent set out to do, what it has finished and what it is on now.
+ * It changes nothing on the page and nothing is stored — the card is a view
+ * of the turn, so it disappears when the chat does.
+ */
+@Composable
+private fun PlanCard(items: List<AgentPlan.Item>) {
+    val done = items.count { it.status == AgentPlan.Status.DONE }
+    Surface(
+        shape = MaterialTheme.shapes.medium,
+        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
+        modifier = Modifier
+            .fillMaxWidth()
+            .semantics { contentDescription = "agent_plan" }
+    ) {
+        Column(Modifier.padding(horizontal = 12.dp, vertical = 10.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(
+                    Icons.Filled.Checklist,
+                    contentDescription = null,
+                    modifier = Modifier.size(16.dp),
+                    tint = MaterialTheme.colorScheme.primary
+                )
+                Spacer(Modifier.width(8.dp))
+                Text("Plan", style = MaterialTheme.typography.labelLarge)
+                Spacer(Modifier.weight(1f))
+                Text(
+                    "$done of ${items.size}",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            Spacer(Modifier.height(6.dp))
+            items.forEach { item ->
+                val (mark, tint) = when (item.status) {
+                    AgentPlan.Status.DONE ->
+                        Icons.Filled.CheckCircle to MaterialTheme.colorScheme.primary
+                    AgentPlan.Status.IN_PROGRESS ->
+                        Icons.Filled.PlayArrow to MaterialTheme.colorScheme.onSurface
+                    AgentPlan.Status.PENDING ->
+                        Icons.Filled.RadioButtonUnchecked to MaterialTheme.colorScheme.onSurfaceVariant
+                }
+                Row(
+                    verticalAlignment = Alignment.Top,
+                    modifier = Modifier.padding(vertical = 2.dp)
+                ) {
+                    Icon(mark, contentDescription = null, modifier = Modifier.size(14.dp), tint = tint)
+                    Spacer(Modifier.width(8.dp))
+                    Text(
+                        item.text,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = if (item.status == AgentPlan.Status.PENDING) {
+                            MaterialTheme.colorScheme.onSurfaceVariant
+                        } else {
+                            MaterialTheme.colorScheme.onSurface
+                        }
+                    )
+                }
+            }
+        }
     }
 }
 
@@ -980,6 +1056,7 @@ private fun toolIcon(name: String): ImageVector = when (name) {
     AgentTools.OPEN_NEW_TAB -> Icons.Filled.Add
     AgentTools.LIST_TABS, AgentTools.SWITCH_TAB -> Icons.Filled.Tab
     AgentTools.CLOSE_TAB -> Icons.Filled.Close
+    AgentTools.PLAN -> Icons.Filled.Checklist
     in AgentTools.DEVTOOLS_TOOLS -> Icons.Filled.BugReport
     else -> Icons.Filled.Search
 }
@@ -1029,6 +1106,14 @@ private fun ApprovalCard(approval: com.roombrowser.agent.AgentApproval, agent: B
                     }
                 }
             }
+            // The narrow answer, on its own line: it is the one a person
+            // reaches for when the same question has arrived three times, and
+            // it must be readable rather than the button pushed off the edge.
+            if (remembersSite(approval)) {
+                TextButton(onClick = { agent.respondApproval(ApprovalAnswer.AllowForSite) }) {
+                    Text("Allow on this site")
+                }
+            }
             Spacer(Modifier.height(2.dp))
             Text(
                 approvalFootnote(approval),
@@ -1037,6 +1122,19 @@ private fun ApprovalCard(approval: com.roombrowser.agent.AgentApproval, agent: B
         }
     }
 }
+
+/**
+ * Whether the prompt may offer the site-scoped answer at all. It is the one
+ * answer that has to be kept honestly, so it is withheld where it could not be:
+ * an action that cannot be undone, a wallet request, a tool whose own prompt is
+ * the point (a live authenticator code typed into a login form), and a page
+ * with no origin to file the answer under.
+ */
+private fun remembersSite(approval: com.roombrowser.agent.AgentApproval): Boolean =
+    approval.origin != null &&
+        !approval.destructive &&
+        approval.name != BrowserAgentController.WALLET_APPROVAL_NAME &&
+        approval.name !in SessionApprovals.NEVER_REMEMBERED
 
 /**
  * What the third answer does, which is not one thing: for a wallet request
@@ -1050,6 +1148,10 @@ private fun approvalFootnote(approval: com.roombrowser.agent.AgentApproval): Str
     approval.name == BrowserAgentController.WALLET_APPROVAL_NAME ->
         "\"Always allow\" covers this request only — wallet requests always ask, and " +
             "the next one asks again."
+    remembersSite(approval) ->
+        "\"Allow on this site\" stops this one tool asking again on ${approval.origin} " +
+            "until the chat ends; \"Always allow\" stops the agent asking about " +
+            "anything, until you turn it off in AI Agent settings."
     else ->
         "\"Always allow\" stops the agent asking about anything, until you turn it " +
             "off in AI Agent settings."
@@ -1112,6 +1214,11 @@ private fun AgentApprovalDialog(
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
                 verticalArrangement = Arrangement.spacedBy(4.dp)
             ) {
+                if (remembersSite(approval)) {
+                    TextButton(onClick = { agent.respondApproval(ApprovalAnswer.AllowForSite) }) {
+                        Text("Allow on this site")
+                    }
+                }
                 if (!approval.destructive) {
                     TextButton(onClick = { agent.respondApproval(ApprovalAnswer.AlwaysAllow) }) {
                         Text("Always allow")

@@ -72,6 +72,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.roombrowser.agent.AgentSettingsController
 import com.roombrowser.data.db.AgentProviderEntity
+import com.roombrowser.domain.agent.AgentConfig
 import com.roombrowser.domain.agent.AgentPermissions
 import com.roombrowser.domain.agent.RetryCodes
 import com.roombrowser.domain.agent.RetryPolicy
@@ -483,15 +484,7 @@ private fun AgentSettingsRoot(
                 steps = 9,
                 onCommit = { controller.updateSettings { s -> s.copy(temperature = (it * 10).toInt() / 10.0) } }
             )
-            SliderRow(
-                label = "Max steps per turn",
-                value = controller.settings.maxSteps.toFloat(),
-                valueLabel = controller.settings.maxSteps.toString(),
-                rangeStart = 5f,
-                rangeEnd = 50f,
-                steps = 8,
-                onCommit = { controller.updateSettings { s -> s.copy(maxSteps = it.toInt()) } }
-            )
+            MaxStepsField(controller)
 
             SystemPromptSection(controller, onApplied = { notice = "System prompt applied" })
 
@@ -570,7 +563,9 @@ private fun AgentSettingsRoot(
                     "are signed in to — while the browser's own screens, and the Developer Tools " +
                     "overlay, are never in it. Nothing is redacted, so anything drawn on the " +
                     "page, including a secret in a canvas, goes with it. It is refused in a " +
-                    "private tab, and it is unavailable on providers that take text only.",
+                    "private tab, and it is unavailable on providers that take text only. On by " +
+                    "default, because a page that reads as nothing is a task the agent would " +
+                    "otherwise give up on; turning this off takes see_page away.",
                 checked = controller.profileSettings.agentVisionEnabled,
                 onCheckedChange = { checked -> controller.setAgentVision(checked) }
             )
@@ -1184,6 +1179,54 @@ private fun RetryDelayField(controller: AgentSettingsController) {
                     } else {
                         "Enter a number from ${RetryPolicy.MIN_DELAY_SECONDS} to " +
                             "${RetryPolicy.MAX_DELAY_SECONDS}."
+                    }
+                )
+            },
+            isError = !inRange,
+            singleLine = true,
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number)
+        )
+    }
+}
+
+/**
+ * The step budget as a typed field. A slider stops where its range stops, and
+ * the useful answers here are not on a grid: a short lookup wants 10, a
+ * multi-page task wants 100. The ceiling is a runaway guard, not a preference,
+ * so the field takes any number inside it.
+ *
+ * Same rule as [RetryAttemptsField]: only a value in range is committed, so a
+ * half-typed number never writes a budget the loop would then honour.
+ */
+@Composable
+private fun MaxStepsField(controller: AgentSettingsController) {
+    var text by remember { mutableStateOf(controller.settings.maxSteps.toString()) }
+    val parsed = text.toIntOrNull()
+    val inRange = parsed != null &&
+        parsed in AgentConfig.MIN_STEPS..AgentConfig.MAX_STEPS
+    Column(Modifier.padding(horizontal = 16.dp, vertical = 6.dp)) {
+        OutlinedTextField(
+            value = text,
+            onValueChange = { typed ->
+                text = typed.filter { it.isDigit() }.take(3)
+                text.toIntOrNull()
+                    ?.takeIf { it in AgentConfig.MIN_STEPS..AgentConfig.MAX_STEPS }
+                    ?.let { n ->
+                        controller.updateSettings { s -> s.copy(maxSteps = n) }
+                    }
+            },
+            modifier = Modifier
+                .fillMaxWidth()
+                .semantics { contentDescription = "max_steps" },
+            label = { Text("Max steps per turn") },
+            supportingText = {
+                Text(
+                    if (inRange) {
+                        "How many actions one turn may take before it wraps up. " +
+                            "${AgentConfig.DEFAULT_STEPS} is the default; raise it for a task " +
+                            "that walks many pages."
+                    } else {
+                        "Enter a number from ${AgentConfig.MIN_STEPS} to ${AgentConfig.MAX_STEPS}."
                     }
                 )
             },

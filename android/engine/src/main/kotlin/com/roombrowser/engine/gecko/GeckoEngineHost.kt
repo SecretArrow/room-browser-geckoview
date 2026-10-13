@@ -194,6 +194,7 @@ internal class GeckoEngineHost : EngineHost {
         // Before the bridge and before any session: a page's FIRST script may
         // feature-detect the passkey API, and the answer must already be final.
         hideWebAuthn()
+        trustEnterpriseRoots()
         installBridge(created)
         // Applied here, not only from [setActivityDelegate]: the app's call
         // arrives before this runtime exists, and a delegate dropped on that
@@ -223,6 +224,29 @@ internal class GeckoEngineHost : EngineHost {
         GeckoPreferenceController.setGeckoPref(
             WEBAUTHN_PREF,
             false,
+            GeckoPreferenceController.PREF_BRANCH_USER
+        )
+    }
+
+    /**
+     * Accept the certificate authorities this device's owner installed.
+     *
+     * A network that inspects encrypted traffic presents a certificate signed
+     * by its own authority, and installing that authority in Android Settings
+     * is the deliberate way to say "I trust this network". This makes it an
+     * authority here too, so the site opens.
+     *
+     * THIS IS NOT A BYPASS and must not become one: the anchors are only
+     * widened to what the user already chose to trust, the engine still
+     * validates every connection against them, and a certificate that is
+     * untrusted under them is still refused. GeckoView exposes no "proceed
+     * anyway" path, and none is built here.
+     */
+    @androidx.annotation.OptIn(ExperimentalGeckoViewApi::class)
+    private fun trustEnterpriseRoots() {
+        GeckoPreferenceController.setGeckoPref(
+            ENTERPRISE_ROOTS_PREF,
+            true,
             GeckoPreferenceController.PREF_BRANCH_USER
         )
     }
@@ -929,6 +953,16 @@ internal class GeckoEngineHost : EngineHost {
 
         /** WebAuthn's master switch, `[Pref=...]` on the WebIDL interfaces. */
         const val WEBAUTHN_PREF = "security.webauth.webauthn"
+
+        /**
+         * Makes Gecko read the authorities the user installed on this device
+         * through Android Settings, not only the ones Mozilla ships.
+         *
+         * GeckoView has its own NSS trust store and does NOT read Android's
+         * `networkSecurityConfig` — the sibling edition's mechanism is not
+         * available here, so this pref is this edition's whole equivalent.
+         */
+        const val ENTERPRISE_ROOTS_PREF = "security.enterprise_roots.enabled"
 
         /** Passive/display mixed content; active content is already blocked by default. */
         const val MIXED_CONTENT_PREF = "security.mixed_content.block_display_content"

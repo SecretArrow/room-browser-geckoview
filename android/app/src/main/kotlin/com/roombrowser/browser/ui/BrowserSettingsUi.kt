@@ -662,6 +662,14 @@ fun ProfileSettingsScreen(viewModel: BrowserViewModel, onClose: () -> Unit) {
             )
             SettingSwitchRow(title = "JavaScript enabled", checked = settings.javascriptEnabled, onCheckedChange = { update(settings.copy(javascriptEnabled = it)) })
         }
+        InfoNote(
+            "Certificate validation is never bypassed, here or anywhere else in the app. " +
+                "This profile accepts the certificate authorities Android ships plus any you " +
+                "installed yourself in Android Settings — the second is what lets a site open " +
+                "on a network whose traffic is inspected, because that network's own authority " +
+                "is then a real authority to this device. A certificate that is not trusted " +
+                "under those authorities is still refused."
+        )
 
         SectionHeader("WebRTC")
         SettingsGroup {
@@ -1156,7 +1164,9 @@ fun ProfileSettingsScreen(viewModel: BrowserViewModel, onClose: () -> Unit) {
                     "are signed in to — while the browser's own screens, and the Developer Tools " +
                     "overlay, are never in it. Nothing is redacted, so anything drawn on the " +
                     "page, including a secret in a canvas, goes with it. It is refused in a " +
-                    "private tab, and it is unavailable on providers that take text only.",
+                    "private tab, and it is unavailable on providers that take text only. On by " +
+                    "default, because a page that reads as nothing is a task the agent would " +
+                    "otherwise give up on; turning this off takes see_page away.",
                 checked = settings.agentVisionEnabled,
                 onCheckedChange = { update(settings.copy(agentVisionEnabled = it)) }
             )

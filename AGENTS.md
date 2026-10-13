@@ -142,7 +142,13 @@ Keep CI fast — it is the only build loop there is:
 - When inspecting `~/.git-credentials` or `~/.netrc`, usernames only.
 - Never disable TLS or certificate validation globally, and never add a certificate-error
   bypass. GeckoView's advantage here is structural — it exposes no "proceed anyway" path
-  for a bad certificate, and the code must not build one.
+  for a bad certificate, and the code must not build one. **Trust anchors from the user are
+  not a bypass**: `security.enterprise_roots.enabled` (set in `GeckoEngineHost`, next to the
+  WebAuthn pref) makes Gecko read the CAs the person installed through Android Settings,
+  which is the standard way of saying "I trust this network". GeckoView does not read
+  Android's `networkSecurityConfig`, so that pref is this edition's whole equivalent — do
+  not add the sibling's XML file here. A certificate untrusted under those anchors is still
+  refused.
 - Never upload wallet files or private keys anywhere.
 - Do not introduce artificial delays or aggressive blocking.
 - Fix root causes. A comment explaining a workaround for a defect is a reason to check

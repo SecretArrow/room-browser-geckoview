@@ -561,6 +561,23 @@ internal class GeckoEngineSession(
     }
 
     /**
+     * No whole-document capture, so [captureFullPage] keeps the facade's
+     * default and this is what the agent is told instead.
+     *
+     * VERIFIED AGAINST THE ARTIFACT, NOT THE JAVADOC. Mozilla's published
+     * `GeckoDisplay.ScreenshotBuilder` page documents a `captureFullPage` and a
+     * `ContentMetrics`, but the version this repo pins (153.0.4) ships neither:
+     * its builder has exactly nine methods -- `source`, `aspectPreservingSize`,
+     * `scale`, `size`, `bitmap`, `capture`, `checkAndSetSizeType` -- and every
+     * one of them is bounded by the viewport the display renders. The javadoc
+     * tracks a newer GeckoView, so it is not evidence about this one.
+     */
+    override fun fullPageUnsupportedReason(): String =
+        "GeckoView, the engine this edition runs on, captures only the part of the page that " +
+            "is on screen, so there is no whole-page screenshot here. Scroll and take another " +
+            "shot instead."
+
+    /**
      * Render the current document to PDF.
      *
      * `saveAsPdf` is @HandlerThread -- an IO-dispatcher thread with no Looper
@@ -849,13 +866,20 @@ internal class GeckoEngineSession(
             // A failure on an app-supplied document carries that document as
             // its URI, so the error surface is handed the reported address
             // rather than the bytes; see [reportedUrl].
+            //
+            // The certificate is the evidence behind a certificate refusal, and
+            // GeckoView hands it over on the error itself. Only the CERTIFICATE
+            // kind reports it: the facade's contract is that the field is
+            // non-null exactly there, and the error surface reads it as "this is
+            // what the connection presented" rather than as a decoration.
             listener?.onPageError(
                 this@GeckoEngineSession,
                 reportedUrl(uri),
                 kind,
                 true,
                 pageErrorCode(error, kind),
-                "category=" + error.category + " code=" + error.code
+                "category=" + error.category + " code=" + error.code,
+                if (kind == PageErrorKind.CERTIFICATE) error.certificate?.toEngineCertificate() else null
             )
             // Always null: that hands the failure to GeckoView's own error page.
             //

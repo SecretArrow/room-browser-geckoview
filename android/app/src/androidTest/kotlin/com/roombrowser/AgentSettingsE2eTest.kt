@@ -229,6 +229,7 @@ class AgentSettingsE2eTest {
             "'Show AI Agent button' switch" to By.descContains("Show AI Agent button"),
             "retry switch" to By.descContains("Retry failed requests switch"),
             "retry_attempts field" to By.desc("retry_attempts"),
+            "max_steps field" to By.desc("max_steps"),
             "retry_delay field" to By.desc("retry_delay"),
             "retry_code_400 box" to By.desc("retry_code_400"),
             "agent hint text" to By.textContains("Ask the agent")
@@ -967,6 +968,23 @@ class AgentSettingsE2eTest {
         assertTrue(
             "Settings screen must list the saved provider",
             hasText("MockLLM", 15_000)
+        )
+
+        // ---- 6a2. The step budget is a typed field -------------------------
+        // It replaced a slider whose range stopped at 50, so its PRESENCE as
+        // an editable field is the thing worth asserting: a slider would not
+        // carry this content description at all. Presence only, like the
+        // retry switch below — the value it writes is pinned by
+        // AgentLoopTest, which drives the clamp directly, and a typed number
+        // left behind here would change the budget for every later test.
+        var stepsSeen = false
+        for (i in 1..12) {
+            if (hasDesc("max_steps", 700)) { stepsSeen = true; break }
+            dragUpQuarter()
+        }
+        assertTrue(
+            "The step budget must be a typed field on the agent settings screen",
+            stepsSeen
         )
 
         // ---- 6b. The local decision gate -----------------------------------

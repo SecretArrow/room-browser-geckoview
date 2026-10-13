@@ -58,6 +58,33 @@ interface BrowserControlApi {
     /** Opens the Developer Tools surface, pointed at [tabId] (or the tab on screen). */
     fun openDevToolsPanel(tabId: String?)
 
+    // ---- files ----
+
+    /**
+     * Queue a download of [url] through the profile's own download engine, the
+     * same one a link the user taps goes through, and return the file name it
+     * will be saved as — or null when this profile has no engine yet, so a
+     * caller never reports a file that was not queued.
+     *
+     * [name] is a suggestion: the engine still de-duplicates it and still takes
+     * the server's Content-Disposition when the URL itself names nothing. The
+     * transfer runs in the background and reports through the downloads list,
+     * so this returning is not the file arriving.
+     */
+    fun startDownload(url: String, name: String?): String?
+
+    /**
+     * Render [tabId]'s page — or the page on screen — to PDF and publish it
+     * through the profile's own download engine, returning the name it will be
+     * saved as, or null when this engine has no PDF renderer or no download
+     * engine is up yet.
+     *
+     * Like [startDownload], returning is the file being queued rather than the
+     * file arriving: the render and the write happen in the background and
+     * report through the downloads list.
+     */
+    fun savePdf(tabId: String?, name: String?): String?
+
     // ---- tab identity ----
 
     fun activeTabId(): String?

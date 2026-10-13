@@ -23,13 +23,17 @@ import com.roombrowser.domain.agent.AgentHttpException
 import com.roombrowser.domain.agent.AgentLoop
 import com.roombrowser.domain.agent.AgentPause
 import com.roombrowser.domain.agent.AgentPauseLabels
+import com.roombrowser.domain.agent.AgentPlan
 import com.roombrowser.domain.agent.AgentPrompts
 import com.roombrowser.domain.agent.AgentTools
 import com.roombrowser.domain.agent.AgentVisionSupport
 import com.roombrowser.domain.agent.AutoModelPicker
 import com.roombrowser.domain.agent.ChatMessage
 import com.roombrowser.domain.agent.LocalAiTuning
+import com.roombrowser.domain.agent.SessionApprovals
+import com.roombrowser.domain.agent.SiteMemory
 import com.roombrowser.domain.agent.ToolExecutor
+import com.roombrowser.domain.agent.UntrustedContent
 import com.roombrowser.domain.agent.formatDurationMs
 import com.roombrowser.domain.model.ProfileId
 import com.roombrowser.domain.model.SearchEngines
@@ -194,8 +198,14 @@ internal fun buildTurnHistory(
  * is hardest to reach — last in the row, labelled with what it actually does
  * rather than with a joke — because it is the one that removes every check
  * there is.
+ *
+ * [AllowForSite] is the narrow answer between the two: this tool, on this
+ * origin, for the rest of this chat. It is what a person actually means when
+ * they are being asked the same question for the third time, and it is offered
+ * only where it can honestly be kept — never for an action that cannot be
+ * undone, never for a wallet request, and never for a page with no origin.
  */
-enum class ApprovalAnswer { Allow, AlwaysAllow, Deny }
+enum class ApprovalAnswer { Allow, AllowForSite, AlwaysAllow, Deny }
 
 /** A pending action that waits for the user's Allow/Deny/Always-allow answer. */
 data class AgentApproval(
@@ -207,6 +217,12 @@ data class AgentApproval(
      * and Deny only: there is no answer here that switches the asking off.
      */
     val destructive: Boolean = false,
+    /**
+     * The origin this action is on, when it can be named. It is what the
+     * site-scoped answer would be remembered by, so the prompt offers that
+     * answer only when this is known — and says which site it means.
+     */
+    val origin: String? = null,
     val respond: (ApprovalAnswer) -> Unit
 )
 
@@ -260,6 +276,27 @@ class BrowserAgentController(
         private set
     var activeSessionId by mutableStateOf<Long?>(null)
         private set
+
+    /**
+     * The step list the model last wrote with `plan`, empty until it writes
+     * one. Held here rather than in the transcript because it is a view of the
+     * work in progress: the tool rows already record that a list was set, and
+     * what the user needs on screen is the CURRENT list, not every revision of
+     * it. It belongs to the chat, so a new chat, another chat and another tab
+     * all start empty.
+     */
+    var plan by mutableStateOf<List<AgentPlan.Item>>(emptyList())
+        private set
+
+    /**
+     * The "allow on this site for this session" answers, kept per controller —
+     * so they last as long as the chat the user is in and no longer. See
+     * [SessionApprovals] for what can never be remembered.
+     */
+    private val sessionApprovals = SessionApprovals()
+
+    /** Where the running turn's page is, or null when that cannot be said. */
+    private var originOfTurn: () -> String? = { null }
 
     /**
      * The last turn that did not finish, or null once one completes cleanly.
@@ -647,6 +684,10 @@ class BrowserAgentController(
         conversationRequest++
         val previous = activeSessionId
         activeSessionId = null
+        // A site-scoped approval belongs to the chat it was given in.
+        sessionApprovals.clear()
+        // So does the step list: the next chat plans its own work.
+        plan = emptyList()
         entries = emptyList()
         // A failed turn belongs to the chat it was asked in; a fresh chat is
         // not where its Retry button should still be waiting.
@@ -679,6 +720,8 @@ class BrowserAgentController(
                 conversationTabId = tabId
             }
             activeSessionId = session.id
+            sessionApprovals.clear()
+            plan = emptyList()
             entries = repo.messages(id).mapNotNull(::entryFromRow)
             retryable = null
         }
@@ -702,6 +745,9 @@ class BrowserAgentController(
         if (token != conversationRequest || vm.activeTabId != tabId) return
         conversationTabId = tabId
         activeSessionId = session?.id
+        // Another tab is another conversation, and usually another site.
+        sessionApprovals.clear()
+        plan = emptyList()
         entries = session?.let { repo.messages(it.id).mapNotNull(::entryFromRow) } ?: emptyList()
     }
 
@@ -737,14 +783,21 @@ class BrowserAgentController(
 
     private fun entryFromRow(row: AgentMessageEntity): AgentEntry? = when (row.role) {
         "user" -> AgentEntry.User(row.content, row.createdAt)
-        "assistant" -> AgentEntry.Assistant(row.content, "", streaming = false, row.createdAt)
+        "assistant" -> AgentEntry.Assistant(
+            text = UntrustedContent.stripMarkers(row.content),
+            thinking = "",
+            streaming = false,
+            at = row.createdAt
+        )
         "tool" -> AgentEntry.Tool(
             callId = "row_${row.id}",
             name = row.toolName ?: "tool",
             label = AgentTools.describeTool(row.toolName ?: "", row.toolArgs),
             running = false,
             ok = !row.content.startsWith("ERROR:"),
-            summary = row.content.take(200),
+            // Rows written before the fence stopped leaking still carry it,
+            // cut off mid-sentence.
+            summary = UntrustedContent.payload(row.content).take(200),
             at = row.createdAt
         )
         else -> null
@@ -900,6 +953,14 @@ class BrowserAgentController(
         runCatching { settings = appState.agentSettingsSnapshot() }
         running = true
         gateFailureNoted = false
+        // Where "this site" is for the approvals this turn asks about. The URL
+        // is the engine's, never the page's, and it is only trusted while the
+        // turn's tab is the one on screen — pageState describes that tab, so a
+        // background one would file the answer under a different site.
+        originOfTurn = {
+            val id = tabId
+            if (id != null && vm.isActiveTab(id)) SiteMemory.originOf(vm.pageState.url) else null
+        }
         // Background mode: foreground service + wake lock so the turn keeps
         // running when the user leaves the app or the screen turns off.
         AgentForeground.stopCurrentTurn = { stop() }
@@ -1040,7 +1101,10 @@ class BrowserAgentController(
                     },
                     siteMemory = GraphSiteMemoryStore(graph, profileId),
                     siteMemoryEnabled = { vm.profileSettings().agentSiteMemoryEnabled },
-                    scratchpad = pad
+                    scratchpad = pad,
+                    // The browser is up behind this hidden page, so a download
+                    // goes to the user's own Downloads and outlives the turn.
+                    download = { url, name -> visibleExecutor.startDownload(url, name) }
                 )
             } else {
                 null
@@ -1162,15 +1226,19 @@ class BrowserAgentController(
                             toolResult = event.summary
                         )
                     }
+                    is AgentEvent.PlanUpdated -> plan = event.items
                     is AgentEvent.FinalAnswer -> {
                         streamingIndex = finalizeAssistant(streamingIndex)
+                        // The model sometimes copies the fence's frame back out
+                        // of the tool result it just read.
+                        val answer = UntrustedContent.stripMarkers(event.text)
                         entries = entries + AgentEntry.Assistant(
-                            text = event.text,
+                            text = answer,
                             thinking = "",
                             streaming = false,
                             at = System.currentTimeMillis()
                         )
-                        repo.addMessage(sessionId, "assistant", event.text)
+                        repo.addMessage(sessionId, "assistant", answer)
                         repo.touchSession(sessionId)
                         setStatus(null)
                     }
@@ -1297,7 +1365,13 @@ class BrowserAgentController(
         if (index >= 0 && index < entries.size) {
             val entry = entries[index]
             if (entry is AgentEntry.Assistant && entry.streaming) {
-                entries = entries.toMutableList().apply { set(index, entry.copy(streaming = false)) }
+                // Tokens arrive one at a time, so the fence can only come off
+                // once the whole answer is in.
+                val done = entry.copy(
+                    streaming = false,
+                    text = UntrustedContent.stripMarkers(entry.text)
+                )
+                entries = entries.toMutableList().apply { set(index, done) }
             }
         }
         return -1
@@ -1333,7 +1407,12 @@ class BrowserAgentController(
         return try {
             withTimeout(APPROVAL_TIMEOUT_MS) {
                 suspendCancellableCoroutine { continuation ->
-                    approval = AgentApproval(name, label, SystemClock.elapsedRealtime()) { answer ->
+                    approval = AgentApproval(
+                        name = name,
+                        label = label,
+                        at = SystemClock.elapsedRealtime(),
+                        origin = originOfTurn()
+                    ) { answer ->
                         if (continuation.isActive) continuation.resume(answer)
                     }
                 }
@@ -1358,7 +1437,8 @@ class BrowserAgentController(
                     approval = AgentApproval(WALLET_APPROVAL_NAME, label, SystemClock.elapsedRealtime()) { answer ->
                         if (continuation.isActive) {
                             when (answer) {
-                                ApprovalAnswer.Allow -> continuation.resume(true)
+                                ApprovalAnswer.Allow, ApprovalAnswer.AllowForSite ->
+                                    continuation.resume(true)
                                 ApprovalAnswer.AlwaysAllow -> {
                                     note(
                                         "Wallet requests always ask — this one was allowed once, " +
@@ -1417,10 +1497,11 @@ class BrowserAgentController(
 
     private suspend fun destructiveVerdict(name: String, label: String): ActionVerdict =
         when (requestDestructiveApproval(name, label)) {
-            // AlwaysAllow is unreachable from the prompt this raises; mapping
-            // it to a plain Allow is the safe reading — it can never switch
-            // the asking off.
-            ApprovalAnswer.Allow, ApprovalAnswer.AlwaysAllow -> ActionVerdict.Allow
+            // AlwaysAllow and AllowForSite are unreachable from the prompt this
+            // raises; mapping them to a plain Allow is the safe reading — it can
+            // never switch the asking off.
+            ApprovalAnswer.Allow, ApprovalAnswer.AlwaysAllow, ApprovalAnswer.AllowForSite ->
+                ActionVerdict.Allow
             ApprovalAnswer.Deny -> ActionVerdict.Deny("the user denied this action, which cannot be undone")
         }
 
@@ -1439,9 +1520,14 @@ class BrowserAgentController(
      *     the user has pointed it at an Ollama decision model. It answers
      *     allow / confirm / deny, and only the first and last are settled
      *     here — "confirm" means the model declined to decide alone, which is
-     *     exactly what rule 2 is for.
-     *  2. **Confirm actions**, the blanket Allow/Deny prompt that has always
-     *     been there. Its third answer, "Always allow", turns rule 0 on.
+     *     exactly what rule 3 is for.
+     *  2. The **session memory** ([SessionApprovals]): an answer the user
+     *     already gave for this tool on this site, in this chat. It sits below
+     *     the local gate so a policy denial still denies — a deny never
+     *     interrupts anyone, so remembering an answer cannot take it away.
+     *  3. **Confirm actions**, the blanket Allow/Deny prompt that has always
+     *     been there. Its third answer, "Always allow", turns rule 0 on, and
+     *     the narrower "Allow on this site" is written into rule 2.
      *
      * So the gate can only ever *add* a decision. Turning rule 1 on never
      * takes away a prompt the user asked for, with one deliberate exception:
@@ -1451,7 +1537,7 @@ class BrowserAgentController(
      * policy text is the user's to write.
      *
      * A gate that is switched on and cannot answer is NOT an error the user
-     * has to clear — the turn continues under rule 2, and the chat says so.
+     * has to clear — the turn continues under rule 3, and the chat says so.
      * The consequence is worth stating plainly, and `SECURITY.md` does: with
      * **Confirm actions off and the gate unreachable, actions run ungated**,
      * exactly as they did before this feature existed. Confirm actions is the
@@ -1460,8 +1546,23 @@ class BrowserAgentController(
     private suspend fun gate(name: String, label: String): ActionVerdict {
         if (settings.yolo) return ActionVerdict.Allow
         localVerdict(name, label)?.let { return it }
+        val origin = originOfTurn()
+        if (sessionApprovals.allows(origin, name)) return ActionVerdict.Allow
         return when (requestApproval(name, label)) {
             ApprovalAnswer.Allow -> ActionVerdict.Allow
+            ApprovalAnswer.AllowForSite -> {
+                sessionApprovals.remember(origin, name)
+                note(
+                    if (sessionApprovals.allows(origin, name)) {
+                        "Allowed \"$name\" on $origin for this chat — it will not ask again here."
+                    } else {
+                        "Allowed once. There is no site to remember it by here, so the next " +
+                            "action asks again."
+                    },
+                    error = false
+                )
+                ActionVerdict.Allow
+            }
             ApprovalAnswer.AlwaysAllow -> {
                 updateSettings { it.copy(yolo = true) }
                 note(

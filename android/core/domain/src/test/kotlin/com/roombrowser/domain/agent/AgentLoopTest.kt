@@ -157,6 +157,43 @@ class AgentLoopTest {
     }
 
     @Test
+    fun `the step budget is clamped to the guard rails`() {
+        assertThat(config().steps).isEqualTo(8)
+        // A stored value below the floor or above the ceiling is clamped, not
+        // trusted: the ceiling is what stops a typed or migrated number from
+        // turning one turn into an unbounded run of provider calls.
+        assertThat(config(maxSteps = 0).steps).isEqualTo(AgentConfig.MIN_STEPS)
+        assertThat(config(maxSteps = -4).steps).isEqualTo(AgentConfig.MIN_STEPS)
+        assertThat(config(maxSteps = AgentConfig.MAX_STEPS + 1).steps)
+            .isEqualTo(AgentConfig.MAX_STEPS)
+        // The default is the one a fresh profile gets, and it has to survive
+        // the clamp or the setting would mean nothing.
+        assertThat(AgentConfig(model = "m", systemPrompt = "s").steps)
+            .isEqualTo(AgentConfig.DEFAULT_STEPS)
+    }
+
+    @Test
+    fun `a tool that failed twice is answered with a correction, not run again`() = runTest {
+        val executor = FakeExecutor(mapOf(AgentTools.CLICK to ToolResult(false, "no such element")))
+        val turns = List(4) { executor.toolCall("c$it", AgentTools.CLICK, """{"ref":3}""") } +
+            listOf(ChatMessage(role = "assistant", content = "Giving up."))
+        val gateway = FakeGateway(turns)
+        val loop = AgentLoop(gateway, executor, config(maxSteps = 5))
+        val history = mutableListOf(ChatMessage(role = "user", content = "click it"))
+        val events = mutableListOf<AgentEvent>()
+
+        loop.runTurn(history) { events.add(it) }
+
+        // Steps 1 and 2 ran and failed; from then on the call is refused before
+        // it reaches the executor, so the page is not touched again.
+        assertThat(executor.executed).hasSize(2)
+        val summaries = events.filterIsInstance<AgentEvent.ToolFinished>().map { it.summary }
+        assertThat(summaries[0]).contains("no such element")
+        assertThat(summaries[2]).contains("failed 2 times in a row")
+        assertThat(history.last().content).isEqualTo("Giving up.")
+    }
+
+    @Test
     fun `provider failure surfaces as fatal agent error`() = runTest {
         val gateway = object : AgentGateway {
             override suspend fun chat(request: ChatRequest, events: suspend (StreamEvent) -> Unit): ChatMessage =
@@ -191,6 +228,30 @@ class AgentLoopTest {
 
         val toolMsg = gateway.requests[1].messages.first { it.role == "tool" }
         assertThat(toolMsg.content!!.length).isEqualTo(AgentLoop.MAX_TOOL_RESULT_CHARS)
+    }
+
+    @Test
+    fun `the user-visible tool summary never carries the fence`() = runTest {
+        val page = "Sign in to continue."
+        val executor = object : ToolExecutor {
+            override suspend fun execute(name: String, argsJson: String): ToolResult =
+                ToolResult(true, UntrustedContent.wrap(page))
+        }
+        val toolTurn = ChatMessage(
+            role = "assistant",
+            toolCalls = listOf(ToolCall(id = "c", function = FunctionCall(AgentTools.READ_PAGE, "{}")))
+        )
+        val gateway = FakeGateway(listOf(toolTurn, ChatMessage(role = "assistant", content = "ok")))
+        val loop = AgentLoop(gateway, executor, config())
+        val events = mutableListOf<AgentEvent>()
+
+        loop.runTurn(mutableListOf(ChatMessage(role = "user", content = "go"))) { events.add(it) }
+
+        assertThat(events.filterIsInstance<AgentEvent.ToolFinished>().single().summary)
+            .isEqualTo(page)
+        // The model's copy keeps the fence: that half is the defence.
+        val toolMsg = gateway.requests[1].messages.first { it.role == "tool" }
+        assertThat(toolMsg.content).contains(UntrustedContent.BEGIN)
     }
 
     @Test

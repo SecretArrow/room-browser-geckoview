@@ -65,6 +65,7 @@ import com.roombrowser.domain.wallet.chains.octra.OctDocument
 import com.roombrowser.domain.wallet.chains.octra.RpcCircleSource
 import com.roombrowser.domain.wallet.model.ChainType
 import com.roombrowser.engine.BlockedResourceSink
+import com.roombrowser.engine.EngineCertificate
 import com.roombrowser.engine.EngineProxyConfig
 import com.roombrowser.engine.EngineSession
 import com.roombrowser.engine.PageErrorKind
@@ -101,7 +102,18 @@ data class PageState(
 sealed interface PageError {
     data class NoInternet(val url: String) : PageError
     data class Unreachable(val url: String) : PageError
-    data class Ssl(val url: String, val message: String) : PageError
+
+    /**
+     * [certificate] is what the connection presented, when the engine could
+     * report it. Null is "the engine did not say", which the error page prints
+     * as such — never as an empty certificate.
+     */
+    data class Ssl(
+        val url: String,
+        val message: String,
+        val certificate: EngineCertificate? = null
+    ) : PageError
+
     data class DnsFailure(val url: String) : PageError
     data class Generic(val url: String, val message: String?) : PageError
 }
@@ -198,6 +210,18 @@ class BrowserViewModel(
     var pageState by mutableStateOf(PageState())
         private set
     var pageError by mutableStateOf<PageError?>(null)
+        private set
+
+    /**
+     * The proxy the engine's page traffic is going through right now, as
+     * `host:port`, or null when it is going direct.
+     *
+     * Read by the certificate error page, which is the one screen where the
+     * cause of the failure is a question the user can act on. Set where the
+     * decision is handed to the engine, so it says what is in force and not
+     * what was requested.
+     */
+    var pageProxyLabel by mutableStateOf<String?>(null)
         private set
 
     /**
@@ -401,6 +425,29 @@ class BrowserViewModel(
     fun answerFileChooser(uris: Array<Uri>?) {
         pendingFileChooser?.accept?.invoke(uris)
         pendingFileChooser = null
+    }
+
+    /**
+     * A page the user asked to keep, waiting for the browser UI to print it.
+     *
+     * The print sheet belongs to the Activity and the engine module only ever
+     * holds an Application context, so the request travels to the UI as state
+     * rather than being carried out here. [nonce] makes asking twice for the
+     * same page a new request: two identical requests would compare equal and
+     * the second print would never be raised.
+     */
+    data class PrintRequest(
+        val tabId: String,
+        val jobName: String,
+        val nonce: Long = System.nanoTime()
+    )
+
+    var pendingPrint by mutableStateOf<PrintRequest?>(null)
+        private set
+
+    /** Clears the outstanding print request once the UI has raised the sheet. */
+    fun answerPrint() {
+        pendingPrint = null
     }
 
     /** Answers the outstanding challenge with credentials. */
@@ -665,9 +712,15 @@ class BrowserViewModel(
             pageState = pageState.copy(loading = false)
         }
 
-        override fun onSslError(session: EngineSession, url: String, errorCode: Int, description: String?) {
+        override fun onSslError(
+            session: EngineSession,
+            url: String,
+            errorCode: Int,
+            description: String?,
+            certificate: EngineCertificate?
+        ) {
             if (session !== activeSession) return
-            pageError = PageError.Ssl(url, sslErrorText(errorCode))
+            pageError = PageError.Ssl(url, sslErrorText(errorCode), certificate)
             pageState = pageState.copy(loading = false)
         }
 
@@ -1059,6 +1112,7 @@ class BrowserViewModel(
             emitMessage("This engine cannot use a ${decided.candidate.scheme.id.uppercase()} proxy")
         }
         ProfileEngine.setProxy(candidate?.let { EngineProxyConfig(it.host, it.port, it.scheme) })
+        pageProxyLabel = candidate?.let { "${it.host}:${it.port}" }
         if (decided is ProxyDecision.Unavailable) {
             emitMessage("No working proxy found — loading directly")
         }
@@ -2148,10 +2202,13 @@ class BrowserViewModel(
 
     // ---------- Downloads ----------
 
-    fun download(url: String, suggestedName: String, mime: String, userAgent: String? = null) {
+    /** Queues a download; false when this profile has no engine yet, so a caller does not report a file that was never queued. */
+    fun download(url: String, suggestedName: String, mime: String, userAgent: String? = null): Boolean {
         if (::downloadEngine.isInitialized) {
             downloadEngine.enqueue(url, suggestedName, mime, userAgent)
+            return true
         }
+        return false
     }
 
     fun pauseDownload(id: Long) { if (::downloadEngine.isInitialized) downloadEngine.pause(id) }
@@ -2400,33 +2457,76 @@ class BrowserViewModel(
     // ---------- Save as PDF ----------
 
     /**
-     * Render the active page to PDF and publish it through the download engine,
-     * so it lands in Download/RoomBrowser beside a retrieved file. A null
-     * stream means the engine could not produce one.
+     * Keep the page the user is looking at as a PDF.
+     *
+     * An engine that renders PDFs itself is asked directly and the file lands
+     * in Downloads/RoomBrowser; one that does not is routed to the platform
+     * print sheet, whose destinations include Save as PDF. The print sheet
+     * belongs to the Activity and the engine module only holds an Application
+     * context, so that route travels to the UI as state — see [PrintRequest].
      */
     fun savePageAsPdf() {
         val session = activeSession
-        if (session == null) {
+        val id = activeTabId
+        if (session == null || id == null) {
             showMessage("No page to save")
             return
         }
-        session.saveAsPdf { stream ->
-            if (stream == null) {
-                showMessage("Could not save this page as PDF")
-                return@saveAsPdf
-            }
-            downloadEngine.saveStream(
-                suggestedName = "page-${System.currentTimeMillis()}.pdf",
-                mime = "application/pdf",
-                source = stream,
-                limitBytes = DownloadEngine.MAX_INLINE_BYTES
-            ) { ok ->
+        if (session.pdfUnsupportedReason() == null) {
+            saveTabAsPdf(id, null) { ok ->
                 showMessage(
                     if (ok) "Saved to Downloads/RoomBrowser"
                     else "Could not save this page as PDF"
                 )
             }
+            return
         }
+        pendingPrint = PrintRequest(id, session.title?.takeIf { it.isNotBlank() } ?: "page")
+    }
+
+    /**
+     * Render [tabId]'s page to PDF and publish it through the download engine,
+     * answering the name it will be saved as — or null when this engine has no
+     * PDF renderer, or no download engine is up yet, so a caller never reports
+     * a file that was not queued.
+     *
+     * The rendering and the write happen in the background, so returning is
+     * not the file arriving; [onResult] reports whether it did.
+     */
+    fun saveTabAsPdf(tabId: String?, name: String?, onResult: (Boolean) -> Unit = {}): String? {
+        val session = tabId?.let { tabSession(it) } ?: activeSession ?: return null
+        if (session.pdfUnsupportedReason() != null) return null
+        if (!::downloadEngine.isInitialized) return null
+        val suggested = pdfFileName(name ?: session.title)
+        session.saveAsPdf { stream ->
+            if (stream == null) {
+                onResult(false)
+                return@saveAsPdf
+            }
+            downloadEngine.saveStream(
+                suggestedName = suggested,
+                mime = "application/pdf",
+                source = stream,
+                limitBytes = DownloadEngine.MAX_INLINE_BYTES,
+                onResult = onResult
+            )
+        }
+        return suggested
+    }
+
+    /**
+     * A file name from a page title or a model's suggestion, either of which is
+     * arbitrary text: a `/` in it would otherwise become a directory in the
+     * Downloads path rather than a character in a name.
+     */
+    private fun pdfFileName(raw: String?): String {
+        val cleaned = raw.orEmpty()
+            .replace(Regex("""[\\/:*?"<>|\p{Cntrl}]"""), " ")
+            .trim()
+            .take(80)
+            .trim()
+        val base = cleaned.takeIf { it.isNotBlank() } ?: "page-${System.currentTimeMillis()}"
+        return if (base.endsWith(".pdf", ignoreCase = true)) base else "$base.pdf"
     }
 
     // ---------- Clear data ----------
@@ -2627,6 +2727,28 @@ class BrowserViewModel(
         viewModelScope.launch(Dispatchers.Main) {
             updateSettings(updated)
             reapplyProxy(updated)
+        }
+    }
+
+    /**
+     * Turn this profile's proxy off for good, from the certificate page.
+     *
+     * Writes exactly what the Privacy screen's own switch writes, so the two
+     * cannot disagree, and goes through [reapplyProxy] so the session pick a
+     * network warning may have recorded is cleared and the engine is re-handed
+     * its page proxy before the page is retried.
+     */
+    fun disableProxyForProfile() {
+        val updated = profileSettings().copy(
+            proxyMode = ProxyMode.OFF,
+            proxyHost = null,
+            proxyPort = 0,
+            proxyPinnedId = null
+        )
+        viewModelScope.launch(Dispatchers.Main) {
+            updateSettings(updated)
+            reapplyProxy(updated)
+            reload()
         }
     }
 
@@ -3265,7 +3387,11 @@ class BrowserViewModel(
      */
     private fun sslErrorText(errorCode: Int): String = when (errorCode) {
         SSL_EXPIRED, SSL_DATE_INVALID -> "The site's certificate has expired."
-        SSL_IDMISMATCH -> "The site's certificate does not match its hostname."
+        // NOT "the site's certificate". A network that intercepts TLS presents
+        // its own certificate for the host that was asked for, and this is the
+        // code the platform reports for that — so the certificate is named as
+        // the thing that does not match, never the site as the thing at fault.
+        SSL_IDMISMATCH -> "The certificate does not match the site's hostname."
         SSL_NOTYETVALID -> "The site's certificate is not valid yet."
         SSL_UNTRUSTED -> "The site's certificate is not trusted."
         SSL_INVALID -> "The site's certificate is invalid."
