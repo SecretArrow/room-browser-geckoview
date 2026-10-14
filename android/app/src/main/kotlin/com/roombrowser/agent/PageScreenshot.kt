@@ -121,27 +121,30 @@ object PageScreenshot {
      * A page taller than [ScrollStitch.MAX_STRIPS] viewports is captured to the
      * cap and the result SAYS it is short of the bottom; it is never silently
      * truncated and never presented as the whole page.
+     *
+     * The numbered overlay, when asked for, is re-installed for every strip
+     * rather than once for the capture -- [drawStrips] says why.
      */
     suspend fun captureFullPage(
         session: EngineSession,
         annotate: Boolean = false,
         capturedAtMillis: Long = System.currentTimeMillis()
-    ): Result<CapturedScreenshot> = withAnnotation(session, annotate) { labels ->
+    ): Result<CapturedScreenshot> {
         val metrics = parseInts(evaluateJs(session, PageInjector.metricsJs()), 3)
-            ?: return@withAnnotation Result.failure(IllegalStateException(NO_PAGE))
+            ?: return Result.failure(IllegalStateException(NO_PAGE))
         val documentCss = metrics[0]
         val viewportCss = metrics[1]
         val startCss = metrics[2]
         val plan = ScrollStitch.plan(documentCss, viewportCss)
         if (plan.strips.isEmpty()) {
-            return@withAnnotation Result.failure(IllegalStateException(NO_PAGE))
+            return Result.failure(IllegalStateException(NO_PAGE))
         }
 
         val viewSize = withContext(Dispatchers.Main) { session.view.width to session.view.height }
         val widthPx = viewSize.first
         val heightPx = viewSize.second
         if (widthPx <= 0 || heightPx <= 0) {
-            return@withAnnotation Result.failure(IllegalStateException(NO_FRAME))
+            return Result.failure(IllegalStateException(NO_FRAME))
         }
 
         // CSS pixels are not device pixels: a phone lays out at ~360 CSS px wide
@@ -156,11 +159,12 @@ object PageScreenshot {
         val output = try {
             createBitmap(outputSize.width, outputSize.height)
         } catch (t: Throwable) {
-            return@withAnnotation Result.failure(t)
+            return Result.failure(t)
         }
-        try {
-            if (drawStrips(session, plan, scale, widthPx, output) == 0) {
-                return@withAnnotation Result.failure(IllegalStateException(NO_FRAME))
+        return try {
+            val stitched = drawStrips(session, plan, scale, widthPx, output, annotate)
+            if (stitched.drawn == 0) {
+                return Result.failure(IllegalStateException(NO_FRAME))
             }
             withContext(Dispatchers.Default) {
                 try {
@@ -171,7 +175,7 @@ object PageScreenshot {
                             url = session.url,
                             capturedAtMillis = capturedAtMillis,
                             frame = encoded.frame,
-                            annotatedLabels = labels,
+                            annotatedLabels = stitched.labels,
                             documentHeightCss = documentCss,
                             capturedHeightCss = plan.capturedHeightCss
                         )
@@ -181,7 +185,15 @@ object PageScreenshot {
                 }
             }
         } finally {
-            withContext(NonCancellable) { runCatching { restoreScroll(session, startCss) } }
+            withContext(NonCancellable) {
+                // The overlay is DOM the page did not write, so it goes whatever
+                // happened -- and before the scroll goes back, so the user never
+                // sees the last strip's numbers over the restored page.
+                if (annotate) {
+                    runCatching { evaluateJs(session, PageInjector.clearAnnotationJs()) }
+                }
+                runCatching { restoreScroll(session, startCss) }
+            }
             output.recycle()
         }
     }
@@ -194,6 +206,9 @@ object PageScreenshot {
      * write, so leaving it behind would change the user's page permanently --
      * and it would be left behind on exactly the runs that failed, which are the
      * ones nobody looks at again.
+     *
+     * One install, at the offset being captured: right for a viewport shot, and
+     * wrong for [captureFullPage], which scrolls and so installs its own.
      */
     private suspend fun <T> withAnnotation(
         session: EngineSession,
@@ -212,24 +227,44 @@ object PageScreenshot {
     }
 
     /**
-     * Scrolls through [plan] and paints each frame at its own document offset.
-     * Returns how many frames were drawn, so a caller can tell an empty image
-     * from a real one.
+     * Scrolls through [plan] and paints each frame at its own document offset,
+     * re-installing the numbered overlay for each one when [annotate] is set.
+     *
+     * THE OVERLAY IS PER STRIP, NOT PER CAPTURE. It is `position: fixed` and
+     * every position in it comes from `getBoundingClientRect()`, so it describes
+     * only the scroll offset it was installed at. Installed once and then
+     * scrolled, it would paint the first screenful's numbers at the first
+     * screenful's screen positions into every later strip, over content they do
+     * not name.
+     *
+     * So it goes in AFTER the scroll -- the rects have to be measured at the
+     * offset being captured -- and BEFORE the frame boundary, so the frame that
+     * answers the capture is composited after the overlay, not before it.
      */
     private suspend fun drawStrips(
         session: EngineSession,
         plan: ScrollStitchPlan,
         scale: Double,
         viewportWidthPx: Int,
-        output: Bitmap
-    ): Int {
+        output: Bitmap,
+        annotate: Boolean
+    ): Stitched {
         val canvas = Canvas(output)
         // Device pixels -> pixels of the output, which is already downscaled, so
         // a frame is drawn at whatever size the output has room for.
         val shrink = output.width.toFloat() / viewportWidthPx
         var drawn = 0
+        var labels: Int? = null
         for (strip in plan.strips) {
             val at = scrollTo(session, strip.scrollCss) ?: break
+            if (annotate) {
+                val count = parseInts(evaluateJs(session, PageInjector.annotateJs()), 1)
+                    ?.firstOrNull()
+                // The fullest screenful's count, not a total: the image holds the
+                // union of the strips and two of them can overlap, so no single
+                // total is honest -- only that numbers are on it.
+                if (count != null) labels = maxOf(labels ?: 0, count)
+            }
             // The copy is of the window's surface, so the frame that answers it
             // is the one composited after the scroll, not before: waiting on a
             // frame boundary is what makes the two line up.
@@ -250,7 +285,7 @@ object PageScreenshot {
                 frame.recycle()
             }
         }
-        return drawn
+        return Stitched(drawn, labels)
     }
 
     /** Scroll the page and report where it actually landed, or null on failure. */
@@ -281,6 +316,9 @@ object PageScreenshot {
         }
 
     private class Encoded(val image: AgentImage, val frame: ScreenshotFrame)
+
+    /** What one pass over the strips produced; [labels] is null when none were asked for. */
+    private class Stitched(val drawn: Int, val labels: Int?)
 
     private fun encode(bitmap: Bitmap): Encoded {
         val size = AgentVisionBounds.scaledSize(bitmap.width, bitmap.height)
@@ -357,8 +395,9 @@ object PageScreenshot {
  * the current page is visible rather than silently believed. A whole-document
  * capture adds what the picture cannot say for itself: how tall the page is,
  * how much of it is in the image, and that it has been scaled down. An
- * annotated one says how many numbers were drawn, because "the picture has no
- * numbers on it" and "the numbers were installed and then removed" look the
+ * annotated one says that numbers were drawn -- and how many, for a viewport
+ * shot, which is the only one with a count to give -- because "the picture has
+ * no numbers on it" and "the numbers were installed and then removed" look the
  * same to the model.
  */
 internal fun screenshotSummary(
@@ -391,9 +430,13 @@ internal fun screenshotSummary(
     val labels = shot.annotatedLabels
     if (labels != null) {
         if (labels > 0) {
+            // Only a viewport capture has a count to give: a whole-document one is
+            // the union of several screenfuls, so the most it can honestly say is
+            // that numbers are on it.
+            append(if (shot.documentHeightCss == null) " $labels elements are" else " Elements are")
             append(
-                " $labels elements are boxed and numbered with the same [ref] numbers " +
-                    "read_page gives, so a number in the picture is what click and fill_input take."
+                " boxed and numbered with the same [ref] numbers read_page gives, so a " +
+                    "number in the picture is what click and fill_input take."
             )
         } else {
             append(

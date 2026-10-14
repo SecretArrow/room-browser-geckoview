@@ -192,9 +192,14 @@ object PageInjector {
      * the two would drift apart on the page where it matters.
      *
      * Only elements intersecting the viewport are labelled, and only up to
-     * [MAX_ANNOTATIONS] of them: the overlay is `position: fixed`, so it is
-     * redrawn for whatever is on screen -- which also means a scrolled,
-     * stitched capture gets each element's number on the strip it appears in.
+     * [MAX_ANNOTATIONS] of them. Every position in the overlay comes from
+     * `getBoundingClientRect()` under `position: fixed`, so one install
+     * describes ONE scroll offset -- it does not follow the page. A caller that
+     * scrolls must therefore run this again once it has, which is what a
+     * stitched whole-page capture does, once per strip. Run once and then
+     * scrolled, it leaves the first screenful's numbers at the first
+     * screenful's screen positions on every later strip, over content they do
+     * not name.
      *
      * Returns how many labels were drawn. The caller MUST remove the overlay
      * afterwards; it is DOM the page did not write.
