@@ -63,7 +63,13 @@ data class AgentConfig(
      * The turn may not change anything until it has written a step list with
      * `plan`. An attempt before that is answered with [AgentPlan.NUDGE]
      * instead of being executed, so the model reads it as the result of its
-     * own call. Off for a scheduled run, which has no user watching a list.
+     * own call.
+     *
+     * On for every chat mode and for a scheduled run alike. A scheduled run
+     * has nobody watching the list, but it still has to say what it is doing
+     * before it does it, and the list is what its progress is reported
+     * against. Plan mode sets it too and is closed off a second way: its tool
+     * gate refuses every action, so [planIsTheAnswer] is what bites there.
      */
     val planBeforeActions: Boolean = false,
     /**

@@ -131,7 +131,7 @@ listed below; the two that must have their tab on screen are marked.
 | `see_page(question?, full_page?, annotate?)` | Screenshots this chat's tab and sends the image to the provider; `full_page` stitches the whole document (scaled down) and `annotate` draws the `[ref]` numbers onto the elements — *off unless the profile enables it; refused on text-only providers and in a private tab* (see below) |
 | `compare_screenshots(tolerance?)` | Captures the page and reports how much of it changed, and where, against the last screenshot taken in this turn — the cheap "did that click do anything?" check that sends the provider no second image |
 | `site_memory(op, key, …)` | Reads, writes or forgets a per-site note kept for this profile — *off unless the profile enables it* (see below) |
-| `plan(items)` | The agent's own step list, shown to you as a checklist card with what it has finished and what it is on now. It sends the **whole list every call** (it replaces the previous one) and touches no page; the app keeps the last list on the chat, so the card comes back when the chat is reopened — see **The step list** below |
+| `plan(items)` | The agent's own step list, shown to you as a checklist card with what it has finished and what it is on now. It sends the **whole list every call** (it replaces the previous one) and touches no page; the app keeps the last list on the chat, so the card comes back when the chat is reopened, and a **scheduled run** is required to write one too — with no card to show it on, the count of steps left open is reported on the task's row — see **The step list** below |
 | `download_file(url, name?)` | Hands a link that leads to a **file** (an invoice PDF, a CSV export, an image) to the browser's own download engine, so it lands in Downloads/RoomBrowser and the transfer outlives the turn. It queues the file and returns — the file is not ready when the call answers, so the agent checks `app_data kind=downloads`. Confirmed like a click, refused in plan mode, and refused in a scheduled run (see below) |
 | `save_pdf(name?)` | Keeps the **page itself** — a receipt, a ticket, a statement — as a PDF in Downloads/RoomBrowser. Use it when the user wants the page they are on kept, and `download_file` when a link already points at a file. Queues the same way a download does, confirmed like a click, refused in plan mode, and refused where there is no page on screen to render (see below) |
 
@@ -464,6 +464,11 @@ Honest limits:
 * **A stored list that cannot be read opens as no list at all** rather than
   failing the chat: the column is one string per chat, and a chat must still
   open on a version that wrote a shape this build does not know.
+* **A scheduled run has no card and no transcript**, so the two notices a chat
+  turn shows inline — the count of steps still open, and the step budget running
+  out — are appended to the answer the task row shows instead. The row is the
+  only place that run is read from, and a run that ended with steps open must
+  not read as one that finished.
 * **Nothing here is page-derived**, so the card is not fenced: the steps are the
   model's own sentences about the task.
 * **A refusal names the words that work**, so a model that misspells a status
@@ -471,8 +476,8 @@ Honest limits:
 
 **Status in this build:** implemented — the tool is in the catalogue for chat
 turns and scheduled runs alike, and the card is `PlanCard` in the agent panel.
-Chat turns require a list before they act; a **scheduled run does not**, because
-there is no one watching a checklist and its budget is spent on the task.
+Both require a list before they act, a scheduled run included: nobody watching
+an unattended run is the reason it needs the list, not the reason it does not.
 
 ### Downloads (`download_file`) — a link that is a file
 
