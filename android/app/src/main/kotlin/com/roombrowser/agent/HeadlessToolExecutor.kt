@@ -115,6 +115,16 @@ class HeadlessToolExecutor(
      */
     private val scratchpad: AgentScratchpad? = null,
     /**
+     * The embedded Node runtime, as this profile. Null leaves `node_run`
+     * unavailable rather than running a program with no identity to send.
+     */
+    private val nodeRuntime: AgentNodeRuntime? = null,
+    /**
+     * The npm packages `node_packages` installs for that runtime. Null leaves
+     * the tool unavailable rather than pretending a package was installed.
+     */
+    private val nodePackages: AgentNodePackages? = null,
+    /**
      * The agent's per-site memory, scoped to the profile this run works as.
      * Null — every scheduled run — leaves the tool unavailable rather than
      * writing under a profile the run was not given.
@@ -140,6 +150,13 @@ class HeadlessToolExecutor(
 
     private val lastStartedAt = AtomicLong(0L)
     private val lastFinishedAt = AtomicLong(0L)
+
+    /**
+     * The last frame this turn captured, for `compare_screenshots`. Held here
+     * rather than in a store because the executor is built per turn: the
+     * comparison is only ever against the page as it was a moment ago.
+     */
+    private val screenshotHistory = ScreenshotHistory()
 
     private val profileTools: AgentProfileTools? = profileData?.let {
         AgentProfileTools(
@@ -173,7 +190,7 @@ class HeadlessToolExecutor(
                     AgentTools.SEARCH_WEB -> searchWeb(str(args, "query"))
                     AgentTools.READ_PAGE -> readPage()
                     AgentTools.SEE_PAGE -> seePage(args)
-                    AgentTools.COMPARE_SCREENSHOTS -> compareScreenshots()
+                    AgentTools.COMPARE_SCREENSHOTS -> compareScreenshots(args)
                     AgentTools.CLICK -> click(int(args, "ref"))
                     AgentTools.FILL_INPUT -> fillInput(int(args, "ref"), str(args, "text"))
                     AgentTools.PRESS_ENTER -> pressEnter(intOrNull(args, "ref"))
@@ -188,6 +205,8 @@ class HeadlessToolExecutor(
                     AgentTools.WAIT -> waitTool(intOrNull(args, "ms"))
                     AgentTools.RUN_JS -> runJs(str(args, "script"))
                     AgentTools.COMPUTE_JS -> computeJs(str(args, "script"))
+                    AgentTools.NODE_RUN -> runNode(str(args, "script"))
+                    AgentTools.NODE_PACKAGES -> runNodePackages(args)
                     AgentTools.DATA_TRANSFORM -> dataTransform(args)
                     AgentTools.SITE_MEMORY -> siteMemoryTool(args)
                     AgentTools.SELECT_OPTION -> selectOption(int(args, "ref"), str(args, "value"))
@@ -354,14 +373,15 @@ class HeadlessToolExecutor(
                 "see_page is not available on this provider — $why. Switch to a provider that accepts images."
             )
         }
-        val shot = if (flag(args, "full_page")) {
-            PageScreenshot.captureFullPage(session, annotate = flag(args, "annotate"))
+        val annotate = bool(args, "annotate")
+        val shot = (if (bool(args, "full_page")) {
+            PageScreenshot.captureFullPage(session, annotate)
         } else {
-            PageScreenshot.capture(session, annotate = flag(args, "annotate"))
-        }.getOrElse {
+            PageScreenshot.capture(session, annotate)
+        }).getOrElse {
             return ToolResult(false, "could not capture the page: ${it.message ?: "unknown error"}")
         }
-        ScreenshotMemory.remember(session.id, shot)
+        shot.frame?.let { screenshotHistory.record(it) }
         return ToolResult(
             true,
             screenshotSummary(shot, str(args, "question"), str(args, "reason")),
@@ -369,50 +389,25 @@ class HeadlessToolExecutor(
         )
     }
 
-    /**
-     * The same comparison a chat turn gets, against the last frame of this
-     * run's page.
-     *
-     * A headless run has one page and no tab list, so the key is the session's
-     * own id — which is the same key the chat executor uses for the same tab,
-     * so a run that follows a chat compares against what the chat last saw.
-     */
-    private suspend fun compareScreenshots(): ToolResult {
+    private suspend fun compareScreenshots(args: Map<String, Any?>): ToolResult {
         if (!visionEnabled()) {
             return ToolResult(
                 false,
-                "compare_screenshots is turned off for this profile — turn on \"Agent can see the page\" in AI Agent settings."
+                "compare_screenshots is turned off for this profile — turn on \"Agent can see " +
+                    "the page\" in AI Agent settings."
             )
         }
         visionUnsupportedReason()?.let { why ->
             return ToolResult(
                 false,
-                "compare_screenshots is not available on this provider — $why. Switch to a provider that accepts images."
+                "compare_screenshots is not available on this provider — $why. Switch to a " +
+                    "provider that accepts images."
             )
         }
-        val before = ScreenshotMemory.last(session.id)
-            ?: return ToolResult(
-                false,
-                "there is no earlier screenshot of this page to compare with. Take one with see_page, " +
-                    "do the thing you want to check, then call compare_screenshots."
-            )
-        val after = PageScreenshot.capture(session).getOrElse {
-            return ToolResult(false, "could not capture the page: ${it.message ?: "unknown error"}")
-        }
-        val beforeGrid = before.signature
-        val afterGrid = after.signature
-        if (beforeGrid == null || afterGrid == null) {
-            return ToolResult(false, "one of the two frames was not reduced, so they cannot be compared")
-        }
-        val diff = ScreenshotDiff.compare(
-            beforeGrid.pixels, beforeGrid.width, beforeGrid.height,
-            afterGrid.pixels, afterGrid.width, afterGrid.height
-        )
-        ScreenshotMemory.remember(session.id, after)
-        return ToolResult(
-            true,
-            comparisonSummary(before, after, diff),
-            images = listOf(after.image)
+        return compareWithLastScreenshot(
+            session,
+            screenshotHistory,
+            intOrNull(args, "tolerance") ?: ScreenshotDiff.DEFAULT_TOLERANCE
         )
     }
 
@@ -551,6 +546,45 @@ class HeadlessToolExecutor(
             true,
             "Scratchpad result (a detached page — the run's own page was not touched):\n" + clip(unquote(raw))
         )
+    }
+
+    /**
+     * Runs a program in the embedded Node runtime. A headless CHAT has one; a
+     * scheduled run is refused the tool before it gets here (see
+     * [AiTaskPermissions.ToolGroup.NODE]), so this message is the one a caller
+     * that built the executor without a runtime reads.
+     */
+    private suspend fun runNode(script: String?): ToolResult {
+        val code = nonBlank(script) ?: return ToolResult(false, "missing 'script' argument")
+        val runtime = nodeRuntime
+            ?: return ToolResult(false, "node_run is not available in this run")
+        return runtime.run(code)
+    }
+
+    /**
+     * Manages the packages `node_run` can `require`. A scheduled run is refused
+     * the tool before it gets here (see [AiTaskPermissions.ToolGroup.NODE]), so
+     * this message is the one a caller that built the executor without a store
+     * reads.
+     */
+    private suspend fun runNodePackages(args: Map<String, Any?>): ToolResult {
+        val packages = nodePackages
+            ?: return ToolResult(false, "node_packages is not available in this run")
+        return when (val action = str(args, "action")?.lowercase()) {
+            "list" -> packages.list()
+            "install" -> {
+                val name = nonBlank(str(args, "name"))
+                    ?: return ToolResult(false, "action=install needs a 'name' argument")
+                packages.install(name, str(args, "spec"))
+            }
+            "remove" -> {
+                val name = nonBlank(str(args, "name"))
+                    ?: return ToolResult(false, "action=remove needs a 'name' argument")
+                packages.remove(name)
+            }
+            null -> ToolResult(false, "missing 'action' argument")
+            else -> ToolResult(false, "unknown node_packages action: $action")
+        }
     }
 
     /**
@@ -784,16 +818,12 @@ class HeadlessToolExecutor(
 
     private fun int(args: Map<String, Any?>, key: String): Int? = intOrNull(args, key)
 
+    /** Optional booleans default to false: an absent flag is the cheaper behaviour. */
+    private fun bool(args: Map<String, Any?>, key: String): Boolean =
+        (args[key] as? Boolean) ?: (args[key] as? String)?.toBooleanStrictOrNull() ?: false
+
     private fun intOrNull(args: Map<String, Any?>, key: String): Int? =
         (args[key] as? Number)?.toInt() ?: (args[key] as? String)?.toIntOrNull()
-
-    /** A boolean argument; absent or unrecognised is false. */
-    private fun flag(args: Map<String, Any?>, key: String): Boolean =
-        when (val value = args[key]) {
-            is Boolean -> value
-            is String -> value.equals("true", ignoreCase = true)
-            else -> false
-        }
 
     companion object {
         private const val SETTLE_MS = 350L
@@ -822,11 +852,7 @@ class HeadlessToolExecutor(
          */
         internal val SUPPORTED_TOOLS: Set<String> = setOf(
             AgentTools.NAVIGATE, AgentTools.SEARCH_WEB, AgentTools.READ_PAGE,
-            AgentTools.SEE_PAGE,
-            // Reads this run's own page and starts no load, so it means the
-            // same thing here as in a chat turn — the comparison is arithmetic
-            // over two frames, with no tab to choose and nothing to confirm.
-            AgentTools.COMPARE_SCREENSHOTS,
+            AgentTools.SEE_PAGE, AgentTools.COMPARE_SCREENSHOTS,
             AgentTools.CLICK, AgentTools.FILL_INPUT, AgentTools.PRESS_ENTER,
             AgentTools.SCROLL, AgentTools.GO_BACK, AgentTools.RELOAD, AgentTools.FORWARD,
             AgentTools.AUTO_LIKE,
@@ -844,6 +870,11 @@ class HeadlessToolExecutor(
             // database, never the page, so a headless run reaches it exactly as
             // a chat turn does — and its own opt-in gate still applies.
             AgentTools.SITE_MEMORY,
+            // A program in the embedded runtime, and the tool that installs
+            // packages for it, are not about the page, so they are recognised
+            // here — and a scheduled run is refused them by the task's own
+            // permissions, not by being absent from this set.
+            AgentTools.NODE_RUN, AgentTools.NODE_PACKAGES,
             // The step list touches neither the page nor the profile: it is
             // the model's own working state, so a run keeps one too.
             AgentTools.PLAN

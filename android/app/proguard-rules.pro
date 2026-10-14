@@ -43,6 +43,11 @@
 -keep interface com.roombrowser.localai.engine.LlamaEngineApi { *; }
 -keep class com.roombrowser.localai.engine.LlamaEngine { *; }
 
+# Embedded Node runtime (JNI): the native method is found by its mangled name,
+# so the class and the method both have to survive shrinking.
+-keepclasseswithmembernames class com.roombrowser.node.NodeBridge { native <methods>; }
+-keep class com.roombrowser.node.NodeBridge { *; }
+
 # --- Multi-chain wallet (:core:wallet) — web3j-crypto + jackson + tuweni ---
 # First exercised by the R8 release build (CI release job). The crypto paths
 # are invoked directly, but web3j/jackson reference optional deps (slf4j,

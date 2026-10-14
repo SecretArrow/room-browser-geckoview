@@ -111,6 +111,15 @@ class AgentPermissionsTest {
     }
 
     @Test
+    fun `the node tools both ride the one node permission`() {
+        listOf(AgentTools.NODE_RUN, AgentTools.NODE_PACKAGES).forEach { tool ->
+            assertThat(AgentPermissions.required(tool)).containsExactly(AgentPermissions.AGENT_NODE)
+        }
+        assertThat(AgentPermissions.refusal(AgentTools.NODE_PACKAGES, setOf(AgentPermissions.AGENT_NODE)))
+            .isNotNull()
+    }
+
+    @Test
     fun `every permission has a label and a description`() {
         AgentPermissions.ALL.forEach { permission ->
             assertThat(AgentPermissions.label(permission)).isNotEqualTo(permission)

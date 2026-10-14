@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!--
+        The runtime runs in a process of its own, which is what makes it
+        killable and keeps a Node crash out of the browser's process. It is NOT
+        a security boundary between the two: the process shares the app's UID
+        and its data directory, so a package that got hold of the app's files
+        would read them either way. The isolation is memory and crashes, and
+        saying more than that would be claiming something this does not do.
+    -->
+    <application>
+        <service
+            android:name="com.roombrowser.node.NodeService"
+            android:process=":node"
+            android:exported="false" />
+    </application>
+
+</manifest>

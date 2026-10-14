@@ -196,6 +196,16 @@
             android:exported="false"
             android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboard|keyboardHidden|density|uiMode" />
         <!--
+          The npm packages installed beside the embedded Node runtime — its OWN
+          activity in the default process, like the other agent screens. The list
+          is read from the shared data directory, and the runtime is never started
+          to show it.
+        -->
+        <activity
+            android:name=".agent.ui.AgentPackagesActivity"
+            android:exported="false"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboard|keyboardHidden|density|uiMode" />
+        <!--
           The default-context editor — its OWN activity (default process, no
           WebView), reached from the agent panel's context chip and from AI
           Agent settings, so a paragraph has a screen to be written on.

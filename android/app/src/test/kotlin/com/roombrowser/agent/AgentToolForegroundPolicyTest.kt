@@ -45,9 +45,8 @@ class AgentToolForegroundPolicyTest {
         // it does not have to wait for the tab. A tab that is not attached to a
         // display has no frame and the tool fails honestly rather than waiting.
         AgentTools.SEE_PAGE,
-        // Comparing against the last frame captures this chat's own engine and
-        // starts no load — the same shape as SEE_PAGE, and it refuses honestly
-        // when there is no earlier frame of this tab to compare with.
+        // The same capture again, and the comparison happens in this process:
+        // nothing about it needs the tab the user is looking at.
         AgentTools.COMPARE_SCREENSHOTS,
         AgentTools.SCROLL,
         AgentTools.OPEN_NEW_TAB,
@@ -76,6 +75,12 @@ class AgentToolForegroundPolicyTest {
         // page, so it needs no tab on screen and starts no navigation. Its
         // per-profile opt-in is the gate, not this list.
         AgentTools.SITE_MEMORY,
+        // node_run runs in a process of its own and touches no page of this
+        // app's, so it needs no tab on screen and starts no navigation.
+        AgentTools.NODE_RUN,
+        // node_packages reads and writes the directory beside that runtime, not
+        // a page, so it too needs no tab on screen and starts no navigation.
+        AgentTools.NODE_PACKAGES,
         // plan is the model's own step list: it touches no page and starts no
         // navigation, so it keeps working while the user is on another tab.
         AgentTools.PLAN,

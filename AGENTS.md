@@ -41,6 +41,9 @@ change belongs in the sibling:
   through the engine facade, never through a raw engine type.
 - `android/app/src/main/kotlin/com/roombrowser/data/`, `theme/`, `qr/`, `ui/` (except the
   engine host), `localai/`.
+- `android/node/` — the embedded Node.js runtime (`libnode.so` + the JNI shim + the
+  runtime-side `bridge.js`). It names no engine type, so it is byte-identical in both
+  editions; only the packaging in `app/build.gradle.kts` and the CI download step differ.
 - `desktop/` — the C desktop edition is engine-independent and identical in both.
 - Everything under `android/app/src/main/assets/room_bridge/` that is page-side JavaScript
   with no engine API in it.
@@ -100,6 +103,16 @@ outside `:engine`; run it in the fast `quality` job, never discover it in e2e.
   the build rather than shipping an APK that dies in `System.loadLibrary`.
 - Expect APKs far larger than the WebView edition's ~16 MB. That is inherent to bundling
   an engine, not a defect.
+- **The pinned engine has no whole-page capture.** Mozilla's published
+  `GeckoDisplay.ScreenshotBuilder` page documents a `captureFullPage` and a `ContentMetrics`,
+  but the pinned build (`153.0.20260810162159`) ships neither: its builder has exactly nine
+  methods (`source`, `aspectPreservingSize`, `scale`, `size`, `bitmap`, `capture`,
+  `checkAndSetSizeType` and two overloads of the setters), every one of them bounded by the
+  viewport the display renders. The javadoc tracks a newer GeckoView, so it is not evidence
+  about this one. That is why `see_page(full_page=true)` is built above the facade — it
+  scrolls, captures viewport strips through `capturePixels` and stitches them with
+  `ScrollStitch` in `:core/domain` — and why no `captureFullPage` member exists on
+  `EngineSession`.
 
 ## Build, test and release — CI only
 

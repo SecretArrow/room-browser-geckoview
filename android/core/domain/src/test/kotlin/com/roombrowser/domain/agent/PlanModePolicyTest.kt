@@ -43,6 +43,14 @@ class PlanModePolicyTest {
     }
 
     @Test
+    fun `the node tools are refused in plan mode`() {
+        // Running a program and installing one both reach past the page a plan
+        // is supposed to be about, so neither belongs in a plan-only turn.
+        assertThat(PlanModePolicy.refusal(AgentTools.NODE_RUN, null)).isNotNull()
+        assertThat(PlanModePolicy.refusal(AgentTools.NODE_PACKAGES, null)).isNotNull()
+    }
+
+    @Test
     fun `app_2fa is refused only when it types into the page`() {
         assertThat(PlanModePolicy.refusal(AgentTools.APP_2FA, "fill")).isNotNull()
         listOf("list", "code", "copy").forEach { action ->

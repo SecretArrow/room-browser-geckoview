@@ -24,11 +24,12 @@ object AgentPermissions {
     const val DEVTOOLS_SECURITY = "devtools.security"
     const val EXPORT_DIAGNOSTICS = "agent.exportDiagnostics"
     const val AGENT_COMPUTE = "agent.compute"
+    const val AGENT_NODE = "agent.node"
 
     /** Every permission this build knows, for the settings screen and the tests. */
     val ALL = setOf(
         DEVTOOLS_READ, DEVTOOLS_NETWORK, DEVTOOLS_STORAGE, DEVTOOLS_COOKIES,
-        DEVTOOLS_SECURITY, EXPORT_DIAGNOSTICS, AGENT_COMPUTE
+        DEVTOOLS_SECURITY, EXPORT_DIAGNOSTICS, AGENT_COMPUTE, AGENT_NODE
     )
 
     /**
@@ -58,6 +59,14 @@ object AgentPermissions {
 
         AgentTools.DATA_TRANSFORM -> setOf(AGENT_COMPUTE)
 
+        // Wider than the scratchpad in every direction: Node's own APIs, the
+        // profile's files and the open network. It is its own permission for
+        // that reason rather than riding AGENT_COMPUTE. Installing a package
+        // reaches the registry and writes under the same directory, so it
+        // rides the same switch.
+        AgentTools.NODE_RUN,
+        AgentTools.NODE_PACKAGES -> setOf(AGENT_NODE)
+
         else -> emptySet()
     }
 
@@ -82,6 +91,7 @@ object AgentPermissions {
         DEVTOOLS_SECURITY -> "Read the connection's security"
         EXPORT_DIAGNOSTICS -> "Export diagnostic reports"
         AGENT_COMPUTE -> "Compute in a scratchpad"
+        AGENT_NODE -> "Run JavaScript in the embedded Node runtime"
         else -> permission
     }
 
@@ -101,6 +111,8 @@ object AgentPermissions {
             "Lets the agent build a diagnostic report and save it for the user to share. The report is redacted, but it is still a file leaving the profile, so it is its own permission."
         AGENT_COMPUTE ->
             "Lets the agent evaluate JavaScript in a detached scratchpad page to calculate and transform data it already has. The scratchpad has no network, no filesystem and no packages, and it cannot see or change the page you are on."
+        AGENT_NODE ->
+            "Lets the agent run a JavaScript program in the Node.js runtime embedded in this app, with Node's own APIs behind it: it can reach the network, write files in this profile's own storage and use packages you installed. It runs in a process of its own, but that process shares this app's identity and data directory, so a program that means harm is not contained by it. Every request it makes carries this profile's user agent."
         else -> permission
     }
 }

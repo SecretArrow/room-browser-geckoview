@@ -275,6 +275,10 @@ dependencies {
     // above the facade, so this stays true rather than merely intended.
     implementation(project(":engine"))
 
+    // The embedded Node runtime. Names no engine type either, so it is shared
+    // with the sibling edition byte for byte.
+    implementation(project(":node"))
+
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.appcompat)
     implementation(libs.androidx.activity.compose)
@@ -360,6 +364,9 @@ dependencies {
 
     androidTestImplementation(libs.androidx.test.core)
     androidTestImplementation(libs.androidx.test.junit)
+    // The runtime's classes are `implementation` in the app, so the instrumented
+    // suite names them through this rather than by accident.
+    androidTestImplementation(project(":node"))
     androidTestImplementation(libs.androidx.espresso)
     androidTestImplementation(libs.androidx.uiautomator)
     androidTestImplementation(libs.androidx.room.testing)

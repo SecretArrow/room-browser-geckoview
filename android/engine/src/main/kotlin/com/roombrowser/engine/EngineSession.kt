@@ -36,26 +36,6 @@ data class EnginePageScripts(
 )
 
 /**
- * A capture of the whole document, and the truth about what it covers.
- *
- * [image] alone would be a claim the engine cannot support: a long page cannot
- * be rendered into one bitmap without a size limit, so the honest answer is the
- * picture AND the document's real size AND whether the picture is all of it.
- * A caller handed only the bitmap would describe a truncated capture as the
- * page, which is the failure this type exists to prevent.
- *
- * [documentHeight] is in the same pixels as [image], so a caller can say what
- * fraction of the page it is looking at without knowing anything about the
- * engine's scale.
- */
-data class EngineFullPageShot(
-    val image: Bitmap,
-    val documentWidth: Int,
-    val documentHeight: Int,
-    val truncated: Boolean
-)
-
-/**
  * One browsing session: a tab.
  *
  * DELIBERATELY NOT A DATA CLASS, and implementations must not override
@@ -200,32 +180,6 @@ interface EngineSession {
      * for the visible tab.
      */
     fun capturePixels(onResult: (Bitmap?) -> Unit)
-
-    /**
-     * Capture the WHOLE document rather than the part of it on screen.
-     *
-     * [capturePixels] answers "what is the user looking at"; this answers "what
-     * does the page say", which is the question a model reading a long article,
-     * a receipt or a table actually has. The two are not interchangeable and
-     * the result carries its own dimensions so a caller can tell them apart.
-     *
-     * The default reports null and [fullPageUnsupportedReason] says why, so an
-     * engine without this capability refuses rather than handing back a
-     * viewport image under a full-page name.
-     */
-    fun captureFullPage(onResult: (EngineFullPageShot?) -> Unit) = onResult(null)
-
-    /**
-     * Why [captureFullPage] cannot work on this engine, or null when it can.
-     *
-     * The default is a REFUSAL rather than null, unlike [pdfUnsupportedReason]:
-     * an engine that overrides neither member simply has no full-page capture,
-     * and a caller must be told that instead of receiving a screenshot of the
-     * wrong size. An engine that can do it overrides this to null.
-     */
-    fun fullPageUnsupportedReason(): String? =
-        "This browser's engine can only capture the part of the page that is on screen, " +
-            "so it cannot take a whole-page screenshot. Scroll and take another shot instead."
 
     /**
      * Render the current document to PDF and hand the raw bytes to [onResult].

@@ -4,6 +4,13 @@ build/
 */*/build/
 app/build/
 core/domain/build/
+node/build/
+
+# Embedded Node runtime — CI downloads the pinned release (58-65 MB per ABI);
+# it never belongs in a public repository. A checkout without it still
+# configures: see node/src/main/cpp/CMakeLists.txt.
+node/src/main/jniLibs/
+node/src/main/cpp/nodejs-mobile/
 
 # Gradle
 .gradle/

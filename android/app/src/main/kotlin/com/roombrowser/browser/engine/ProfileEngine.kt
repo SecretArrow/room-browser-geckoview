@@ -128,6 +128,15 @@ object ProfileEngine {
     fun boundProfile(): ProfileId? = host.boundProfile()
 
     /**
+     * The identity this engine sends when a profile picks none of its own — the
+     * second half of [UserAgents.effectiveUserAgent]'s answer, and what the
+     * Node runtime is given when a profile is in DEFAULT mode. Null when the
+     * engine cannot say.
+     */
+    fun defaultUserAgent(context: Context): String? =
+        runCatching { host.defaultUserAgent(context) }.getOrNull()
+
+    /**
      * Hand the engine a way to open a system window on its behalf.
      *
      * Reachable from `:app` without naming the engine: [EngineActivityDelegate]

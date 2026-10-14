@@ -319,6 +319,36 @@ jobs:
       - name: Cache Gradle
         uses: gradle/actions/setup-gradle@v5
 
+      - name: Fetch the Node runtime (nodejs-mobile, pinned)
+        # libnode.so is 58-65 MB per ABI and does not belong in a public
+        # repository, so CI downloads the pinned release instead of it being
+        # committed. The CMake configure tolerates its absence — a checkout
+        # without it still builds, it just builds an APK whose runtime reports
+        # itself unavailable — so this is a build input, not a release-only one.
+        # The pinned release ships arm64-v8a, armeabi-v7a and x86_64 and no
+        # 32-bit x86: that ABI's shim is compiled without libnode on purpose
+        # (android/node/src/main/cpp/CMakeLists.txt).
+        working-directory: android
+        run: |
+          set -euo pipefail
+          TAG=v18.20.4
+          ZIP="$RUNNER_TEMP/nodejs-mobile-android.zip"
+          curl -sSL --retry 3 -o "$ZIP" \
+            "https://github.com/nodejs-mobile/nodejs-mobile/releases/download/${TAG}/nodejs-mobile-${TAG}-android.zip"
+          for abi in arm64-v8a armeabi-v7a x86_64; do
+            mkdir -p "node/src/main/jniLibs/$abi"
+            unzip -o -j "$ZIP" "bin/$abi/libnode.so" -d "node/src/main/jniLibs/$abi" > /dev/null
+          done
+          mkdir -p node/src/main/cpp/nodejs-mobile
+          unzip -o -q "$ZIP" 'include/*' -d node/src/main/cpp/nodejs-mobile
+          test -f node/src/main/cpp/nodejs-mobile/include/node/node.h \
+            || { echo "::error::the Node headers were not unpacked"; exit 1; }
+          for abi in arm64-v8a armeabi-v7a x86_64; do
+            test -f "node/src/main/jniLibs/$abi/libnode.so" \
+              || { echo "::error::libnode.so is missing for $abi"; exit 1; }
+          done
+          echo "Node runtime unpacked: $(du -sh node/src/main/jniLibs | cut -f1)"
+
       - name: Static analysis (Android Lint)
         working-directory: android
         run: ./gradlew lintDebug --console=plain
@@ -473,6 +503,30 @@ jobs:
             echo "$(basename "$apk"): lib/${abi}/libxul.so present ($(du -h "$apk" | cut -f1))"
           done
 
+      - name: Report the release APK sizes
+        working-directory: android
+        # A measurement, not a gate. The embedded Node runtime adds tens of MB
+        # per ABI, and the only way a further jump gets noticed is for the
+        # number to be printed on every run rather than estimated once. The
+        # per-ABI libnode.so is listed beside it because that is where such a
+        # change would come from.
+        run: |
+          set -euo pipefail
+          for apk in app/build/outputs/apk/release/*.apk; do
+            printf 'release APK: %s MB (%s bytes)  %s\n' \
+              "$(( $(stat -c%s "$apk") / 1024 / 1024 ))" "$(stat -c%s "$apk")" "$(basename "$apk")"
+            # HOW the native payload is stored, not just how big it is. A
+            # deflated libnode.so is unpacked at install time, and that is the
+            # one thing the zip-level packaging check below cannot see: it
+            # accepts a deflated library as readily as a stored one.
+            unzip -v "$apk" 'lib/*/libnode.so' 2>/dev/null | grep 'libnode\.so' || true
+          done
+          for so in node/src/main/jniLibs/*/libnode.so; do
+            [ -f "$so" ] || continue
+            printf 'libnode.so:  %s MB (%s bytes)  %s\n' \
+              "$(( $(stat -c%s "$so") / 1024 / 1024 ))" "$(stat -c%s "$so")" "$so"
+          done
+
       - name: Check the release APKs' archive packaging
         working-directory: android
         # The rules `zipalign -c -P 16` enforces: every Stored entry on a
@@ -598,6 +652,36 @@ jobs:
 
       - name: Cache Gradle
         uses: gradle/actions/setup-gradle@v5
+
+      - name: Fetch the Node runtime (nodejs-mobile, pinned)
+        # libnode.so is 58-65 MB per ABI and does not belong in a public
+        # repository, so CI downloads the pinned release instead of it being
+        # committed. The CMake configure tolerates its absence — a checkout
+        # without it still builds, it just builds an APK whose runtime reports
+        # itself unavailable — so this is a build input, not a release-only one.
+        # The pinned release ships arm64-v8a, armeabi-v7a and x86_64 and no
+        # 32-bit x86: that ABI's shim is compiled without libnode on purpose
+        # (android/node/src/main/cpp/CMakeLists.txt).
+        working-directory: android
+        run: |
+          set -euo pipefail
+          TAG=v18.20.4
+          ZIP="$RUNNER_TEMP/nodejs-mobile-android.zip"
+          curl -sSL --retry 3 -o "$ZIP" \
+            "https://github.com/nodejs-mobile/nodejs-mobile/releases/download/${TAG}/nodejs-mobile-${TAG}-android.zip"
+          for abi in arm64-v8a armeabi-v7a x86_64; do
+            mkdir -p "node/src/main/jniLibs/$abi"
+            unzip -o -j "$ZIP" "bin/$abi/libnode.so" -d "node/src/main/jniLibs/$abi" > /dev/null
+          done
+          mkdir -p node/src/main/cpp/nodejs-mobile
+          unzip -o -q "$ZIP" 'include/*' -d node/src/main/cpp/nodejs-mobile
+          test -f node/src/main/cpp/nodejs-mobile/include/node/node.h \
+            || { echo "::error::the Node headers were not unpacked"; exit 1; }
+          for abi in arm64-v8a armeabi-v7a x86_64; do
+            test -f "node/src/main/jniLibs/$abi/libnode.so" \
+              || { echo "::error::libnode.so is missing for $abi"; exit 1; }
+          done
+          echo "Node runtime unpacked: $(du -sh node/src/main/jniLibs | cut -f1)"
 
       - name: Enable KVM
         run: |
@@ -998,6 +1082,36 @@ jobs:
 
       - name: Cache Gradle
         uses: gradle/actions/setup-gradle@v5
+
+      - name: Fetch the Node runtime (nodejs-mobile, pinned)
+        # libnode.so is 58-65 MB per ABI and does not belong in a public
+        # repository, so CI downloads the pinned release instead of it being
+        # committed. The CMake configure tolerates its absence — a checkout
+        # without it still builds, it just builds an APK whose runtime reports
+        # itself unavailable — so this is a build input, not a release-only one.
+        # The pinned release ships arm64-v8a, armeabi-v7a and x86_64 and no
+        # 32-bit x86: that ABI's shim is compiled without libnode on purpose
+        # (android/node/src/main/cpp/CMakeLists.txt).
+        working-directory: android
+        run: |
+          set -euo pipefail
+          TAG=v18.20.4
+          ZIP="$RUNNER_TEMP/nodejs-mobile-android.zip"
+          curl -sSL --retry 3 -o "$ZIP" \
+            "https://github.com/nodejs-mobile/nodejs-mobile/releases/download/${TAG}/nodejs-mobile-${TAG}-android.zip"
+          for abi in arm64-v8a armeabi-v7a x86_64; do
+            mkdir -p "node/src/main/jniLibs/$abi"
+            unzip -o -j "$ZIP" "bin/$abi/libnode.so" -d "node/src/main/jniLibs/$abi" > /dev/null
+          done
+          mkdir -p node/src/main/cpp/nodejs-mobile
+          unzip -o -q "$ZIP" 'include/*' -d node/src/main/cpp/nodejs-mobile
+          test -f node/src/main/cpp/nodejs-mobile/include/node/node.h \
+            || { echo "::error::the Node headers were not unpacked"; exit 1; }
+          for abi in arm64-v8a armeabi-v7a x86_64; do
+            test -f "node/src/main/jniLibs/$abi/libnode.so" \
+              || { echo "::error::libnode.so is missing for $abi"; exit 1; }
+          done
+          echo "Node runtime unpacked: $(du -sh node/src/main/jniLibs | cut -f1)"
 
       # Whatever path cut this release, it is a STABLE release. The
       # tag-vs-main branch used to also emit `prerelease`, and main always

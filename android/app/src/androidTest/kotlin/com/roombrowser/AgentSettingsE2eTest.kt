@@ -970,23 +970,6 @@ class AgentSettingsE2eTest {
             hasText("MockLLM", 15_000)
         )
 
-        // ---- 6a2. The step budget is a typed field -------------------------
-        // It replaced a slider whose range stopped at 50, so its PRESENCE as
-        // an editable field is the thing worth asserting: a slider would not
-        // carry this content description at all. Presence only, like the
-        // retry switch below — the value it writes is pinned by
-        // AgentLoopTest, which drives the clamp directly, and a typed number
-        // left behind here would change the budget for every later test.
-        var stepsSeen = false
-        for (i in 1..12) {
-            if (hasDesc("max_steps", 700)) { stepsSeen = true; break }
-            dragUpQuarter()
-        }
-        assertTrue(
-            "The step budget must be a typed field on the agent settings screen",
-            stepsSeen
-        )
-
         // ---- 6b. The local decision gate -----------------------------------
         // The gate is switchable here but NOT usable: this test configures an
         // OpenAI-compatible provider, and /v1/systemone only exists on a local
@@ -1037,6 +1020,28 @@ class AgentSettingsE2eTest {
         assertTrue(
             "YOLO switch must flip OFF",
             flipSwitch("YOLO: always allow", wantOn = false)
+        )
+
+        // ---- 6c2. The step budget is a typed field -------------------------
+        // The field sits below the YOLO switch and above the retry switch, so
+        // it is checked here, on the way down. Checking it any EARLIER scrolls
+        // past the gate and YOLO switches, and flipSwitch cannot scroll back
+        // up to them.
+        //
+        // It replaced a slider whose range stopped at 50, so its PRESENCE as an
+        // editable field is the thing worth asserting: a slider would not carry
+        // this content description at all. Presence only, like the retry switch
+        // below — the value it writes is pinned by AgentLoopTest, which drives
+        // the clamp directly, and a typed number left behind here would change
+        // the budget for every later test.
+        var stepsSeen = false
+        for (i in 1..12) {
+            if (hasDesc("max_steps", 700)) { stepsSeen = true; break }
+            dragUpQuarter()
+        }
+        assertTrue(
+            "The step budget must be a typed field on the agent settings screen",
+            stepsSeen
         )
 
         // ---- 6d. Retry on error --------------------------------------------
