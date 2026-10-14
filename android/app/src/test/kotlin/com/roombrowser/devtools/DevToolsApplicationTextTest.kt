@@ -245,7 +245,7 @@ class DevToolsApplicationTextTest {
             DeveloperToolsStorageText.estimateText(
                 StorageEstimateReport(usage = 4096.0, quota = 1048576.0, persisted = true)
             )
-        ).isEqualTo("Usage -- 4 kB of 1 MB, persisted")
+        ).isEqualTo("Usage -- 4.0 KB of 1.0 MB, persisted")
         assertThat(DeveloperToolsStorageText.estimateText(StorageEstimateReport(usage = 0.0, persisted = false)))
             .isEqualTo("Usage -- 0 B of (quota not reported), not persisted")
     }
