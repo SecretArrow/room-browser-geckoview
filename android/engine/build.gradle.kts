@@ -52,6 +52,12 @@ dependencies {
     // signatures, so every consumer needs them on its own classpath.
     api(project(":core:domain"))
 
+    // The engine's own KTX-form calls. GeckoView's POM drags in `androidx.core`
+    // -- the Java artifact, not the `-ktx` one -- and as a RUNTIME dependency,
+    // so the KTX extensions are not on this module's compile classpath without
+    // this line.
+    implementation(libs.androidx.core.ktx)
+
     // `implementation`, deliberately: this is the single line that keeps
     // GeckoView out of `:app`'s compile classpath. Changing it to `api` would
     // silently undo the whole facade.
