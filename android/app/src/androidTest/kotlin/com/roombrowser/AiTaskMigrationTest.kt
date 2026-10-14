@@ -25,8 +25,10 @@ import org.junit.runner.RunWith
  *
  * Building a v10 database: rather than hand-write the schema of every table at
  * v10, let Room create a real database at the current version and undo exactly
- * the v10→v12 delta — the `ai_tasks` table and its index. Nothing else changed,
- * so what remains is genuinely the v10 schema.
+ * the v10→v12 delta — the `ai_tasks` table and its index. Every other table is
+ * left at the CURRENT shape, so a later version that altered one of them has to
+ * be undone here as well: `agent_sessions` gained `plan_json` at v16 and is
+ * stripped too. What remains is genuinely the v10 schema.
  */
 @RunWith(AndroidJUnit4::class)
 class AiTaskMigrationTest {
@@ -102,7 +104,8 @@ class AiTaskMigrationTest {
      * Rewrites the freshly created database into the v10 shape, in place: v10
      * had no `ai_tasks` table at all. Dropping it (and its index with it) and
      * the `room_master_table` row — which holds the current schema hash and has
-     * no business in a database that claims to be v10 — leaves exactly v10.
+     * no business in a database that claims to be v10 — leaves exactly v10,
+     * once `agent_sessions` is back in its pre-v16 shape too.
      */
     private fun revertToV10() {
         val db = SQLiteDatabase.openDatabase(
@@ -111,6 +114,7 @@ class AiTaskMigrationTest {
             SQLiteDatabase.OPEN_READWRITE
         )
         try {
+            stripPlanJsonColumn(db)
             db.execSQL("DROP TABLE IF EXISTS `ai_tasks`")
             db.execSQL("DROP TABLE IF EXISTS `room_master_table`")
             db.version = 10

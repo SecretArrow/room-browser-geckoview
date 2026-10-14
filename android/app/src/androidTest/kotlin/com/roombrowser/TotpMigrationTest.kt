@@ -27,7 +27,9 @@ import org.junit.runner.RunWith
  * Building a v13 database: rather than hand-write the schema of every table at
  * v13, let Room create a real database at the current version and undo exactly
  * the v13->v14 delta — the `totp_entries` table, whose indices drop with it.
- * Nothing else changed, so what remains is genuinely v13.
+ * Every other table is left at the CURRENT shape, so a later version that
+ * altered one of them has to be undone here as well: `agent_sessions` gained
+ * `plan_json` at v16 and is stripped too. What remains is genuinely v13.
  */
 @RunWith(AndroidJUnit4::class)
 class TotpMigrationTest {
@@ -233,11 +235,13 @@ class TotpMigrationTest {
      * Rewrites the freshly created database into the v13 shape, in place: v13
      * had no `totp_entries` table at all. Dropping it (and its indices with it)
      * and the `room_master_table` row — which holds the current schema hash and
-     * has no business in a database that claims to be v13 — leaves exactly v13.
+     * has no business in a database that claims to be v13 — leaves exactly v13,
+     * once `agent_sessions` is back in its pre-v16 shape too.
      */
     private fun revertToV13() {
         val db = openRaw()
         try {
+            stripPlanJsonColumn(db)
             db.execSQL("DROP TABLE IF EXISTS `totp_entries`")
             db.execSQL("DROP TABLE IF EXISTS `room_master_table`")
             db.version = 13
