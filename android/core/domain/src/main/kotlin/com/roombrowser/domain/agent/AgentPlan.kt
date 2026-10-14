@@ -136,11 +136,14 @@ object AgentPlan {
 
     /**
      * Handed to the model when it tries to change something before it has
-     * written a list. Short, because it can arrive twice in one turn.
+     * written a list. Short, because it can arrive twice in one turn — and it
+     * also lands in the user's transcript as a failed step, so its first
+     * sentence reports what happened rather than reading as an order to them.
      */
     const val NUDGE: String =
-        "You have not written your step list yet. Call `plan` first with the whole list for " +
-            "this task — one short step per line, the step you are starting marked in_progress."
+        "No step list has been written yet, so this action was not carried out. Call `plan` " +
+            "first with the whole list for this task — one short step per line, the step you " +
+            "are starting marked in_progress."
 
     /** One line for the transcript when a turn ends with steps still open. */
     fun completionNotice(items: List<Item>): String {

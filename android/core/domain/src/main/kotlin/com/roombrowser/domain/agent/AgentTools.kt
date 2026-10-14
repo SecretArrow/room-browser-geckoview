@@ -346,7 +346,7 @@ object AgentTools {
         ),
         def(
             PLAN,
-            "Keep the step list for this task and show it to the user as a checklist. Send the WHOLE list every time — it REPLACES the previous one, so a step you have finished stays in it, marked done, and the step you are working on now is marked in_progress. Use it for any task that takes more than two or three actions, and keep it updated as you go; skip it for a question that needs one step. It changes nothing on the page and nothing is stored.",
+            "Keep the step list for this task and show it to the user as a checklist. Send the WHOLE list every time — it REPLACES the previous one, so a step you have finished stays in it, marked done, and the step you are working on now is marked in_progress. Use it for any task that takes more than two or three actions, and keep it updated as you go; skip it for a question that needs one step. It changes nothing on the page.",
             SCHEMA_PLAN
         ),
         def(APP_OPEN, "Open one of the browser's own screens, by name: settings, history, bookmarks, downloads, tabs, privacy, wallet, theme, ai_tasks and the rest. The page stays loaded and the page tools keep working afterwards.", SCHEMA_APP_OPEN),
