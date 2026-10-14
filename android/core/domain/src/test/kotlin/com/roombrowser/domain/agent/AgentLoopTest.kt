@@ -40,11 +40,24 @@ private class FakeExecutor(private val results: Map<String, ToolResult> = emptyM
 
 class AgentLoopTest {
 
-    private fun config(maxSteps: Int = 8) = AgentConfig(
+    private fun config(
+        maxSteps: Int = 8,
+        planBeforeActions: Boolean = false,
+        planIsTheAnswer: Boolean = false
+    ) = AgentConfig(
         model = "test-model",
         maxSteps = maxSteps,
         temperature = 0.0,
-        systemPrompt = "sys"
+        systemPrompt = "sys",
+        planBeforeActions = planBeforeActions,
+        planIsTheAnswer = planIsTheAnswer
+    )
+
+    /** A `plan` result as the real tool returns it, so the loop sees a list. */
+    private fun planResult(vararg statuses: AgentPlan.Status): ToolResult = ToolResult(
+        ok = true,
+        output = "plan shown",
+        plan = statuses.mapIndexed { i, s -> AgentPlan.Item("step $i", s) }
     )
 
     @Test
@@ -269,5 +282,142 @@ class AgentLoopTest {
         loop.runTurn(history) { }
         assertThat(history.size).isAtMost(AgentLoop.MAX_HISTORY + 4)
         assertThat(history.first().role).isEqualTo("system")
+    }
+
+    // ---------- The step list ----------
+
+    @Test
+    fun `an action before the step list is refused and never reaches the page`() = runTest {
+        val executor = FakeExecutor(mapOf(AgentTools.PLAN to planResult(AgentPlan.Status.DONE)))
+        val turns = listOf(
+            executor.toolCall("c1", AgentTools.CLICK, """{"ref":3}"""),
+            executor.toolCall("c2", AgentTools.PLAN, """{"items":[{"text":"step 0","status":"done"}]}"""),
+            executor.toolCall("c3", AgentTools.CLICK, """{"ref":3}"""),
+            ChatMessage(role = "assistant", content = "Clicked it.")
+        )
+        val gateway = FakeGateway(turns)
+        val loop = AgentLoop(gateway, executor, config(planBeforeActions = true))
+        val events = mutableListOf<AgentEvent>()
+
+        loop.runTurn(mutableListOf(ChatMessage(role = "user", content = "click it"))) { events.add(it) }
+
+        // The click tried first never ran — only the plan, then the click the
+        // model made once it had written one.
+        assertThat(executor.executed.map { it.first })
+            .containsExactly(AgentTools.PLAN, AgentTools.CLICK).inOrder()
+        val finished = events.filterIsInstance<AgentEvent.ToolFinished>()
+        assertThat(finished.first().ok).isFalse()
+        assertThat(finished.first().summary).contains("step list")
+        assertThat(events.last()).isInstanceOf(AgentEvent.FinalAnswer::class.java)
+    }
+
+    @Test
+    fun `a model that will not write a list is still allowed to work`() = runTest {
+        val executor = FakeExecutor()
+        val turns = List(3) { executor.toolCall("c$it", AgentTools.CLICK, """{"ref":3}""") } +
+            listOf(ChatMessage(role = "assistant", content = "Clicked it."))
+        val gateway = FakeGateway(turns)
+        val loop = AgentLoop(gateway, executor, config(maxSteps = 6, planBeforeActions = true))
+        val events = mutableListOf<AgentEvent>()
+
+        loop.runTurn(mutableListOf(ChatMessage(role = "user", content = "click it"))) { events.add(it) }
+
+        // Two refusals, then the third call runs: insisting past that would let
+        // the ritual wedge the task the user actually asked for.
+        assertThat(executor.executed.map { it.first }).containsExactly(AgentTools.CLICK)
+        val summaries = events.filterIsInstance<AgentEvent.ToolFinished>().map { it.summary }
+        assertThat(summaries.take(2).all { it.contains("step list") }).isTrue()
+        assertThat(summaries[2]).isEqualTo("ok:click")
+    }
+
+    @Test
+    fun `plan mode is re-asked once when it answers without a list`() = runTest {
+        val executor = FakeExecutor(mapOf(AgentTools.PLAN to planResult(AgentPlan.Status.PENDING)))
+        val turns = listOf(
+            ChatMessage(role = "assistant", content = "Here is what I would do."),
+            executor.toolCall("c1", AgentTools.PLAN, """{"items":[{"text":"step 0","status":"pending"}]}"""),
+            ChatMessage(role = "assistant", content = "That is the plan.")
+        )
+        val gateway = FakeGateway(turns)
+        val loop = AgentLoop(gateway, executor, config(planIsTheAnswer = true))
+        val events = mutableListOf<AgentEvent>()
+
+        loop.runTurn(mutableListOf(ChatMessage(role = "user", content = "book me a table"))) { events.add(it) }
+
+        assertThat(gateway.calls).isEqualTo(3)
+        // The re-ask reaches the model as a message it will read, rather than
+        // costing a turn whose answer nothing was listening for.
+        assertThat(gateway.requests[1].messages.map { it.content }).contains(AgentPlan.NUDGE)
+        assertThat(events.filterIsInstance<AgentEvent.PlanUpdated>()).isNotEmpty()
+        assertThat(events.last()).isInstanceOf(AgentEvent.FinalAnswer::class.java)
+    }
+
+    @Test
+    fun `a plain question is answered without a list`() = runTest {
+        val gateway = FakeGateway(listOf(ChatMessage(role = "assistant", content = "Paris.")))
+        val loop = AgentLoop(gateway, FakeExecutor(), config(planBeforeActions = true))
+        val events = mutableListOf<AgentEvent>()
+
+        loop.runTurn(mutableListOf(ChatMessage(role = "user", content = "capital of France?"))) { events.add(it) }
+
+        // Nothing was touched, so there was no list to write and none is asked
+        // for: one step, one answer.
+        assertThat(gateway.calls).isEqualTo(1)
+        assertThat(events.last()).isInstanceOf(AgentEvent.FinalAnswer::class.java)
+    }
+
+    @Test
+    fun `the tool-less last step is never re-asked for a list`() = runTest {
+        val gateway = FakeGateway(listOf(ChatMessage(role = "assistant", content = "No plan from me.")))
+        val loop = AgentLoop(gateway, FakeExecutor(), config(maxSteps = 1, planIsTheAnswer = true))
+
+        loop.runTurn(mutableListOf(ChatMessage(role = "user", content = "plan this"))) { }
+
+        // Asking for a tool that was not offered gets an answer to nothing.
+        assertThat(gateway.calls).isEqualTo(1)
+        assertThat(gateway.requests[0].tools).isNull()
+    }
+
+    @Test
+    fun `a turn ending with steps still open says so`() = runTest {
+        val executor = FakeExecutor(
+            mapOf(AgentTools.PLAN to planResult(AgentPlan.Status.DONE, AgentPlan.Status.PENDING))
+        )
+        val turns = listOf(
+            executor.toolCall(
+                "c1",
+                AgentTools.PLAN,
+                """{"items":[{"text":"a","status":"done"},{"text":"b","status":"pending"}]}"""
+            ),
+            ChatMessage(role = "assistant", content = "Halfway.")
+        )
+        val gateway = FakeGateway(turns)
+        val loop = AgentLoop(gateway, executor, config(planBeforeActions = true))
+        val events = mutableListOf<AgentEvent>()
+
+        loop.runTurn(mutableListOf(ChatMessage(role = "user", content = "do the thing"))) { events.add(it) }
+
+        val notice = events.filterIsInstance<AgentEvent.Notice>().single()
+        assertThat(notice.text).contains("1 of 2")
+        assertThat(notice.text).contains("still open")
+        // After the answer, so it reads as the turn's closing line.
+        assertThat(events.indexOf(notice))
+            .isGreaterThan(events.indexOfLast { it is AgentEvent.FinalAnswer })
+    }
+
+    @Test
+    fun `a turn that finishes its list says nothing extra`() = runTest {
+        val executor = FakeExecutor(mapOf(AgentTools.PLAN to planResult(AgentPlan.Status.DONE)))
+        val turns = listOf(
+            executor.toolCall("c1", AgentTools.PLAN, """{"items":[{"text":"a","status":"done"}]}"""),
+            ChatMessage(role = "assistant", content = "Done.")
+        )
+        val gateway = FakeGateway(turns)
+        val loop = AgentLoop(gateway, executor, config(planBeforeActions = true))
+        val events = mutableListOf<AgentEvent>()
+
+        loop.runTurn(mutableListOf(ChatMessage(role = "user", content = "do it"))) { events.add(it) }
+
+        assertThat(events.filterIsInstance<AgentEvent.Notice>()).isEmpty()
     }
 }

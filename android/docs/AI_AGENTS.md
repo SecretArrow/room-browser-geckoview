@@ -56,6 +56,13 @@ too.
 
 * **New chat (+)** gives the tab up rather than deleting anything: the current
   conversation moves to the history list and the tab starts a fresh one.
+* **A new message continues the chat**, it does not start one: the follow-up is
+  written to the same session, and the step list that chat last wrote is shown
+  to the model again, so it carries on where it left off rather than beginning
+  from nothing. Only **New chat (+)** — or adopting another chat from History —
+  starts a conversation that knows nothing about the last one.
+* **Allow on this site** lasts as long as the chat it was given in: switching to
+  another tab and back is still that chat, so the approval is still there.
 * **History** lists every chat of the profile. Tapping one **adopts it into
   the current tab**, so a conversation started elsewhere can be picked up
   here; the chat this tab was showing goes back to the list.
@@ -124,7 +131,7 @@ listed below; the two that must have their tab on screen are marked.
 | `see_page(question?, full_page?, annotate?)` | Screenshots this chat's tab and sends the image to the provider; `full_page` stitches the whole document (scaled down) and `annotate` draws the `[ref]` numbers onto the elements — *off unless the profile enables it; refused on text-only providers and in a private tab* (see below) |
 | `compare_screenshots(tolerance?)` | Captures the page and reports how much of it changed, and where, against the last screenshot taken in this turn — the cheap "did that click do anything?" check that sends the provider no second image |
 | `site_memory(op, key, …)` | Reads, writes or forgets a per-site note kept for this profile — *off unless the profile enables it* (see below) |
-| `plan(items)` | The agent's own step list, shown to you as a checklist card with what it has finished and what it is on now. It sends the **whole list every call** (it replaces the previous one), touches no page and stores nothing — see **The step list** below |
+| `plan(items)` | The agent's own step list, shown to you as a checklist card with what it has finished and what it is on now. It sends the **whole list every call** (it replaces the previous one) and touches no page; the app keeps the last list on the chat, so the card comes back when the chat is reopened, and a **scheduled run** is required to write one too — with no card to show it on, the count of steps left open is reported on the task's row — see **The step list** below |
 | `download_file(url, name?)` | Hands a link that leads to a **file** (an invoice PDF, a CSV export, an image) to the browser's own download engine, so it lands in Downloads/RoomBrowser and the transfer outlives the turn. It queues the file and returns — the file is not ready when the call answers, so the agent checks `app_data kind=downloads`. Confirmed like a click, refused in plan mode, and refused in a scheduled run (see below) |
 | `save_pdf(name?)` | Keeps the **page itself** — a receipt, a ticket, a statement — as a PDF in Downloads/RoomBrowser. Use it when the user wants the page they are on kept, and `download_file` when a link already points at a file. Queues the same way a download does, confirmed like a click, refused in plan mode, and refused where there is no page on screen to render (see below) |
 
@@ -436,17 +443,32 @@ until the user turns on "Let the agent remember this site".
 A long autonomous run is otherwise a scroll of tool cards: it says what
 happened, and nothing says what the agent set out to do. `plan` is the agent's
 own checklist, rendered in the panel as a card with each step marked done,
-in progress or pending.
+in progress or pending. The agent is told to write it before it starts, and a
+turn that would change something before the list exists is answered with a
+reminder instead of being carried out (twice at most, so a model that will not
+plan still finishes the task).
 
 Honest limits:
 
-* **Nothing is stored.** The list lives in the chat on screen; it is not written
-  to the transcript and it is gone when the chat is. The tool rows still record
-  that a list was set, so a reloaded chat is not silent about it.
+* **The stored copy is a claim, not a verification.** The last list a chat
+  wrote is kept on that chat's row, so the card is there when the chat is
+  reopened and the model is shown its own list again on the next turn. But
+  every status in it is the model's own account of its work: a step marked done
+  is the model saying so, and a turn that ends with steps still open is
+  announced by a notice that repeats the count rather than proving anything.
+  Nothing checks the page to confirm a step was really carried out.
 * **Every call carries the whole list** — the tool REPLACES the previous one.
   A call that cannot be read (no items, an unknown status word, more than 24
   steps) is refused and the list the user is watching stays as it was, rather
   than being cleared by a malformed call.
+* **A stored list that cannot be read opens as no list at all** rather than
+  failing the chat: the column is one string per chat, and a chat must still
+  open on a version that wrote a shape this build does not know.
+* **A scheduled run has no card and no transcript**, so the two notices a chat
+  turn shows inline — the count of steps still open, and the step budget running
+  out — are appended to the answer the task row shows instead. The row is the
+  only place that run is read from, and a run that ended with steps open must
+  not read as one that finished.
 * **Nothing here is page-derived**, so the card is not fenced: the steps are the
   model's own sentences about the task.
 * **A refusal names the words that work**, so a model that misspells a status
@@ -454,6 +476,8 @@ Honest limits:
 
 **Status in this build:** implemented — the tool is in the catalogue for chat
 turns and scheduled runs alike, and the card is `PlanCard` in the agent panel.
+Both require a list before they act, a scheduled run included: nobody watching
+an unattended run is the reason it needs the list, not the reason it does not.
 
 ### Downloads (`download_file`) — a link that is a file
 

@@ -25,8 +25,10 @@ import org.junit.runner.RunWith
  *
  * Building a v12 database: rather than hand-write the schema of every table at
  * v12, let Room create a real database at the current version and undo exactly
- * the v12→v13 delta — the `notes` table (its indices drop with it). Nothing
- * else changed, so what remains is genuinely the v12 schema.
+ * the v12→v13 delta — the `notes` table (its indices drop with it). Every other
+ * table is left at the CURRENT shape, so a later version that altered one of
+ * them has to be undone here as well: `agent_sessions` gained `plan_json` at v16
+ * and is stripped too. What remains is genuinely the v12 schema.
  */
 @RunWith(AndroidJUnit4::class)
 class NoteMigrationTest {
@@ -105,7 +107,8 @@ class NoteMigrationTest {
      * Rewrites the freshly created database into the v12 shape, in place: v12
      * had no `notes` table at all. Dropping it (and its indices with it) and
      * the `room_master_table` row — which holds the current schema hash and has
-     * no business in a database that claims to be v12 — leaves exactly v12.
+     * no business in a database that claims to be v12 — leaves exactly v12,
+     * once `agent_sessions` is back in its pre-v16 shape too.
      */
     private fun revertToV12() {
         val db = SQLiteDatabase.openDatabase(
@@ -114,6 +117,7 @@ class NoteMigrationTest {
             SQLiteDatabase.OPEN_READWRITE
         )
         try {
+            stripPlanJsonColumn(db)
             db.execSQL("DROP TABLE IF EXISTS `notes`")
             db.execSQL("DROP TABLE IF EXISTS `room_master_table`")
             db.version = 12

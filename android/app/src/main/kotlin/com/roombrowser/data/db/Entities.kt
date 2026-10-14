@@ -259,6 +259,15 @@ data class AgentSessionEntity(
     @ColumnInfo(name = "title") val title: String,
     @ColumnInfo(name = "provider_id") val providerId: Long,
     @ColumnInfo(name = "model") val model: String,
+    /**
+     * The step list this chat last wrote with `plan`, as the JSON that tool
+     * takes (AgentPlan.encode); "" when it has none.
+     *
+     * It lives on the chat rather than in a message row because it is one value
+     * per conversation that has to come back when the chat is reopened, and be
+     * shown to the model again on the next turn. A fresh chat starts empty.
+     */
+    @ColumnInfo(name = "plan_json", defaultValue = "") val planJson: String = "",
     @ColumnInfo(name = "created_at") val createdAt: Long,
     @ColumnInfo(name = "updated_at") val updatedAt: Long
 )

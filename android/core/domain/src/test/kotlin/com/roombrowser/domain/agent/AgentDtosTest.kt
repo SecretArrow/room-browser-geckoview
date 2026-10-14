@@ -257,6 +257,17 @@ class AgentDtosTest {
     }
 
     @Test
+    fun `the step-list clause names the tool it asks for`() {
+        // Appended in EVERY mode, so a model that never reads PLAN_CLAUSE still
+        // learns what to call — and the list is worthless if it is not the whole
+        // one, since a call replaces the previous list rather than adding to it.
+        assertThat(AgentPrompts.TODO_CLAUSE).contains(AgentTools.PLAN)
+        assertThat(AgentPrompts.TODO_CLAUSE).contains("whole list")
+        // In Plan mode the list IS the answer, so that clause names it too.
+        assertThat(AgentPrompts.PLAN_CLAUSE).contains(AgentTools.PLAN)
+    }
+
+    @Test
     fun `prompt renders placeholders`() {
         val rendered = AgentPrompts.render(java.time.LocalDate.of(2026, 9, 27), "Google")
         assertThat(rendered).contains("2026-09-27")

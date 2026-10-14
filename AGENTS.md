@@ -74,6 +74,10 @@ change belongs in the sibling:
   cannot be serviced in a third-party GeckoView app, so a sign-in that still offers a passkey
   hangs forever on a promise nothing ever settles. The sibling has no equivalent pref and no
   equivalent test, and does not exhibit the hang. Never copy it across.
+- `android/app/src/main/res/drawable/ic_launcher_background.xml` and
+  `ic_launcher_foreground.xml` — **the launcher icon is deliberately a different colour per
+  edition**: orange here, violet in the sibling. This is the one place `res/` is allowed to
+  differ, it is a decision rather than drift, and the two must not be "fixed" to match.
 - `README.md`, `SECURITY.md` where they name the engine.
 
 **The facade is the boundary.** `android/engine/` exposes app-owned interfaces

@@ -2,19 +2,27 @@ package com.roombrowser.domain.agent
 
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.addJsonObject
+import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.put
+import kotlinx.serialization.json.putJsonArray
 
 /**
  * The agent's own step list, and the only tool in the catalogue that changes
  * nothing but what the user sees.
  *
- * STATELESS ON PURPOSE. Every call carries the WHOLE list, so there is no
- * server-side copy to drift out of step with what the model believes: the
- * list the user is looking at is always the list the model last wrote, and a
+ * The TOOL is stateless on purpose: every call carries the WHOLE list, so there
+ * is no server-side copy to drift out of step with what the model believes — a
  * call that fails leaves the previous one standing rather than half-applied.
  * That also means the tool has no store, no profile data and nothing to clean
- * up — which is why a scheduled run may use it exactly as a chat turn does.
+ * up, which is why a scheduled run may use it exactly as a chat turn does.
+ *
+ * The APP keeps one copy of it — the last list a session wrote, on that
+ * session's row — so the card is still there when the chat is reopened and the
+ * model is shown its own list on the next turn. Only a call that succeeded
+ * writes it, and [encode]/[decode] are its only format.
  *
  * A step's text is the model's own sentence about the task, so nothing here is
  * page-derived and nothing is fenced; the list is shown as the plan the model
@@ -102,6 +110,45 @@ object AgentPlan {
             "The user is looking at this list. Keep it up to date with the same tool: send the " +
                 "whole list again with the current step marked in_progress and the finished ones done."
         )
+    }
+
+    /**
+     * The list as a stored string: the same JSON the tool takes, so one shape
+     * covers both and a stored list can never be something [parse] would reject.
+     */
+    fun encode(items: List<Item>): String = buildJsonObject {
+        putJsonArray("items") {
+            items.forEach { item ->
+                addJsonObject {
+                    put("text", item.text)
+                    put("status", item.status.id)
+                }
+            }
+        }
+    }.toString()
+
+    /**
+     * A stored list, or empty for anything that cannot be read — blank, or a
+     * shape from a version that does not exist yet. A chat must still open.
+     */
+    fun decode(raw: String?): List<Item> =
+        if (raw.isNullOrBlank()) emptyList() else (parse(raw) as? Parsed.Ok)?.items.orEmpty()
+
+    /**
+     * Handed to the model when it tries to change something before it has
+     * written a list. Short, because it can arrive twice in one turn — and it
+     * also lands in the user's transcript as a failed step, so its first
+     * sentence reports what happened rather than reading as an order to them.
+     */
+    const val NUDGE: String =
+        "No step list has been written yet, so this action was not carried out. Call `plan` " +
+            "first with the whole list for this task — one short step per line, the step you " +
+            "are starting marked in_progress."
+
+    /** One line for the transcript when a turn ends with steps still open. */
+    fun completionNotice(items: List<Item>): String {
+        val open = items.count { it.status != Status.DONE }
+        return "Plan: ${items.size - open} of ${items.size} steps done — $open still open."
     }
 
     /**

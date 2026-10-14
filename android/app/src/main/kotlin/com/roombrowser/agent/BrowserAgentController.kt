@@ -132,7 +132,12 @@ internal fun formatSize(bytes: Long): String = when {
  * Pure function (no Android deps) so the ORDER is unit-testable on the JVM.
  * The order is the contract, and every part of it is load-bearing:
  *
- *   system | prior turns | page snapshot | standing context | attachments | request
+ *   system | prior turns | current plan | page snapshot | standing context | attachments | request
+ *
+ * The plan sits with the prior turns rather than down with the request: it is
+ * this conversation's own work-state, so it belongs beside the rows that are
+ * the conversation, and the pinned tail — snapshot, standing context, request —
+ * is left exactly as it was.
  *
  * The standing context is re-sent on EVERY turn rather than once when it was
  * written, because a provider keeps no memory between turns: a context that
@@ -165,10 +170,23 @@ internal fun buildTurnHistory(
     pageSnapshot: String?,
     settings: AgentSettings,
     attachments: List<AgentAttachment>,
-    request: String
+    request: String,
+    /** The step list this chat last wrote, or empty when it has none. */
+    plan: List<AgentPlan.Item> = emptyList()
 ): MutableList<ChatMessage> {
     val history = mutableListOf(ChatMessage(role = "system", content = prompt))
     history.addAll(priorTurns)
+    // Without this a follow-up turn starts from nothing: tool rows are not
+    // replayed, so the list is the only record of what the last turn did.
+    if (plan.isNotEmpty()) {
+        history.add(
+            ChatMessage(
+                role = "user",
+                content = "Your step list for this task so far — keep it current with `plan`, " +
+                    "sending the whole list every time:\n" + AgentPlan.render(plan)
+            )
+        )
+    }
     if (pageSnapshot != null) {
         history.add(ChatMessage(role = "user", content = "$pageSnapshot\n\n(The user's request follows.)"))
     }
@@ -294,6 +312,19 @@ class BrowserAgentController(
      * [SessionApprovals] for what can never be remembered.
      */
     private val sessionApprovals = SessionApprovals()
+
+    /**
+     * The chat [sessionApprovals] belongs to. The memory is dropped when the
+     * chat changes and kept when a tab is merely switched away from and back,
+     * which is what "for the rest of this chat" has to mean.
+     */
+    private var approvalsSessionId: Long? = null
+
+    private fun pointApprovalsAt(session: Long?) {
+        if (approvalsSessionId == session) return
+        approvalsSessionId = session
+        sessionApprovals.clear()
+    }
 
     /** Where the running turn's page is, or null when that cannot be said. */
     private var originOfTurn: () -> String? = { null }
@@ -685,7 +716,7 @@ class BrowserAgentController(
         val previous = activeSessionId
         activeSessionId = null
         // A site-scoped approval belongs to the chat it was given in.
-        sessionApprovals.clear()
+        pointApprovalsAt(null)
         // So does the step list: the next chat plans its own work.
         plan = emptyList()
         entries = emptyList()
@@ -720,8 +751,8 @@ class BrowserAgentController(
                 conversationTabId = tabId
             }
             activeSessionId = session.id
-            sessionApprovals.clear()
-            plan = emptyList()
+            pointApprovalsAt(session.id)
+            plan = AgentPlan.decode(session.planJson)
             entries = repo.messages(id).mapNotNull(::entryFromRow)
             retryable = null
         }
@@ -745,9 +776,10 @@ class BrowserAgentController(
         if (token != conversationRequest || vm.activeTabId != tabId) return
         conversationTabId = tabId
         activeSessionId = session?.id
-        // Another tab is another conversation, and usually another site.
-        sessionApprovals.clear()
-        plan = emptyList()
+        // Another chat is another site; coming back to this one keeps what it
+        // was told "for the rest of this chat".
+        pointApprovalsAt(session?.id)
+        plan = session?.let { AgentPlan.decode(it.planJson) }.orEmpty()
         entries = session?.let { repo.messages(it.id).mapNotNull(::entryFromRow) } ?: emptyList()
     }
 
@@ -1135,35 +1167,54 @@ class BrowserAgentController(
             // "Delete all agent chats" can run in the settings ACTIVITY while
             // a session is active here — verify it still exists, else start a
             // fresh one instead of writing to a dead row (FK safety).
-            val sessionId = activeSessionId
-                ?.takeIf { runCatching { repo.session(it) != null }.getOrDefault(false) }
-                ?: repo.createSession(
-                    profileId = profileId.value,
-                    title = text.take(64),
-                    providerId = provider.id,
-                    model = model,
-                    // The new chat belongs to this tab, so coming back to the
-                    // tab brings the conversation back with it.
-                    tabId = tabId.orEmpty()
-                ).also {
-                    activeSessionId = it
-                    tabId?.let { id -> conversationTabId = id }
-                }
+            //
+            // And when nothing is resolved yet, ask the TAB before creating
+            // one: the panel can be used before its tab resolve finishes, and
+            // a second message must continue the conversation it belongs to
+            // rather than silently start a second one.
+            val previousId = activeSessionId
+            val known = previousId?.let { id ->
+                runCatching { repo.session(id) }.getOrNull()
+            } ?: tabId?.let { repo.sessionForTab(profileId.value, it) }
+            val sessionId = known?.id ?: repo.createSession(
+                profileId = profileId.value,
+                title = text.take(64),
+                providerId = provider.id,
+                model = model,
+                // The new chat belongs to this tab, so coming back to the
+                // tab brings the conversation back with it.
+                tabId = tabId.orEmpty()
+            )
+            activeSessionId = sessionId
+            // Adopting the tab's chat is continuing it, so what it was already
+            // allowed to do on a site still stands.
+            pointApprovalsAt(sessionId)
+            tabId?.let { id -> conversationTabId = id }
+            // Carrying on with the chat the panel was already showing keeps the
+            // list in memory. Landing anywhere else takes the row's, so a chat
+            // deleted underneath us cannot lend its list to its replacement.
+            if (sessionId != previousId) plan = AgentPlan.decode(known?.planJson)
             repo.addMessage(sessionId, "user", display)
 
             val engine = SearchEngines.byId(vm.profileSettings().searchEngineId).label
             val basePrompt = settings.systemPromptOverride?.takeIf { it.isNotBlank() }
                 ?: AgentPrompts.render(System.currentTimeMillis(), ZoneId.systemDefault(), engine)
+            val mode = settings.chatMode
             // A Plan turn says so up front: otherwise the model plans a
             // click, is refused, and spends its steps probing what is left.
-            val prompt =
-                if (settings.chatMode == AgentMode.PLAN) basePrompt + AgentPrompts.PLAN_CLAUSE
-                else basePrompt
+            val prompt = when (mode) {
+                AgentMode.PLAN -> basePrompt + AgentPrompts.PLAN_CLAUSE + AgentPrompts.TODO_CLAUSE
+                else -> basePrompt + AgentPrompts.TODO_CLAUSE
+            }
             val config = com.roombrowser.domain.agent.AgentConfig(
                 model = model,
                 maxSteps = settings.maxSteps,
                 temperature = settings.temperature,
-                systemPrompt = prompt
+                systemPrompt = prompt,
+                // Work is not carried out before the list that says what the
+                // work is; in Plan mode the list is the whole deliverable.
+                planBeforeActions = mode != AgentMode.PLAN,
+                planIsTheAnswer = mode == AgentMode.PLAN
             )
 
             // Rebuild the conversation: system + prior user/assistant rows +
@@ -1182,7 +1233,8 @@ class BrowserAgentController(
                 },
                 settings = settings,
                 attachments = attachments,
-                request = text
+                request = text,
+                plan = plan
             )
 
             val loop = AgentLoop(
@@ -1230,18 +1282,26 @@ class BrowserAgentController(
                             toolResult = event.summary
                         )
                     }
-                    is AgentEvent.PlanUpdated -> plan = event.items
+                    is AgentEvent.PlanUpdated -> {
+                        plan = event.items
+                        // The row is the copy that outlives the process, so the
+                        // card is still there when the chat is reopened and the
+                        // model is shown its own list on the next turn.
+                        repo.setSessionPlan(sessionId, AgentPlan.encode(event.items))
+                    }
                     is AgentEvent.FinalAnswer -> {
-                        streamingIndex = finalizeAssistant(streamingIndex)
                         // The model sometimes copies the fence's frame back out
                         // of the tool result it just read.
                         val answer = UntrustedContent.stripMarkers(event.text)
-                        entries = entries + AgentEntry.Assistant(
-                            text = answer,
-                            thinking = "",
-                            streaming = false,
+                        // The answer is the bubble the user watched appear, so
+                        // it lands in it rather than beside it.
+                        entries = AgentTranscript.answer(
+                            entries = entries,
+                            openIndex = streamingIndex,
+                            answer = answer,
                             at = System.currentTimeMillis()
                         )
+                        streamingIndex = -1
                         repo.addMessage(sessionId, "assistant", answer)
                         repo.touchSession(sessionId)
                         setStatus(null)

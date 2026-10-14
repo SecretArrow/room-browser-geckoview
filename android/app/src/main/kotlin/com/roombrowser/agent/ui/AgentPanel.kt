@@ -769,8 +769,9 @@ private fun AgentConversation(
  * It is the one surface that shows the SHAPE of a long run rather than its
  * individual steps: a scroll of tool cards says what happened, and this says
  * what the agent set out to do, what it has finished and what it is on now.
- * It changes nothing on the page and nothing is stored — the card is a view
- * of the turn, so it disappears when the chat does.
+ * It changes nothing on the page, and it is kept with the chat: reopening the
+ * chat shows the same card, and the model is handed its own list on the next
+ * turn.
  */
 @Composable
 private fun PlanCard(items: List<AgentPlan.Item>) {

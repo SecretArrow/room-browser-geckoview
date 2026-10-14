@@ -59,6 +59,9 @@ class AgentRepository(private val db: AppDatabase) {
      */
     suspend fun bindSessionToTab(id: Long, tabId: String) = dao.setTab(id, tabId)
 
+    /** Stores the step list this chat last wrote, or "" to clear it. */
+    suspend fun setSessionPlan(id: Long, planJson: String) = dao.setPlan(id, planJson)
+
     suspend fun createSession(
         profileId: String,
         title: String,

@@ -137,4 +137,31 @@ class AgentPlanTest {
         assertThat(rendered).contains("[>] sign in")
         assertThat(rendered).contains("[ ] download the invoice")
     }
+
+    @Test
+    fun `a stored list survives the round trip through the chat row`() {
+        val items = listOf(
+            AgentPlan.Item("open the site", AgentPlan.Status.DONE),
+            AgentPlan.Item("sign in", AgentPlan.Status.IN_PROGRESS),
+            AgentPlan.Item("download the invoice", AgentPlan.Status.PENDING)
+        )
+
+        val back = AgentPlan.decode(AgentPlan.encode(items))
+
+        // Text and status both, in order: a reopened chat has to show the same
+        // card it showed before, or the progress the user was watching is lost.
+        assertThat(back).isEqualTo(items)
+        // And it is the shape the TOOL takes, so a stored list can never be
+        // something parse() would reject.
+        assertThat(AgentPlan.parse(AgentPlan.encode(items))).isInstanceOf(AgentPlan.Parsed.Ok::class.java)
+    }
+
+    @Test
+    fun `a chat with no list, or an unreadable one, opens with an empty list`() {
+        assertThat(AgentPlan.decode(null)).isEmpty()
+        assertThat(AgentPlan.decode("")).isEmpty()
+        assertThat(AgentPlan.decode("   ")).isEmpty()
+        assertThat(AgentPlan.decode("not json")).isEmpty()
+        assertThat(AgentPlan.decode("""{"items":[]}""")).isEmpty()
+    }
 }

@@ -2,6 +2,7 @@ package com.roombrowser.agent
 
 import com.google.common.truth.Truth.assertThat
 import com.roombrowser.data.repo.AgentSettings
+import com.roombrowser.domain.agent.AgentPlan
 import com.roombrowser.domain.agent.ChatMessage
 import org.junit.Test
 
@@ -27,8 +28,9 @@ class AgentTurnHistoryTest {
         settings: AgentSettings = AgentSettings(),
         pageSnapshot: String? = null,
         attachments: List<AgentAttachment> = emptyList(),
-        request: String = "do the thing"
-    ) = buildTurnHistory(prompt, prior, pageSnapshot, settings, attachments, request)
+        request: String = "do the thing",
+        plan: List<AgentPlan.Item> = emptyList()
+    ) = buildTurnHistory(prompt, prior, pageSnapshot, settings, attachments, request, plan)
 
     @Test
     fun `the standing context is sent when the switch is on`() {
@@ -104,5 +106,34 @@ class AgentTurnHistoryTest {
         assertThat(messages.none { it.content.orEmpty().contains("The user's request follows.") }).isTrue()
         // ...and the context still rides along without it.
         assertThat(messages.any { it.content.orEmpty().contains("be terse") }).isTrue()
+    }
+
+    @Test
+    fun `the step list rides with the prior turns, ahead of the snapshot`() {
+        val messages = history(
+            settings = AgentSettings(defaultContext = "be terse", useDefaultContext = true),
+            pageSnapshot = "PAGE SNAPSHOT",
+            plan = listOf(
+                AgentPlan.Item("open the site", AgentPlan.Status.DONE),
+                AgentPlan.Item("sign in", AgentPlan.Status.IN_PROGRESS)
+            )
+        )
+
+        assertThat(messages.first().role).isEqualTo("system")
+        assertThat(messages[1].content).isEqualTo("first")
+        assertThat(messages[2].content).isEqualTo("answer")
+        // The list is this conversation's own state, so it sits with its rows,
+        // and the pinned tail behind it keeps the order it had.
+        assertThat(messages[3].content).contains("[>] sign in")
+        assertThat(messages[4].content).contains("PAGE SNAPSHOT")
+        assertThat(messages[5].content).contains("be terse")
+        assertThat(messages.last().content).isEqualTo("do the thing")
+    }
+
+    @Test
+    fun `a chat with no list is sent without one`() {
+        val messages = history()
+
+        assertThat(messages.none { it.content.orEmpty().contains("step list") }).isTrue()
     }
 }

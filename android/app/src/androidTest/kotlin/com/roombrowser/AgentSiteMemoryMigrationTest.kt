@@ -27,7 +27,10 @@ import org.junit.runner.RunWith
  *
  * Building a v14 database: let Room create a real one at the current version,
  * then undo exactly the v14->v15 delta — the `agent_site_memory` table, whose
- * indices drop with it. Nothing else changed, so what remains is v14.
+ * indices drop with it. Every other table is left at the CURRENT shape, so a
+ * later version that altered one of them has to be undone here as well:
+ * `agent_sessions` gained `plan_json` at v16 and is stripped too. What remains
+ * is v14.
  */
 @RunWith(AndroidJUnit4::class)
 class AgentSiteMemoryMigrationTest {
@@ -245,11 +248,13 @@ class AgentSiteMemoryMigrationTest {
      * Rewrites the freshly created database into the v14 shape, in place: v14
      * had no `agent_site_memory` table. Dropping it (and its indices with it)
      * and the `room_master_table` row — which holds the current schema hash and
-     * has no business in a database that claims to be v14 — leaves exactly v14.
+     * has no business in a database that claims to be v14 — leaves exactly v14,
+     * once `agent_sessions` is back in its pre-v16 shape too.
      */
     private fun revertToV14() {
         val db = openRaw()
         try {
+            stripPlanJsonColumn(db)
             db.execSQL("DROP TABLE IF EXISTS `agent_site_memory`")
             db.execSQL("DROP TABLE IF EXISTS `room_master_table`")
             db.version = 14

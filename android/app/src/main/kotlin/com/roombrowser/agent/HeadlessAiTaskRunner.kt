@@ -167,7 +167,7 @@ class HeadlessAiTaskRunner(
                         siteMemoryEnabled = { profile.settings.agentSiteMemoryEnabled }
                     )
                 }
-                val config = AgentConfig(
+                val config = scheduledRunConfig(
                     model = model,
                     maxSteps = settings.maxSteps,
                     temperature = settings.temperature,
@@ -184,10 +184,16 @@ class HeadlessAiTaskRunner(
 
                 var answer: String? = null
                 var failure: String? = null
+                // A scheduled run has no transcript, so the loop's notices —
+                // how many steps were still open when the turn ended, and the
+                // step budget running out — have nowhere to land unless they
+                // ride out on the summary the row shows.
+                val notes = mutableListOf<String>()
                 AgentLoop(gateway, executor, config).runTurn(history) { event ->
                     when (event) {
                         is AgentEvent.FinalAnswer -> answer = event.text
                         is AgentEvent.AgentError -> failure = event.message
+                        is AgentEvent.Notice -> notes += event.text
                         else -> Unit
                     }
                 }
@@ -203,7 +209,7 @@ class HeadlessAiTaskRunner(
                         .ifBlank { "(the answer was only the page-content frame)" }
                 }
                 when {
-                    text != null -> AiTaskRunOutcome.Completed(text)
+                    text != null -> AiTaskRunOutcome.Completed(completedSummary(text, notes))
                     failure != null -> AiTaskRunOutcome.Failed(failure!!)
                     else -> AiTaskRunOutcome.Failed("the agent stopped without an answer")
                 }
@@ -262,3 +268,35 @@ class HeadlessAiTaskRunner(
         )
     }.getOrNull()
 }
+
+/**
+ * The config a scheduled run drives the loop with. It differs from a chat turn's
+ * in one way: the step list is required before any action, exactly as it is in a
+ * chat. Nobody is watching an unattended run, and that is the reason it needs
+ * the list rather than the reason it does not — a run that never writes down
+ * what it set out to do is one whose progress the row cannot report.
+ *
+ * [AgentConfig.planIsTheAnswer] stays off: there is no Plan mode here, so a
+ * plain answer with no list is a finished run rather than one to be re-asked.
+ */
+internal fun scheduledRunConfig(
+    model: String,
+    maxSteps: Int,
+    temperature: Double,
+    systemPrompt: String
+): AgentConfig = AgentConfig(
+    model = model,
+    maxSteps = maxSteps,
+    temperature = temperature,
+    systemPrompt = systemPrompt,
+    planBeforeActions = true
+)
+
+/**
+ * The row's one line: the model's answer, then whatever the loop noticed on the
+ * way — the count of steps left open when the turn ended, or the step budget
+ * running out. A chat turn shows those as notices in the transcript, which is
+ * exactly what a scheduled run does not have.
+ */
+internal fun completedSummary(answer: String, notes: List<String>): String =
+    (listOf(answer) + notes).joinToString(" ")
