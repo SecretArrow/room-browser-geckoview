@@ -3,11 +3,11 @@ package com.roombrowser.engine.gecko
 import android.content.Context
 import android.content.Intent
 import android.graphics.Bitmap
-import android.net.Uri
 import android.os.Handler
 import android.os.Looper
 import android.view.View
 import android.view.ViewGroup
+import androidx.core.net.toUri
 import com.roombrowser.domain.model.Profile
 import com.roombrowser.domain.model.UserAgents
 import com.roombrowser.engine.EngineErrorCode
@@ -1407,7 +1407,9 @@ internal class GeckoEngineSession(
      */
     private fun authHost(uri: String?): String {
         if (uri == null) return ""
-        return Uri.parse(uri).host ?: uri
+        // The KTX form: lint's UseKtx quickfix rewrites `Uri.parse(s)` to this
+        // but does not add the import, which would break the module's build.
+        return uri.toUri().host ?: uri
     }
 
     /**
