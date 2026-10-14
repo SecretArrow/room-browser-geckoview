@@ -30,6 +30,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.roombrowser.domain.download.DownloadFormat
 import com.roombrowser.ui.common.LocalRoomExtras
 import com.roombrowser.ui.common.RoomCopyButton
 import com.roombrowser.ui.common.SectionHeader
@@ -221,7 +222,7 @@ private fun NetworkRow(entry: NetworkEntry) {
     val extras = LocalRoomExtras.current
     val size = when {
         entry.sizesHidden -> "size hidden (no Timing-Allow-Origin)"
-        entry.transferSize != null -> formatBytes(entry.transferSize)
+        entry.transferSize != null -> DownloadFormat.bytes(entry.transferSize.toLong())
         else -> null
     }
     Column(Modifier.fillMaxWidth().padding(vertical = 4.dp)) {

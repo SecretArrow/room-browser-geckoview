@@ -6,7 +6,11 @@ import org.junit.Test
 /**
  * JVM tests for the agent attachment pipeline's pure rendering logic:
  * [AgentAttachment] metadata + [renderAttachments] prompt-block behavior
- * (inlining, binary handling, inline budget, joining, size formatting).
+ * (inlining, binary handling, inline budget, joining).
+ *
+ * The size in the header comes from
+ * [com.roombrowser.domain.download.DownloadFormat], whose own test pins the
+ * arithmetic; these pin that the header carries it.
  */
 class AgentAttachmentsTest {
 
@@ -30,7 +34,7 @@ class AgentAttachmentsTest {
             listOf(AgentAttachment(name = "photo.jpg", mime = "image/jpeg", sizeBytes = 348160L, text = null))
         )
         assertThat(rendered)
-            .contains("[Attached file: photo.jpg — image/jpeg, 340.0 KB] — binary file, content not inlined")
+            .contains("[Attached file: photo.jpg — image/jpeg, 340 KB] — binary file, content not inlined")
         assertThat(rendered).doesNotContain("photo.jpg\n") // no content block after the header line
         assertThat(rendered.lines()).hasSize(1)
     }
@@ -77,14 +81,6 @@ class AgentAttachmentsTest {
         assertThat(sections[0]).contains("AAA")
         assertThat(sections[1]).contains("[Attached file: b.json")
         assertThat(sections[1]).contains("""{"b":1}""")
-    }
-
-    @Test
-    fun `size formatting uses B KB MB with one decimal`() {
-        assertThat(formatSize(1234L)).isEqualTo("1.2 KB")
-        assertThat(formatSize(512L)).isEqualTo("512 B")
-        assertThat(formatSize(0L)).isEqualTo("0 B")
-        assertThat(formatSize(3L * 1024L * 1024L)).isEqualTo("3.0 MB")
     }
 
     @Test

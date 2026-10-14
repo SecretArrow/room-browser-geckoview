@@ -35,6 +35,7 @@ import com.roombrowser.domain.agent.SiteMemory
 import com.roombrowser.domain.agent.ToolExecutor
 import com.roombrowser.domain.agent.UntrustedContent
 import com.roombrowser.domain.agent.formatDurationMs
+import com.roombrowser.domain.download.DownloadFormat
 import com.roombrowser.domain.model.ProfileId
 import com.roombrowser.domain.model.SearchEngines
 import com.roombrowser.domain.task.AiTaskPermissions
@@ -90,19 +91,19 @@ private const val ATTACHMENT_INLINE_BUDGET = 60_000
  *
  * Pure function (no Android deps) so it is unit-testable on the JVM.
  *
- * `internal`, like [formatSize] below: this is a prompt-assembly detail of the
- * controller, and it was public only by omission — nothing outside this module
- * ever called it, so the wider visibility published a signature no caller
- * wanted and no one could change freely. Not `private`, because the unit test
- * (AgentAttachmentsTest) exercises it directly, and the test source set is a
- * friend of this module.
+ * `internal`: this is a prompt-assembly detail of the controller, and it was
+ * public only by omission — nothing outside this module ever called it, so the
+ * wider visibility published a signature no caller wanted and no one could
+ * change freely. Not `private`, because the unit test (AgentAttachmentsTest)
+ * exercises it directly, and the test source set is a friend of this module.
  */
 internal fun renderAttachments(attachments: List<AgentAttachment>): String {
     if (attachments.isEmpty()) return ""
     val sections = mutableListOf<String>()
     var inlineChars = 0
     attachments.forEach { attachment ->
-        val header = "[Attached file: ${attachment.name} — ${attachment.mime}, ${formatSize(attachment.sizeBytes)}]"
+        val header = "[Attached file: ${attachment.name} — ${attachment.mime}, " +
+            "${DownloadFormat.bytes(attachment.sizeBytes)}]"
         val content = attachment.text
         when {
             content == null ->
@@ -116,14 +117,6 @@ internal fun renderAttachments(attachments: List<AgentAttachment>): String {
         }
     }
     return sections.joinToString("\n\n")
-}
-
-/** Formats a byte count as B / KB / MB (1 decimal, dot separator). */
-internal fun formatSize(bytes: Long): String = when {
-    bytes < 0L -> "?"
-    bytes < 1024L -> "$bytes B"
-    bytes < 1024L * 1024L -> String.format(java.util.Locale.ROOT, "%.1f KB", bytes / 1024.0)
-    else -> String.format(java.util.Locale.ROOT, "%.1f MB", bytes / (1024.0 * 1024.0))
 }
 
 /**
