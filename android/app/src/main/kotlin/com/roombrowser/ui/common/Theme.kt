@@ -225,14 +225,6 @@ private val RoomTypography = Typography(
     labelSmall = TextStyle(fontFamily = FontFamily.Default, fontWeight = FontWeight.Medium, fontSize = 11.sp, lineHeight = 14.sp, letterSpacing = 0.5.sp)
 )
 
-/** Motion tokens (spring-forward, 2026 feel). */
-object RoomMotion {
-    val pressScale = 0.96f
-    val press = androidx.compose.animation.core.SpringSpec<Float>(
-        stiffness = androidx.compose.animation.core.Spring.StiffnessMediumLow
-    )
-}
-
 /**
  * The shape scale, derived from the profile's one radius setting.
  *
@@ -339,9 +331,3 @@ fun RoomPreviewTheme(
  * theme's transparency level to let the page shine through (glass effect).
  */
 fun RoomExtras.chromeAlpha(): Float = surfaceAlpha
-
-/** Convenience: current extras (theme chrome colors, radius, glass settings). */
-object RoomTheme {
-    val extras: RoomExtras
-        @Composable get() = LocalRoomExtras.current
-}

@@ -13,10 +13,8 @@ import com.roombrowser.data.db.SiteSettingEntity
 import com.roombrowser.data.db.TabEntity
 import com.roombrowser.domain.model.PermissionDecision
 import com.roombrowser.domain.model.ProfileId
-import com.roombrowser.domain.profile.ProfileDirectoryLayout
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
-import java.io.File
 import java.util.UUID
 
 enum class DownloadStatus { QUEUED, RUNNING, PAUSED, COMPLETED, FAILED, CANCELLED }
@@ -74,7 +72,6 @@ class BrowserRepository(private val db: AppDatabase) {
     suspend fun moveTab(id: String, position: Int) = tabs.setposition(id, position)
     suspend fun groupTab(id: String, group: String?) = tabs.setGroup(id, group)
     suspend fun pinTab(id: String, pinned: Boolean) = tabs.setPinned(id, pinned)
-    suspend fun deleteTab(id: String) = tabs.delete(id)
     suspend fun purgeOldClosedTabs(days: Int) =
         tabs.purgeClosedBefore(System.currentTimeMillis() - days * 86_400_000L)
 
@@ -95,9 +92,7 @@ class BrowserRepository(private val db: AppDatabase) {
         )
     }
 
-    suspend fun updateBookmark(id: Long, title: String, folder: String?) = bookmarks.updateMeta(id, title, folder)
     suspend fun deleteBookmark(id: Long) = bookmarks.delete(id)
-    suspend fun deleteAllBookmarks(profileId: ProfileId) = bookmarks.deleteAllFor(profileId.value)
 
     // ---------- Notes ----------
     fun observeNotes(profileId: ProfileId): Flow<List<NoteEntity>> = notes.observe(profileId.value)
@@ -164,9 +159,6 @@ class BrowserRepository(private val db: AppDatabase) {
     suspend fun clearHistory(profileId: ProfileId, since: Long) =
         history.deleteSince(profileId.value, since)
 
-    suspend fun distinctSitesSince(profileId: ProfileId, since: Long): Int =
-        history.distinctSites(profileId.value, since)
-
     // ---------- Downloads ----------
     fun observeDownloads(profileId: ProfileId): Flow<List<DownloadEntity>> = downloads.observeAll(profileId.value)
     suspend fun downloadsFor(profileId: ProfileId): List<DownloadEntity> =
@@ -224,13 +216,10 @@ class BrowserRepository(private val db: AppDatabase) {
 
     // ---------- IP history ----------
     suspend fun allIpHistory(): List<IpHistoryEntity> = ip.all()
-    suspend fun ipHistoryFor(profileId: ProfileId): List<IpHistoryEntity> = ip.forProfile(profileId.value)
-    fun observeIpHistory(profileId: ProfileId): Flow<List<IpHistoryEntity>> = ip.observeForProfile(profileId.value)
     suspend fun upsertIpHistory(entity: IpHistoryEntity): Long = ip.upsert(entity)
     suspend fun findIpAssociation(profileId: ProfileId, ipAddr: String): IpHistoryEntity? =
         ip.forProfile(profileId.value).firstOrNull { it.ip == ipAddr }
     suspend fun forgetIp(profileId: ProfileId, ipAddr: String) = ip.forgetIp(profileId.value, ipAddr)
-    suspend fun clearIpHistory(profileId: ProfileId) = ip.deleteAllFor(profileId.value)
     suspend fun purgeIpHistory(cutoff: Long) = ip.purgeBefore(cutoff)
 
     // ---------- Privacy stats ----------
@@ -250,8 +239,4 @@ class BrowserRepository(private val db: AppDatabase) {
 
     suspend fun statCountsForHost(profileId: ProfileId, host: String, since: Long): List<CategoryCount> =
         stats.countsSinceForHost(profileId.value, host, since)
-
-    // ---------- Profile storage (diagnostics) ----------
-    fun profileStorageDirs(baseDir: File, profileId: ProfileId): List<File> =
-        ProfileDirectoryLayout.allDirs(profileId).map { File(baseDir, it) }
 }

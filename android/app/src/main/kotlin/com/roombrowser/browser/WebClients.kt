@@ -591,32 +591,6 @@ object PageBridgeChannels {
 internal fun JSONObject.stringOrNull(name: String): String? =
     if (isNull(name)) null else optString(name, "").ifEmpty { null }
 
-/**
- * The page host a sub-resource block is judged against, given the FIRING
- * engine's own page URL and — only as a fallback — the ACTIVE tab's URL.
- *
- * Extracted as a pure function because the fallback is the load-bearing part
- * of the cross-tab fix and the one piece the JVM tests can pin without a
- * WebView (see SubResourcePageHostTest):
- *
- *  - the engine's OWN url wins, so a background tab's sub-resources are
- *    judged against ITS page. Judging them against the active tab's page was
- *    the bug: the cross-site test was decided by whichever tab the user was
- *    looking at, and the category recorded for the block followed it.
- *  - an engine that owns no session (destroyed, mid-teardown, never tracked)
- *    falls back to the active tab's URL — exactly the pre-fix answer. An
- *    untracked engine must not behave WORSE than it did before, and the
- *    fallback is deliberately not "block everything".
- *  - a page that resolves to no host at all (about:home, junk) answers null
- *    for its own engine rather than borrowing the active tab's host.
- *
- * Never throws: [UrlIntelligence.hostOf] is total and returns null on junk.
- */
-internal fun subResourcePageHost(enginePageUrl: String?, activePageUrl: String?): String? {
-    val url = enginePageUrl ?: activePageUrl ?: return null
-    return UrlIntelligence.hostOf(url)
-}
-
 /** Category names persisted for stats (kept in one place to avoid typos). */
 object StatCategories {
     const val AD = "AD"

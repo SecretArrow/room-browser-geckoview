@@ -287,11 +287,6 @@ class EvmAdapter(private val rpc: JsonRpcClient = JsonRpcClient()) : DerivationP
         return Numeric.decodeQuantity(result.jsonPrimitive.content)
     }
 
-    suspend fun getChainId(chain: RpcEndpointChain): Long {
-        val result = chain.call("eth_chainId")
-        return Numeric.decodeQuantity(result.jsonPrimitive.content).toLong()
-    }
-
     suspend fun getTransactionCount(chain: RpcEndpointChain, address: String): BigInteger {
         val result = chain.call(
             "eth_getTransactionCount",
@@ -345,57 +340,6 @@ class EvmAdapter(private val rpc: JsonRpcClient = JsonRpcClient()) : DerivationP
         }
         val result = chain.call("eth_estimateGas", listOf(txObject))
         return Numeric.decodeQuantity(result.jsonPrimitive.content)
-    }
-
-    // ------------------------------------------------------------------
-    // ERC-20 / ERC-721 reads (dashboard + confirmation enrichment)
-    // ------------------------------------------------------------------
-
-    suspend fun erc20Balance(
-        network: NetworkConfig, contract: String, holder: String
-    ): BigInteger? = ethCall(network, contract, "0x70a08231" + holder.removePrefix("0x").lowercase().padStart(64, '0'))
-        ?.let { Numeric.toBigIntNoPrefix(it.removePrefix("0x")) }
-
-    suspend fun erc20Decimals(network: NetworkConfig, contract: String): Int? =
-        ethCall(network, contract, "0x313ce567")?.let {
-            runCatching { Numeric.toBigIntNoPrefix(it.removePrefix("0x")).toInt() }.getOrNull()
-        }
-
-    suspend fun erc20Symbol(network: NetworkConfig, contract: String): String? =
-        ethCall(network, contract, "0x95d89b41")?.let { decodeAbiString(it.removePrefix("0x")) }
-
-    suspend fun erc721Balance(
-        network: NetworkConfig, contract: String, holder: String
-    ): BigInteger? = ethCall(network, contract, "0x70a08231" + holder.removePrefix("0x").lowercase().padStart(64, '0'))
-        ?.let { Numeric.toBigIntNoPrefix(it.removePrefix("0x")) }
-
-    suspend fun ethCall(network: NetworkConfig, to: String, dataHex: String): String? {
-        val callObject = buildJsonObject {
-            put("to", JsonPrimitive(to))
-            put("data", JsonPrimitive(dataHex))
-        }
-        return try {
-            val result = endpointsOf(network)
-                .call("eth_call", listOf(callObject, JsonPrimitive("latest")))
-            result.jsonPrimitive.content
-        } catch (_: WalletException) {
-            null
-        }
-    }
-
-    /** ABI-encoded `string` return decode (symbol()). */
-    private fun decodeAbiString(hex: String): String? {
-        return try {
-            val bytes = Hex.decode(hex)
-            if (bytes.size < 64) return null
-            val offset = BigInteger(bytes.copyOfRange(0, 32)).toInt()
-            if (offset + 32 > bytes.size) return null
-            val len = BigInteger(bytes.copyOfRange(offset, offset + 32)).toInt()
-            if (offset + 32 + len > bytes.size) return null
-            String(bytes.copyOfRange(offset + 32, offset + 32 + len), Charsets.UTF_8)
-        } catch (_: IllegalArgumentException) {
-            null
-        }
     }
 
     data class DerivedEvmKey(val privateKey: BigInteger, val address: String, val path: String)

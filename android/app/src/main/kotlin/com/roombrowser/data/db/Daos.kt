@@ -113,9 +113,6 @@ interface TabDao {
 
     @Query("DELETE FROM tabs WHERE closed_at IS NOT NULL AND closed_at < :cutoff")
     suspend fun purgeClosedBefore(cutoff: Long)
-
-    @Query("DELETE FROM tabs WHERE id = :id")
-    suspend fun delete(id: String)
 }
 
 @Dao
@@ -138,8 +135,6 @@ interface BookmarkDao {
     @Query("DELETE FROM bookmarks WHERE profile_id = :profileId")
     suspend fun deleteAllFor(profileId: String)
 
-    @Query("UPDATE bookmarks SET title = :title, folder = :folder WHERE id = :id")
-    suspend fun updateMeta(id: Long, title: String, folder: String?)
 
     @Query("SELECT MAX(position) FROM bookmarks WHERE profile_id = :profileId")
     suspend fun maxPosition(profileId: String): Int?
@@ -168,8 +163,6 @@ interface HistoryDao {
     @Query("DELETE FROM history WHERE profile_id = :profileId")
     suspend fun deleteAllFor(profileId: String)
 
-    @Query("SELECT COUNT(DISTINCT url) FROM history WHERE profile_id = :profileId AND visited_at >= :since")
-    suspend fun distinctSites(profileId: String, since: Long): Int
 }
 
 @Dao
@@ -241,8 +234,6 @@ interface SiteSettingsDao {
     @Query("SELECT * FROM site_permissions WHERE profile_id = :profileId AND host = :host")
     suspend fun permissionsFor(profileId: String, host: String): List<SitePermissionEntity>
 
-    @Query("SELECT * FROM site_permissions WHERE profile_id = :profileId")
-    fun observePermissions(profileId: String): Flow<List<SitePermissionEntity>>
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsertPermission(entity: SitePermissionEntity)
@@ -274,11 +265,7 @@ interface IpHistoryDao {
     @Query("SELECT * FROM ip_history ORDER BY last_seen_at DESC")
     suspend fun all(): List<IpHistoryEntity>
 
-    @Query("SELECT * FROM ip_history WHERE ip = :ip")
-    suspend fun forIp(ip: String): List<IpHistoryEntity>
-
     @Query("SELECT * FROM ip_history WHERE profile_id = :profileId ORDER BY last_seen_at DESC")
-    fun observeForProfile(profileId: String): Flow<List<IpHistoryEntity>>
 
     @Query("SELECT * FROM ip_history WHERE profile_id = :profileId ORDER BY last_seen_at DESC")
     suspend fun forProfile(profileId: String): List<IpHistoryEntity>
@@ -295,8 +282,6 @@ interface IpHistoryDao {
     @Query("DELETE FROM ip_history WHERE last_seen_at < :cutoff")
     suspend fun purgeBefore(cutoff: Long)
 
-    @Query("DELETE FROM ip_history")
-    suspend fun clearAll()
 }
 
 @Dao
@@ -361,8 +346,6 @@ interface ThemeDao {
     @Query("DELETE FROM themes WHERE id = :id")
     suspend fun delete(id: String)
 
-    @Query("DELETE FROM themes")
-    suspend fun deleteAll()
 }
 
 // =========================================================================
@@ -389,8 +372,6 @@ interface AgentDao {
     @Query("DELETE FROM agent_providers WHERE id = :id")
     suspend fun deleteProvider(id: Long)
 
-    @Query("DELETE FROM agent_providers")
-    suspend fun deleteAllProviders()
 
     // ---------- Sessions ----------
 
@@ -424,8 +405,6 @@ interface AgentDao {
     @Insert
     suspend fun insertSession(entity: AgentSessionEntity): Long
 
-    @Query("UPDATE agent_sessions SET title = :title, updated_at = :ts WHERE id = :id")
-    suspend fun updateTitle(id: Long, title: String, ts: Long)
 
     @Query("UPDATE agent_sessions SET updated_at = :ts WHERE id = :id")
     suspend fun touch(id: Long, ts: Long)

@@ -15,7 +15,6 @@ import com.roombrowser.domain.wallet.rpc.JsonRpcClient
 import com.roombrowser.domain.wallet.rpc.RpcEndpointChain
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
-import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
@@ -231,42 +230,6 @@ class SolanaAdapter(private val rpc: JsonRpcClient = JsonRpcClient()) : Derivati
         null
     }
 
-    /** SPL token holdings (uiAmount + mint) for the dashboard token list. */
-    suspend fun getSplTokens(network: NetworkConfig, owner: String): List<SplToken> {
-        val chain = endpointsOf(network)
-        if (chain.urls.isEmpty()) return emptyList()
-        return try {
-            val filter = buildJsonObject { put("programId", JsonPrimitive(TOKEN_PROGRAM)) }
-            val config = buildJsonObject { put("encoding", JsonPrimitive("jsonParsed")) }
-            val result = chain.call(
-                "getTokenAccountsByOwner",
-                listOf(JsonPrimitive(owner), filter, config)
-            )
-            result.jsonArray.mapNotNull { element ->
-                val parsed = element.jsonObject["account"]?.jsonObject?.get("data")
-                    ?.jsonObject?.get("parsed")?.jsonObject ?: return@mapNotNull null
-                val info = parsed["info"]?.jsonObject ?: return@mapNotNull null
-                val amount = info["tokenAmount"]?.jsonObject ?: return@mapNotNull null
-                val uiAmount = amount["uiAmountString"]?.jsonPrimitive?.content ?: return@mapNotNull null
-                SplToken(mint = info["mint"]?.jsonPrimitive?.content ?: "?", uiAmount = uiAmount)
-            }
-        } catch (_: WalletException) {
-            emptyList()
-        } catch (_: kotlinx.serialization.SerializationException) {
-            emptyList()
-        }
-    }
-
-    suspend fun getSignatureStatus(chain: RpcEndpointChain, signature: String): String? = try {
-        val signatures = kotlinx.serialization.json.buildJsonArray { add(JsonPrimitive(signature)) }
-        val result = chain.call("getSignatureStatuses", listOf(signatures))
-        result.jsonArray.firstOrNull()?.jsonObject?.get("confirmationStatus")?.jsonPrimitive?.content
-    } catch (_: WalletException) {
-        null
-    }
-
-    data class SplToken(val mint: String, val uiAmount: String)
-
     data class DerivedSolanaKey(
         val seed: ByteArray,
         val publicKey: ByteArray,
@@ -275,7 +238,6 @@ class SolanaAdapter(private val rpc: JsonRpcClient = JsonRpcClient()) : Derivati
     )
 
     companion object {
-        const val TOKEN_PROGRAM = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
         const val SYSTEM_PROGRAM = "11111111111111111111111111111111"
 
         val MAINNET = NetworkConfig(

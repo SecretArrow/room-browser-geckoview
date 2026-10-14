@@ -32,11 +32,6 @@ data class CopyOptions(
     val siteData: Boolean = false
 )
 
-/** Tab-count port for the profile cards. */
-interface TabCountStore {
-    suspend fun tabCount(profileId: ProfileId): Int
-}
-
 /**
  * Profile manager: create / open / edit / duplicate / delete / rename /
  * re-style / reset / lock. UUID is the immutable storage identity.

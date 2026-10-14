@@ -43,7 +43,6 @@ object AppStateKeys {
 
     const val IP_CACHE = "network_ip_cache"
     const val EXTERNAL_URL = "external_url"
-    const val SESSION_ID = "browser_session_id"
     const val AGENT_SETTINGS = "agent_settings"
     const val LOCAL_AI_SETTINGS = "local_ai_settings"
 
@@ -484,14 +483,6 @@ class AppStateRepository(private val dao: AppStateDao) {
         if (url == null) dao.remove(AppStateKeys.EXTERNAL_URL)
         else dao.put(AppStateEntity(AppStateKeys.EXTERNAL_URL, url))
     }
-
-    suspend fun newSessionId(): String {
-        val id = java.util.UUID.randomUUID().toString()
-        dao.put(AppStateEntity(AppStateKeys.SESSION_ID, id))
-        return id
-    }
-
-    suspend fun sessionId(): String? = dao.get(AppStateKeys.SESSION_ID)
 
     // ---------- Post-create password-import offer ----------
 

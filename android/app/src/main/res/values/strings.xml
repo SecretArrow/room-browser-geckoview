@@ -1,60 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!-- Only the manifest label lives here; every user-visible string is written
+     where it is shown, in the Compose UI. -->
 <resources>
     <string name="app_name">Room Browser</string>
-    <string name="profile_selector_title">Your profiles</string>
-    <string name="create_profile">Create Profile</string>
-    <string name="open_profile">Open</string>
-    <string name="duplicate_profile">Duplicate</string>
-    <string name="delete_profile">Delete</string>
-    <string name="rename_profile">Rename</string>
-    <string name="edit_profile">Edit Profile</string>
-    <string name="lock_profile">Lock profile</string>
-    <string name="set_default_profile">Set as default</string>
-    <string name="reset_profile">Reset profile</string>
-    <string name="export_profile">Export settings</string>
-    <string name="import_profile">Import settings</string>
-    <string name="switch_profile">Switch profile</string>
-    <string name="cancel">Cancel</string>
-    <string name="continue_anyway">Continue Anyway</string>
-    <string name="switch_profile_action">Switch</string>
-    <string name="dont_warn_again">Don\'t warn again for this IP</string>
-    <string name="network_settings">Network Settings</string>
-    <string name="airplane_mode">Airplane Mode</string>
-    <string name="network_profile_warning">Profile Network Warning</string>
-    <string name="new_tab">New tab</string>
-    <string name="private_tab">Private tab</string>
-    <string name="tabs">Tabs</string>
-    <string name="bookmarks">Bookmarks</string>
-    <string name="history">History</string>
-    <string name="downloads">Downloads</string>
-    <string name="privacy_dashboard">Privacy Dashboard</string>
-    <string name="shields">Shields</string>
-    <string name="settings">Settings</string>
-    <string name="find_in_page">Find in page</string>
-    <string name="share">Share</string>
-    <string name="translate">Translate</string>
-    <string name="desktop_site">Desktop site</string>
-    <string name="add_bookmark">Add bookmark</string>
-    <string name="add_to_home_screen">Add to Home screen</string>
-    <string name="reader_mode">Reader mode</string>
-    <string name="save_page_pdf">Save page as PDF</string>
-    <string name="site_settings">Site settings</string>
-    <string name="clear_browsing_data">Clear browsing data</string>
-    <string name="qr_scan">Scan QR code</string>
-    <string name="voice_search">Voice search</string>
-    <string name="search_or_type_url">Search or type URL</string>
-    <string name="no_internet">No Internet</string>
-    <string name="try_again">Try Again</string>
-    <string name="connection_not_secure">Connection Not Secure</string>
-    <string name="dns_resolution_failed">DNS Resolution Failed</string>
-    <string name="download_failed">Download Failed</string>
-    <string name="retry">Retry</string>
-    <string name="open_with_profile">Open with profile</string>
-    <string name="remember_choice">Remember choice</string>
-    <string name="welcome_title">Your browser. Your profiles.</string>
-    <string name="welcome_subtitle">Your data stays separated.</string>
-    <string name="start_browsing">Start Browsing</string>
-    <string name="profile_is_ready">Your profile is ready.</string>
-    <string name="biometric_lock_title">Unlock profile</string>
-    <string name="biometric_lock_subtitle">Authentication is required to open this profile</string>
 </resources>

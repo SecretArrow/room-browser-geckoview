@@ -76,21 +76,6 @@ data class NetworkConfig(
     }
 }
 
-/** An account derived or imported for one chain. Pure data — no key material. */
-data class WalletAccountInfo(
-    val id: String,
-    val walletId: String,
-    val chainType: ChainType,
-    val address: String,
-    val label: String,
-    /** Derivation path for mnemonic-derived accounts ("" for imports). */
-    val path: String,
-    /** DERIVED = from the wallet mnemonic, IMPORTED = private key/keystore. */
-    val source: Source
-) {
-    enum class Source { DERIVED, IMPORTED }
-}
-
 /** Result of a balance query; formatted decimal string or null when offline. */
 sealed interface BalanceResult {
     data class Ok(val amount: String, val symbol: String) : BalanceResult
@@ -134,5 +119,4 @@ sealed class WalletException(message: String) : Exception(message) {
     class Unauthorized(message: String) : WalletException(message)
     class UnsupportedMethod(message: String) : WalletException(message)
     class InvalidParams(message: String) : WalletException(message)
-    class ChainNotSupported(message: String) : WalletException(message)
 }

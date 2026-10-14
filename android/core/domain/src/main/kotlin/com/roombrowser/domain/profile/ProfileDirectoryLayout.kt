@@ -35,13 +35,4 @@ object ProfileDirectoryLayout {
 
     fun settingsDir(profileId: ProfileId): String =
         "${profileDir(profileId)}/$SETTINGS"
-
-    /** All per-profile storage sub-directories. */
-    fun allDirs(profileId: ProfileId): List<String> = listOf(
-        metadataDir(profileId),
-        browserDataDir(profileId),
-        cacheDir(profileId),
-        downloadsDir(profileId),
-        settingsDir(profileId)
-    )
 }

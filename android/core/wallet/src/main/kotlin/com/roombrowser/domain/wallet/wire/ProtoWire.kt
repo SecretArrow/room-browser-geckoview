@@ -48,9 +48,6 @@ class ProtoWriter {
 
     fun writeBool(fieldNumber: Int, value: Boolean) = writeVarint(fieldNumber, if (value) 1 else 0)
 
-    /** Writes a sub-message field (payload already protobuf-serialized). */
-    fun writeMessage(fieldNumber: Int, payload: ByteArray) = writeBytes(fieldNumber, payload)
-
     companion object {
         /** google.protobuf.Any: type_url = 1, value = 2. */
         fun any(typeUrl: String, value: ByteArray): ByteArray =

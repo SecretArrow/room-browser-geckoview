@@ -90,11 +90,6 @@ class ThemeRepository(db: AppDatabase) {
         profileDao.updateTheme(profileId.value, "")
     }
 
-    suspend fun profileTheme(profileId: ProfileId): RoomThemeSpec {
-        val raw = profileDao.get(profileId.value)?.themeJson ?: ""
-        return BuiltInThemes.resolveOrDefault(raw)
-    }
-
     private fun newCustomId(): String =
         RoomThemeSpec.CUSTOM_PREFIX + UUID.randomUUID().toString().replace("-", "").take(20)
 }

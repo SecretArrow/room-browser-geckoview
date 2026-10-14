@@ -43,16 +43,6 @@ class BcsWriter {
         for (shift in 0 until 64 step 8) out.write((value shr shift).toInt() and 0xff)
     }
 
-    fun writeU128(value: String) = apply {
-        writeU128Bytes(parseU128(value))
-    }
-
-    fun writeU128Bytes(bytes: ByteArray) = apply {
-        // bytes: 16 bytes little-endian
-        require(bytes.size == 16) { "u128 must be 16 bytes" }
-        out.write(bytes)
-    }
-
     fun writeString(text: String) = apply {
         val data = text.toByteArray(Charsets.UTF_8)
         writeUleb128(data.size.toLong())

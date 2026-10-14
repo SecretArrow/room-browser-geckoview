@@ -82,9 +82,6 @@ class AgentRepository(private val db: AppDatabase) {
 
     suspend fun touchSession(id: Long) = dao.touch(id, System.currentTimeMillis())
 
-    suspend fun updateSessionTitle(id: Long, title: String) =
-        dao.updateTitle(id, title.ifBlank { "Agent task" }, System.currentTimeMillis())
-
     suspend fun deleteSession(id: Long) = dao.deleteMessagesFor(id).let { dao.deleteSession(id) }
 
     suspend fun deleteSessionsForProfile(profileId: String): Int {
@@ -98,13 +95,6 @@ class AgentRepository(private val db: AppDatabase) {
     suspend fun deleteAllSessions() {
         dao.deleteAllMessages()
         dao.deleteAllSessions()
-    }
-
-    /** Nukes sessions + messages + providers (the "delete agent data" action). */
-    suspend fun deleteAllAgentData() {
-        dao.deleteAllMessages()
-        dao.deleteAllSessions()
-        dao.deleteAllProviders()
     }
 
     // ---------- Messages ----------
