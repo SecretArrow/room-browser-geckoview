@@ -287,8 +287,12 @@ data class AgentSettings(
  * Agent settings cannot end up disagreeing about what the agent may do.
  */
 enum class AgentMode(val title: String, val blurb: String) {
-    /** Acts on the page, asking before each action. */
-    ASK("Ask", "Act on the page, asking before every action"),
+    /**
+     * Acts on the page. The Confirm actions switch decides whether each action
+     * is approved first, so the blurb names that control rather than promising
+     * a prompt the switch can be turned off for.
+     */
+    ASK("Ask", "Act on the page; Confirm actions decides whether you approve each one"),
 
     /** Reads, and answers with the steps instead of taking them. */
     PLAN("Plan", "Read pages and answer with the steps, changing nothing"),

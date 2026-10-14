@@ -887,6 +887,7 @@ private fun DecisionGateSection(
     onNotice: (String) -> Unit
 ) {
     val provider = controller.decisionProvider
+    val providers = controller.decisionProviders
     val model = controller.decisionModel
     var pickerOpen by remember { mutableStateOf(false) }
     var policy by remember(controller.settings.decisionPolicy) {
@@ -949,6 +950,7 @@ private fun DecisionGateSection(
 
     if (pickerOpen && provider != null) {
         DecisionModelDialog(
+            providers = providers,
             provider = provider,
             controller = controller,
             selected = model,
@@ -956,15 +958,20 @@ private fun DecisionGateSection(
             onPick = { tag ->
                 controller.setDecisionModel(tag)
                 pickerOpen = false
-            }
+            },
+            onProviderPick = { id -> controller.setDecisionProvider(id) }
         )
     }
 }
 
 /**
- * Picks the decision model for [provider] from what is actually installed.
+ * Picks which Ollama server judges the actions, and the model on it.
  *
- * The list comes from the server (`GET /api/tags`), so it shows `nimble`,
+ * The server is only offered when there is more than one to choose from:
+ * [AgentSettingsController.decisionProvider] otherwise resolves to the only
+ * one there is, and a list of one changes nothing.
+ *
+ * The model list comes from the server (`GET /api/tags`), so it shows `nimble`,
  * `tev1` and `tev1:0.8b` once they are pulled, and nothing when they are
  * not — which is the useful answer, since a decision model that is not
  * installed cannot be asked anything. A typed tag is accepted as well: the
@@ -973,11 +980,13 @@ private fun DecisionGateSection(
  */
 @Composable
 private fun DecisionModelDialog(
+    providers: List<AgentProviderEntity>,
     provider: AgentProviderEntity,
     controller: AgentSettingsController,
     selected: String?,
     onDismiss: () -> Unit,
-    onPick: (String) -> Unit
+    onPick: (String) -> Unit,
+    onProviderPick: (Long) -> Unit
 ) {
     var models by remember(provider.id) { mutableStateOf<List<String>>(emptyList()) }
     var loading by remember(provider.id) { mutableStateOf(true) }
@@ -1005,6 +1014,40 @@ private fun DecisionModelDialog(
                 .verticalScroll(rememberScrollState())
         ) {
             RoomSheetHeader("Decision model")
+            if (providers.size > 1) {
+                Text(
+                    "Which Ollama server judges the actions:",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                providers.forEach { candidate ->
+                    Row(
+                        Modifier
+                            .fillMaxWidth()
+                            .clickable { onProviderPick(candidate.id) }
+                            .padding(vertical = 8.dp)
+                            .semantics { contentDescription = "decision_provider_${candidate.id}" },
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        RadioButton(
+                            selected = candidate.id == provider.id,
+                            onClick = { onProviderPick(candidate.id) }
+                        )
+                        Spacer(Modifier.width(8.dp))
+                        Column(Modifier.weight(1f)) {
+                            Text(candidate.name, style = MaterialTheme.typography.bodyLarge)
+                            Text(
+                                candidate.baseUrl,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                    }
+                }
+                Spacer(Modifier.height(12.dp))
+            }
             Text(
                 if (loading) "Reading ${provider.name}…"
                 else if (models.isEmpty()) {

@@ -598,8 +598,9 @@ class BrowserAgentController(
 
     /**
      * Chooses what a chat turn runs ON: the tab the user is looking at, or a
-     * hidden page of this profile's own. Persisted, because it is a standing
-     * choice about how this profile's agent works, not a per-turn switch.
+     * hidden page of the running profile's own. Persisted in the app-wide
+     * agent settings, so it is a standing choice about how the agent works
+     * rather than a per-turn switch — and the same in every profile.
      */
     fun setChatSurface(headless: Boolean) {
         scope.launch {
@@ -610,14 +611,14 @@ class BrowserAgentController(
 
     /**
      * Chooses what every turn from now on may do. Persisted like the surface,
-     * because it is a standing choice about how this profile's agent works
-     * rather than a per-turn switch.
+     * because it is a standing choice about how the agent works rather than a
+     * per-turn switch — and, like the surface, the same in every profile.
      *
      * A mode is stored as the flags it means rather than beside them, so the
      * switches in AI Agent settings keep editing the same state and cannot end
      * up describing a mode other than the one the header shows. ASK turns the
-     * confirmation prompt ON: "asked before each action" is what the mode
-     * promises, and it would be a lie while that switch is off.
+     * confirmation prompt ON: the prompt is the mode's whole point, so it
+     * should not be left off by whatever the switch happened to be.
      */
     fun setAgentMode(mode: AgentMode) {
         scope.launch {

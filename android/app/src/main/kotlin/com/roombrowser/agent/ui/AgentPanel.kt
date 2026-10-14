@@ -587,10 +587,14 @@ private fun AgentPanelHeader(
                 )
             }
         }
-        IconButton(onClick = onNewSession) {
+        // Both are off while a turn runs, because both are refused then:
+        // newSession/openSession bail on `running` so the running turn keeps
+        // the one transcript list the panel has. A tap that silently did
+        // nothing is worse than a control that says it is unavailable.
+        IconButton(onClick = onNewSession, enabled = !agent.running) {
             Icon(Icons.Filled.Add, contentDescription = "New agent chat")
         }
-        IconButton(onClick = onOpenSessions) {
+        IconButton(onClick = onOpenSessions, enabled = !agent.running) {
             Icon(Icons.Filled.History, contentDescription = "Agent chat history")
         }
         IconButton(onClick = onOpenSettings) {
@@ -683,6 +687,33 @@ private fun ChatModePicker(agent: BrowserAgentController) {
 
 // ------------------------------------------------------------------- conversation
 
+/**
+ * One stable key per transcript entry, for the LazyColumn.
+ *
+ * The entries carry a timestamp (and, for tools, the call id) rather than an
+ * id of their own, and a timestamp is not unique on its own — two rows written
+ * in the same millisecond would collide, and a duplicate key is a crash, not a
+ * cosmetic problem. A repeat is therefore disambiguated by how many identical
+ * ones preceded it. That number cannot move under a survivor: the list is only
+ * ever appended to or updated in place, never spliced.
+ *
+ * `internal` so the JVM test can pin it; not `private`, because a key that
+ * collides takes the whole panel down.
+ */
+internal fun transcriptKeys(entries: List<AgentEntry>): List<String> {
+    val seen = HashMap<String, Int>()
+    return entries.map { entry ->
+        val base = when (entry) {
+            is AgentEntry.Tool -> "tool:${entry.callId}"
+            is AgentEntry.User -> "user:${entry.at}"
+            is AgentEntry.Assistant -> "assistant:${entry.at}"
+            is AgentEntry.Notice -> "notice:${entry.at}"
+        }
+        val repeat = (seen.merge(base, 1) { a, b -> a + b } ?: 1) - 1
+        if (repeat == 0) base else "$base#$repeat"
+    }
+}
+
 @Composable
 private fun AgentConversation(
     agent: BrowserAgentController,
@@ -742,6 +773,10 @@ private fun AgentConversation(
         return
     }
 
+    // Keys are per ENTRY, not per slot. Position was the key before, so item
+    // state remembered inside an item — an expanded "Thought process" — stayed
+    // behind at that offset and was handed to whatever the next chat put there.
+    val keys = remember(entries) { transcriptKeys(entries) }
     LazyColumn(
         state = listState,
         modifier = modifier,
@@ -750,7 +785,7 @@ private fun AgentConversation(
         ),
         verticalArrangement = Arrangement.spacedBy(8.dp)
     ) {
-        itemsIndexed(entries, key = { index, _ -> index }) { _, entry ->
+        itemsIndexed(entries, key = { index, _ -> keys[index] }) { _, entry ->
             when (entry) {
                 is AgentEntry.User -> UserBubble(entry)
                 is AgentEntry.Assistant -> AssistantMessage(entry)
@@ -1251,11 +1286,15 @@ private val IncludeGreenLightContent = Color(0xFF0A3818)
 @Composable
 private fun AgentComposer(agent: BrowserAgentController, modifier: Modifier = Modifier) {
     var input by rememberSaveable { mutableStateOf("") }
-    var includePage by rememberSaveable { mutableStateOf(agent.settings.includePageContext) }
-    // Keyed on the SETTING, not merely remembered: the default context is also
-    // editable from AI Agent settings and from the sheet below, and this panel
-    // stays composed underneath those. Reading the setting back means an edit
-    // made anywhere shows up here instead of the composer going stale.
+    // Both chips are keyed on their SETTING, not merely remembered: they are
+    // also editable from AI Agent settings, and this panel stays composed
+    // underneath those screens. Reading the setting back means an edit made
+    // anywhere shows up here instead of the composer going stale, and a keyed
+    // value is discarded when the setting moves — which is what should happen
+    // to a per-turn toggle whose default just changed.
+    var includePage by rememberSaveable(agent.settings.includePageContext) {
+        mutableStateOf(agent.settings.includePageContext)
+    }
     var useDefaultContext by remember(agent.settings.useDefaultContext) {
         mutableStateOf(agent.settings.useDefaultContext)
     }
@@ -1518,7 +1557,12 @@ private fun AgentComposer(agent: BrowserAgentController, modifier: Modifier = Mo
                     keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
                     keyboardActions = KeyboardActions(
                         onSend = {
-                            if (input.isNotBlank()) {
+                            // A running turn replaces Send with pause/stop, but
+                            // the IME's own Send key is still there — and
+                            // clearing the box for a message that was never
+                            // sent would silently eat what the user typed.
+                            // It stays in the field, to send when the turn ends.
+                            if (!agent.running && input.isNotBlank()) {
                                 agent.send(input, includePage, attachments)
                                 input = ""
                                 attachments = emptyList()
@@ -1822,7 +1866,11 @@ private fun ChatSurfaceSheet(agent: BrowserAgentController, onDismiss: () -> Uni
             Text("Where the chat runs", style = MaterialTheme.typography.titleLarge)
             Spacer(Modifier.height(4.dp))
             Text(
-                "Applies to every turn from now on, in this profile.",
+                // NOT "in this profile": the choice is stored in the app-wide
+                // agent settings blob, so it is the same answer in every
+                // profile. The paragraph below is the per-profile half — the
+                // page a headless turn runs on is this profile's own.
+                "Applies to every turn from now on, in every profile.",
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )

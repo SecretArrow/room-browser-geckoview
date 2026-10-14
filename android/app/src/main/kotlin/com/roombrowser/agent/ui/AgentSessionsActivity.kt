@@ -109,12 +109,6 @@ class AgentSessionsActivity : ComponentActivity() {
     companion object {
         const val EXTRA_PROFILE_ID = "profile_id"
         const val EXTRA_SESSION_ID = "session_id"
-
-        fun launchForResult(from: Activity, profileId: String) {
-            from.startActivity(Intent(from, AgentSessionsActivity::class.java).apply {
-                putExtra(EXTRA_PROFILE_ID, profileId)
-            })
-        }
     }
 }
 
