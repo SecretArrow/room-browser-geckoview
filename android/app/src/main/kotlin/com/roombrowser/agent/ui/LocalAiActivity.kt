@@ -95,6 +95,7 @@ import com.roombrowser.domain.agent.OllamaModelPreset
 import com.roombrowser.domain.agent.OllamaModelPresets
 import com.roombrowser.domain.agent.OllamaPresetTier
 import com.roombrowser.domain.agent.OllamaRegistry
+import com.roombrowser.domain.download.DownloadFormat
 import com.roombrowser.domain.paging.Paging
 import com.roombrowser.localai.engine.LlamaEngine
 import com.roombrowser.localai.store.OnDeviceDownloadController
@@ -112,7 +113,6 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import java.util.Locale
 
 /**
  * Local AI (Ollama) manager — a DEDICATED ACTIVITY (own window, own back
@@ -1039,7 +1039,7 @@ private fun OnDeviceModelRow(
             )
             val details = listOfNotNull(
                 model.meta?.quantization ?: "unknown quant",
-                formatBytes(model.sizeBytes).ifBlank { null },
+                modelSizeLabel(model.sizeBytes).ifBlank { null },
                 model.meta?.architecture,
                 model.meta?.contextLength?.let { "ctx $it" } ?: "ctx ?"
             ).joinToString(" · ")
@@ -1134,7 +1134,7 @@ private fun OnDeviceDownloadRow(
                     .padding(top = 4.dp)
             )
             Text(
-                "${formatBytes(entry.received)} / ${formatBytes(knownTotal)}",
+                "${DownloadFormat.bytes(entry.received)} / ${DownloadFormat.bytes(knownTotal)}",
                 style = MaterialTheme.typography.labelMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(top = 2.dp)
@@ -1195,7 +1195,7 @@ private fun InstalledModelRow(
                 overflow = TextOverflow.Ellipsis
             )
             val details = listOf(
-                formatBytes(model.sizeBytes),
+                modelSizeLabel(model.sizeBytes),
                 model.family,
                 model.parameterSize,
                 model.quantizationLevel
@@ -1271,7 +1271,7 @@ private fun DownloadRow(
         }
         if (state.receivedBytes > 0 && knownTotal != null && knownTotal > 0) {
             Text(
-                "${formatBytes(state.receivedBytes)} / ${formatBytes(knownTotal)}",
+                "${DownloadFormat.bytes(state.receivedBytes)} / ${DownloadFormat.bytes(knownTotal)}",
                 style = MaterialTheme.typography.labelMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(top = 2.dp)
@@ -1947,13 +1947,14 @@ private fun TuningSlider(
 // Helpers
 // ===========================================================================
 
-/** Human-readable byte size ("812 MB", "1.2 GB"); blank when unknown. */
-private fun formatBytes(bytes: Long): String {
-    if (bytes <= 0) return ""
-    val mb = bytes / (1024.0 * 1024.0)
-    return if (mb >= 1024.0) {
-        String.format(Locale.US, "%.1f GB", mb / 1024.0)
-    } else {
-        String.format(Locale.US, "%.0f MB", mb)
-    }
-}
+/**
+ * A model's weight-file size, or "" when the store has no size for it.
+ *
+ * Blank rather than "0 B" because a model row that does not know its size must
+ * not claim to be empty; the details line drops the blank entry. Sizes
+ * themselves come from [DownloadFormat], so a model, a download and a network
+ * request all print in one spelling — this used to round to whole megabytes, so
+ * anything under half a megabyte read "0 MB".
+ */
+private fun modelSizeLabel(bytes: Long): String =
+    if (bytes <= 0) "" else DownloadFormat.bytes(bytes)

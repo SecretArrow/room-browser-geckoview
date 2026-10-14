@@ -3,7 +3,6 @@ package com.roombrowser.data.repo
 import com.roombrowser.data.db.AppDatabase
 import com.roombrowser.data.db.CustomThemeEntity
 import com.roombrowser.domain.model.ProfileId
-import com.roombrowser.domain.theme.BuiltInThemes
 import com.roombrowser.domain.theme.RoomThemeSpec
 import com.roombrowser.domain.theme.ThemeJson
 import kotlinx.coroutines.flow.Flow
@@ -88,11 +87,6 @@ class ThemeRepository(db: AppDatabase) {
     /** Reset a profile back to the built-in default theme. */
     suspend fun resetProfile(profileId: ProfileId) {
         profileDao.updateTheme(profileId.value, "")
-    }
-
-    suspend fun profileTheme(profileId: ProfileId): RoomThemeSpec {
-        val raw = profileDao.get(profileId.value)?.themeJson ?: ""
-        return BuiltInThemes.resolveOrDefault(raw)
     }
 
     private fun newCustomId(): String =

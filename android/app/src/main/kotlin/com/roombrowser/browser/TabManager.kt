@@ -119,15 +119,6 @@ class TabManager {
 
     fun all(): List<TabSession> = sessions.values.toList()
 
-    fun updateEntity(entity: TabEntity) {
-        val existing = sessions[entity.id]
-        if (existing != null) {
-            store(existing.copy(entity = entity))
-        } else {
-            store(TabSession(entity, null, thumbnails[entity.id]))
-        }
-    }
-
     fun attachEngine(id: String, engine: EngineSession?) {
         sessions[id]?.let {
             store(it.copy(engine = engine, lastUsedAt = android.os.SystemClock.elapsedRealtime()))

@@ -112,14 +112,6 @@ data class RoomThemeSpec(
         )
     }
 
-    /** Short descriptor of the active mode, for UI summaries. */
-    fun modeLabel(): String = when (mode) {
-        RoomThemeMode.LIGHT -> "Light"
-        RoomThemeMode.DARK -> "Dark"
-        RoomThemeMode.AMOLED -> "AMOLED"
-        RoomThemeMode.AUTO -> "Auto"
-    }
-
     fun withIdentity(newId: String, newName: String): RoomThemeSpec =
         copy(id = newId, name = newName)
 

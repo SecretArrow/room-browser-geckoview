@@ -43,6 +43,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.viewModelScope
 import com.roombrowser.browser.BrowserViewModel
 import com.roombrowser.browser.engine.ProfileEngine
 import com.roombrowser.engine.devtools.DevToolsCapability
@@ -194,6 +195,10 @@ fun DeveloperToolsHost(
                                 overview = overview,
                                 answered = answered,
                                 hasEngine = inspector != null || engineSession != null,
+                                // The browser's own scope, so a panel that has
+                                // work to finish while leaving has somewhere
+                                // that outlives this composition to run it.
+                                hostScope = viewModel.viewModelScope,
                                 onRefresh = { refreshKey++ },
                                 onRunAgentTask = { prompt -> viewModel.agent.send(prompt, includePage = false) },
                                 onShowLimits = { showLimits = true }

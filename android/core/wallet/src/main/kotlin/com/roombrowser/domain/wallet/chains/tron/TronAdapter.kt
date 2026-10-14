@@ -265,44 +265,6 @@ class TronAdapter(private val rpc: JsonRpcClient = JsonRpcClient()) : Derivation
         return signAndBroadcast(network, privateKey, ourAddress, unsigned)
     }
 
-    /** TRC-20 transfer via triggerSmartContract. */
-    suspend fun sendTrc20(
-        network: NetworkConfig,
-        privateKey: BigInteger,
-        ourAddress: String,
-        contractAddress: String,
-        toAddress: String,
-        amount: BigInteger,
-        decimals: Int
-    ): BroadcastResult {
-        val chain = endpointsOf(network)
-        if (chain.urls.isEmpty()) return BroadcastResult.Error("Network has no RPC endpoint")
-        val selector = Hex.encode(Hashes.keccak256("transfer(address,uint256)".toByteArray(Charsets.US_ASCII))).substring(0, 8)
-        val data = Hex.decode(
-            selector +
-                addressToHex(toAddress).removePrefix("0x").padStart(64, '0') +
-                amount.toString(16).padStart(64, '0')
-        )
-        val request = buildJsonObject {
-            put("owner_address", JsonPrimitive(addressToHex(ourAddress)))
-            put("contract_address", JsonPrimitive(addressToHex(contractAddress)))
-            put("function_selector", JsonPrimitive("transfer(address,uint256)"))
-            put("parameter", JsonPrimitive(""))
-            put("data", JsonPrimitive(Hex.encode(data)))
-            put("fee_limit", JsonPrimitive(100_000_000L)) // 100 TRX
-            put("call_value", JsonPrimitive(0))
-            put("visible", JsonPrimitive(false))
-        }
-        val result = try {
-            chain.firstWorking { url -> rpc.postJson("$url/wallet/triggersmartcontract", request) }.jsonObject
-        } catch (e: WalletException) {
-            return BroadcastResult.Error("Build TRC-20 call failed: ${e.message}")
-        }
-        val unsigned = result["transaction"]?.jsonObject
-            ?: return BroadcastResult.Error("Contract call did not return a transaction")
-        return signAndBroadcast(network, privateKey, ourAddress, unsigned)
-    }
-
     suspend fun signAndBroadcast(
         network: NetworkConfig,
         privateKey: BigInteger,
@@ -347,30 +309,6 @@ class TronAdapter(private val rpc: JsonRpcClient = JsonRpcClient()) : Derivation
             }
             val result = chain.firstWorking { url -> rpc.postJson("$url/wallet/getaccount", request) }.jsonObject
             result["balance"]?.jsonPrimitive?.content?.toLongOrNull() ?: 0L
-        } catch (_: WalletException) {
-            null
-        }
-    }
-
-    suspend fun getTrc20Balance(
-        network: NetworkConfig, contractAddress: String, holder: String
-    ): BigInteger? {
-        val chain = endpointsOf(network)
-        if (chain.urls.isEmpty()) return null
-        return try {
-            val selector = Hex.encode(Hashes.keccak256("balanceOf(address)".toByteArray(Charsets.US_ASCII))).substring(0, 8)
-            val data = Hex.decode(selector + addressToHex(holder).removePrefix("0x").padStart(64, '0'))
-            val request = buildJsonObject {
-                put("owner_address", JsonPrimitive(addressToHex(holder)))
-                put("contract_address", JsonPrimitive(addressToHex(contractAddress)))
-                put("function_selector", JsonPrimitive("balanceOf(address)"))
-                put("data", JsonPrimitive(Hex.encode(data)))
-                put("visible", JsonPrimitive(false))
-            }
-            val result = chain.firstWorking { url -> rpc.postJson("$url/wallet/triggerconstantcontract", request) }.jsonObject
-            val constant = result["constant_result"]?.let { it as? JsonArray }?.firstOrNull()?.jsonPrimitive?.content
-                ?: return null
-            BigInteger(constant.removePrefix("0x").padStart(1, '0'), 16)
         } catch (_: WalletException) {
             null
         }

@@ -104,20 +104,6 @@ class JsonRpcClient(
         execute(request)
     }
 
-    suspend fun getBytes(endpoint: String): ByteArray = withContext(Dispatchers.IO) {
-        val request = Request.Builder().url(endpoint).get().build()
-        try {
-            http.newCall(request).execute().use { resp ->
-                if (!resp.isSuccessful) throw WalletException.RpcError(resp.code, "HTTP ${resp.code} from $endpoint")
-                resp.body?.bytes() ?: throw WalletException.RpcError(resp.code, "Empty body")
-            }
-        } catch (e: WalletException) {
-            throw e
-        } catch (e: java.io.IOException) {
-            throw transportFailure("Request", e)
-        }
-    }
-
     private suspend fun executeForJson(request: Request): JsonElement {
         val text = execute(request)
         return parse(text, request.url.toString())

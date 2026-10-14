@@ -156,15 +156,6 @@ class DeveloperToolsEntriesTest {
     }
 
     @Test
-    fun bytes_are_shown_in_the_unit_a_person_would_say() {
-        assertThat(formatBytes(0.0)).isEqualTo("0 B")
-        assertThat(formatBytes(512.0)).isEqualTo("512 B")
-        assertThat(formatBytes(1024.0)).isEqualTo("1 kB")
-        assertThat(formatBytes(1536.0)).isEqualTo("1.5 kB")
-        assertThat(formatBytes(1024.0 * 1024)).isEqualTo("1 MB")
-    }
-
-    @Test
     fun a_kind_the_feed_does_not_contain_gets_no_filter_chip() {
         // WebView emits no completion at all, so offering the chip would be
         // offering a filter that can only come back empty.

@@ -82,6 +82,7 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.roombrowser.domain.download.DownloadFormat
 import com.roombrowser.domain.model.Profile
 import com.roombrowser.domain.profile.CopyOptions
 import com.roombrowser.main.ExportSections
@@ -89,6 +90,7 @@ import com.roombrowser.main.MainActivity
 import com.roombrowser.main.MainViewModel
 import com.roombrowser.main.MessageAction
 import com.roombrowser.main.PendingExport
+import com.roombrowser.main.ProfileWipe
 import com.roombrowser.ui.common.EmptyState
 import com.roombrowser.ui.common.ProfileAvatar
 import com.roombrowser.ui.common.RoomBottomSheetShape
@@ -158,7 +160,6 @@ fun MainScreen(
     var showCreate by remember { mutableStateOf(false) }
     var editTarget by remember { mutableStateOf<Profile?>(null) }
     var duplicateTarget by remember { mutableStateOf<Profile?>(null) }
-    var resetTarget by remember { mutableStateOf<Profile?>(null) }
     var exportTarget by remember { mutableStateOf<Profile?>(null) }
     var showBulkExport by remember { mutableStateOf(false) }
     var showImport by remember { mutableStateOf(false) }
@@ -337,7 +338,7 @@ fun MainScreen(
                             },
                             onEdit = { editTarget = profile },
                             onDuplicate = { duplicateTarget = profile },
-                            onReset = { resetTarget = profile },
+                            onReset = { viewModel.requestResetProfile(profile) },
                             onDelete = { viewModel.requestDeleteProfile(profile) },
                             onExport = { exportTarget = profile },
                             onImportPasswords = {
@@ -419,69 +420,79 @@ fun MainScreen(
         )
     }
 
-    resetTarget?.let { target ->
-        ConfirmDialog(
-            title = "Reset Profile",
-            text = "This removes all browsing data of \"${target.name}\" (tabs, history, permissions, site data). Storage identity stays valid.",
-            confirmLabel = "Reset",
-            onDismiss = { resetTarget = null },
-            onConfirm = {
-                viewModel.resetProfile(target.id)
-                resetTarget = null
-            }
-        )
-    }
-
     // The offer must come BEFORE the delete: deleting destroys the saved
     // passwords, rows and Keystore key together.
-    viewModel.deletePrompt?.let { prompt ->
+    viewModel.profileWipePrompt?.let { prompt ->
         val target = prompt.profile
+        val resetting = prompt.wipe == ProfileWipe.RESET
+        // "with it" only reads right when the profile itself goes too.
+        val withIt = if (resetting) "" else " with it"
         val passwords = when (val count = prompt.credentialCount) {
-            null -> "This profile may hold saved passwords that will be destroyed with it."
+            null -> "This profile may hold saved passwords that will be destroyed$withIt and " +
+                "cannot be recovered."
             0 -> null
-            1 -> "1 saved password will be destroyed with it and cannot be recovered."
-            else -> "$count saved passwords will be destroyed with it and cannot be recovered."
+            1 -> "1 saved password will be destroyed$withIt and cannot be recovered."
+            else -> "$count saved passwords will be destroyed$withIt and cannot be recovered."
         }
         // 2FA seeds have no counterpart anywhere else once they are gone: the
         // account they authenticate can only be recovered through the service's
         // own backup codes, which this app does not hold.
         val twoFactor = when (prompt.totpCount) {
             0 -> null
-            1 -> "1 authenticator account (2FA) will be destroyed with it, and its " +
+            1 -> "1 authenticator account (2FA) will be destroyed$withIt, and its " +
                 "setup key cannot be recovered."
-            else -> "${prompt.totpCount} authenticator accounts (2FA) will be destroyed " +
-                "with it, and their setup keys cannot be recovered."
+            else -> "${prompt.totpCount} authenticator accounts (2FA) will be destroyed" +
+                "$withIt, and their setup keys cannot be recovered."
+        }
+        // The wallet's rows and the key that decrypts them go together, so the
+        // recovery phrase is the only copy left afterwards.
+        val wallet = if (prompt.hasWallet) {
+            "This profile's wallet will be destroyed$withIt — its recovery phrase is the " +
+                "only way to get it back."
+        } else {
+            null
         }
         // "Worth exporting" is NOT the same as "has passwords": a profile whose
         // only secrets are authenticator accounts still loses them for good, so
         // the Export-first route has to be offered for it too.
         val exportable = prompt.credentialCount != 0 || prompt.totpCount > 0
         AlertDialog(
-            onDismissRequest = { viewModel.dismissDeletePrompt() },
-            title = { Text("Delete Profile") },
+            onDismissRequest = { viewModel.dismissProfileWipePrompt() },
+            title = { Text(if (resetting) "Reset Profile" else "Delete Profile") },
             text = {
                 Column {
                     Text(
-                        "This permanently deletes \"${target.name}\" and ALL of its " +
-                            "isolated data (cookies, storage, history, downloads)."
+                        if (resetting) {
+                            // No "cookies, storage" here: those are the engine's, and a
+                            // reset leaves them alone — only a delete wipes them.
+                            "This wipes everything \"${target.name}\" holds: history, " +
+                                "bookmarks, downloads, saved passwords, wallet, 2FA accounts, " +
+                                "scheduled tasks and agent chats. The profile itself stays. " +
+                                "Cookies and cached site data stay too — deleting the profile " +
+                                "is what removes those."
+                        } else {
+                            "This permanently deletes \"${target.name}\" and ALL of its " +
+                                "isolated data (cookies, storage, history, downloads)."
+                        }
                     )
-                    listOfNotNull(passwords, twoFactor).forEach { line ->
+                    listOfNotNull(passwords, twoFactor, wallet).forEach { line ->
                         Spacer(Modifier.height(12.dp))
                         Text(line)
                     }
                 }
             },
             confirmButton = {
-                TextButton(onClick = { viewModel.confirmDeleteWithoutExport() }) {
-                    Text(if (exportable) "Delete without exporting" else "Delete")
+                TextButton(onClick = { viewModel.confirmWipeWithoutExport() }) {
+                    val verb = if (resetting) "Reset" else "Delete"
+                    Text(if (exportable) "$verb without exporting" else verb)
                 }
             },
             dismissButton = {
                 Row {
-                    TextButton(onClick = { viewModel.dismissDeletePrompt() }) { Text("Cancel") }
+                    TextButton(onClick = { viewModel.dismissProfileWipePrompt() }) { Text("Cancel") }
                     if (exportable) {
                         Spacer(Modifier.width(4.dp))
-                        Button(onClick = { viewModel.confirmDeleteWithExport() }) {
+                        Button(onClick = { viewModel.confirmWipeWithExport() }) {
                             Text("Export first")
                         }
                     }
@@ -1223,11 +1234,6 @@ fun ConfirmDialog(
     )
 }
 
-/** Human-readable size for the delivery dialog. */
-private fun formatSize(bytes: Int): String =
-    if (bytes < 2048) "$bytes B"
-    else String.format(Locale.US, "%.1f KB", bytes / 1024.0)
-
 @Composable
 private fun ExportProfileDialog(
     profile: Profile,
@@ -1413,7 +1419,7 @@ private fun ExportDeliveryDialog(
             // name plus the three-line explanation did not fit a landscape
             // dialog, and an unscrollable body just hid the rest.
             Column(Modifier.verticalScroll(rememberScrollState())) {
-                Text("\"${export.fileName}\" · ${formatSize(export.sizeBytes)}")
+                Text("\"${export.fileName}\" · ${DownloadFormat.bytes(export.sizeBytes.toLong())}")
                 Spacer(Modifier.height(8.dp))
                 Text(
                     "Save it somewhere safe or share it directly. The passwords inside stay " +

@@ -1,12 +1,10 @@
 package com.roombrowser.domain.wallet.chains.evm
 
-import com.roombrowser.domain.wallet.model.ChainType
 import com.roombrowser.domain.wallet.model.NetworkConfig
 import com.roombrowser.domain.wallet.model.WalletException
 import com.roombrowser.domain.wallet.rpc.JsonRpcClient
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
-import kotlinx.serialization.json.add
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonPrimitive
 
@@ -82,32 +80,5 @@ class ChainlistClient(
 
     companion object {
         private const val CACHE_MS = 10 * 60 * 1000L
-
-        /** Chainlist "add to MetaMask" style entry (wallet_addEthereumChain). */
-        fun addChainRequestToConfig(chainType: ChainType, params: JsonObject): NetworkConfig? {
-            if (chainType != ChainType.EVM) return null
-            val chainIdHex = params["chainId"]?.jsonPrimitive?.content ?: return null
-            val chainId = chainIdHex.removePrefix("0x").toLongOrNull(16) ?: return null
-            val name = params["chainName"]?.jsonPrimitive?.content ?: "Chain $chainId"
-            val rpcUrls = (params["rpcUrls"] as? JsonArray)
-                ?.mapNotNull { it.jsonPrimitive.contentOrNull }
-                ?.takeIf { it.isNotEmpty() }
-                ?: return null
-            val currency = params["nativeCurrency"] as? JsonObject
-            val symbol = currency?.get("symbol")?.jsonPrimitive?.content ?: "ETH"
-            val decimals = currency?.get("decimals")?.jsonPrimitive?.content?.toIntOrNull() ?: 18
-            val explorer = (params["blockExplorerUrls"] as? JsonArray)
-                ?.firstOrNull()?.jsonPrimitive?.contentOrNull
-            return NetworkConfig(
-                id = "EVM:$chainId",
-                chainType = ChainType.EVM,
-                chainId = chainId.toString(),
-                name = name,
-                rpcUrls = rpcUrls,
-                nativeSymbol = symbol,
-                nativeDecimals = decimals,
-                explorerUrl = explorer
-            )
-        }
     }
 }

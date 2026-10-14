@@ -1,5 +1,6 @@
 package com.roombrowser.devtools
 
+import com.roombrowser.domain.download.DownloadFormat
 import com.roombrowser.engine.devtools.EngineCookie
 
 /**
@@ -194,8 +195,8 @@ internal object DeveloperToolsStorageText {
 
     fun estimateText(estimate: StorageEstimateReport?): String {
         if (estimate == null) return "Usage -- this build cannot read the storage estimate"
-        val usage = estimate.usage?.let { formatBytes(it) } ?: "(usage not reported)"
-        val quota = estimate.quota?.let { formatBytes(it) } ?: "(quota not reported)"
+        val usage = estimate.usage?.let { DownloadFormat.bytes(it.toLong()) } ?: "(usage not reported)"
+        val quota = estimate.quota?.let { DownloadFormat.bytes(it.toLong()) } ?: "(quota not reported)"
         val persisted = estimate.persisted?.let { if (it) "persisted" else "not persisted" } ?: "(persistence not reported)"
         return "Usage -- $usage of $quota, $persisted"
     }

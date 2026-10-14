@@ -97,40 +97,50 @@ class BrowserActivity : FragmentActivity() {
         // padding itself, so nothing ever overlaps the 3-button navigation
         // bar (Back / Home / Recents) or the status bar.
         enableEdgeToEdge()
+        // FIRST, before anything can suspend: the framework refuses a
+        // registration made once the activity is STARTED, and the cold-restore
+        // path below resolves the profile without blocking the main thread.
+        registerLaunchers()
 
         val fromIntent = intent.getStringExtra(EXTRA_PROFILE_ID)
-        var profileIdString = fromIntent
-        if (profileIdString == null) {
-            // Cold restore path: read the persisted active profile
-            val graph = (application as com.roombrowser.RoomBrowserApp).graph
-            profileIdString = kotlinx.coroutines.runBlocking {
-                graph.appState.activeProfileIdSnapshot()
-            }
-        }
-        if (profileIdString == null) {
-            // No profile selected → back to the picker
-            startActivity(
-                Intent(this, com.roombrowser.main.MainActivity::class.java)
-                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK)
-            )
-            finish()
-            return
-        }
-
-        val profileId = ProfileId(profileIdString)
         val initialUrl = intent.getStringExtra(EXTRA_INITIAL_URL)
             ?: savedInstanceState?.getString(EXTRA_INITIAL_URL)
-        launchRequest = initialUrl?.let { LaunchRequest(it, System.nanoTime()) }
         if (intent.getBooleanExtra(AgentActivity.EXTRA_OPEN_AGENT, false)) openAgentSignal++
 
+        if (fromIntent != null) {
+            startBoundProfile(ProfileId(fromIntent), initialUrl)
+            return
+        }
+        // Cold restore: the extra is absent, so the profile comes from
+        // app_state — read OFF the main thread, because this is the launch path
+        // and the first query of a process also pays for opening the database.
+        lifecycleScope.launch {
+            val resolved = (application as com.roombrowser.RoomBrowserApp)
+                .graph.appState.activeProfileIdSnapshot()
+            if (resolved == null) {
+                returnToPicker()
+                return@launch
+            }
+            startBoundProfile(ProfileId(resolved), initialUrl)
+        }
+    }
+
+    /**
+     * Both result launchers, registered before the profile is even known.
+     *
+     * They have to be registered during [onCreate] and before the activity is
+     * STARTED, and the cold-restore path resolves the profile off the main
+     * thread — so the registration cannot live in the code that depends on it.
+     */
+    private fun registerLaunchers() {
         // ---- Passkeys ------------------------------------------------
         // The credential prompt belongs to the system's credential provider
         // and only an Activity can start it, so the engine -- which has no
         // Activity -- hands us the PendingIntent and waits. Installed BEFORE
-        // the bind below, because the bind is what creates the engine runtime
-        // and wires this in; a delegate that arrived afterwards would leave
-        // every passkey request failing, which a page shows as a sign-in that
-        // spins forever.
+        // the bind, because the bind is what creates the engine runtime and
+        // wires this in; a delegate that arrived afterwards would leave every
+        // passkey request failing, which a page shows as a sign-in that spins
+        // forever.
         passkeyLauncher = registerForActivityResult(
             ActivityResultContracts.StartIntentSenderForResult()
         ) { result ->
@@ -138,6 +148,61 @@ class BrowserActivity : FragmentActivity() {
                 if (result.resultCode == RESULT_OK) result.data else null
             )
         }
+
+        // ---- Profile network warning (replaces the old IpWarningDialog) ---
+        // The pending decision is STATE, not a dialog: while the gate stands,
+        // this launcher loop keeps the full-screen warning in place. System
+        // Back finishes it with RESULT_CANCELED — the gate is still armed, so
+        // the warning comes straight back. Only an explicit decision (or a
+        // persisted suppression) releases browsing.
+        networkWarningLauncher = registerForActivityResult(
+            ActivityResultContracts.StartActivityForResult()
+        ) { result ->
+            Log.d(TAG, "warning result: code=${result.resultCode}")
+            networkWarningRunning = false
+            // A proxy chosen on the warning screen applies to this session only, so it is
+            // handed to the engine here rather than written to the profile. It is handed
+            // over BEFORE the decision below, because the decision is what releases the
+            // gate: queueing the engine's proxy change first is what keeps the load that
+            // release starts from being the one that still goes out on the old address.
+            NetworkWarningActivity.chosenProxyFrom(result.data)
+                ?.let { browserViewModel?.applySessionProxy(it) }
+            // Null only if the warning somehow returned before the profile was
+            // bound; the gate is still armed, so onResume picks it up again.
+            browserViewModel?.let { vm ->
+                when (result.resultCode) {
+                    NetworkWarningActivity.RESULT_CONTINUE ->
+                        vm.resolveNetworkWarning(NetworkWarningDecision.CONTINUE)
+                    NetworkWarningActivity.RESULT_SWITCH ->
+                        vm.resolveNetworkWarning(NetworkWarningDecision.SWITCH)
+                    NetworkWarningActivity.RESULT_SUPPRESS ->
+                        vm.resolveNetworkWarning(NetworkWarningDecision.SUPPRESS)
+                    else -> Unit // Back / cancel: the decision is still pending.
+                }
+            }
+            launchNetworkWarningIfNeeded()
+        }
+    }
+
+    /** Nothing to bind to: hand the user back to the profile picker. */
+    private fun returnToPicker() {
+        startActivity(
+            Intent(this, com.roombrowser.main.MainActivity::class.java)
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK)
+        )
+        finish()
+    }
+
+    /**
+     * Bind this process to [profileId] and build everything that depends on it.
+     *
+     * Split out of [onCreate] because the cold-restore path resolves the
+     * profile without blocking the main thread, so this can run after onResume
+     * — which is why [registerLaunchers] runs first, and why every surface it
+     * reaches guards against [browserViewModel] still being null.
+     */
+    private fun startBoundProfile(profileId: ProfileId, initialUrl: String?) {
+        launchRequest = initialUrl?.let { LaunchRequest(it, System.nanoTime()) }
         ProfileEngine.setActivityDelegate(engineActivityBridge)
 
         // THE isolation-critical step: bind this process to the profile.
@@ -158,11 +223,7 @@ class BrowserActivity : FragmentActivity() {
         // ProfileSwitchExecutor.scheduleRestart).
         cancelPendingRestartAlarm()
 
-        val factory = object : ViewModelProvider.Factory {
-            @Suppress("UNCHECKED_CAST")
-            override fun <T : androidx.lifecycle.ViewModel> create(modelClass: Class<T>): T = BrowserViewModel(application, profileId) as T
-        }
-        val viewModel = ViewModelProvider(this, factory)[BrowserViewModel::class.java]
+        val viewModel = ViewModelProvider(this, browserFactory(profileId))[BrowserViewModel::class.java]
         browserViewModel = viewModel
         // Published for the surfaces that are a different Activity but the
         // same browser — the full-screen Room Agent, which must not build a
@@ -193,35 +254,6 @@ class BrowserActivity : FragmentActivity() {
         taskPageHost = pageHost
         AiTaskPageHosts.register(pageHost)
 
-        // ---- Profile network warning (replaces the old IpWarningDialog) ---
-        // The pending decision is STATE, not a dialog: while the gate stands,
-        // this launcher loop keeps the full-screen warning in place. System
-        // Back finishes it with RESULT_CANCELED — the gate is still armed, so
-        // the warning comes straight back. Only an explicit decision (or a
-        // persisted suppression) releases browsing.
-        networkWarningLauncher = registerForActivityResult(
-            ActivityResultContracts.StartActivityForResult()
-        ) { result ->
-            Log.d(TAG, "warning result: code=${result.resultCode}")
-            networkWarningRunning = false
-            // A proxy chosen on the warning screen applies to this session only, so it is
-            // handed to the engine here rather than written to the profile. It is handed
-            // over BEFORE the decision below, because the decision is what releases the
-            // gate: queueing the engine's proxy change first is what keeps the load that
-            // release starts from being the one that still goes out on the old address.
-            NetworkWarningActivity.chosenProxyFrom(result.data)
-                ?.let { viewModel.applySessionProxy(it) }
-            when (result.resultCode) {
-                NetworkWarningActivity.RESULT_CONTINUE ->
-                    viewModel.resolveNetworkWarning(NetworkWarningDecision.CONTINUE)
-                NetworkWarningActivity.RESULT_SWITCH ->
-                    viewModel.resolveNetworkWarning(NetworkWarningDecision.SWITCH)
-                NetworkWarningActivity.RESULT_SUPPRESS ->
-                    viewModel.resolveNetworkWarning(NetworkWarningDecision.SUPPRESS)
-                else -> Unit // Back / cancel: the decision is still pending.
-            }
-            launchNetworkWarningIfNeeded()
-        }
         lifecycleScope.launch {
             // repeatOnLifecycle, not a bare collect: a bare collector stays
             // subscribed while the activity is STOPPED, so a gate armed behind

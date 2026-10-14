@@ -35,6 +35,7 @@ import com.roombrowser.domain.agent.SiteMemory
 import com.roombrowser.domain.agent.ToolExecutor
 import com.roombrowser.domain.agent.UntrustedContent
 import com.roombrowser.domain.agent.formatDurationMs
+import com.roombrowser.domain.download.DownloadFormat
 import com.roombrowser.domain.model.ProfileId
 import com.roombrowser.domain.model.SearchEngines
 import com.roombrowser.domain.task.AiTaskPermissions
@@ -90,19 +91,19 @@ private const val ATTACHMENT_INLINE_BUDGET = 60_000
  *
  * Pure function (no Android deps) so it is unit-testable on the JVM.
  *
- * `internal`, like [formatSize] below: this is a prompt-assembly detail of the
- * controller, and it was public only by omission — nothing outside this module
- * ever called it, so the wider visibility published a signature no caller
- * wanted and no one could change freely. Not `private`, because the unit test
- * (AgentAttachmentsTest) exercises it directly, and the test source set is a
- * friend of this module.
+ * `internal`: this is a prompt-assembly detail of the controller, and it was
+ * public only by omission — nothing outside this module ever called it, so the
+ * wider visibility published a signature no caller wanted and no one could
+ * change freely. Not `private`, because the unit test (AgentAttachmentsTest)
+ * exercises it directly, and the test source set is a friend of this module.
  */
 internal fun renderAttachments(attachments: List<AgentAttachment>): String {
     if (attachments.isEmpty()) return ""
     val sections = mutableListOf<String>()
     var inlineChars = 0
     attachments.forEach { attachment ->
-        val header = "[Attached file: ${attachment.name} — ${attachment.mime}, ${formatSize(attachment.sizeBytes)}]"
+        val header = "[Attached file: ${attachment.name} — ${attachment.mime}, " +
+            "${DownloadFormat.bytes(attachment.sizeBytes)}]"
         val content = attachment.text
         when {
             content == null ->
@@ -116,14 +117,6 @@ internal fun renderAttachments(attachments: List<AgentAttachment>): String {
         }
     }
     return sections.joinToString("\n\n")
-}
-
-/** Formats a byte count as B / KB / MB (1 decimal, dot separator). */
-internal fun formatSize(bytes: Long): String = when {
-    bytes < 0L -> "?"
-    bytes < 1024L -> "$bytes B"
-    bytes < 1024L * 1024L -> String.format(java.util.Locale.ROOT, "%.1f KB", bytes / 1024.0)
-    else -> String.format(java.util.Locale.ROOT, "%.1f MB", bytes / (1024.0 * 1024.0))
 }
 
 /**
@@ -636,8 +629,9 @@ class BrowserAgentController(
 
     /**
      * Chooses what a chat turn runs ON: the tab the user is looking at, or a
-     * hidden page of this profile's own. Persisted, because it is a standing
-     * choice about how this profile's agent works, not a per-turn switch.
+     * hidden page of the running profile's own. Persisted in the app-wide
+     * agent settings, so it is a standing choice about how the agent works
+     * rather than a per-turn switch — and the same in every profile.
      */
     fun setChatSurface(headless: Boolean) {
         scope.launch {
@@ -648,14 +642,14 @@ class BrowserAgentController(
 
     /**
      * Chooses what every turn from now on may do. Persisted like the surface,
-     * because it is a standing choice about how this profile's agent works
-     * rather than a per-turn switch.
+     * because it is a standing choice about how the agent works rather than a
+     * per-turn switch — and, like the surface, the same in every profile.
      *
      * A mode is stored as the flags it means rather than beside them, so the
      * switches in AI Agent settings keep editing the same state and cannot end
      * up describing a mode other than the one the header shows. ASK turns the
-     * confirmation prompt ON: "asked before each action" is what the mode
-     * promises, and it would be a lie while that switch is off.
+     * confirmation prompt ON: the prompt is the mode's whole point, so it
+     * should not be left off by whatever the switch happened to be.
      */
     fun setAgentMode(mode: AgentMode) {
         scope.launch {

@@ -43,7 +43,6 @@ object AppStateKeys {
 
     const val IP_CACHE = "network_ip_cache"
     const val EXTERNAL_URL = "external_url"
-    const val SESSION_ID = "browser_session_id"
     const val AGENT_SETTINGS = "agent_settings"
     const val LOCAL_AI_SETTINGS = "local_ai_settings"
 
@@ -288,8 +287,12 @@ data class AgentSettings(
  * Agent settings cannot end up disagreeing about what the agent may do.
  */
 enum class AgentMode(val title: String, val blurb: String) {
-    /** Acts on the page, asking before each action. */
-    ASK("Ask", "Act on the page, asking before every action"),
+    /**
+     * Acts on the page. The Confirm actions switch decides whether each action
+     * is approved first, so the blurb names that control rather than promising
+     * a prompt the switch can be turned off for.
+     */
+    ASK("Ask", "Act on the page; Confirm actions decides whether you approve each one"),
 
     /** Reads, and answers with the steps instead of taking them. */
     PLAN("Plan", "Read pages and answer with the steps, changing nothing"),
@@ -484,14 +487,6 @@ class AppStateRepository(private val dao: AppStateDao) {
         if (url == null) dao.remove(AppStateKeys.EXTERNAL_URL)
         else dao.put(AppStateEntity(AppStateKeys.EXTERNAL_URL, url))
     }
-
-    suspend fun newSessionId(): String {
-        val id = java.util.UUID.randomUUID().toString()
-        dao.put(AppStateEntity(AppStateKeys.SESSION_ID, id))
-        return id
-    }
-
-    suspend fun sessionId(): String? = dao.get(AppStateKeys.SESSION_ID)
 
     // ---------- Post-create password-import offer ----------
 

@@ -225,17 +225,3 @@ internal fun ResourceTiming.toEntry(): NetworkEntry = NetworkEntry(
     sizesHidden = sizesAreHidden(crossOrigin, listOf(transferSize, encodedBodySize, decodedBodySize)),
     note = nextHopProtocol
 )
-
-/** A byte count at one decimal, in the unit a person would say it in. */
-internal fun formatBytes(bytes: Double): String {
-    val units = listOf("B", "kB", "MB", "GB")
-    var value = bytes
-    var unit = 0
-    while (value >= 1024 && unit < units.lastIndex) {
-        value /= 1024
-        unit++
-    }
-    val rounded = kotlin.math.round(value * 10) / 10
-    val whole = rounded == rounded.toLong().toDouble()
-    return (if (whole) rounded.toLong().toString() else rounded.toString()) + " " + units[unit]
-}

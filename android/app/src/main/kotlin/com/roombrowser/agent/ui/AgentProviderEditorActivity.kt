@@ -188,6 +188,16 @@ class AgentProviderEditorActivity : ComponentActivity() {
 // Provider editor (add / edit) — manual input + presets + model discovery
 // ===========================================================================
 
+/**
+ * The placeholder address an on-device provider carries.
+ *
+ * It is not an endpoint: it exists so the base-URL field is non-blank (Save
+ * requires that) for a provider that has no server to talk to at all. Which
+ * is also why it must not be allowed to survive a switch to a hosted
+ * protocol, where it would be saved as that provider's real endpoint.
+ */
+private const val LOCAL_BASE_URL = "local://engine"
+
 @Composable
 private fun ProviderEditorRoot(
     controller: AgentSettingsController,
@@ -218,12 +228,12 @@ private fun ProviderEditorRoot(
             }
         )
     }
-    // On-device providers carry a PLACEHOLDER base URL ("local://engine") —
-    // pre-fill it whenever the protocol is LOCAL and nothing is typed yet,
-    // so the field always satisfies the (non-blank) save validation.
+    // On-device providers carry a PLACEHOLDER base URL — pre-fill it whenever
+    // the protocol is LOCAL and nothing is typed yet, so the field always
+    // satisfies the (non-blank) save validation.
     LaunchedEffect(protocol) {
         if (protocol == AgentProviderEntity.PROTOCOL_LOCAL && baseUrl.isBlank()) {
-            baseUrl = "local://engine"
+            baseUrl = LOCAL_BASE_URL
         }
     }
     /* The API key stays on PLAIN remember on purpose: saved instance state is
@@ -415,39 +425,50 @@ private fun ProviderEditorRoot(
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
                 verticalArrangement = Arrangement.spacedBy(4.dp)
             ) {
+                // One handler for all five chips: besides dropping the fetched
+                // list, it keeps the base URL honest across the switch. Going
+                // to On-device, the field needs the placeholder (Save refuses a
+                // blank); coming back, the placeholder must GO — left in place
+                // it reads as a real endpoint under a hosted provider's label,
+                // and Save would take it, because it is not blank.
+                val pickProtocol: (String) -> Unit = { chosen ->
+                    protocol = chosen
+                    models = emptyList()
+                    presetModels = emptyList()
+                    fetchError = null
+                    if (chosen == AgentProviderEntity.PROTOCOL_LOCAL) {
+                        if (baseUrl.isBlank()) baseUrl = LOCAL_BASE_URL
+                    } else if (baseUrl == LOCAL_BASE_URL) {
+                        baseUrl = ""
+                    }
+                }
                 FilterChip(
                     selected = protocol == AgentProviderEntity.PROTOCOL_OPENAI,
-                    onClick = { protocol = AgentProviderEntity.PROTOCOL_OPENAI; models = emptyList(); presetModels = emptyList(); fetchError = null },
+                    onClick = { pickProtocol(AgentProviderEntity.PROTOCOL_OPENAI) },
                     label = { Text("OpenAI-compatible API") },
                     modifier = Modifier.semantics { contentDescription = "provider_protocol_openai" }
                 )
                 FilterChip(
                     selected = protocol == AgentProviderEntity.PROTOCOL_ANTHROPIC,
-                    onClick = { protocol = AgentProviderEntity.PROTOCOL_ANTHROPIC; models = emptyList(); presetModels = emptyList(); fetchError = null },
+                    onClick = { pickProtocol(AgentProviderEntity.PROTOCOL_ANTHROPIC) },
                     label = { Text("Anthropic Messages API") },
                     modifier = Modifier.semantics { contentDescription = "provider_protocol_anthropic" }
                 )
                 FilterChip(
                     selected = protocol == AgentProviderEntity.PROTOCOL_OPENCODE,
-                    onClick = { protocol = AgentProviderEntity.PROTOCOL_OPENCODE; models = emptyList(); presetModels = emptyList(); fetchError = null },
+                    onClick = { pickProtocol(AgentProviderEntity.PROTOCOL_OPENCODE) },
                     label = { Text("OpenCode server") },
                     modifier = Modifier.semantics { contentDescription = "provider_protocol_opencode" }
                 )
                 FilterChip(
                     selected = protocol == AgentProviderEntity.PROTOCOL_OLLAMA,
-                    onClick = { protocol = AgentProviderEntity.PROTOCOL_OLLAMA; models = emptyList(); presetModels = emptyList(); fetchError = null },
+                    onClick = { pickProtocol(AgentProviderEntity.PROTOCOL_OLLAMA) },
                     label = { Text("Ollama native") },
                     modifier = Modifier.semantics { contentDescription = "provider_protocol_ollama" }
                 )
                 FilterChip(
                     selected = protocol == AgentProviderEntity.PROTOCOL_LOCAL,
-                    onClick = {
-                        protocol = AgentProviderEntity.PROTOCOL_LOCAL
-                        models = emptyList()
-                        presetModels = emptyList()
-                        fetchError = null
-                        if (baseUrl.isBlank()) baseUrl = "local://engine"
-                    },
+                    onClick = { pickProtocol(AgentProviderEntity.PROTOCOL_LOCAL) },
                     label = { Text("On-device") },
                     modifier = Modifier.semantics { contentDescription = "provider_protocol_local" }
                 )

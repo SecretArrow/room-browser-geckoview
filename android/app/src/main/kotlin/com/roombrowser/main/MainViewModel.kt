@@ -98,10 +98,29 @@ enum class MessageAction { OPEN_NOTIFICATION_SETTINGS }
 data class VaultGateRequest(val id: Int)
 
 /**
+ * Which profile-wipe the confirmation is about. Both clear the SAME stores —
+ * [MainViewModel.deleteProfile] also drops the profile row, while
+ * [MainViewModel.resetProfile] keeps the identity — so they share one prompt
+ * and one warning. Two prompts is how the reset came to leave a profile's
+ * saved logins, wallet and 2FA accounts behind while telling the user their
+ * data was gone.
+ */
+enum class ProfileWipe { DELETE, RESET }
+
+/**
  * @param credentialCount saved logins the profile holds, or null when the vault
  *   is locked and the count could not be read — a different sentence to the user.
+ * @param hasWallet whether the profile holds a wallet. Its rows and its
+ *   Keystore key go together, so the mnemonic is not recoverable from the app
+ *   afterwards unless it was written down.
  */
-data class DeletePrompt(val profile: Profile, val credentialCount: Int?, val totpCount: Int)
+data class ProfileWipePrompt(
+    val profile: Profile,
+    val wipe: ProfileWipe,
+    val credentialCount: Int?,
+    val totpCount: Int,
+    val hasWallet: Boolean
+)
 
 /**
  * Which parts of a profile an export carries. Every flag but one defaults to
@@ -315,8 +334,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     var passwordImportOfferId by mutableStateOf<String?>(null)
         private set
 
-    /** The pre-delete prompt, or null when nothing is being deleted. */
-    var deletePrompt by mutableStateOf<DeletePrompt?>(null)
+    /** The pre-delete/-reset confirmation, or null when neither is pending. */
+    var profileWipePrompt by mutableStateOf<ProfileWipePrompt?>(null)
         private set
 
     /** [passwordsOnly] exports the passwords file instead of a whole backup. */
@@ -334,12 +353,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private var passwordImport: PasswordImport? = null
 
     /**
-     * The profile whose export must be followed by its deletion — set when the
-     * user chose "Export" in the pre-delete prompt, cleared by anything that
-     * does not produce a delivered file. Deleting only after a file has
+     * The profile whose export must be followed by its wipe, and which wipe —
+     * set when the user chose "Export first" in the prompt, cleared by anything
+     * that does not produce a delivered file. Wiping only after a file has
      * actually been written is the whole point of asking.
      */
-    private var deleteAfterPasswordExport: ProfileId? = null
+    private var wipeAfterPasswordExport: Pair<ProfileId, ProfileWipe>? = null
 
     /**
      * What a staged passwords export could not carry, held until the file is
@@ -612,11 +631,18 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
      * now actually conditional on success: it was posted unconditionally
      * right after the call, so a reset that threw told the user their
      * browsing data was gone when nothing had been touched.
+     *
+     * @param successMessage what to say when it worked, for the same reason as
+     *   [deleteProfile]'s: after a passwords export the user needs to hear
+     *   that the file was written as well as that the data went.
      */
-    fun resetProfile(id: ProfileId) {
+    fun resetProfile(
+        id: ProfileId,
+        successMessage: String = "Profile reset — its data is gone, the profile is not"
+    ) {
         viewModelScope.launch {
             runCatching { profileManager.resetData(id) }
-                .onSuccess { message = "Profile browsing data reset" }
+                .onSuccess { message = successMessage }
                 .onFailure { message = it.message ?: "Could not reset profile data" }
         }
     }
@@ -1259,10 +1285,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         bundleExportHolds = emptyList()
         passphrasePrompt = null
         pendingExport = null
-        // A cancel or a failure is exactly the case where the pending delete
+        // A cancel or a failure is exactly the case where the pending wipe
         // must NOT survive: the profile is the only remaining copy of those
         // passwords, so it stays.
-        deleteAfterPasswordExport = null
+        wipeAfterPasswordExport = null
         pendingExportNote = null
     }
 
@@ -1797,14 +1823,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
      * Export a profile's saved passwords to a sealed file of its own, as
      * opposed to the whole-profile backup that [startExport] builds.
      *
-     * @param deleteAfter true when this export is the pre-delete prompt's
-     *   "Export" choice: the profile is then deleted only once a file has
-     *   actually been delivered — saved or shared — never merely because the
-     *   export was attempted.
+     * @param wipeAfter which wipe to carry out once the file is delivered —
+     *   null for the plain "Export passwords…" menu item, [ProfileWipe.DELETE]
+     *   or [ProfileWipe.RESET] for the prompt's "Export first" choice. The
+     *   wipe happens only after a file has actually been delivered (saved or
+     *   shared), never merely because the export was attempted.
      */
-    fun startPasswordExport(profile: Profile, deleteAfter: Boolean = false) {
+    fun startPasswordExport(profile: Profile, wipeAfter: ProfileWipe? = null) {
         exportDraft = ExportDraft(profile, ExportSections.PASSWORDS_FILE, passwordsOnly = true)
-        deleteAfterPasswordExport = if (deleteAfter) profile.id else null
+        wipeAfterPasswordExport = wipeAfter?.let { profile.id to it }
         pendingExport = null
         passphrasePrompt = null
         pendingExportNote = null
@@ -2078,54 +2105,80 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
      * have" instead of naming a number: a profile whose passwords we could not
      * count is exactly the one most worth warning about.
      */
-    fun requestDeleteProfile(profile: Profile) {
+    fun requestDeleteProfile(profile: Profile) = requestWipe(profile, ProfileWipe.DELETE)
+
+    /**
+     * The reset action asks with the same prompt, because it destroys the same
+     * things: only the profile row survives. It is NOT refused for the active
+     * profile the way [requestDeleteProfile] is — the profile is still there
+     * afterwards, so the running browser is not left holding a profile that no
+     * longer exists.
+     */
+    fun requestResetProfile(profile: Profile) = requestWipe(profile, ProfileWipe.RESET)
+
+    private fun requestWipe(profile: Profile, wipe: ProfileWipe) {
         viewModelScope.launch {
-            if (refuseDeleteOfActiveProfile(profile.id)) return@launch
+            if (wipe == ProfileWipe.DELETE && refuseDeleteOfActiveProfile(profile.id)) return@launch
             val count = runCatching {
                 if (!vaultUnlocked()) null else graph.credentialRepo.exportAll(profile.id).size
             }.getOrNull()
             // A count, not a secret, so this needs no unlock: the warning must
             // not go quiet just because the screen happens to be locked.
             val totp = runCatching { graph.totpRepo.countForProfile(profile.id) }.getOrDefault(0)
-            deletePrompt = DeletePrompt(profile, count, totp)
+            // Same rule for the wallet: whether one exists is not a secret, and
+            // its mnemonic is unrecoverable once the rows and their key go.
+            val wallet = runCatching { graph.walletRepo.wallet(profile.id) != null }.getOrDefault(false)
+            profileWipePrompt = ProfileWipePrompt(profile, wipe, count, totp, wallet)
         }
     }
 
     /** "Cancel" — the profile stays, nothing is exported. */
-    fun dismissDeletePrompt() {
-        deletePrompt = null
+    fun dismissProfileWipePrompt() {
+        profileWipePrompt = null
     }
 
-    /** "Delete without exporting" — the user has been told what that costs. */
-    fun confirmDeleteWithoutExport() {
-        val profile = deletePrompt?.profile ?: return
-        deletePrompt = null
-        deleteProfile(profile.id)
+    /** "Without exporting" — the user has been told what that costs. */
+    fun confirmWipeWithoutExport() {
+        val prompt = profileWipePrompt ?: return
+        profileWipePrompt = null
+        carryOutWipe(prompt.profile.id, prompt.wipe)
     }
 
-    /** "Export first" — the export flow runs, and deletes only on delivery. */
-    fun confirmDeleteWithExport() {
-        val profile = deletePrompt?.profile ?: return
-        deletePrompt = null
-        startPasswordExport(profile, deleteAfter = true)
+    /** "Export first" — the export flow runs, and wipes only on delivery. */
+    fun confirmWipeWithExport() {
+        val prompt = profileWipePrompt ?: return
+        profileWipePrompt = null
+        startPasswordExport(prompt.profile, wipeAfter = prompt.wipe)
+    }
+
+    private fun carryOutWipe(id: ProfileId, wipe: ProfileWipe) {
+        when (wipe) {
+            ProfileWipe.DELETE -> deleteProfile(id)
+            ProfileWipe.RESET -> resetProfile(id)
+        }
     }
 
     /**
      * A staged passwords export was delivered (saved to a file, or shared).
-     * Carries out a pending delete — and only here, because a file that was
-     * never written is not a backup.
+     * Carries out a pending delete or reset — and only here, because a file
+     * that was never written is not a backup.
      */
     private fun afterPasswordExportDelivered() {
-        val id = deleteAfterPasswordExport ?: return
-        deleteAfterPasswordExport = null
-        deleteProfile(
-            id,
-            buildString {
-                append("Passwords exported")
-                pendingExportNote?.let { append(" — "); append(it) }
-                append(" — profile deleted with all its data")
-            }
-        )
+        val pending = wipeAfterPasswordExport ?: return
+        wipeAfterPasswordExport = null
+        val done = when (pending.second) {
+            ProfileWipe.DELETE -> "profile deleted with all its data"
+            ProfileWipe.RESET -> "profile reset — its data is gone, the profile is not"
+        }
+        val note = buildString {
+            append("Passwords exported")
+            pendingExportNote?.let { append(" — "); append(it) }
+            append(" — "); append(done)
+        }
+        when (pending.second) {
+            ProfileWipe.DELETE -> deleteProfile(pending.first, note)
+            ProfileWipe.RESET -> resetProfile(pending.first, note)
+        }
     }
 
     // ---------- Vault gate plumbing (the screen owns BiometricGate) ----------

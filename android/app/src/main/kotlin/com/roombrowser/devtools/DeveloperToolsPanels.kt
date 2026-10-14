@@ -23,6 +23,7 @@ import com.roombrowser.engine.devtools.DeveloperToolsCapabilities
 import com.roombrowser.ui.common.LocalRoomExtras
 import com.roombrowser.ui.common.RoomCopyButton
 import com.roombrowser.ui.common.SectionHeader
+import kotlinx.coroutines.CoroutineScope
 
 /**
  * What one panel is handed when it composes.
@@ -44,6 +45,15 @@ import com.roombrowser.ui.common.SectionHeader
  * lives on the scope rather than on the one panel that offers the row, because
  * the host owns the screen and a second panel offering it must not need a
  * second implementation.
+ *
+ * [hostScope] is the browser ViewModel's scope, and it is here for the work a
+ * panel must finish as it leaves. A composition's own scope is cancelled by the
+ * time `onDispose` runs, so a panel that needs one more engine call on the way
+ * out -- the Recorder uninstalling its listeners from someone's page -- cannot
+ * use it; and a fresh `CoroutineScope(...)` there is an orphan with no owner, no
+ * cancellation and no supervisor. The host's scope outlives the panel by
+ * construction and dies with the browser, which is exactly the lifetime this
+ * work wants.
  */
 internal class DevToolsPanelScope(
     val session: InspectorSession?,
@@ -54,6 +64,7 @@ internal class DevToolsPanelScope(
     val overview: PageOverview?,
     val answered: Boolean?,
     val hasEngine: Boolean,
+    val hostScope: CoroutineScope,
     val onRefresh: () -> Unit,
     val onRunAgentTask: (String) -> Unit,
     val onShowLimits: () -> Unit
