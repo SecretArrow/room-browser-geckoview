@@ -8,6 +8,7 @@ import androidx.test.platform.app.InstrumentationRegistry
 import com.google.common.truth.Truth.assertThat
 import com.roombrowser.data.db.AgentSessionEntity
 import com.roombrowser.data.db.AppDatabase
+import com.roombrowser.domain.agent.AgentPlan
 import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Before
@@ -34,9 +35,11 @@ import org.junit.runner.RunWith
  * test is about, and any LATER change to that table makes the revert below
  * incomplete and this test wrong — which is why the revert is written out in
  * full, with the v9 shape named explicitly, instead of being derived from the
- * entity it is testing. A table a later version CREATED is dropped instead, so
- * that the replay creates it again: `ai_tasks` arrives at v11 and is given a
- * column at v12, and ADD COLUMN cannot run over a table that already has it.
+ * entity it is testing. Columns added later (`plan_json` at v16) are excluded
+ * by the same rewrite, so the replay below is what puts them back. A table a
+ * later version CREATED is dropped instead, so that the replay creates it
+ * again: `ai_tasks` arrives at v11 and is given a column at v12, and ADD
+ * COLUMN cannot run over a table that already has it.
  */
 @RunWith(AndroidJUnit4::class)
 class AgentSessionMigrationTest {
@@ -60,7 +63,7 @@ class AgentSessionMigrationTest {
     }
 
     @Test
-    fun upgrading_from_v9_keeps_every_chat_and_adds_the_tab_column() = runBlocking<Unit> {
+    fun upgrading_from_v9_keeps_every_chat_and_adds_the_later_columns() = runBlocking<Unit> {
         // 1. A real database with a real chat in it.
         val created = Room.databaseBuilder(context, AppDatabase::class.java, dbName).build()
         created.agentDao().insertSession(
@@ -102,6 +105,16 @@ class AgentSessionMigrationTest {
             upgraded.agentDao().setTab(sessions.first().id, tabB)
             assertThat(upgraded.agentDao().sessionForTab(profile, tabB)?.id)
                 .isEqualTo(sessions.first().id)
+            // 5. `plan_json` (v16) arrives empty on an old chat — no list yet,
+            //    which is what the next turn writes its own into.
+            assertThat(sessions.first().planJson).isEmpty()
+            val items = listOf(
+                AgentPlan.Item("open the site", AgentPlan.Status.DONE),
+                AgentPlan.Item("sign in", AgentPlan.Status.IN_PROGRESS)
+            )
+            upgraded.agentDao().setPlan(sessions.first().id, AgentPlan.encode(items))
+            assertThat(AgentPlan.decode(upgraded.agentDao().session(sessions.first().id)?.planJson))
+                .isEqualTo(items)
         } finally {
             upgraded.close()
         }
