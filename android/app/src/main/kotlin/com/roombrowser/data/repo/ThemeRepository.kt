@@ -3,7 +3,6 @@ package com.roombrowser.data.repo
 import com.roombrowser.data.db.AppDatabase
 import com.roombrowser.data.db.CustomThemeEntity
 import com.roombrowser.domain.model.ProfileId
-import com.roombrowser.domain.theme.BuiltInThemes
 import com.roombrowser.domain.theme.RoomThemeSpec
 import com.roombrowser.domain.theme.ThemeJson
 import kotlinx.coroutines.flow.Flow

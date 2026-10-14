@@ -86,7 +86,6 @@ import com.roombrowser.RoomBrowserApp
 import com.roombrowser.agent.AgentProviderStore
 import com.roombrowser.agent.LocalAiController
 import com.roombrowser.data.db.AgentProviderEntity
-import com.roombrowser.domain.download.DownloadFormat
 import com.roombrowser.domain.agent.LocalAiBackup
 import com.roombrowser.domain.agent.LocalAiTuning
 import com.roombrowser.domain.agent.OllamaLibraryEntry
@@ -96,6 +95,7 @@ import com.roombrowser.domain.agent.OllamaModelPreset
 import com.roombrowser.domain.agent.OllamaModelPresets
 import com.roombrowser.domain.agent.OllamaPresetTier
 import com.roombrowser.domain.agent.OllamaRegistry
+import com.roombrowser.domain.download.DownloadFormat
 import com.roombrowser.domain.paging.Paging
 import com.roombrowser.localai.engine.LlamaEngine
 import com.roombrowser.localai.store.OnDeviceDownloadController

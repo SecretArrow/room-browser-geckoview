@@ -135,7 +135,6 @@ interface BookmarkDao {
     @Query("DELETE FROM bookmarks WHERE profile_id = :profileId")
     suspend fun deleteAllFor(profileId: String)
 
-
     @Query("SELECT MAX(position) FROM bookmarks WHERE profile_id = :profileId")
     suspend fun maxPosition(profileId: String): Int?
 }
@@ -162,7 +161,6 @@ interface HistoryDao {
 
     @Query("DELETE FROM history WHERE profile_id = :profileId")
     suspend fun deleteAllFor(profileId: String)
-
 }
 
 @Dao
@@ -234,7 +232,6 @@ interface SiteSettingsDao {
     @Query("SELECT * FROM site_permissions WHERE profile_id = :profileId AND host = :host")
     suspend fun permissionsFor(profileId: String, host: String): List<SitePermissionEntity>
 
-
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsertPermission(entity: SitePermissionEntity)
 
@@ -279,7 +276,6 @@ interface IpHistoryDao {
 
     @Query("DELETE FROM ip_history WHERE last_seen_at < :cutoff")
     suspend fun purgeBefore(cutoff: Long)
-
 }
 
 @Dao
@@ -343,7 +339,6 @@ interface ThemeDao {
 
     @Query("DELETE FROM themes WHERE id = :id")
     suspend fun delete(id: String)
-
 }
 
 // =========================================================================
@@ -369,7 +364,6 @@ interface AgentDao {
 
     @Query("DELETE FROM agent_providers WHERE id = :id")
     suspend fun deleteProvider(id: Long)
-
 
     // ---------- Sessions ----------
 
@@ -402,7 +396,6 @@ interface AgentDao {
 
     @Insert
     suspend fun insertSession(entity: AgentSessionEntity): Long
-
 
     @Query("UPDATE agent_sessions SET updated_at = :ts WHERE id = :id")
     suspend fun touch(id: Long, ts: Long)
