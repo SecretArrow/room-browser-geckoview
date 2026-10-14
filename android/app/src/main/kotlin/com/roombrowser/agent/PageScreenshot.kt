@@ -4,6 +4,7 @@ import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Rect
 import android.util.Base64
+import androidx.core.graphics.createBitmap
 import androidx.core.graphics.scale
 import com.roombrowser.domain.agent.AgentImage
 import com.roombrowser.domain.agent.AgentVisionBounds
@@ -153,7 +154,7 @@ object PageScreenshot {
         // otherwise allocate a hundred megabytes to throw almost all of it away.
         val outputSize = AgentVisionBounds.scaledSize(widthPx, coveredPx)
         val output = try {
-            Bitmap.createBitmap(outputSize.width, outputSize.height, Bitmap.Config.ARGB_8888)
+            createBitmap(outputSize.width, outputSize.height)
         } catch (t: Throwable) {
             return@withAnnotation Result.failure(t)
         }
