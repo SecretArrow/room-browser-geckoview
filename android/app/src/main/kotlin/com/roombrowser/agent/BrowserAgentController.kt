@@ -1290,16 +1290,18 @@ class BrowserAgentController(
                         repo.setSessionPlan(sessionId, AgentPlan.encode(event.items))
                     }
                     is AgentEvent.FinalAnswer -> {
-                        streamingIndex = finalizeAssistant(streamingIndex)
                         // The model sometimes copies the fence's frame back out
                         // of the tool result it just read.
                         val answer = UntrustedContent.stripMarkers(event.text)
-                        entries = entries + AgentEntry.Assistant(
-                            text = answer,
-                            thinking = "",
-                            streaming = false,
+                        // The answer is the bubble the user watched appear, so
+                        // it lands in it rather than beside it.
+                        entries = AgentTranscript.answer(
+                            entries = entries,
+                            openIndex = streamingIndex,
+                            answer = answer,
                             at = System.currentTimeMillis()
                         )
+                        streamingIndex = -1
                         repo.addMessage(sessionId, "assistant", answer)
                         repo.touchSession(sessionId)
                         setStatus(null)

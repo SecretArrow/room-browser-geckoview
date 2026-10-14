@@ -400,9 +400,9 @@ class AgentLoopTest {
         val notice = events.filterIsInstance<AgentEvent.Notice>().single()
         assertThat(notice.text).contains("1 of 2")
         assertThat(notice.text).contains("still open")
-        // Before the answer, so the two are read together.
+        // After the answer, so it reads as the turn's closing line.
         assertThat(events.indexOf(notice))
-            .isLessThan(events.indexOfLast { it is AgentEvent.FinalAnswer })
+            .isGreaterThan(events.indexOfLast { it is AgentEvent.FinalAnswer })
     }
 
     @Test

@@ -196,12 +196,12 @@ class AgentLoop(
                         history.add(ChatMessage(role = "user", content = AgentPlan.NUDGE))
                         continue
                     }
-                    // The user can see the list; this says in words whether the
-                    // turn finished what it set out to do.
+                    listener(AgentEvent.FinalAnswer(assistant.content.orEmpty().ifBlank { "(the model returned an empty answer)" }))
+                    // After the answer, so it reads as the closing line of the
+                    // turn rather than as something said before it.
                     if (config.planBeforeActions && currentPlan.any { it.status != AgentPlan.Status.DONE }) {
                         listener(AgentEvent.Notice(AgentPlan.completionNotice(currentPlan)))
                     }
-                    listener(AgentEvent.FinalAnswer(assistant.content.orEmpty().ifBlank { "(the model returned an empty answer)" }))
                     return
                 }
 
@@ -270,10 +270,6 @@ class AgentLoop(
             }
 
             listener(AgentEvent.Notice("Step limit reached (${config.steps}) — wrapping up."))
-            // A turn cut off mid-list is exactly when the count matters most.
-            if (config.planBeforeActions && currentPlan.any { it.status != AgentPlan.Status.DONE }) {
-                listener(AgentEvent.Notice(AgentPlan.completionNotice(currentPlan)))
-            }
             trimHistory(history)
             val final = gateway.chat(
                 ChatRequest(
@@ -287,6 +283,11 @@ class AgentLoop(
             }
             history.add(final)
             listener(AgentEvent.FinalAnswer(final.content.orEmpty().ifBlank { "(stopped at the step limit without a final answer)" }))
+            // A turn cut off mid-list is exactly when the count matters most,
+            // and it goes under the answer for the same reason as above.
+            if (config.planBeforeActions && currentPlan.any { it.status != AgentPlan.Status.DONE }) {
+                listener(AgentEvent.Notice(AgentPlan.completionNotice(currentPlan)))
+            }
         } catch (ce: CancellationException) {
             throw ce
         } catch (t: Throwable) {
