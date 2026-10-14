@@ -1172,7 +1172,8 @@ class BrowserAgentController(
             // one: the panel can be used before its tab resolve finishes, and
             // a second message must continue the conversation it belongs to
             // rather than silently start a second one.
-            val known = activeSessionId?.let { id ->
+            val previousId = activeSessionId
+            val known = previousId?.let { id ->
                 runCatching { repo.session(id) }.getOrNull()
             } ?: tabId?.let { repo.sessionForTab(profileId.value, it) }
             val sessionId = known?.id ?: repo.createSession(
@@ -1189,9 +1190,10 @@ class BrowserAgentController(
             // allowed to do on a site still stands.
             pointApprovalsAt(sessionId)
             tabId?.let { id -> conversationTabId = id }
-            // For the same reason the list comes off the row, not from what
-            // happens to be in memory.
-            if (plan.isEmpty()) plan = AgentPlan.decode(known?.planJson)
+            // Carrying on with the chat the panel was already showing keeps the
+            // list in memory. Landing anywhere else takes the row's, so a chat
+            // deleted underneath us cannot lend its list to its replacement.
+            if (sessionId != previousId) plan = AgentPlan.decode(known?.planJson)
             repo.addMessage(sessionId, "user", display)
 
             val engine = SearchEngines.byId(vm.profileSettings().searchEngineId).label
