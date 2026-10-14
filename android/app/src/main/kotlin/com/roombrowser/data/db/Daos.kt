@@ -453,6 +453,18 @@ interface AgentDao {
     @Query("DELETE FROM agent_messages WHERE session_id = :sessionId")
     suspend fun deleteMessagesFor(sessionId: Long)
 
+    /**
+     * Every message of every chat this profile owns. Messages carry no
+     * profile_id of their own — they hang off a session — so the cascade has
+     * to reach them through the sessions, and a profile deleted without this
+     * would leave its chat transcripts behind with nothing pointing at them.
+     */
+    @Query(
+        "DELETE FROM agent_messages WHERE session_id IN " +
+            "(SELECT id FROM agent_sessions WHERE profile_id = :profileId)"
+    )
+    suspend fun deleteMessagesForProfile(profileId: String)
+
     @Query("DELETE FROM agent_messages")
     suspend fun deleteAllMessages()
 }

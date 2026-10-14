@@ -52,6 +52,7 @@ class ProfileRepositoryImpl(db: AppDatabase) : ProfileStore {
     private val noteDao = db.noteDao()
     private val totpDao = db.totpDao()
     private val siteMemoryDao = db.agentSiteMemoryDao()
+    private val agentDao = db.agentDao()
 
     private val json = Json { ignoreUnknownKeys = true; encodeDefaults = true }
 
@@ -73,55 +74,7 @@ class ProfileRepositoryImpl(db: AppDatabase) : ProfileStore {
 
     override suspend fun remove(id: ProfileId, cascadeData: Boolean) {
         dao.delete(id.value)
-        if (cascadeData) {
-            tabDao.deleteAllFor(id.value)
-            bookmarkDao.deleteAllFor(id.value)
-            historyDao.deleteAllFor(id.value)
-            siteSettingsDao.deleteAllPermissionsFor(id.value)
-            siteSettingsDao.deleteAllSiteSettingsFor(id.value)
-            ipDao.deleteAllFor(id.value)
-            statsDao.deleteAllFor(id.value)
-            downloadDao.deleteAllFor(id.value)
-            // Saved logins are profile data too: rows first, THEN the
-            // Keystore key. That order fails closed — if anything dies in
-            // between, any surviving ciphertext stays permanently
-            // undecryptable instead of leaving a decryptable orphan. With
-            // cascadeData=false the key is kept on purpose so the profile's
-            // data (and its passwords) stay recoverable on restore.
-            credentialDao.deleteAllForProfile(id.value)
-            VaultCrypto.deleteKey(id)
-            // Wallet data is profile data too: same rows-first-then-key
-            // order as the credentials cascade (fail closed — a mid-cascade
-            // death leaves ciphertext undecryptable, never a decryptable
-            // orphan), and the wallet's Keystore key is separate from the
-            // password vault's. Accounts go before the wallets row they
-            // reference; cascadeData=false keeps the key on purpose so the
-            // profile's wallet (and passwords) stay recoverable on restore.
-            walletAccountDao.deleteAllForProfile(id.value)
-            walletDao.deleteAllForProfile(id.value)
-            walletNetworkDao.deleteAllForProfile(id.value)
-            walletNetworkDao.deleteActiveNetworksForProfile(id.value)
-            dappPermissionDao.deleteAllForProfile(id.value)
-            walletActivityDao.deleteAllForProfile(id.value)
-            // Scheduled tasks belong to the profile they run against; a task
-            // pointing at a deleted profile could never run anyway.
-            aiTaskDao.deleteAllForProfile(id.value)
-            // Notes are profile content like bookmarks — no keystore key
-            // involved, so they simply go with the profile.
-            noteDao.deleteAllForProfile(id.value)
-            // The agent's per-site memory is profile content too, and the
-            // promise the toggle makes is that it goes when the profile does.
-            siteMemoryDao.deleteAllForProfile(id.value)
-            // 2FA accounts: rows first, then their OWN Keystore key — the same
-            // fail-closed order as the credential and wallet cascades above.
-            totpDao.deleteAllForProfile(id.value)
-            TotpKeyCrypto.deleteKey(id)
-            WalletKeyCrypto.deleteKey(id)
-            // Same fail-closed rule for the remembered oct:// passphrase: the
-            // ciphertext lives in app_state and only its own key can read it,
-            // so dropping the key is what makes the row inert.
-            OctCircleKeyCrypto.deleteKey(id)
-        }
+        if (cascadeData) clearProfileData(id)
     }
 
     override suspend fun updateSettings(id: ProfileId, settings: ProfileSettings) {
@@ -150,16 +103,53 @@ class ProfileRepositoryImpl(db: AppDatabase) : ProfileStore {
         // options.settings handled by caller (settings serialized on ProfileEntity)
     }
 
-    override suspend fun resetProfileData(id: ProfileId) {
+    override suspend fun resetProfileData(id: ProfileId) = clearProfileData(id)
+
+    /**
+     * Every store holding data that belongs to one profile, called by both
+     * [remove] (with `cascadeData`) and [resetProfileData].
+     *
+     * ONE list, because two is how they drifted apart: a reset left the saved
+     * logins, the wallet and its still-decryptable Keystore key, the 2FA
+     * seeds, the downloads, the scheduled tasks and the agent chats on the
+     * device, so a profile the user believed they had wiped still held a
+     * working wallet. Deleting missed the agent chats too.
+     *
+     * Rows go before the Keystore key that decrypts them, so a death in the
+     * middle fails closed — undecryptable ciphertext rather than a decryptable
+     * orphan. The engine's own directories are NOT here: they are not Room
+     * rows, and only a profile that is not live can have them removed.
+     */
+    private suspend fun clearProfileData(id: ProfileId) {
         tabDao.deleteAllFor(id.value)
         bookmarkDao.deleteAllFor(id.value)
         historyDao.deleteAllFor(id.value)
+        downloadDao.deleteAllFor(id.value)
         siteSettingsDao.deleteAllPermissionsFor(id.value)
         siteSettingsDao.deleteAllSiteSettingsFor(id.value)
         statsDao.deleteAllFor(id.value)
         ipDao.deleteAllFor(id.value)
         noteDao.deleteAllForProfile(id.value)
         siteMemoryDao.deleteAllForProfile(id.value)
+        aiTaskDao.deleteAllForProfile(id.value)
+        // Transcripts hang off sessions, so they go first.
+        agentDao.deleteMessagesForProfile(id.value)
+        agentDao.deleteSessionsFor(id.value)
+        credentialDao.deleteAllForProfile(id.value)
+        VaultCrypto.deleteKey(id)
+        walletAccountDao.deleteAllForProfile(id.value)
+        walletDao.deleteAllForProfile(id.value)
+        walletNetworkDao.deleteAllForProfile(id.value)
+        walletNetworkDao.deleteActiveNetworksForProfile(id.value)
+        dappPermissionDao.deleteAllForProfile(id.value)
+        walletActivityDao.deleteAllForProfile(id.value)
+        totpDao.deleteAllForProfile(id.value)
+        TotpKeyCrypto.deleteKey(id)
+        WalletKeyCrypto.deleteKey(id)
+        // The remembered oct:// passphrase: its ciphertext lives in app_state
+        // and only this key can read it, so dropping the key is what makes the
+        // row inert.
+        OctCircleKeyCrypto.deleteKey(id)
     }
 
     suspend fun touch(id: ProfileId, ts: Long) = dao.touch(id.value, ts)

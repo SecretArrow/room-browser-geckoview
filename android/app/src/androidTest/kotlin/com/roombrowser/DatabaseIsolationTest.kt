@@ -5,11 +5,16 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import com.google.common.truth.Truth.assertThat
 import com.roombrowser.browser.wallet.WalletActivityRecord
+import com.roombrowser.data.db.AgentMessageEntity
+import com.roombrowser.data.db.AgentSessionEntity
+import com.roombrowser.data.db.AiTaskEntity
 import com.roombrowser.data.db.AppDatabase
 import com.roombrowser.data.db.BookmarkEntity
+import com.roombrowser.data.db.DownloadEntity
 import com.roombrowser.data.db.HistoryEntity
 import com.roombrowser.data.db.ProfileEntity
 import com.roombrowser.data.db.TabEntity
+import com.roombrowser.data.db.TotpEntity
 import com.roombrowser.data.repo.BrowserRepository
 import com.roombrowser.data.repo.CredentialRepository
 import com.roombrowser.data.repo.ProfileRepositoryImpl
@@ -35,7 +40,9 @@ import org.junit.runner.RunWith
  * on wrong keys / corrupt data), that tab positions are allocated uniquely
  * across open AND closed rows, and that the wallet tables (Room v8) are
  * scoped + encrypted per profile with the profile-delete cascade wiping
- * exactly one profile's wallet data.
+ * exactly one profile's wallet data. A reset runs the same store list as a
+ * delete and is pinned against it, so neither can quietly stop clearing
+ * something the other still does.
  */
 @RunWith(AndroidJUnit4::class)
 class DatabaseIsolationTest {
@@ -414,5 +421,111 @@ class DatabaseIsolationTest {
         val encB = db.walletDao().byProfile(profileB)?.mnemonicEnc
             ?: error("B's wallet row must survive the cascade")
         assertThat(WalletKeyCrypto.decrypt(b, encB)).isEqualTo(mnemonicB)
+    }
+
+    /**
+     * A reset is a delete that keeps the profile row: both routes run ONE
+     * store list, so everything the delete cascade wipes, the reset wipes too.
+     *
+     * Before that they were two lists, and the reset's was shorter — it left
+     * the saved logins, the wallet and its still-decryptable Keystore key, the
+     * 2FA seeds, the downloads, the scheduled tasks and the agent chats on the
+     * device, so a profile the user believed they had wiped still held a
+     * working wallet. This pins the reset against the delete, store by store.
+     */
+    @Test
+    fun resetting_a_profile_clears_the_same_data_but_keeps_the_row() = runBlocking<Unit> {
+        val a = ProfileId(profileA)
+        val b = ProfileId(profileB)
+        val repo = ProfileRepositoryImpl(db)
+
+        val creds = CredentialRepository(db.credentialDao(), VaultCrypto)
+        creds.unlock()
+        creds.save(a, "a.example.com", "user-a", "secret-a")
+        creds.save(b, "b.example.com", "user-b", "secret-b")
+
+        val wallet = WalletRepository(
+            db.walletDao(),
+            db.walletAccountDao(),
+            db.walletNetworkDao(),
+            db.dappPermissionDao(),
+            db.walletActivityDao(),
+            WalletKeyCrypto
+        )
+        wallet.createWallet(a, "A Wallet", MNEMONIC_A)
+        wallet.createWallet(b, "B Wallet", MNEMONIC_B)
+
+        db.tabDao().insertNextPosition("tabA", profileA, "A", "https://a.example.com", isPrivate = false, createdAt = 0, lastViewedAt = 0)
+        db.bookmarkDao().upsert(BookmarkEntity(profileId = profileA, url = "https://a.example.com", title = "A", createdAt = 0))
+        db.historyDao().insert(HistoryEntity(profileId = profileA, url = "https://a.example.com", title = "A", visitedAt = 1))
+        db.downloadDao().insert(
+            DownloadEntity(
+                profileId = profileA, url = "https://a.example.com/f.bin", fileName = "f.bin",
+                mimeType = "application/octet-stream", destination = "/tmp/f.bin",
+                totalBytes = 1, downloadedBytes = 1, status = "COMPLETE", createdAt = 0
+            )
+        )
+        db.aiTaskDao().upsert(
+            AiTaskEntity(
+                name = "task", prompt = "p", profileId = profileA,
+                scheduleJson = "{}", permissionsJson = "{}", createdAt = 0
+            )
+        )
+        db.totpDao().upsert(
+            TotpEntity(
+                id = "totp-a", profileId = profileA, issuer = "A", account = "a@example.com",
+                secretEnc = "ciphertext", algorithm = "SHA1", digits = 6, period = 30,
+                createdAt = 0, lastUsedAt = null
+            )
+        )
+        val sessionA = db.agentDao().insertSession(
+            AgentSessionEntity(profileId = profileA, title = "chat", providerId = 1, model = "m", createdAt = 0, updatedAt = 0)
+        )
+        db.agentDao().insertMessage(AgentMessageEntity(sessionId = sessionA, role = "user", content = "hi", createdAt = 0))
+        val sessionB = db.agentDao().insertSession(
+            AgentSessionEntity(profileId = profileB, title = "chat b", providerId = 1, model = "m", createdAt = 0, updatedAt = 0)
+        )
+        db.agentDao().insertMessage(AgentMessageEntity(sessionId = sessionB, role = "user", content = "hi b", createdAt = 0))
+
+        repo.resetProfileData(a)
+
+        // The profile row survives — that is the whole difference from a delete.
+        assertThat(db.profileDao().get(profileA)).isNotNull()
+
+        // Everything that belonged to A is gone.
+        assertThat(db.tabDao().openTabs(profileA)).isEmpty()
+        assertThat(db.bookmarkDao().all(profileA)).isEmpty()
+        assertThat(db.historyDao().since(profileA, 0)).isEmpty()
+        assertThat(countRows("downloads", profileA)).isEqualTo(0)
+        assertThat(countRows("ai_tasks", profileA)).isEqualTo(0)
+        assertThat(db.credentialDao().countForProfile(profileA)).isEqualTo(0)
+        assertThat(db.totpDao().allForProfile(profileA)).isEmpty()
+        assertThat(db.walletDao().byProfile(profileA)).isNull()
+        assertThat(db.walletAccountDao().forProfile(profileA)).isEmpty()
+        assertThat(db.agentDao().sessions(profileA)).isEmpty()
+        assertThat(db.agentDao().messages(sessionA)).isEmpty()
+
+        // B is untouched, and its wallet blob still decrypts under its own key:
+        // the reset destroyed A's Keystore key, never B's.
+        assertThat(db.profileDao().get(profileB)).isNotNull()
+        assertThat(db.credentialDao().countForProfile(profileB)).isEqualTo(1)
+        assertThat(db.agentDao().sessions(profileB)).hasSize(1)
+        assertThat(db.agentDao().messages(sessionB)).hasSize(1)
+        val encB = db.walletDao().byProfile(profileB)?.mnemonicEnc
+            ?: error("B's wallet row must survive A's reset")
+        assertThat(WalletKeyCrypto.decrypt(b, encB)).isEqualTo(MNEMONIC_B)
+    }
+
+    /** Raw count for the two stores with no per-profile read of their own. */
+    private fun countRows(table: String, profileId: String): Int =
+        db.query("SELECT COUNT(*) FROM $table WHERE profile_id = ?", arrayOf(profileId))
+            .use { cursor -> cursor.moveToFirst(); cursor.getInt(0) }
+
+    private companion object {
+        const val MNEMONIC_A =
+            "abandon abandon abandon abandon abandon abandon abandon abandon " +
+                "abandon abandon abandon about"
+        const val MNEMONIC_B =
+            "shoot island position soft burden budget tooth cruel issue economy destroy above"
     }
 }
