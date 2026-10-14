@@ -58,7 +58,20 @@ data class AgentConfig(
     val model: String,
     val maxSteps: Int = DEFAULT_STEPS,
     val temperature: Double = 0.2,
-    val systemPrompt: String
+    val systemPrompt: String,
+    /**
+     * The turn may not change anything until it has written a step list with
+     * `plan`. An attempt before that is answered with [AgentPlan.NUDGE]
+     * instead of being executed, so the model reads it as the result of its
+     * own call. Off for a scheduled run, which has no user watching a list.
+     */
+    val planBeforeActions: Boolean = false,
+    /**
+     * The turn must END with a step list, because in this mode the list IS the
+     * answer. Off everywhere else: a turn that only answers a question needs
+     * no list.
+     */
+    val planIsTheAnswer: Boolean = false
 ) {
     /**
      * The step budget the loop actually honours. A stored value is clamped
@@ -137,6 +150,10 @@ class AgentLoop(
             // One turn's worth: a tool that failed twice in a previous turn is
             // not a loop in this one.
             val failures = AgentFailureWatch()
+            // The list this turn is working to, as the last `plan` call set it.
+            var currentPlan = emptyList<AgentPlan.Item>()
+            var planRefusals = 0
+            var planNudges = 0
             while (step < config.steps) {
                 if (!currentCoroutineContext().isActive) return
                 beforeStep()
@@ -169,6 +186,21 @@ class AgentLoop(
 
                 val calls = assistant.toolCalls.orEmpty()
                 if (calls.isEmpty()) {
+                    // Where the list IS the answer, an answer without one is not
+                    // an answer. One re-ask, and never on the tools-free last
+                    // step, where the tool it asks for is not on offer.
+                    if (config.planIsTheAnswer && currentPlan.isEmpty() &&
+                        useTools && planNudges < MAX_PLAN_NUDGES
+                    ) {
+                        planNudges++
+                        history.add(ChatMessage(role = "user", content = AgentPlan.NUDGE))
+                        continue
+                    }
+                    // The user can see the list; this says in words whether the
+                    // turn finished what it set out to do.
+                    if (config.planBeforeActions && currentPlan.any { it.status != AgentPlan.Status.DONE }) {
+                        listener(AgentEvent.Notice(AgentPlan.completionNotice(currentPlan)))
+                    }
                     listener(AgentEvent.FinalAnswer(assistant.content.orEmpty().ifBlank { "(the model returned an empty answer)" }))
                     return
                 }
@@ -176,11 +208,23 @@ class AgentLoop(
                 val turnImages = mutableListOf<AgentImage>()
                 for (call in calls) {
                     listener(AgentEvent.ToolStarted(call.id, call.function.name, call.function.arguments))
+                    // Work may not be carried out before the list that says what
+                    // the work is. The refusal is bounded: a model that will not
+                    // write a list still gets to finish the user's task.
+                    val needsPlan = config.planBeforeActions &&
+                        currentPlan.isEmpty() &&
+                        call.function.name in PlanModePolicy.REFUSED &&
+                        planRefusals < MAX_PLAN_REFUSALS
                     // A repeat of a call that just failed twice is answered with
                     // a correction rather than executed again: the model reads
                     // it as the result of its own call, which is the one place
                     // it is certain to look.
-                    val blocked = failures.refusal(call.function.name)
+                    val blocked = if (needsPlan) {
+                        planRefusals++
+                        AgentPlan.NUDGE
+                    } else {
+                        failures.refusal(call.function.name)
+                    }
                     val result = if (blocked != null) {
                         ToolResult(ok = false, output = blocked)
                     } else {
@@ -201,7 +245,10 @@ class AgentLoop(
                         .replace('\n', ' ').trim().take(SUMMARY_CHARS)
                     // Before the card, so the checklist the step belongs to is
                     // already on screen when the step lands in it.
-                    if (result.plan.isNotEmpty()) listener(AgentEvent.PlanUpdated(result.plan))
+                    if (result.plan.isNotEmpty()) {
+                        currentPlan = result.plan
+                        listener(AgentEvent.PlanUpdated(result.plan))
+                    }
                     listener(AgentEvent.ToolFinished(call.id, call.function.name, result.ok, summary))
                     history.add(
                         ChatMessage(role = "tool", content = content, toolCallId = call.id)
@@ -223,6 +270,10 @@ class AgentLoop(
             }
 
             listener(AgentEvent.Notice("Step limit reached (${config.steps}) — wrapping up."))
+            // A turn cut off mid-list is exactly when the count matters most.
+            if (config.planBeforeActions && currentPlan.any { it.status != AgentPlan.Status.DONE }) {
+                listener(AgentEvent.Notice(AgentPlan.completionNotice(currentPlan)))
+            }
             trimHistory(history)
             val final = gateway.chat(
                 ChatRequest(
@@ -264,5 +315,13 @@ class AgentLoop(
         const val MAX_TOOL_RESULT_CHARS = 6000
         const val SUMMARY_CHARS = 160
         const val MAX_HISTORY = 40
+
+        /**
+         * How many times a turn may be told to write its step list before the
+         * loop stops insisting and lets the work proceed. A model that will not
+         * plan must not be able to wedge the task it was given.
+         */
+        const val MAX_PLAN_REFUSALS = 2
+        const val MAX_PLAN_NUDGES = 1
     }
 }

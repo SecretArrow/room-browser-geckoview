@@ -421,6 +421,10 @@ interface AgentDao {
     @Query("UPDATE agent_sessions SET tab_id = :tabId WHERE id = :id")
     suspend fun setTab(id: Long, tabId: String)
 
+    /** Replaces this chat's step list, as AgentPlan.encode writes it. */
+    @Query("UPDATE agent_sessions SET plan_json = :plan WHERE id = :id")
+    suspend fun setPlan(id: Long, plan: String)
+
     @Insert
     suspend fun insertSession(entity: AgentSessionEntity): Long
 

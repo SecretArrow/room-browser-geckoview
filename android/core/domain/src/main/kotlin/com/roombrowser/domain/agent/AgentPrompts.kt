@@ -62,6 +62,21 @@ Today is {DATE}. The browser's search engine is {ENGINE}.
         render(java.time.Instant.ofEpochMilli(epochMillis).atZone(zone).toLocalDate(), searchEngineLabel)
 
     /**
+     * Appended in every chat mode. The agent is told BEFORE it acts, because an
+     * action refused for want of a step list costs a step and reads as the tool
+     * being broken — the loop enforces this, and this is what keeps it from
+     * having to.
+     */
+    val TODO_CLAUSE: String = """
+
+YOUR STEP LIST — write it before you work, and keep it current:
+- Before the first action of any task that takes more than a step or two, call `plan` with the whole list: one short step per line, in the order you will do them. Until that list exists an action is refused, so write it first rather than finding that out mid-task.
+- Send the WHOLE list every time. It REPLACES the previous one, so a step you finished stays in it marked done and the step you are on now is marked in_progress.
+- Mark every step done before your final answer, and drop a step that turned out to be unnecessary. The list is how the user sees where a long run has got to, and how you can tell whether the task is finished: while a step is still open, the task is not done.
+- A question you can answer in one step, or without touching the page, needs no list.
+""".trimEnd()
+
+    /**
      * Appended to the system prompt while the chat is in Plan mode. The model
      * is told BEFORE it plans, because a tool that only refuses mid-plan costs
      * a step and reads as the tool being broken.
@@ -70,7 +85,7 @@ Today is {DATE}. The browser's search engine is {ENGINE}.
 
 PLAN MODE — this turn reads pages and proposes work, and never carries it out:
 - Clicking, typing, pressing Enter, choosing an option, sending keys, running JavaScript (in the page or in the Node runtime), installing a package, liking, reposting, replying, posting, downloading a file, saving a page as a PDF and approving a wallet request are switched off for this turn, and a call to one of them is refused.
-- Investigate with search_web, navigate and read_page, then answer with a short numbered plan: what you would do, in order, and what each step changes on the page.
+- Investigate with search_web, navigate and read_page, then write your step list with `plan`. That list IS your answer — the user reads it as the plan, so it has to say what you would do, in order, and what each step changes on the page.
 - Stop there. The user switches the mode to Ask to have you carry the plan out with a prompt before each action, or to YOLO to run it without being asked.
 """.trimEnd()
 }

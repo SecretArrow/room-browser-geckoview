@@ -46,7 +46,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         TotpEntity::class,
         AgentSiteMemoryEntity::class
     ],
-    version = 15,
+    version = 16,
     exportSchema = true
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -558,6 +558,25 @@ abstract class AppDatabase : RoomDatabase() {
         }
 
         /**
+         * v15 → v16: `agent_sessions.plan_json`, the step list the chat last
+         * wrote with `plan`.
+         *
+         * Purely additive: every existing chat gets "", which reads as "no
+         * list yet", so nothing is lost and the next turn writes its own.
+         *
+         * `internal` for the same reason as [MIGRATION_10_11]: only
+         * AgentSessionMigrationTest executes it, since a fresh install creates
+         * v16 directly.
+         */
+        internal val MIGRATION_15_16 = object : Migration(15, 16) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    "ALTER TABLE `agent_sessions` ADD COLUMN `plan_json` TEXT NOT NULL DEFAULT ''"
+                )
+            }
+        }
+
+        /**
          * Every migration, oldest first — the ONE list. [build] applies it and
          * the migration tests apply it too, so a version bump cannot leave a
          * test registering a subset that stops short of the current version.
@@ -566,7 +585,7 @@ abstract class AppDatabase : RoomDatabase() {
             MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4,
             MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8,
             MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11, MIGRATION_11_12,
-            MIGRATION_12_13, MIGRATION_13_14, MIGRATION_14_15
+            MIGRATION_12_13, MIGRATION_13_14, MIGRATION_14_15, MIGRATION_15_16
         )
 
         @Volatile
