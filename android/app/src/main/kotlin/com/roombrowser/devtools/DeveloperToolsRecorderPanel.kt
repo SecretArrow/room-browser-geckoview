@@ -34,7 +34,6 @@ import com.roombrowser.ui.common.LocalRoomExtras
 import com.roombrowser.ui.common.RoomCopyButton
 import com.roombrowser.ui.common.SectionHeader
 import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 
 private const val RENDER_MAX = 200
@@ -52,13 +51,14 @@ private const val RENDER_MAX = 200
 @Composable
 internal fun RecorderPanel(scope: DevToolsPanelScope) {
     val session = scope.session ?: return
-    RecorderBody(session, scope.tabUrl, scope.onRunAgentTask)
+    RecorderBody(session, scope.tabUrl, scope.hostScope, scope.onRunAgentTask)
 }
 
 @Composable
 private fun RecorderBody(
     session: InspectorSession,
     tabUrl: String,
+    hostScope: CoroutineScope,
     onRunAgentTask: (String) -> Unit
 ) {
     val extras = LocalRoomExtras.current
@@ -90,9 +90,11 @@ private fun RecorderBody(
     DisposableEffect(session) {
         onDispose {
             // Leaving the panel must not leave a recorder installed in someone's
-            // page. The call is asynchronous, and a scope tied to this
-            // composition is already cancelled here, so it goes out on its own.
-            CoroutineScope(Dispatchers.Main).launch {
+            // page, and the call is asynchronous — so it goes on the host's
+            // scope, not this composition's (already cancelled here) and not a
+            // scope built on the spot, which would have no owner, no
+            // cancellation and no supervisor.
+            hostScope.launch {
                 session.rawEval(DeveloperToolsRecorderScripts.uninstallJs())
             }
         }
