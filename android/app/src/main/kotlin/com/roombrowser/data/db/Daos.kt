@@ -266,8 +266,6 @@ interface IpHistoryDao {
     suspend fun all(): List<IpHistoryEntity>
 
     @Query("SELECT * FROM ip_history WHERE profile_id = :profileId ORDER BY last_seen_at DESC")
-
-    @Query("SELECT * FROM ip_history WHERE profile_id = :profileId ORDER BY last_seen_at DESC")
     suspend fun forProfile(profileId: String): List<IpHistoryEntity>
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)

@@ -458,14 +458,14 @@ class DatabaseIsolationTest {
         db.tabDao().insertNextPosition("tabA", profileA, "A", "https://a.example.com", isPrivate = false, createdAt = 0, lastViewedAt = 0)
         db.bookmarkDao().upsert(BookmarkEntity(profileId = profileA, url = "https://a.example.com", title = "A", createdAt = 0))
         db.historyDao().insert(HistoryEntity(profileId = profileA, url = "https://a.example.com", title = "A", visitedAt = 1))
-        db.downloadDao().insert(
+        val downloadA = db.downloadDao().insert(
             DownloadEntity(
                 profileId = profileA, url = "https://a.example.com/f.bin", fileName = "f.bin",
                 mimeType = "application/octet-stream", destination = "/tmp/f.bin",
                 totalBytes = 1, downloadedBytes = 1, status = "COMPLETE", createdAt = 0
             )
         )
-        db.aiTaskDao().upsert(
+        val taskA = db.aiTaskDao().upsert(
             AiTaskEntity(
                 name = "task", prompt = "p", profileId = profileA,
                 scheduleJson = "{}", permissionsJson = "{}", createdAt = 0
@@ -496,8 +496,10 @@ class DatabaseIsolationTest {
         assertThat(db.tabDao().openTabs(profileA)).isEmpty()
         assertThat(db.bookmarkDao().all(profileA)).isEmpty()
         assertThat(db.historyDao().since(profileA, 0)).isEmpty()
-        assertThat(countRows("downloads", profileA)).isEqualTo(0)
-        assertThat(countRows("ai_tasks", profileA)).isEqualTo(0)
+        // By id, not by list: neither store has a synchronous per-profile read
+        // of its own, and "the row I wrote is gone" is the stronger claim.
+        assertThat(db.downloadDao().get(downloadA)).isNull()
+        assertThat(db.aiTaskDao().get(taskA)).isNull()
         assertThat(db.credentialDao().countForProfile(profileA)).isEqualTo(0)
         assertThat(db.totpDao().allForProfile(profileA)).isEmpty()
         assertThat(db.walletDao().byProfile(profileA)).isNull()
@@ -515,11 +517,6 @@ class DatabaseIsolationTest {
             ?: error("B's wallet row must survive A's reset")
         assertThat(WalletKeyCrypto.decrypt(b, encB)).isEqualTo(MNEMONIC_B)
     }
-
-    /** Raw count for the two stores with no per-profile read of their own. */
-    private fun countRows(table: String, profileId: String): Int =
-        db.query("SELECT COUNT(*) FROM $table WHERE profile_id = ?", arrayOf(profileId))
-            .use { cursor -> cursor.moveToFirst(); cursor.getInt(0) }
 
     private companion object {
         const val MNEMONIC_A =
