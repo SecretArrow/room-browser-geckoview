@@ -258,8 +258,8 @@ static gboolean on_totp_tick(gpointer user_data)
     int i;
 
     for (i = 0; i < n; i++) {
-        GtkWidget *row =
-            gtk_list_box_get_row_at_index(GTK_LIST_BOX(st->list), i);
+        GtkWidget *row = GTK_WIDGET(
+            gtk_list_box_get_row_at_index(GTK_LIST_BOX(st->list), i));
 
         if (row == NULL) break;   /* the list lags the store only mid-rebuild */
         rb_totp_refresh_row(row, rb_totp_at(st->store, i), now);
