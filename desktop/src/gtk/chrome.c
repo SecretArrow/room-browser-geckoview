@@ -28,6 +28,8 @@
 #include "chrome.h"
 #include "webview.h"
 #include "rb_version.h"
+#include "notes.h"
+#include "totp.h"
 
 /* Single global application state (declared extern in chrome.h). */
 App g_app;
@@ -1899,6 +1901,11 @@ void rb_do_switch_profile(App *app, const char *to_id)
             break;
         case RB_SWITCH_FLUSH_PROFILE_STATE:
             rb_data_shutdown(app);
+            /* The notes and 2FA windows keep stores of their own: flush
+             * them here too, while the OLD profile is still the
+             * destination. */
+            rb_notes_flush(app);
+            rb_totp_flush(app);
             break;
         case RB_SWITCH_RELEASE_PROFILE_RESOURCES:
             /* The in-memory stores that were the old profile's view of the
@@ -1917,6 +1924,8 @@ void rb_do_switch_profile(App *app, const char *to_id)
                                          "https://duckduckgo.com")));
             rb_set_str(&app->download_dir, NULL);
             rb_downloads_dir_init(app);
+            rb_notes_reload(app);      /* the new profile's notes */
+            rb_totp_reload(app);       /* ...and its 2FA accounts */
             rb_css_load(app);          /* the new profile's theme */
             rb_apply_font_scale(app);  /* ...and its font scale */
             rb_apply_reduced_motion(app);
@@ -4024,6 +4033,20 @@ static void on_menu_downloads(GtkMenuItem *item, gpointer user_data)
     rb_show_downloads_dialog(app);
 }
 
+static void on_menu_notes(GtkMenuItem *item, gpointer user_data)
+{
+    App *app = (App *)user_data;
+    (void)item;
+    rb_open_notes_window(app);
+}
+
+static void on_menu_totp(GtkMenuItem *item, gpointer user_data)
+{
+    App *app = (App *)user_data;
+    (void)item;
+    rb_open_totp_window(app);
+}
+
 static void on_menu_prefs(GtkMenuItem *item, gpointer user_data)
 {
     App *app = (App *)user_data;
@@ -4216,6 +4239,20 @@ static void rb_build_menu(App *app)
         gtk_menu_item_set_submenu(GTK_MENU_ITEM(top), sub);
         gtk_menu_shell_append(GTK_MENU_SHELL(menu), top);
     }
+
+    gtk_menu_shell_append(GTK_MENU_SHELL(menu), gtk_separator_menu_item_new());
+
+    item = gtk_menu_item_new_with_label("Notes");
+    g_signal_connect(item, "activate", G_CALLBACK(on_menu_notes), app);
+    gtk_menu_shell_append(GTK_MENU_SHELL(menu), item);
+
+    item = gtk_menu_item_new_with_label("2FA Management");
+    g_signal_connect(item, "activate", G_CALLBACK(on_menu_totp), app);
+    gtk_menu_shell_append(GTK_MENU_SHELL(menu), item);
+
+    item = gtk_menu_item_new_with_label("Shield");
+    g_signal_connect(item, "activate", G_CALLBACK(on_menu_prefs), app);
+    gtk_menu_shell_append(GTK_MENU_SHELL(menu), item);
 
     gtk_menu_shell_append(GTK_MENU_SHELL(menu), gtk_separator_menu_item_new());
 

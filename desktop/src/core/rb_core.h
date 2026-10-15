@@ -27,6 +27,7 @@
 #include "rb_https.h"
 #include "rb_ipconflict.h"
 #include "rb_json.h"
+#include "rb_notes.h"
 #include "rb_paths.h"
 #include "rb_prefs.h"
 #include "rb_profile.h"
@@ -36,6 +37,7 @@
 #include "rb_switch.h"
 #include "rb_tabs.h"
 #include "rb_theme.h"
+#include "rb_totp.h"
 #include "rb_ua.h"
 #include "rb_url.h"
 

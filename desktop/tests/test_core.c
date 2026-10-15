@@ -37,6 +37,11 @@
 #include "core/rb_switch.h"
 #include "core/rb_devices.h"
 
+/* The notes and 2FA suites are self-contained fragments: one translation
+ * unit, one failure counter each, temp files they clean up themselves. */
+#include "frag_notes.c"
+#include "frag_totp.c"
+
 #define TMP "rb-test-tmp.txt"
 #define TMP_DIR "rb-test-dir"
 
@@ -4961,6 +4966,13 @@ int main(void)
     test_rb_device_behaviour();
     test_rb_device_shim_escaping();
     test_rb_screen_shim();
+    /* A nonzero return means the fragment already printed its FAIL lines. */
+    if (rb_test_notes_all() != 0) {
+        return 1;
+    }
+    if (rb_test_totp_all() != 0) {
+        return 1;
+    }
     remove(TMP);
     (void)rb_paths_remove_tree(TMP_DIR);
     printf("core checks: %d\n", g_checks);

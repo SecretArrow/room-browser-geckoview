@@ -28,6 +28,8 @@
 #include "downloads.h"
 #include "webview.h"
 #include "prefs.h"
+#include "notes.h"
+#include "totp.h"
 #include "resource.h"
 #include "rb_version.h"
 
@@ -991,6 +993,11 @@ void rb_do_switch_profile(App *app, const char *to_id)
                                    "Profile switched");
             break;
         case RB_SWITCH_FLUSH_PROFILE_STATE:
+            /* The notes and 2FA windows keep their stores themselves, so
+             * they commit under the OLD profile here, where the other
+             * per-profile state is flushed. */
+            rb_notes_flush(app);
+            rb_totp_flush(app);
             rb_data_shutdown(app);
             break;
         case RB_SWITCH_RELEASE_PROFILE_RESOURCES:
@@ -1011,6 +1018,10 @@ void rb_do_switch_profile(App *app, const char *to_id)
                                          "https://duckduckgo.com")));
             rb_set_str(&app->download_dir, NULL);
             rb_downloads_dir_refresh(app);
+            /* The windows over the profile's own files (notes, 2FA) re-read
+             * here, next to everything else the new profile owns. */
+            rb_notes_reload(app);
+            rb_totp_reload(app);
             rb_theme_apply(app);       /* the new profile's palette */
             rb_apply_font_scale(app);  /* ...and its font scale */
             rb_progress_refresh(app);  /* ...and whether a load may animate */
@@ -2022,6 +2033,15 @@ static void rb_menu_show(App *app)
     AppendMenuW(prof, MF_STRING, IDM_PROF_ADD, L"Add profile");
     AppendMenuW(m, MF_POPUP, (UINT_PTR)prof, L"Profile");
 
+    /* The privacy tools, under their own separator.  "Shield" is the
+     * profile-settings window by another name - the menu offers the same
+     * room under the word people look for - so it reuses the IDM_PREFS
+     * handler rather than owning a window. */
+    AppendMenuW(m, MF_SEPARATOR, 0, NULL);
+    AppendMenuW(m, MF_STRING, IDM_NOTES, L"Notes");
+    AppendMenuW(m, MF_STRING, IDM_TOTP, L"2FA Management");
+    AppendMenuW(m, MF_STRING, IDM_SHIELD, L"Shield");
+
     AppendMenuW(m, MF_SEPARATOR, 0, NULL);
     AppendMenuW(m, MF_STRING | (rb_pref_int(app, RB_PREF_BOOKMARKS_BAR_LOCAL, 1)
                                      ? MF_CHECKED : 0),
@@ -2074,6 +2094,12 @@ static void rb_on_command(App *app, int id, int notify)
         rb_bmbar_refresh(app);
     } else if (id == IDM_DOWNLOADS) {
         rb_show_downloads(app);
+    } else if (id == IDM_NOTES) {
+        rb_show_notes(app);
+    } else if (id == IDM_TOTP) {
+        rb_show_totp(app);
+    } else if (id == IDM_SHIELD) {
+        rb_show_prefs(app);
     } else if (id == IDM_TRANSLATE) {
         rb_do_translate(app);
     } else if (id == IDM_FIND) {

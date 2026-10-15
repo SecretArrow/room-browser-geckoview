@@ -12,6 +12,8 @@ configure_file(src/rb_version.h.in ${CMAKE_CURRENT_BINARY_DIR}/rb_version.h @ONL
 add_library(rb_core STATIC
     src/core/rb_str.c
     src/core/rb_json.c
+    src/core/rb_notes.c
+    src/core/rb_totp.c
     src/core/rb_url.c
     src/core/rb_search.c
     src/core/rb_paths.c
@@ -49,6 +51,8 @@ if(RB_BUILD_GUI AND WIN32)
         src/win/downloads.c
         src/win/prefs.c
         src/win/webview.c
+        src/win/notes.c
+        src/win/totp.c
         ${CMAKE_CURRENT_BINARY_DIR}/app.rc)
     target_include_directories(RoomBrowser PRIVATE ${WEBVIEW2_INCLUDE_DIR} src/win)
     target_link_libraries(RoomBrowser PRIVATE rb_core user32 gdi32 comctl32 dwmapi shell32 ole32 oleaut32)
@@ -67,7 +71,9 @@ if(RB_BUILD_GUI AND UNIX AND NOT APPLE)
     add_executable(roombrowser
         src/gtk/main.c
         src/gtk/chrome.c
-        src/gtk/webview.c)
+        src/gtk/webview.c
+        src/gtk/notes.c
+        src/gtk/totp.c)
     target_include_directories(roombrowser PRIVATE src/gtk)
     target_link_libraries(roombrowser PRIVATE rb_core PkgConfig::GTK)
 endif()
