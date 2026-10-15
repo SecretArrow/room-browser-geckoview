@@ -470,9 +470,11 @@ class AgentLoopTest {
         // not as a silent extra call. The nudge is appended AFTER the plain
         // answer's own request was snapshotted, so it is the NEXT request —
         // index 2, the one that also carries the second `plan` call — that
-        // must contain it.
+        // must contain it. The item's text is the scripted planResult's
+        // "step 0": the fake executor answers with its own result, not with
+        // the items the args JSON spelled.
         val nudge = gateway.requests[2].messages.map { it.content }.first { it != null && it.contains("open steps") }
-        assertThat(nudge).contains("[ ] a")
+        assertThat(nudge).contains("[ ] step 0")
         // The turn went back to WORK after the answer: the second `plan` call
         // ran, and the final answer is the one after it.
         assertThat(executedNames).containsExactly(AgentTools.PLAN, AgentTools.PLAN)
@@ -512,7 +514,10 @@ class AgentLoopTest {
         assertThat(nudgesIn(1)).isEqualTo(0)
         assertThat(nudgesIn(2)).isEqualTo(1)
         assertThat(nudgesIn(3)).isEqualTo(2)
-        assertThat(events.last()).isInstanceOf(AgentEvent.FinalAnswer::class.java)
+        // The completion notice is the turn's CLOSING line — it follows the
+        // FinalAnswer, exactly as the pre-existing open-steps test pins — so
+        // the answer is found by type, not by being the last event.
+        assertThat(events.filterIsInstance<AgentEvent.FinalAnswer>()).hasSize(1)
         val notice = events.filterIsInstance<AgentEvent.Notice>().single()
         assertThat(notice.text).contains("still open")
     }
