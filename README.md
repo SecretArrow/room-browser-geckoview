@@ -5,7 +5,7 @@ Privacy-first browser family by **Maragung** — one repository, two platforms.
 | Edition | Path | Stack | CI artifacts |
 |---|---|---|---|
 | **Android** | [`android/`](android/) | Kotlin · Jetpack Compose · Room · on-device llama.cpp engine | signed per-ABI APKs + universal + AAB |
-| **Windows / Ubuntu desktop** | [`desktop/`](desktop/) | **C11** — Win32 + WebView2 (Windows) · GTK3 + WebKitGTK (Ubuntu) | `RoomBrowser-<ver>-windows-x64.zip` · `roombrowser_<ver>_amd64.deb` · `RoomBrowser-<ver>-linux-x64.tar.gz` |
+| **Windows / Ubuntu desktop** | [`desktop/`](desktop/) | **Rust** — tao + WebView2 (Windows) · GTK3 + WebKitGTK (Ubuntu) | `RoomBrowser-<ver>-windows-x64.zip` · `roombrowser_<ver>_amd64.deb` · `RoomBrowser-<ver>-linux-x64.tar.gz` |
 
 ## Highlights
 
@@ -16,7 +16,7 @@ Privacy-first browser family by **Maragung** — one repository, two platforms.
   AI-agent layer that talks to
   Ollama/OpenCode endpoints **or runs llama.cpp fully on-device**. See
   [`android/README.md`](android/README.md).
-- **Desktop** — a Brave-inspired dark browser chrome written in pure C: tab
+- **Desktop** — a Brave-inspired dark browser chrome written in Rust: tab
   strip with close buttons, omnibox (type URLs or search terms), back /
   forward / reload / home, bookmarks, history and settings persisted to disk,
   and an embedded system web view per platform. JavaScript is **never disabled
@@ -29,9 +29,9 @@ Privacy-first browser family by **Maragung** — one repository, two platforms.
 1. **Auto-fix** — Gradle `lintFix`; any automatic fixes are committed & re-run.
 2. **Quality** — Android Lint, unit tests (domain + app), debug build.
 3. **E2E** — instrumented tests on a real Android emulator.
-4. **Desktop** — the C core's unit tests, then release builds for
-   Windows x64 (MSVC + WebView2 loader, statically linked → standalone exe)
-   and Ubuntu x64 (GTK3 + WebKitGTK → deb + tar.gz).
+4. **Desktop** — the Rust core's unit tests (140 checks), then release
+   builds for Windows x64 (MSVC + WebView2, single exe) and Ubuntu x64
+   (GTK3 + WebKitGTK → deb + tar.gz).
 5. **Auto-release** — when everything is green: Android APKs/AAB **plus** the
    desktop zip/deb/tar.gz and `checksums.sha256`, published as a GitHub
    Release. Version numbering continues from the highest existing `v1.0.x` tag.
@@ -42,7 +42,7 @@ All builds happen on GitHub-hosted runners — nothing is ever built locally.
 
 ```
 android/        Android app (Gradle project: app/, core/, tools/, docs/)
-desktop/        Desktop browser in C11 (src/core, src/win, src/gtk, scripts, assets)
+desktop/        Desktop browser in Rust (crates: rbcore, rbchrome, rbwin, rblinux; scripts, assets)
 .github/        CI/CD workflows
 SECURITY.md     Responsible-disclosure policy
 PRIVACY.md      What the app collects (nothing) and what can leave the device

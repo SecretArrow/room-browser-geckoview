@@ -1,2 +1,0 @@
-#pragma once
-#define RB_VERSION "@ROOMBROWSER_VERSION@"

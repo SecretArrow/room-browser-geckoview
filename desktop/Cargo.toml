@@ -1,0 +1,30 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/rbcore",
+    "crates/rbchrome",
+    "crates/rbwin",
+    "crates/rblinux",
+]
+
+[workspace.package]
+version = "1.0.0"
+edition = "2021"
+license = "MIT"
+repository = "https://github.com/SecretArrow/room-browser"
+
+# The version string baked into the binaries. CI passes RB_VERSION explicitly
+# so the desktop artifacts carry the same number as the Android release; a
+# bare `cargo build` outside CI gets the dev placeholder instead.
+# (documentation only; build.rs reads the real env var)
+
+[profile.release]
+# Desktop CI runs on 2-core (Windows) / 4-core (Linux) hosted runners and the
+# desktop jobs are budgeted to stay well under the Android e2e pole. These
+# settings favour wall-clock build time over last-percent binary size:
+# opt-level 2 is what llama.cpp effectively needs for usable tokens/s.
+opt-level = 2
+lto = false
+codegen-units = 16
+debug = false
+strip = true

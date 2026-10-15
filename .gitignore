@@ -1,7 +1,7 @@
-# Desktop (C) build outputs
-desktop/build/
+# Desktop (Rust) build outputs — target/ is cargo's scratch tree (multi-GB),
+# rebuilt from source by CI and by `cargo build`; never track it.
+desktop/target/
 desktop/dist/
-desktop/build-*/
 
 # CI scratch
 release-out/

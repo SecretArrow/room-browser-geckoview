@@ -1,0 +1,29 @@
+[package]
+name = "rbwin"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Room Browser — Windows frontend (tao + WebView2)"
+
+[[bin]]
+name = "RoomBrowser"
+path = "src/main.rs"
+
+[target.'cfg(target_os = "windows")'.dependencies]
+rbcore = { path = "../rbcore" }
+rbchrome = { path = "../rbchrome" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+ureq = { version = "2", default-features = false, features = ["json", "native-tls", "charset"] }
+tao = "0.37"
+webview2-com = "0.39"
+windows = { version = "0.62", features = [
+    "Win32_Foundation",
+    "Win32_System_Com",
+] }
+
+[dependencies]
+rbcore = { path = "../rbcore" }
+rbchrome = { path = "../rbchrome" }
+serde_json = "1"

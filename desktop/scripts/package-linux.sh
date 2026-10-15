@@ -4,7 +4,7 @@
 # Usage:
 #   ./scripts/package-linux.sh BUILD_DIR VERSION DIST_DIR
 #
-#   BUILD_DIR  directory containing the built `roombrowser` executable
+#   BUILD_DIR  the desktop/ workspace root; the binary is at target/release/roombrowser
 #   VERSION    release version, e.g. 1.0.86
 #   DIST_DIR   output directory (created when missing)
 #
@@ -24,7 +24,7 @@ VERSION="$2"
 DIST_DIR="$3"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-BIN="$BUILD_DIR/roombrowser"
+BIN="$BUILD_DIR/target/release/roombrowser"
 ICON="$SCRIPT_DIR/../assets/icon-256.png"
 LICENSE="$SCRIPT_DIR/../LICENSE"
 
@@ -33,7 +33,7 @@ fail() {
     exit 1
 }
 
-[ -f "$BIN" ]     || fail "built executable not found at '$BIN' (run cmake --build first)."
+[ -f "$BIN" ]     || fail "built executable not found at '$BIN' (run cargo build --release -p rblinux first)."
 [ -x "$BIN" ]     || fail "'$BIN' is not executable."
 [ -f "$ICON" ]    || fail "icon not found at '$ICON' (expected at desktop/assets/icon-256.png)."
 [ -f "$LICENSE" ] || fail "LICENSE not found at '$LICENSE' (expected at desktop/LICENSE, next to scripts/)."

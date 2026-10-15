@@ -815,29 +815,19 @@ jobs:
           if-no-files-found: ignore
 
   # ---------------------------------------------------------------------
-  # DESKTOP (Windows x64): pure-C browser chrome (Win32) + WebView2.
-  # Headers come from the official WebView2 NuGet SDK; the loader DLL is
-  # loaded at runtime via LoadLibrary (no .lib linkage, no CRT mismatch)
-  # and shipped next to the exe for a portable zip.
+  # DESKTOP (Windows x64): Rust browser chrome (rbwin: tao + WebView2).
+  # webview2-com binds the SDK at link time; the loader DLL is still
+  # staged next to the exe as a runtime fallback for setups where the
+  # static import fails to bind, keeping the zip portable either way.
   # ---------------------------------------------------------------------
   desktop-windows:
-    name: Desktop build (Windows x64, C + WebView2)
+    name: Desktop build (Windows x64, Rust + WebView2)
     runs-on: windows-latest
-    timeout-minutes: 30
-    # IN the main-branch pipeline, on purpose. The old tag/dispatch-only gate
-    # had a hole the release flow itself kept open: `release` cuts the tag
-    # through the API, and a tag created that way fires no `push` event, so
-    # NOTHING but a hand-pushed tag or a dispatch ever ran this job — the
-    # desktop C core landed on main with zero verification, and the drift it
-    # hid (the sibling's notes/2FA desktop work, five days unsynced) was
-    # found by an audit, not by a pipeline. The original reason for the gate
-    # — "release cannot start until every job in its needs has finished" —
-    # was measured and found empty: e2e is the long pole at ~68 minutes, this
-    # job finishes in under ten, and both start at the same time, so the
-    # wall-clock cost of running it is zero. A desktop failure still cannot
-    # block the APK (the release job's `!cancelled()` Android-first policy is
-    # unchanged); skipped only on pull_request, where the Android gates carry
-    # the review and the merge re-runs this job on main anyway.
+    timeout-minutes: 40
+    # Runs on every main-branch pipeline (skipped only on pull_request):
+    # desktop artifacts ride the same releases the Android APKs do, so the
+    # desktop tree is verified exactly as often as the app. See the release
+    # job's note for why a desktop failure never blocks the APK.
     if: github.event_name != 'pull_request'
     steps:
       - name: Checkout
@@ -852,98 +842,63 @@ jobs:
         with:
           peer-repo: SecretArrow/room-browser
 
-      - name: Fetch WebView2 SDK (official NuGet package)
-        shell: pwsh
-        run: |
-          $sdk = "1.0.2903.40"
-          curl.exe -sSL -o webview2.nupkg "https://www.nuget.org/api/v2/package/Microsoft.Web.WebView2/$sdk"
-          Copy-Item webview2.nupkg webview2.zip -Force
-          Expand-Archive webview2.zip -DestinationPath webview2-sdk -Force
-          $inc = (Get-ChildItem -Path webview2-sdk -Recurse -Filter WebView2.h | Select-Object -First 1).DirectoryName
-          $dll = (Get-ChildItem -Path webview2-sdk -Recurse -Filter WebView2Loader.dll | Where-Object { $_.FullName -match 'x64' } | Select-Object -First 1).FullName
-          if (-not $dll) { $dll = (Get-ChildItem -Path webview2-sdk -Recurse -Filter WebView2Loader.dll | Select-Object -First 1).FullName }
-          if (-not $inc -or -not $dll) {
-            Write-Host "WebView2 SDK layout not recognized — dumping tree:"
-            Get-ChildItem -Recurse webview2-sdk | ForEach-Object { Write-Host $_.FullName }
-            exit 1
-          }
-          Add-Content -Path $env:GITHUB_ENV -Value "WEBVIEW2_INCLUDE=$inc"
-          Add-Content -Path $env:GITHUB_ENV -Value "WEBVIEW2_DLL=$dll"
-          Write-Host "headers: $inc"
-          Write-Host "loader : $dll"
+      - name: Install Rust toolchain (stable, msvc)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
 
-      - name: Configure + build (MSVC, C11)
-        shell: pwsh
-        run: |
-          cmake -S desktop -B desktop/build -DCMAKE_BUILD_TYPE=Release `
-                -DROOMBROWSER_VERSION="${{ steps.ver.outputs.version }}" `
-                -DWEBVIEW2_INCLUDE_DIR="$env:WEBVIEW2_INCLUDE"
-          if ($LASTEXITCODE -ne 0) { exit 1 }
-          cmake --build desktop/build --config Release
-          if ($LASTEXITCODE -ne 0) { exit 1 }
+      - name: Cache cargo registry + target
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            desktop/target
+          key: rust-win-x64-${{ hashFiles('desktop/Cargo.lock') }}
+          restore-keys: rust-win-x64-
 
-      - name: Smoke test (--version, retried)
+      - name: Unit tests (rbcore + rbchrome)
         shell: pwsh
-        timeout-minutes: 5
+        env:
+          RB_VERSION: ${{ steps.ver.outputs.version }}
         run: |
-          $exe = Join-Path $PWD "desktop\build\Release\RoomBrowser.exe"
-          if (-not (Test-Path $exe)) { Write-Host "RoomBrowser.exe missing"; exit 1 }
-          $out = Join-Path $PWD "version-out.txt"
-          $ok = $false
-          # A freshly-linked unsigned exe can hit transient AV/Defender handle
-          # races on the runner (CI-proven: identical commit green one run,
-          # empty --out file the next). Retry at the process level and key
-          # off BOTH the exit code and the file content.
-          foreach ($attempt in 1..3) {
-            Remove-Item -Path $out -ErrorAction SilentlyContinue
-            $p = Start-Process -FilePath $exe -ArgumentList "--version","--out","$out" -PassThru -Wait
-            $line = Get-Content $out -ErrorAction SilentlyContinue
-            Write-Host "attempt $attempt exit code: $($p.ExitCode)"
-            Write-Host "attempt $attempt version output: $line"
-            if (($p.ExitCode -eq 0) -and ($line -match "Room Browser .+\(windows x86_64\)")) { $ok = $true; break }
-            Start-Sleep -Seconds 5
-          }
-          if (-not $ok) { Write-Host "smoke test failed after 3 attempts"; exit 1 }
+          cargo test --manifest-path desktop/Cargo.toml -p rbcore -p rbchrome --lib
 
-      # --version only proves the exe links and starts. This drives the
-      # profile registry, the per-profile settings, the filter engine and the
-      # theme against a scratch data directory, so a regression in the Win32
-      # state layer fails the build instead of shipping. It runs without a
-      # window, so it needs neither the WebView2 runtime nor a desktop.
-      - name: Self-test (--selftest)
+      - name: Build (release, single exe)
         shell: pwsh
-        timeout-minutes: 5
+        env:
+          RB_VERSION: ${{ steps.ver.outputs.version }}
         run: |
-          $exe = Join-Path $PWD "desktop\build\Release\RoomBrowser.exe"
-          $out = Join-Path $PWD "selftest-out.txt"
-          Remove-Item -Path $out -ErrorAction SilentlyContinue
-          $p = Start-Process -FilePath $exe -ArgumentList "--selftest","--out","$out" -PassThru -Wait
-          # @() so a single-line report is still an array. Start-Process
-          # detaches the child, so its stderr (which carries the per-check
-          # FAIL lines) never reaches this log: the report file is the only
-          # channel, which is why the summary names every failing check and
-          # the environment it ran against. Echo the whole thing.
-          $lines = @(Get-Content $out -ErrorAction SilentlyContinue)
-          Write-Host "selftest exit code: $($p.ExitCode)"
-          if ($lines.Count -eq 0) { Write-Host "selftest wrote no report"; exit 1 }
-          $lines | ForEach-Object { Write-Host "selftest | $_" }
-          $line = $lines[0]
-          if ($p.ExitCode -ne 0) { Write-Host "selftest failed"; exit 1 }
-          if ($lines.Count -ne 1) { Write-Host "selftest reported failures yet exited 0"; exit 1 }
-          if ($line -notmatch "selftest: \d+ checks, 0 failed") {
-            Write-Host "selftest did not report a clean pass"; exit 1
+          cargo build --manifest-path desktop/Cargo.toml --release -p rbwin --target x86_64-pc-windows-msvc
+
+      - name: Smoke test (--version)
+        shell: pwsh
+        run: |
+          $exe = "desktop/target/x86_64-pc-windows-msvc/release/RoomBrowser.exe"
+          if (-not (Test-Path $exe)) { throw "exe missing" }
+          & $exe --version | Tee-Object -FilePath version-out.txt
+          # Select-String writes nothing and exits 0 on a non-match, so the
+          # banner check has to be an explicit assertion, not a side effect.
+          if (-not (Select-String -Path version-out.txt -Pattern 'Room Browser .+')) {
+            throw "version banner missing from --version output"
           }
 
+      # The static WebView2Loader lib covers the loader symbols at link time;
+      # the DLL still ships beside the exe as a fallback for setups where the
+      # static import fails to bind (same layout the C edition shipped).
       - name: Stage WebView2 loader DLL next to the exe
         shell: pwsh
         run: |
-          Copy-Item "$env:WEBVIEW2_DLL" "desktop\build\Release\" -Force
-          Get-ChildItem "desktop\build\Release"
+          $dll = Get-ChildItem -Recurse "$env:USERPROFILE/.cargo/registry/src" -Filter WebView2Loader.dll |
+            Where-Object { $_.DirectoryName -match 'x64$' } |
+            Select-Object -First 1
+          if ($null -eq $dll) { throw "WebView2Loader.dll not found in the cargo registry" }
+          Copy-Item $dll.FullName "desktop/WebView2Loader.dll" -Force
+          Get-Item "desktop/WebView2Loader.dll"
 
       - name: Package (portable zip)
         shell: pwsh
         run: |
-          desktop\scripts\package-windows.ps1 -BuildDir desktop\build\Release -Version ${{ steps.ver.outputs.version }} -DistDir desktop\dist
+          desktop\scripts\package-windows.ps1 -BuildDir desktop -Version ${{ steps.ver.outputs.version }} -DistDir desktop/dist
 
       - name: Upload artifact
         uses: actions/upload-artifact@v7
@@ -951,14 +906,10 @@ jobs:
           name: desktop-windows
           path: desktop/dist/
 
-  # ---------------------------------------------------------------------
-  # DESKTOP (Ubuntu x64): pure-C browser chrome (GTK3) + WebKitGTK.
-  # Runs the shared C-core unit tests, then packages deb + tar.gz.
-  # ---------------------------------------------------------------------
   desktop-linux:
-    name: Desktop build (Ubuntu x64, C + WebKitGTK)
+    name: Desktop build (Linux x64, Rust + WebKitGTK)
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 40
     # Same gate as desktop-windows: see the note there.
     if: github.event_name != 'pull_request'
     steps:
@@ -968,32 +919,48 @@ jobs:
       - name: Install GTK3 + WebKitGTK dev libraries
         run: |
           sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libssl-dev
 
-      # The same number as the Windows job and the Android release — see the
-      # action for why it is read from both editions.
+      # The same number as the Windows job and the Android release — see
+      # the action for why it is read from both editions.
       - name: Compute version
         id: ver
         uses: ./.github/actions/release-version
         with:
           peer-repo: SecretArrow/room-browser
 
-      - name: Configure + build (gcc, C11) + run core unit tests
+      - name: Install Rust toolchain (stable)
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry + target
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            desktop/target
+          key: rust-linux-x64-${{ hashFiles('desktop/Cargo.lock') }}
+          restore-keys: rust-linux-x64-
+
+      - name: Build + run core unit tests (gcc/clang toolchain via cargo)
+        env:
+          RB_VERSION: ${{ steps.ver.outputs.version }}
         run: |
-          cmake -S desktop -B desktop/build -DCMAKE_BUILD_TYPE=Release \
-                -DROOMBROWSER_VERSION="${{ steps.ver.outputs.version }}" \
-                -DRB_BUILD_TESTS=ON
-          cmake --build desktop/build -j"$(nproc)"
-          ./desktop/build/rb_tests
+          cargo test --manifest-path desktop/Cargo.toml -p rbcore -p rbchrome --lib
+          cargo build --manifest-path desktop/Cargo.toml --release -p rblinux
 
       - name: Smoke test (--version)
         run: |
-          ./desktop/build/roombrowser --version | tee version-out.txt
+          # No `|| true` and an explicit existence check: a missing binary
+          # would otherwise pass, because the pipeline's exit status is
+          # tee's, and the grep's failure was being swallowed besides.
+          exe=desktop/target/release/roombrowser
+          test -x "$exe" || { echo "missing $exe"; exit 1; }
+          "$exe" --version | tee version-out.txt
           grep -E 'Room Browser .+\(linux x86_64\)' version-out.txt
 
       - name: Package (deb + tar.gz)
         run: |
-          desktop/scripts/package-linux.sh desktop/build ${{ steps.ver.outputs.version }} desktop/dist
+          desktop/scripts/package-linux.sh desktop ${{ steps.ver.outputs.version }} desktop/dist
 
       - name: Upload artifact
         uses: actions/upload-artifact@v7
@@ -1018,8 +985,9 @@ jobs:
     # Android-first release policy: the APK/AAB ship as soon as the Android
     # gates (quality + e2e) are green. The desktop jobs stay in `needs` so
     # their artifacts attach WHEN they pass, but a desktop failure no longer
-    # blocks the Android release (the pure-C desktop edition is being brought
-    # to parity separately). `!cancelled()` lets this run even if a desktop
+    # blocks the Android release (the desktop edition is engine-independent
+    # Rust, verified by its own jobs and riding the same release train).
+    # `!cancelled()` lets this run even if a desktop
     # job failed rather than skipping the whole release.
     needs: [ quality, e2e, desktop-windows, desktop-linux ]
     # `!inputs.e2e_filter` is the guard that keeps a filtered run from ever

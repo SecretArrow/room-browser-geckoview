@@ -1,0 +1,28 @@
+[package]
+name = "rblinux"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Room Browser — Linux frontend (GTK3 + WebKitGTK)"
+
+[[bin]]
+name = "roombrowser"
+path = "src/main.rs"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+rbcore = { path = "../rbcore" }
+rbchrome = { path = "../rbchrome" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+ureq = { version = "2", default-features = false, features = ["json", "native-tls", "charset"] }
+gtk = "0.18"
+glib = "0.18"
+
+webkit2gtk = { version = "2.0", features = ["v2_38"] }
+javascriptcore-rs = "1.1"
+
+[dependencies]
+rbcore = { path = "../rbcore" }
+rbchrome = { path = "../rbchrome" }
+serde_json = "1"

@@ -24,12 +24,17 @@ $ErrorActionPreference = 'Stop'
 
 # --- Locate inputs -------------------------------------------------------------
 
-$exePath = Join-Path $BuildDir 'RoomBrowser.exe'
+# The Rust build puts the exe at target/<triple>/release/ (cross-style) or
+# target/release/ (host-style); the loader DLL is staged by CI next to it.
+$exePath = Join-Path $BuildDir 'target\x86_64-pc-windows-msvc\release\RoomBrowser.exe'
+if (-not (Test-Path -LiteralPath $exePath)) { $exePath = Join-Path $BuildDir 'target\release\RoomBrowser.exe' }
+if (-not (Test-Path -LiteralPath $exePath)) { $exePath = Join-Path $BuildDir 'RoomBrowser.exe' }
 $dllPath = Join-Path $BuildDir 'WebView2Loader.dll'
+
 $licensePath = Join-Path (Split-Path -Parent $PSScriptRoot) 'LICENSE'
 
 if (-not (Test-Path -LiteralPath $exePath -PathType Leaf)) {
-    throw "package-windows.ps1: FATAL: RoomBrowser.exe not found at '$exePath'. Build it first (cmake --build) and stage WebView2Loader.dll next to it."
+    throw "package-windows.ps1: FATAL: RoomBrowser.exe not found at '$exePath'. Build it first (cargo build --release -p rbwin --target x86_64-pc-windows-msvc)."
 }
 if (-not (Test-Path -LiteralPath $dllPath -PathType Leaf)) {
     throw "package-windows.ps1: FATAL: WebView2Loader.dll not found at '$dllPath'. Stage the WebView2 loader DLL next to RoomBrowser.exe before packaging."

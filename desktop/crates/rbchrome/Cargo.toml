@@ -1,0 +1,10 @@
+[package]
+name = "rbchrome"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Room Browser desktop chrome: the HTML/JS UI layer shared by both engine frontends"
+
+[dependencies]
+rbcore = { path = "../rbcore" }
+serde_json = "1"
