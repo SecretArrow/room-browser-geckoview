@@ -791,7 +791,10 @@ class RoomVaultBridge(
  *    would compare an iframe's host against the top page anyway, and filling
  *    across frame boundaries is a phishing vector we simply do not open.
  *    Cross-origin iframe logins are therefore NOT detected, by choice.
- *  - OFFER = focus/click on an `input[type=password]`.
+ *  - OFFER = focus/click on an `input[type=password]`, OR focus on a
+ *    username-candidate field while the page shows a visible password field
+ *    (the user starts at the username — the offer must too, or it arrives
+ *    after the whole form is already typed).
  *  - SAVE = a login form being submitted, whatever path the page uses:
  *      1. the DOM `submit` event — native submits and `form.requestSubmit()`;
  *      2. a capture-phase `click` on a submit control (`input[type=submit]`,
@@ -805,23 +808,36 @@ class RoomVaultBridge(
  *         `submit()` bypasses the submit event entirely);
  *      5. `fetch` and `XMLHttpRequest.prototype.send` WHILE a password field
  *         we filled is still recent — the SPA login that reads the field and
- *         POSTs JSON, with no DOM signal at all.
+ *         POSTs JSON, with no DOM signal at all;
+ *      6. a click on ANY button-shaped control (BUTTON of any type, INPUT
+ *         button kinds, role=button) while a visible password field holds a
+ *         value — the formless React/Vue login screen, whose "Log in" div
+ *         has no form, no submit type and sometimes no button tag at all.
+ *         Paired with this, the network path 5 window is now ALSO armed by
+ *         the user TYPING into a password field (not only by a vault fill),
+ *         gated to non-GET requests — the formless SPA's actual login POST.
  *
- * Why 2/3/5 are deliberately narrow: `click`, `keydown` and `fetch` fire for
- * everything on a page (toggles, search-as-you-type, analytics), so the click
- * path accepts only genuine submit controls, and the network path requires a
- * fill made by us within RECENT_FILL_MS. Paths 1 and 4 are exact signals and
- * are never gated.
+ * Why 2/3/5/6 are deliberately narrow: `click`, `keydown`, `input` and
+ * `fetch` fire for everything on a page (toggles, search-as-you-type,
+ * analytics), so the in-form click path accepts only genuine submit controls,
+ * the formless click path additionally requires a filled visible password
+ * field, and the typed network window requires a non-GET request. Paths 1
+ * and 4 are exact signals and are never gated.
+ *
+ * Dismissal reset: `window.__roomVaultReset()`, called by the host when the
+ * user taps "Not now" — an early report (an eye-toggle click on a formless
+ * layout is the canonical case) must not have its 30-second same-key
+ * suppression swallow the REAL submit that follows the dismissal.
  *
  * STILL NOT DETECTED — the honest list, so nobody mistakes this for total
  * coverage: cross-origin iframe logins; canvas/WebGL-drawn login UIs (there
  * are no input elements to observe); a page that collects the password
- * without any of the five signals above (e.g. keeps keystrokes in a variable
+ * without any of the six signals above (e.g. keeps keystrokes in a variable
  * and posts from a Web Worker or WebSocket); a page that replaces
  * `window.fetch` / `XMLHttpRequest.prototype.send` AFTER this script has run
  * (we wrap once, at document start — re-wrapping on every assignment would be
  * an arms race we lose anyway); and a submit from a password field that was
- * never focused, clicked or filled through anything we can see.
+ * never focused, typed into, clicked or filled through anything we can see.
  *
  * Robustness rules: everything is wrapped in try/catch — a broken page must
  * still load; nothing is ever written to the console (no spam); the script is
@@ -863,10 +879,18 @@ object RoomVaultScript {
     // enough for a round-trip login, short enough that later unrelated
     // requests are not mistaken for one.
     var RECENT_FILL_MS = 15000;
+    // The same window for a password the user TYPED (no vault fill involved):
+    // the formless SPA login reads the field and POSTs with fetch/XHR, and
+    // without this window that login is invisible — no form, no submit
+    // control, no fill. A login POST leaves within seconds of the last
+    // keystroke, so fifteen seconds covers it without stretching to the
+    // page's later unrelated traffic.
+    var RECENT_TYPE_MS = 15000;
     var lastRequestAt = 0;
     var lastReportKey = '';
     var lastReportAt = 0;
     var lastFillAt = 0;
+    var lastTypeAt = 0;
     var userField = null;
     var passField = null;
 
@@ -1006,15 +1030,54 @@ object RoomVaultScript {
       }
     }
 
+    // Path 6's net: ANY button-shaped element — a BUTTON whatever its type
+    // (a React onClick submit button does not need type=submit), an INPUT of
+    // the button kinds, or anything the page has dressed in role=button.
+    // Wider than isSubmitControl on purpose: the formless path only fires
+    // when a visible password field already holds a value, so the extra
+    // breadth costs at most a dismissible prompt, never a missed login.
+    function isButtonish(el) {
+      try {
+        if (!el || el.nodeType !== 1) return false;
+        var tag = el.tagName;
+        if (tag === 'BUTTON') return true;
+        if (tag === 'INPUT') {
+          var t = String(el.type || '').toLowerCase();
+          return t === 'submit' || t === 'button' || t === 'image';
+        }
+        var role = '';
+        try { role = el.getAttribute('role') || ''; } catch (e2) {}
+        return role === 'button';
+      } catch (e) {
+        return false;
+      }
+    }
+
     function recentlyFilled() {
       return lastFillAt > 0 && (Date.now() - lastFillAt) < RECENT_FILL_MS;
+    }
+
+    function recentlyTyped() {
+      return lastTypeAt > 0 && (Date.now() - lastTypeAt) < RECENT_TYPE_MS;
+    }
+
+    // True when the page's visible password field holds something — the
+    // formless-SPA click path's gate, and the username-focus offer's gate.
+    function pageHasFilledPassword() {
+      var pf = anyPassword();
+      return !!(pf && pf.value);
     }
 
     window.__roomVaultFill = function (payload) {
       try {
         var data = (typeof payload === 'string') ? JSON.parse(payload) : payload;
         if (!data) return;
-        var pf = (passField && document.contains(passField)) ? passField : anyPassword();
+        // isPassword guard: a username-field focus calls request() with the
+        // PAGE's password field, but a page that re-rendered between the
+        // focus and this fill can leave a stale element here — writing the
+        // password into a text field is the one mistake this cannot make.
+        var pf = (passField && document.contains(passField) && isPassword(passField))
+          ? passField : anyPassword();
         if (!pf) return;
         passField = pf;
         if (data.p !== undefined && data.p !== null) setValue(pf, String(data.p));
@@ -1068,6 +1131,21 @@ object RoomVaultScript {
       }
     }
 
+    // Called by the native side when the user dismisses the save prompt
+    // without saving: the report suppression above must not swallow the REAL
+    // submit that follows a "Not now" (the eye-toggle click reported early,
+    // the actual login button reports for real — same values, thirty seconds
+    // apart — and the second one is the one the user meant). Clearing the
+    // key here re-arms every detection path for that submit.
+    window.__roomVaultReset = function () {
+      try {
+        lastReportKey = '';
+        lastReportAt = 0;
+        lastFillAt = 0;
+        lastTypeAt = 0;
+      } catch (e) {}
+    };
+
     function report(scope) {
       try {
         var pw = firstPassword(scope);
@@ -1089,13 +1167,44 @@ object RoomVaultScript {
       return false;
     }
 
-    // Armed only by the fetch/XHR wrappers: they see every request on the
-    // page, so they must only fire inside the short window after a fill made
-    // by the vault. The first hit closes the window, so a page that fires
-    // several requests after a login cannot produce several prompts.
-    function maybeReportOnSubmit() {
-      if (!recentlyFilled()) return;
-      if (reportBest()) lastFillAt = 0;
+    // Armed by the fetch/XHR wrappers AND by the user's own typing: the fill
+    // window keeps its old any-request behaviour, while the typed window is
+    // gated to non-GET requests — a manually typed password followed by an
+    // analytics GET is not a login, and the one thing that makes a request
+    // look like a submit without a form is that it WRITES. [methodHint] is
+    // uppercase, or null when the wrapper could not tell (in which case the
+    // typed window still reports — unknown must not mean suppressed, or a
+    // send() through an exotic wrapper is invisible again).
+    function maybeReportOnSubmit(methodHint) {
+      var filled = recentlyFilled();
+      var typed = recentlyTyped();
+      if (!filled && !typed) return;
+      if (!filled && methodHint === 'GET') return;
+      if (reportBest()) {
+        lastFillAt = 0;
+        lastTypeAt = 0;
+      }
+    }
+
+    // The request method a fetch call is making, when it can be told:
+    // fetch(input, options) where input is a URL string, or a Request object
+    // of our own. A bare fetch(url) IS a GET — the default — so it says 'GET'
+    // rather than null: the typed window must be able to skip analytics
+    // pings that never bothered writing a method down.
+    function fetchMethodHint(args) {
+      try {
+        if (!args || !args.length) return 'GET';
+        var a0 = args[0];
+        if (a0 && typeof a0 === 'object' && typeof a0.method === 'string') {
+          return String(a0.method || '').toUpperCase() || 'GET';
+        }
+        if (args.length > 1 && args[1] && typeof args[1] === 'object' &&
+            typeof args[1].method === 'string') {
+          return String(args[1].method || '').toUpperCase() || 'GET';
+        }
+        return 'GET';
+      } catch (e) {}
+      return null;
     }
 
     // Path 4: a scripted form.submit() skips the submit event entirely, and
@@ -1125,13 +1234,15 @@ object RoomVaultScript {
 
     // Path 5: the SPA login that reads the field and POSTs, with no DOM
     // signal at all. Both wrappers report BEFORE the request leaves, so the
-    // values are still in the page.
+    // values are still in the page. The window is armed by a vault fill AND
+    // by the user typing into a password field (see RECENT_TYPE_MS); XHR's
+    // method comes from an open() hook, fetch's from its arguments.
     function hookNetwork() {
       try {
         if (typeof window.fetch === 'function') {
           var origFetch = window.fetch;
           window.fetch = function () {
-            try { maybeReportOnSubmit(); } catch (e) {}
+            try { maybeReportOnSubmit(fetchMethodHint(arguments)); } catch (e) {}
             return origFetch.apply(this, arguments);
           };
         }
@@ -1139,9 +1250,14 @@ object RoomVaultScript {
       try {
         var xhrProto = window.XMLHttpRequest && window.XMLHttpRequest.prototype;
         if (xhrProto && typeof xhrProto.send === 'function') {
+          var origOpen = xhrProto.open;
+          xhrProto.open = function () {
+            try { this.__roomMethod = String(arguments[0] || '').toUpperCase() || null; } catch (e) {}
+            return origOpen.apply(this, arguments);
+          };
           var origSend = xhrProto.send;
           xhrProto.send = function () {
-            try { maybeReportOnSubmit(); } catch (e) {}
+            try { maybeReportOnSubmit(this.__roomMethod || null); } catch (e) {}
             return origSend.apply(this, arguments);
           };
         }
@@ -1151,7 +1267,32 @@ object RoomVaultScript {
     document.addEventListener('focusin', function (ev) {
       try {
         var t = ev.target;
-        if (isPassword(t)) request(t);
+        if (isPassword(t)) { request(t); return; }
+        // A username field in a login form is where the user STARTS — waiting
+        // for the password field to be focused before offering logins means
+        // the offer arrives after the username is already typed, which is
+        // exactly the "saved passwords are never suggested" experience.
+        // request() takes the PASSWORD element (it anchors the fill's field
+        // references), so the page's password field is what is passed — not
+        // the focused username field, which would anchor the fill to a text
+        // input. Gate on a visible password field existing, so a search box
+        // alone never asks.
+        if (isUsernameCandidate(t)) {
+          var pf = anyPassword();
+          if (pf) request(pf);
+        }
+      } catch (e) {}
+    }, true);
+
+    // The user typing into a password field arms the network window — see
+    // RECENT_TYPE_MS. An input event, not keydown: paste, autofill from the
+    // keyboard's own manager, and IME compositions all count as "the user
+    // put a password in this field", and a keydown listener sees none of
+    // them.
+    document.addEventListener('input', function (ev) {
+      try {
+        var t = ev.target;
+        if (isPassword(t)) lastTypeAt = Date.now();
       } catch (e) {}
     }, true);
 
@@ -1165,12 +1306,36 @@ object RoomVaultScript {
         while (el && el.nodeType === 1 && el !== document && !isSubmitControl(el)) {
           el = el.parentNode;
         }
-        if (!isSubmitControl(el)) return;
-        var form = closestForm(el);
-        if (!form && el.form && el.form.tagName === 'FORM') form = el.form;
-        if (!form) return;
-        var pw = firstPassword(form);
-        if (pw && pw.value) reportElement(pw);
+        if (isSubmitControl(el)) {
+          var form = closestForm(el);
+          if (!form && el.form && el.form.tagName === 'FORM') form = el.form;
+          if (form) {
+            var pw = firstPassword(form);
+            if (pw && pw.value) reportElement(pw);
+            return;
+          }
+          // A submit control with no form around it: fall through to the
+          // formless path below rather than returning — the control's whole
+          // purpose was still a submit.
+        }
+        // Path 6: the formless SPA login button — a BUTTON (of any type; a
+        // React onClick handler does not need type=submit), an INPUT
+        // button/submit, or anything wearing role=button, clicked while a
+        // VISIBLE password field on the page holds a value. Nearly every
+        // hand-rolled React/Vue login screen is shaped exactly like this, and
+        // without this path their successful logins are never offered a save.
+        // False-positive cost (e.g. a "show password" eye toggle in a
+        // formless layout): one prompt the user dismisses with "Not now" —
+        // and the dismissal reset (window.__roomVaultReset) re-arms the
+        // real submit right behind it.
+        var node = t;
+        while (node && node.nodeType === 1 && node !== document && !isButtonish(node)) {
+          node = node.parentNode;
+        }
+        if (isButtonish(node) && pageHasFilledPassword()) {
+          var pf = anyPassword();
+          if (pf) reportElement(pf);
+        }
       } catch (e) {}
     }, true);
 

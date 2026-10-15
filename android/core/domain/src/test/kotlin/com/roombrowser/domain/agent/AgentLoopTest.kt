@@ -420,4 +420,111 @@ class AgentLoopTest {
 
         assertThat(events.filterIsInstance<AgentEvent.Notice>()).isEmpty()
     }
+
+    // ---------------------------------------------------------------
+    // The continue nudge: a plain answer over the model's own unfinished
+    // list is a stop, not a completion. The chat used to go quiet exactly
+    // here, with steps the user could still see left open on the card.
+    // ---------------------------------------------------------------
+
+    @Test
+    fun `an answer over an unfinished list is sent back to work`() = runTest {
+        // The list starts with one step open; the model "checks in" with a
+        // plain status line mid-task, then — nudged — actually finishes it.
+        // The plan tool answers PENDING on the first call and DONE on the
+        // second, which a map-keyed fake executor cannot express.
+        val planAnswers = ArrayDeque(
+            listOf(
+                planResult(AgentPlan.Status.PENDING),
+                planResult(AgentPlan.Status.DONE)
+            )
+        )
+        val executedNames = mutableListOf<String>()
+        val executor = object : ToolExecutor {
+            override suspend fun execute(name: String, argsJson: String): ToolResult {
+                executedNames.add(name)
+                return planAnswers.removeFirst()
+            }
+        }
+        val setPlan = ChatMessage(
+            role = "assistant",
+            toolCalls = listOf(ToolCall(id = "c1", function = FunctionCall(AgentTools.PLAN, """{"items":[{"text":"a","status":"pending"}]}""")))
+        )
+        val setPlanDone = ChatMessage(
+            role = "assistant",
+            toolCalls = listOf(ToolCall(id = "c2", function = FunctionCall(AgentTools.PLAN, """{"items":[{"text":"a","status":"done"}]}""")))
+        )
+        val turns = listOf(
+            setPlan,
+            ChatMessage(role = "assistant", content = "Working on it, one moment."),
+            setPlanDone,
+            ChatMessage(role = "assistant", content = "All steps are complete.")
+        )
+        val gateway = FakeGateway(turns)
+        val loop = AgentLoop(gateway, executor, config(planBeforeActions = true))
+        val events = mutableListOf<AgentEvent>()
+
+        loop.runTurn(mutableListOf(ChatMessage(role = "user", content = "do the thing"))) { events.add(it) }
+
+        // The re-ask reaches the model as a message naming the open step,
+        // not as a silent extra call.
+        val nudge = gateway.requests[1].messages.map { it.content }.first { it != null && it.contains("open steps") }
+        assertThat(nudge).contains("[ ] a")
+        // The turn went back to WORK after the answer: the second `plan` call
+        // ran, and the final answer is the one after it.
+        assertThat(executedNames).containsExactly(AgentTools.PLAN, AgentTools.PLAN)
+        assertThat(events.last()).isInstanceOf(AgentEvent.FinalAnswer::class.java)
+        assertThat((events.last() as AgentEvent.FinalAnswer).text).isEqualTo("All steps are complete.")
+        // A finished list earns no closing notice.
+        assertThat(events.filterIsInstance<AgentEvent.Notice>()).isEmpty()
+    }
+
+    @Test
+    fun `the continue nudge is bounded`() = runTest {
+        // A model that only ever answers plainly over its own open list must
+        // not wedge the loop: after MAX_CONTINUE_NUDGES send-backs, the third
+        // plain answer ends the turn with the completion notice saying what
+        // is still open.
+        val executor = FakeExecutor(mapOf(AgentTools.PLAN to planResult(AgentPlan.Status.PENDING)))
+        val setPlan = executor.toolCall(
+            "c1", AgentTools.PLAN, """{"items":[{"text":"a","status":"pending"}]}"""
+        )
+        val plain = ChatMessage(role = "assistant", content = "Still on it.")
+        val turns = listOf(setPlan, plain)
+        val gateway = FakeGateway(turns)
+        val loop = AgentLoop(gateway, executor, config(planBeforeActions = true))
+        val events = mutableListOf<AgentEvent>()
+
+        loop.runTurn(mutableListOf(ChatMessage(role = "user", content = "do it"))) { events.add(it) }
+
+        // 1 (plan) + 2 nudged re-asks + the third plain answer that ends it.
+        assertThat(gateway.calls).isEqualTo(4)
+        // Nudges ACCUMULATE in the history the model is re-sent, so the
+        // counts are cumulative: one new send-back per request until the
+        // ceiling, and none after it — the third plain answer ended the turn.
+        fun nudgesIn(call: Int) =
+            gateway.requests[call].messages.count { m -> m.content?.contains("open steps") == true }
+        assertThat(nudgesIn(1)).isEqualTo(1)
+        assertThat(nudgesIn(2)).isEqualTo(2)
+        assertThat(nudgesIn(3)).isEqualTo(2)
+        assertThat(events.last()).isInstanceOf(AgentEvent.FinalAnswer::class.java)
+        val notice = events.filterIsInstance<AgentEvent.Notice>().single()
+        assertThat(notice.text).contains("still open")
+    }
+
+    @Test
+    fun `a finished list is answered without a send-back`() = runTest {
+        val executor = FakeExecutor(mapOf(AgentTools.PLAN to planResult(AgentPlan.Status.DONE)))
+        val turns = listOf(
+            executor.toolCall("c1", AgentTools.PLAN, """{"items":[{"text":"a","status":"done"}]}"""),
+            ChatMessage(role = "assistant", content = "Everything is done.")
+        )
+        val gateway = FakeGateway(turns)
+        val loop = AgentLoop(gateway, executor, config(planBeforeActions = true))
+
+        loop.runTurn(mutableListOf(ChatMessage(role = "user", content = "do it"))) { }
+
+        // The list is finished, so the plain answer IS the completion.
+        assertThat(gateway.calls).isEqualTo(2)
+    }
 }

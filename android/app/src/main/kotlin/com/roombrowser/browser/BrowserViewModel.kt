@@ -3224,9 +3224,25 @@ class BrowserViewModel(
         vaultOffer = null
     }
 
-    /** "Not now" on the save prompt: forget the reported login entirely. */
+    /**
+     * "Not now" on the save prompt: forget the reported login entirely — and
+     * tell the page world to forget it too. The injected vault script
+     * suppresses a re-report of the same (host, username, password) for 30
+     * seconds, which is right while several detection paths fire for ONE
+     * submit and wrong the moment the user declines an EARLY report (the
+     * eye-toggle click on a formless layout, say) and the REAL submit follows
+     * seconds later — same values, so without this reset the genuine login
+     * would never prompt. `__roomVaultReset` is a fire-and-forget call on the
+     * active session: a page that navigated away between the prompt and this
+     * tap has a fresh script anyway, and a closed session has nothing to
+     * re-arm.
+     */
     fun dismissVaultSavePrompt() {
         vaultSavePrompt = null
+        activeSession?.evaluateJs(
+            "window.__roomVaultReset && window.__roomVaultReset()",
+            null
+        )
     }
 
     /** Navigation hook (onPageStarted): retires the offer + its suppressions. */

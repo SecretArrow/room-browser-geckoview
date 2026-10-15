@@ -160,6 +160,11 @@ class AgentLoop(
             var currentPlan = emptyList<AgentPlan.Item>()
             var planRefusals = 0
             var planNudges = 0
+            // How many times a plain answer over an unfinished list has been
+            // sent back to work. Bounded for the same reason every nudge here
+            // is: a model that will not continue must still be allowed to
+            // finish the turn with an answer rather than wedge the loop.
+            var continueNudges = 0
             while (step < config.steps) {
                 if (!currentCoroutineContext().isActive) return
                 beforeStep()
@@ -200,6 +205,21 @@ class AgentLoop(
                     ) {
                         planNudges++
                         history.add(ChatMessage(role = "user", content = AgentPlan.NUDGE))
+                        continue
+                    }
+                    // A plain answer over the model's OWN unfinished list is a
+                    // stop, not a completion — the list is the measure of the
+                    // work it set itself, and the user's complaint is precisely
+                    // the chat going quiet with steps left open. Send it back
+                    // to work (bounded), the same way the plan-mode nudge does,
+                    // and never on the tools-free last step: the tools it needs
+                    // to continue are not on offer there.
+                    if (config.planBeforeActions &&
+                        currentPlan.any { it.status != AgentPlan.Status.DONE } &&
+                        useTools && continueNudges < MAX_CONTINUE_NUDGES
+                    ) {
+                        continueNudges++
+                        history.add(ChatMessage(role = "user", content = AgentPlan.continueNudge(currentPlan)))
                         continue
                     }
                     listener(AgentEvent.FinalAnswer(assistant.content.orEmpty().ifBlank { "(the model returned an empty answer)" }))
@@ -330,5 +350,14 @@ class AgentLoop(
          */
         const val MAX_PLAN_REFUSALS = 2
         const val MAX_PLAN_NUDGES = 1
+
+        /**
+         * How many times a plain answer over an unfinished list is sent back
+         * to work before the turn is allowed to end. Two is enough to cover a
+         * model that "checks in" verbally mid-task without turning it into a
+         * loop the user cannot stop — the third plain answer ends the turn,
+         * with the completion notice saying what is still open.
+         */
+        const val MAX_CONTINUE_NUDGES = 2
     }
 }

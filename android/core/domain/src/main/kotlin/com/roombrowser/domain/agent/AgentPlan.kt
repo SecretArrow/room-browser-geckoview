@@ -145,6 +145,29 @@ object AgentPlan {
             "first with the whole list for this task — one short step per line, the step you " +
             "are starting marked in_progress."
 
+    /**
+     * Handed to the model when it produces a plain answer while its own list
+     * still has open steps. The model is the author of the list, so the list
+     * is the measure of whether the user's task is actually finished — an
+     * answer typed over unfinished work is a stop, not a completion, and the
+     * user's complaint is exactly that: the chat goes quiet with steps left.
+     *
+     * The nudge names the open steps rather than counting them, because the
+     * model reads it as its next instruction, not as a report; and it offers
+     * the honest exit — say which step is blocked — so a genuinely stuck turn
+     * ends with an explanation instead of a fourth loop.
+     */
+    fun continueNudge(items: List<Item>): String = buildString {
+        appendLine("Your step list still has open steps, so the task is not finished:")
+        appendLine(render(items))
+        append(
+            "Keep working through the open steps with your tools — mark each one " +
+                "in_progress when you start it and done when it is finished, sending the " +
+                "whole list again with `plan`. Only stop if the user's request is fully " +
+                "satisfied; if a step truly cannot be done, say which one and why."
+        )
+    }
+
     /** One line for the transcript when a turn ends with steps still open. */
     fun completionNotice(items: List<Item>): String {
         val open = items.count { it.status != Status.DONE }
