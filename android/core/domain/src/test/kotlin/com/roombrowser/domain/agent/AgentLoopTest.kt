@@ -467,8 +467,11 @@ class AgentLoopTest {
         loop.runTurn(mutableListOf(ChatMessage(role = "user", content = "do the thing"))) { events.add(it) }
 
         // The re-ask reaches the model as a message naming the open step,
-        // not as a silent extra call.
-        val nudge = gateway.requests[1].messages.map { it.content }.first { it != null && it.contains("open steps") }
+        // not as a silent extra call. The nudge is appended AFTER the plain
+        // answer's own request was snapshotted, so it is the NEXT request —
+        // index 2, the one that also carries the second `plan` call — that
+        // must contain it.
+        val nudge = gateway.requests[2].messages.map { it.content }.first { it != null && it.contains("open steps") }
         assertThat(nudge).contains("[ ] a")
         // The turn went back to WORK after the answer: the second `plan` call
         // ran, and the final answer is the one after it.
@@ -499,13 +502,15 @@ class AgentLoopTest {
 
         // 1 (plan) + 2 nudged re-asks + the third plain answer that ends it.
         assertThat(gateway.calls).isEqualTo(4)
-        // Nudges ACCUMULATE in the history the model is re-sent, so the
-        // counts are cumulative: one new send-back per request until the
-        // ceiling, and none after it — the third plain answer ended the turn.
+        // A nudge is appended AFTER the request that earned it was
+        // snapshotted, so it first appears in the NEXT request: request 1
+        // carries none, request 2 carries the first, request 3 carries both
+        // — and no third is ever added, because the third plain answer ended
+        // the turn.
         fun nudgesIn(call: Int) =
             gateway.requests[call].messages.count { m -> m.content?.contains("open steps") == true }
-        assertThat(nudgesIn(1)).isEqualTo(1)
-        assertThat(nudgesIn(2)).isEqualTo(2)
+        assertThat(nudgesIn(1)).isEqualTo(0)
+        assertThat(nudgesIn(2)).isEqualTo(1)
         assertThat(nudgesIn(3)).isEqualTo(2)
         assertThat(events.last()).isInstanceOf(AgentEvent.FinalAnswer::class.java)
         val notice = events.filterIsInstance<AgentEvent.Notice>().single()
