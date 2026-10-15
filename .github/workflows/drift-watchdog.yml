@@ -1,0 +1,148 @@
+# Drift watchdog — the audit lesson, automated.
+#
+# The two editions are one product on two engines, and AGENTS.md pins which
+# trees must stay byte-identical between them. Nothing enforced that rule:
+# the sibling's notes/2FA desktop work landed on the 10th and this edition
+# carried nothing of it for five days — found by a hand audit, not by a
+# pipeline, because no pipeline ever looked across the repository boundary.
+#
+# This workflow looks. Weekly (and on demand) it diffs every shared tree
+# against the sibling's main and opens an issue naming the drifted files,
+# with the full diff attached. It does NOT auto-commit anything: a drift is
+# a decision (port it, or document why it is engine-specific after all),
+# and the issue is how that decision gets made instead of silently skipped.
+#
+# Why these paths and not "everything": the engine trees
+# (android/engine/, WebClients.kt, BrowserViewModel.kt, the manifests, the
+# build files, the edition-specific e2e suites) differ ON PURPOSE — that is
+# the facade working as designed. This list is the AGENTS.md shared set,
+# each verified byte-identical at the time the watchdog was introduced.
+name: Shared-tree drift watchdog
+
+on:
+  schedule:
+    # Mondays 03:23 UTC — after the weekend's pushes, before the week's.
+    - cron: '23 3 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: drift-watchdog
+  cancel-in-progress: true
+
+env:
+  # The other half of the pair. One word, no owner: the step below owns the
+  # full URL so the checkout stays obviously anonymous-and-public.
+  SIBLING_REPO: ${{ github.repository == 'SecretArrow/room-browser-geckoview' && 'room-browser' || 'room-browser-geckoview' }}
+
+jobs:
+  diff-shared:
+    name: Diff the shared trees against the sibling edition
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout this edition
+        uses: actions/checkout@v7
+
+      - name: Clone the sibling (shallow, anonymous)
+        run: |
+          git clone --depth 1 \
+            "https://github.com/SecretArrow/${SIBLING_REPO}.git" \
+            "$RUNNER_TEMP/sibling"
+
+      - name: Diff the AGENTS.md shared trees
+        id: diff
+        run: |
+          set -euo pipefail
+          SIB="$RUNNER_TEMP/sibling"
+          mkdir -p drift-report
+          : > drift-report/summary.txt
+
+          # The wallet tree is shared EXCEPT dapp/WalletBridge.kt, which is
+          # the engine's own bridge; stage filtered copies so the diff is
+          # only over what the policy calls shared.
+          rm -rf /tmp/wallet-a /tmp/wallet-b
+          cp -r android/app/src/main/kotlin/com/roombrowser/browser/wallet /tmp/wallet-a
+          cp -r "$SIB/android/app/src/main/kotlin/com/roombrowser/browser/wallet" /tmp/wallet-b
+          rm -f /tmp/wallet-a/dapp/WalletBridge.kt /tmp/wallet-b/dapp/WalletBridge.kt
+
+          drift=0
+          check() {
+            local name="$1" here="$2" there="$3"
+            if ! diff -rq "$here" "$there" > "drift-report/$name.txt" 2>&1; then
+              drift=1
+              echo "::error::$name has drifted from the sibling edition — see the attached report"
+              {
+                echo "## $name"
+                echo '```'
+                cat "drift-report/$name.txt"
+                echo '```'
+              } >> drift-report/summary.txt
+            else
+              echo "$name: in sync"
+            fi
+          }
+
+          check core-domain   android/core/domain  "$SIB/android/core/domain"
+          check core-wallet   android/core/wallet  "$SIB/android/core/wallet"
+          check node          android/node         "$SIB/android/node"
+          check desktop       desktop              "$SIB/desktop"
+          check agent         android/app/src/main/kotlin/com/roombrowser/agent         "$SIB/android/app/src/main/kotlin/com/roombrowser/agent"
+          check wallet        /tmp/wallet-a        /tmp/wallet-b
+          check browser-ui    android/app/src/main/kotlin/com/roombrowser/browser/ui    "$SIB/android/app/src/main/kotlin/com/roombrowser/browser/ui"
+          check app-data      android/app/src/main/kotlin/com/roombrowser/data          "$SIB/android/app/src/main/kotlin/com/roombrowser/data"
+          check app-theme     android/app/src/main/kotlin/com/roombrowser/theme         "$SIB/android/app/src/main/kotlin/com/roombrowser/theme"
+          check app-qr        android/app/src/main/kotlin/com/roombrowser/qr            "$SIB/android/app/src/main/kotlin/com/roombrowser/qr"
+          check app-localai   android/app/src/main/kotlin/com/roombrowser/localai       "$SIB/android/app/src/main/kotlin/com/roombrowser/localai"
+          check app-security  android/app/src/main/kotlin/com/roombrowser/security      "$SIB/android/app/src/main/kotlin/com/roombrowser/security"
+
+          if [ "$drift" -ne 0 ]; then
+            echo "drifted=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Upload the full drift report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: drift-report
+          path: drift-report/
+
+      - name: Open a drift issue
+        if: steps.diff.outputs.drifted == 'true'
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const fs = require('fs');
+            let summary = '';
+            try { summary = fs.readFileSync('drift-report/summary.txt', 'utf8'); } catch (e) {
+              summary = '(the per-tree report could not be read — see the run page)';
+            }
+            const runUrl = process.env.GITHUB_SERVER_URL + '/' + process.env.GITHUB_REPOSITORY +
+                           '/actions/runs/' + process.env.GITHUB_RUN_ID;
+            const body = [
+              'A shared tree has drifted between the two editions — the same',
+              'class of gap that left this edition without the desktop notes/2FA',
+              'tools for five days. Nothing was changed by the watchdog; this',
+              'issue is the decision point.',
+              '',
+              summary,
+              '',
+              'Two ways to settle it, per AGENTS.md:',
+              '1. The change belongs in both editions — port it to this one',
+              '   (or the sibling, whichever is missing it).',
+              '2. The change is engine-specific after all — move it under the',
+              '   engine-specific trees or say so here, and shrink the watchdog',
+              '   list if the policy itself changed.',
+              '',
+              'Full report: ' + runUrl
+            ].join('\n');
+            await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: 'Shared-tree drift detected vs ' + process.env.SIBLING_REPO,
+              labels: ['drift'],
+              body
+            });
