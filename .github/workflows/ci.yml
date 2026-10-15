@@ -824,14 +824,21 @@ jobs:
     name: Desktop build (Windows x64, C + WebView2)
     runs-on: windows-latest
     timeout-minutes: 30
-    # Deliberately OUT of the main-branch pipeline. A desktop artifact is
-    # optional (see the release job's Android-first policy) but the job is
-    # not free: `release` cannot START until every job in its `needs` has
-    # finished, so a Windows MSVC + WebView2 build that outruns the Android
-    # gates delays the APK even though its own failure could never block it.
-    # It still runs where a desktop artifact is actually published — a tag —
-    # and on manual dispatch.
-    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
+    # IN the main-branch pipeline, on purpose. The old tag/dispatch-only gate
+    # had a hole the release flow itself kept open: `release` cuts the tag
+    # through the API, and a tag created that way fires no `push` event, so
+    # NOTHING but a hand-pushed tag or a dispatch ever ran this job — the
+    # desktop C core landed on main with zero verification, and the drift it
+    # hid (the sibling's notes/2FA desktop work, five days unsynced) was
+    # found by an audit, not by a pipeline. The original reason for the gate
+    # — "release cannot start until every job in its needs has finished" —
+    # was measured and found empty: e2e is the long pole at ~68 minutes, this
+    # job finishes in under ten, and both start at the same time, so the
+    # wall-clock cost of running it is zero. A desktop failure still cannot
+    # block the APK (the release job's `!cancelled()` Android-first policy is
+    # unchanged); skipped only on pull_request, where the Android gates carry
+    # the review and the merge re-runs this job on main anyway.
+    if: github.event_name != 'pull_request'
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -953,7 +960,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     # Same gate as desktop-windows: see the note there.
-    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
+    if: github.event_name != 'pull_request'
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -1314,8 +1321,11 @@ jobs:
             | `room-browser-v*-armeabi-v7a-release.apk` | older 32-bit ARM devices |
 
             The desktop edition (Windows portable zip, Ubuntu deb/tar.gz) is
-            built on a TAG only, so a build from `main` will not carry it.
-            When a tag release does, its files appear in the asset list above.
+            built by the same pipeline — the desktop jobs run alongside the
+            Android gates and finish under the emulator's run, so a green
+            release carries both editions' artifacts below. When a desktop
+            job fails, the release stays Android-first: the APKs still ship
+            and the desktop files appear again on the next green run.
 
             ### Before you install
 
