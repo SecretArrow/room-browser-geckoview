@@ -126,7 +126,7 @@ class PluginManifestValidatorTest {
     }
 
     @Test
-    fun `files is refused by name as a module.json-only permission`() {
+    fun `files is refused by name as a module-json-only permission`() {
         // A plugin.json author copying a module's manifest learns the real
         // fix — the name exists, just not in THIS format — rather than a
         // generic unknown-permission message.

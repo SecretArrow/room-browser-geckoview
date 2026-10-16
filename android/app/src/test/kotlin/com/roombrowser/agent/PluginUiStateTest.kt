@@ -171,18 +171,18 @@ exports.commands = { greet: { run: () => 'hello' } };
             coEvery { all() } returns listOf(plugin, moduleRow)
             coEvery { byFormat(any()) } answers { listOfNotNull(moduleRow) }
             coEvery { setPromptStaged(any(), any()) } answers {
-                stagedWrites.add(firstArg() to secondArg())
-                moduleRow = moduleRow.copy(promptStaged = secondArg())
+                stagedWrites.add(firstArg<String>() to secondArg<Boolean>())
+                moduleRow = moduleRow.copy(promptStaged = secondArg<Boolean>())
                 Unit
             }
             // The install door's row writer: a composed plugin's upsert is
             // the proof an install happened, and byId answers what upsert
             // wrote (null before that) — the repository's own replace rule.
             coEvery { byId(any()) } answers {
-                upserts.lastOrNull { it.id == firstArg() }
+                upserts.lastOrNull { it.id == firstArg<String>() }
             }
             coEvery { upsert(any()) } answers {
-                upserts.add(firstArg())
+                upserts.add(firstArg<PluginEntity>())
                 Unit
             }
         }

@@ -89,7 +89,7 @@ class ZAgentsManifestTest {
     }
 
     @Test
-    fun `timeout seconds defaults to thirty and clamps into the 1..120 window`() {
+    fun `timeout seconds defaults to thirty and clamps into the 1 to 120 window`() {
         fun timeoutOf(json: String): Int = ZAgentsManifest.parse(json)!!.timeoutSeconds
         assertThat(timeoutOf("""{"name":"m"}""")).isEqualTo(30)
         assertThat(timeoutOf("""{"name":"m","timeoutSeconds":0}""")).isEqualTo(1)

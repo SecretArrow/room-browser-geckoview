@@ -70,7 +70,7 @@ class PluginRepositoryTest {
             val upserts = mutableListOf<PluginEntity>()
             val pluginDao = mockk<PluginDao> {
                 coEvery { byId(any()) } returns null
-                coEvery { upsert(any()) } answers { upserts += firstArg() }
+                coEvery { upsert(any()) } answers { upserts += firstArg<PluginEntity>() }
             }
             val db = mockk<AppDatabase> { every { pluginDao() } returns pluginDao }
             val repo = PluginRepository(db, pluginsDir, File(root, "plugin-data"))
