@@ -41,6 +41,13 @@ import org.junit.runner.RunWith
  * exercise the picker on a brand-new chat. The endpoint is a dead port; no
  * turn ever needs to succeed here.
  *
+ * The second flow (word_count_asks_this_chats_own_ai_to_compose) drives the
+ * agent.generate extension end-to-end: word-count installs from the APK
+ * through the repository, its consent dialog carries the new permission's
+ * sentence, and /compose's ask crosses the bridge as a reverse request and
+ * comes back as the dead-endpoint refusal — an ANSWER, proven by the absence
+ * of the reverse timeout's wording.
+ *
  * Node-dependent assertions carry the generous timeouts this runner needs for
  * a first runtime boot (NodeRuntimeE2eTest's whole purpose); everything else
  * uses the shared suite's short, verified-tap idioms.
@@ -240,8 +247,93 @@ class PluginE2eTest {
         )
     }
 
+    /**
+     * The agent.generate surface, on a real device with the real bridge: the
+     * word-count example (shipped beside hello-world in the APK, installed
+     * here through the same repository the SAF button feeds) declares the
+     * fourth permission, so its consent dialog carries the new sentence; and
+     * its /compose command asks THIS chat's own AI for one sentence.
+     *
+     * The chat's provider is the seeded dead port, so the generation is
+     * REFUSED within milliseconds — which is exactly what makes this
+     * deterministic without a live model: the ask leaves the plugin, crosses
+     * the bridge as a reverse request, is answered by the app's read loop
+     * (the gateway's own refusal, not the runtime's 20s reverse timeout), and
+     * comes back to the plugin as the failure card. A compose card title plus
+     * the absence of the timeout wording is the round trip's whole proof.
+     */
+    @Test
+    fun word_count_asks_this_chats_own_ai_to_compose() {
+        // ---- 1. Cold start → engine → agent panel --------------------------
+        bootstrapEngine()
+        if (!openAgentPanelFromMenu()) {
+            throw AssertionError("Agent panel must open from the page menu; UI:\n" + uiTree())
+        }
+
+        // ---- 2. Install word-count through the real repository -------------
+        // The manager's bundled button installs hello-world specifically;
+        // word-count ships beside it in the APK and installs through the same
+        // stream path that button feeds.
+        runBlocking {
+            val graph = (targetContext.applicationContext as RoomBrowserApp).graph
+            targetContext.assets.open("node/plugins/word-count.zip").use { stream ->
+                graph.pluginRepo.install(stream)
+            }
+        }
+
+        // ---- 3. Enable through the sheet, with the new consent sentence ----
+        assertTrue("The /plugins command must reach the composer and send", sendComposer("/plugins"))
+        assertTrue("The chat-plugins sheet must open", hasDesc("plugins_sheet", 10_000))
+        assertTrue(
+            "The word-count switch must be in the sheet",
+            clickDesc(wordCountSwitch, 10_000)
+        )
+        assertTrue(
+            "The permission dialog must appear (word-count declares four permissions)",
+            hasDesc("plugin_permission_accept", 10_000)
+        )
+        assertTrue(
+            "The agent.generate consent sentence must be in the dialog",
+            // Contains, not equals: the dialog renders each label with its
+            // own "• " bullet prefix.
+            hasTextContains("Have this chat's AI write text for it", 5_000)
+        )
+        assertTrue(
+            "Granting must be clickable",
+            clickDesc("plugin_permission_accept", 5_000)
+        )
+        assertTrue(
+            "The sheet must step out of the way once the grant is given",
+            waitGoneDesc("plugins_sheet", 10_000)
+        )
+        // Probe + activate in the embedded Node runtime; the first boot on
+        // this runner is the slow path.
+        assertTrue(
+            "The activation card must land in the conversation",
+            hasDesc(wordCountCard, 60_000)
+        )
+
+        // ---- 4. "/compose" rides the reverse channel to this chat's own AI -
+        assertTrue(
+            "The /compose command must reach the composer and send",
+            sendComposer("/compose hello room browser world")
+        )
+        assertTrue(
+            "The composition card must answer the command",
+            hasTextContains("The chat's AI could not compose", 60_000)
+        )
+        assertTrue(
+            "The refusal must be an ANSWER from the app's read loop, not the 20s reverse timeout",
+            !hasTextContains("did not answer the generation request", 2_000)
+        )
+    }
+
     /** The directory name the whole plugin system addresses hello-world by. */
     private val helloDirName = "com_example_hello"
+
+    /** The same, for the word-count plugin the compose flow installs. */
+    private val wordCountSwitch = "plugin_enable_com_example_wordcount"
+    private val wordCountCard = "plugin_card_com_example_wordcount"
 
     // ----------------------------------------------------------- ui plumbing
 

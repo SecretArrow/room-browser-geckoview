@@ -85,7 +85,8 @@ Research   →  1b7d…uuid  →  own cookie jar / storage / history
 - **Plugins** — Node.js modules installed from a ZIP, sandboxed (capability
   sandbox over the embedded Node runtime), per-chat isolated with explicit
   permissions granted at enable time, extending the agent with their own
-  tools and commands; see `docs/PLUGINS.md`.
+  tools and commands — and able to ask this chat's own AI to compose text
+  for them (`agent.generate`); see `docs/PLUGINS.md`.
 - **Developer Tools** — a docked inspector over the live page, opened from the
   Page Actions menu (or **F12** / **Ctrl+Shift+I** on an external keyboard).
   It states up front, per edition, exactly what its engine can and cannot

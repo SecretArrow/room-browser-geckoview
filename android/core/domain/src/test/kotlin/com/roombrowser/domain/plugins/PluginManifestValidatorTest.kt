@@ -95,11 +95,34 @@ class PluginManifestValidatorTest {
         assertThat(
             PluginManifestValidator.validate(
                 valid(
-                    "permissions" to jsonArray("storage", "network", "agent.tools", "chat.context"),
+                    "permissions" to jsonArray(
+                        "storage", "network", "agent.tools", "chat.context", "agent.generate"
+                    ),
                     "network" to networkAllow("api.example.com")
                 )
             )
         ).isEmpty()
+    }
+
+    @Test
+    fun `agent generate is a permission and five of them are the cap`() {
+        // The new permission declares on its own, like every other one.
+        assertThat(
+            PluginManifestValidator.validate(valid("permissions" to jsonArray("agent.generate")))
+        ).isEmpty()
+
+        // Six entries are over the cap even when every one is known — the
+        // count is its own rule, not a side effect of the vocabulary.
+        val errors = PluginManifestValidator.validate(
+            valid(
+                "permissions" to jsonArray(
+                    "storage", "network", "agent.tools", "chat.context", "agent.generate", "storage"
+                ),
+                "network" to networkAllow("api.example.com")
+            )
+        )
+        assertThat(errors).isNotEmpty()
+        assertThat(errors.any { it.contains("at most 5") }).isTrue()
     }
 
     @Test

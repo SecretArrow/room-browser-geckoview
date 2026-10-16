@@ -9,7 +9,7 @@
   "license": "MIT",
   "api": 1,
   "entry": "main.js",
-  "permissions": ["agent.tools", "chat.context", "storage"],
+  "permissions": ["agent.tools", "chat.context", "storage", "agent.generate"],
   "config": {
     "schema": [
       {
@@ -20,5 +20,9 @@
         "description": "Count words case-insensitively"
       }
     ]
-  }
+  },
+  "commands": [
+    { "name": "compose", "title": "Compose", "description": "Ask this chat's AI to write one sentence about the words counted" }
+  ],
+  "hooks": []
 }

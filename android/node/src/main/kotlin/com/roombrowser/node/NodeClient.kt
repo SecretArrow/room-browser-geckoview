@@ -6,6 +6,8 @@ import android.net.LocalSocket
 import android.net.LocalSocketAddress
 import android.os.Process
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.contentOrNull
 import java.io.BufferedReader
 import java.io.Closeable
 import java.io.File
@@ -71,12 +73,24 @@ class NodeClient private constructor(
      * refusal from the runtime is an [IllegalStateException] carrying its
      * words, while a plugin that failed is an answer inside a successful
      * envelope — see [PluginCallResult].
+     *
+     * [onReverse] answers the reverse requests the runtime may write while
+     * the plugin runs — `room.agent.generate` riding back over the same
+     * connection. It is BLOCKING and runs on this exchange's read. Null (the
+     * default) means this call has no generation wired, and any reverse
+     * request is answered with "agent generation is not available" rather
+     * than ignored: the plugin reads the refusal in its own words and the
+     * call itself carries on.
      */
     @Synchronized
-    fun plugin(call: PluginCallRequest): PluginCallResult = exchange(
+    fun plugin(
+        call: PluginCallRequest,
+        onReverse: ((JsonObject) -> JsonObject)? = null
+    ): PluginCallResult = exchange(
         request = { id -> NodeProtocol.pluginRequest(id, token, call) },
         read = NodeProtocol::pluginOf,
-        readTimeoutMillis = readTimeoutFor(call.timeoutMs)
+        readTimeoutMillis = readTimeoutFor(call.timeoutMs),
+        onReverse = onReverse
     )
 
     @Synchronized
@@ -93,12 +107,27 @@ class NodeClient private constructor(
         readTimeoutMillis = readTimeoutMillis
     )
 
-    /** Writes one request line and reads one reply, the whole of the protocol. */
+    /**
+     * Writes one request line and reads lines until the reply arrives — the
+     * whole of the protocol, plus the one wrinkle a plugin call adds: while
+     * the runtime runs the plugin it may write REVERSE REQUESTS, and each is
+     * answered HERE (token-checked, one command deep, [onReverse] doing the
+     * work) before the read goes back to waiting for the reply the exchange
+     * is actually owed. A line with no `cmd` member is that reply — the
+     * existing id-checked path, unchanged.
+     *
+     * Anything the handler throws is answered as the reverse line's own
+     * error envelope and the wait continues — a failed generation is an
+     * answer the plugin reads, not a broken call. Generations are serial by
+     * construction: the loop answers one reverse line before reading the
+     * next, so a plugin firing several gets them served in arrival order.
+     */
     @Synchronized
     private fun <T> exchange(
         request: (Int) -> String,
         read: (JsonObject) -> T,
-        readTimeoutMillis: Long
+        readTimeoutMillis: Long,
+        onReverse: ((JsonObject) -> JsonObject)? = null
     ): T {
         val id = ++nextId
         out.write(request(id))
@@ -107,8 +136,51 @@ class NodeClient private constructor(
         // A runtime that is wedged in a script would otherwise hold this
         // thread — and the turn behind it — forever, with nothing to report.
         socket.soTimeout = readTimeoutMillis.toInt()
-        val line = input.readLine() ?: throw IOException("the Node runtime closed the connection")
-        return read(NodeProtocol.result(line, id))
+        while (true) {
+            val line = input.readLine() ?: throw IOException("the Node runtime closed the connection")
+            val parsed = NodeProtocol.parse(line)
+            if (NodeProtocol.isReverse(parsed)) {
+                out.write(answerReverse(parsed, onReverse))
+                out.write("\n")
+                out.flush()
+                continue
+            }
+            return read(NodeProtocol.resultOf(parsed, id))
+        }
+    }
+
+    /**
+     * One reverse request's answer as the line to write back. The envelope
+     * borrows the runtime's own reply shape and carries the REVERSE line's
+     * id — the bridge settles its pending promise by id, so answering with
+     * anything else would leave it waiting on a line it cannot match. Every
+     * refusal keeps the id and carries its words; the read that called here
+     * keeps waiting for the plugin reply either way.
+     */
+    private fun answerReverse(line: JsonObject, onReverse: ((JsonObject) -> JsonObject)?): String {
+        val id = (line["id"] as? JsonPrimitive)?.contentOrNull ?: ""
+        val carried = (line["token"] as? JsonPrimitive)?.contentOrNull
+        if (carried != token) {
+            return NodeProtocol.reverseError(id, "the reverse request did not carry this run's token")
+        }
+        val cmd = (line["cmd"] as? JsonPrimitive)?.contentOrNull
+        if (cmd != NodeProtocol.REVERSE_GENERATE) {
+            return NodeProtocol.reverseError(id, "unknown reverse command: $cmd")
+        }
+        val handler = onReverse
+            ?: return NodeProtocol.reverseError(id, "agent generation is not available")
+        return try {
+            NodeProtocol.reverseReply(id, handler(line))
+        } catch (err: Exception) {
+            // The handler is blocking and budgeted by its own caller; whatever
+            // it raised (a generation timeout included) is the generation's
+            // honest outcome, and its words are the most useful thing the
+            // plugin can be told.
+            NodeProtocol.reverseError(
+                id,
+                err.message ?: "the generation failed: ${err.javaClass.simpleName}"
+            )
+        }
     }
 
     @Synchronized

@@ -9,11 +9,16 @@ import com.roombrowser.domain.agent.UntrustedContent
 import com.roombrowser.node.PluginCallRequest
 import com.roombrowser.node.PluginCallResult
 import com.roombrowser.node.PluginChatEntry
+import com.roombrowser.node.PluginGenerateRequest
 import io.mockk.every
 import io.mockk.mockk
 import kotlinx.coroutines.runBlocking
+import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.booleanOrNull
+import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.put
+import org.junit.Assert.assertThrows
 import org.junit.Test
 import java.io.File
 import java.nio.file.Files
@@ -42,8 +47,17 @@ class AgentPluginRuntimeTest {
     private val context: Context = mockk<Context>().apply { every { filesDir } returns root }
 
     private val calls = mutableListOf<PluginCallRequest>()
-    private val call = PluginCall { request ->
+
+    /**
+     * The reverse handler each call's generator became — wrapped with the
+     * SAME production wrap [PluginCall.throughRunner] uses, so a test that
+     * invokes one drives exactly the code the runner would hand NodeClient.
+     */
+    private val reverseHandlers = mutableListOf<((JsonObject) -> JsonObject)?>()
+
+    private val call = PluginCall { request, generate ->
         calls.add(request)
+        reverseHandlers.add(generate?.let(::reverseGenerateHandler))
         PluginCallResult(ok = true, output = "ran ${request.event}")
     }
 
@@ -84,6 +98,21 @@ class AgentPluginRuntimeTest {
     )
 
     private fun runtime() = AgentPluginRuntime(context, profile = null, call = call)
+
+    /** One reverse request line, in the shape bridge.js writes (design §3). */
+    private fun reverseLine(): JsonObject = buildJsonObject {
+        put("id", "gen-1")
+        put("cmd", "agent_generate")
+        put("token", "0123456789abcdef0123456789abcdef0123456789abcdef")
+        put(
+            "request",
+            buildJsonObject {
+                put("purpose", "chat-reply")
+                put("instruction", "Reply to the last message")
+                put("style", buildJsonObject { put("maxWords", 24) })
+            }
+        )
+    }
 
     @Test
     fun `the request carries the row and the binding, roots scoped per design`() = runBlocking<Unit> {
@@ -165,7 +194,7 @@ class AgentPluginRuntimeTest {
 
     @Test
     fun `a tool's failure is the plugin's own words, unfenced`() = runBlocking<Unit> {
-        val failing = PluginCall { _ -> PluginCallResult(ok = false, output = "boom: bad schema") }
+        val failing = PluginCall { _, _ -> PluginCallResult(ok = false, output = "boom: bad schema") }
         val runtime = AgentPluginRuntime(context, profile = null, call = failing)
         val run = runtime.runTool(7L, plugin(), binding(), "count_words", "{}")
         assertThat(run.result.ok).isFalse()
@@ -175,11 +204,60 @@ class AgentPluginRuntimeTest {
 
     @Test
     fun `a seam failure is an answer, not an exception`() = runBlocking<Unit> {
-        val throwing = PluginCall { _ -> error("the runtime is absent") }
+        val throwing = PluginCall { _, _ -> error("the runtime is absent") }
         val runtime = AgentPluginRuntime(context, profile = null, call = throwing)
         val result = runtime.run(7L, plugin(), binding(), PluginCallRequest.EVENT_PROBE)
         assertThat(result.ok).isFalse()
         assertThat(result.output).contains("the runtime is absent")
+    }
+
+    // ------------------------------------------------------- the generate seam
+
+    @Test
+    fun `a generator rides the seam and answers a reverse line as text`() = runBlocking<Unit> {
+        val seen = mutableListOf<PluginGenerateRequest>()
+        val generator = PluginGenerateCall { request ->
+            seen.add(request)
+            "the puzzle app is honestly addictive"
+        }
+        runtime().run(
+            7L, plugin(), binding(), PluginCallRequest.EVENT_ACTIVATE, generate = generator
+        )
+        val handler = requireNotNull(reverseHandlers.single())
+        val answer = handler(reverseLine())
+        assertThat(answer.toString())
+            .isEqualTo("""{"text":"the puzzle app is honestly addictive"}""")
+        // The generator saw the request the reverse line carried — parsed and
+        // clamped, not the raw line — and the wrap answered its text.
+        assertThat(seen.single().purpose).isEqualTo("chat-reply")
+        assertThat(seen.single().style.maxWords).isEqualTo(24)
+    }
+
+    @Test
+    fun `a throwing generator surfaces its own words`() = runBlocking<Unit> {
+        val throwing = PluginGenerateCall { _ -> error("the chat's model wrote no text") }
+        runtime().run(
+            7L, plugin(), binding(), PluginCallRequest.EVENT_ACTIVATE, generate = throwing
+        )
+        val handler = requireNotNull(reverseHandlers.single())
+        // The wrap catches NOTHING — NodeClient is the one that turns a throw
+        // into the reverse line's error envelope — so the handler raises the
+        // generator's own words for it to carry.
+        val thrown = assertThrows(IllegalStateException::class.java) { handler(reverseLine()) }
+        assertThat(thrown.message).isEqualTo("the chat's model wrote no text")
+    }
+
+    @Test
+    fun `no generator means no handler on the seam`() = runBlocking<Unit> {
+        runtime().run(7L, plugin(), binding(), PluginCallRequest.EVENT_PROBE)
+        assertThat(reverseHandlers.single()).isNull()
+    }
+
+    @Test
+    fun `runTool hands the generator to the tool event`() = runBlocking<Unit> {
+        val generator = PluginGenerateCall { _ -> "text" }
+        runtime().runTool(7L, plugin(), binding(), "count_words", "{}", generate = generator)
+        assertThat(reverseHandlers.single()).isNotNull()
     }
 
     @Test

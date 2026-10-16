@@ -44,8 +44,13 @@ class PluginToolExecutorTest {
     private val context: Context = mockk<Context>().apply { every { filesDir } returns root }
 
     private val calls = mutableListOf<PluginCallRequest>()
-    private val call = PluginCall { request ->
+
+    /** The generator each event's call was handed, event for event with [calls]. */
+    private val generators = mutableListOf<PluginGenerateCall?>()
+
+    private val call = PluginCall { request, generate ->
         calls.add(request)
+        generators.add(generate)
         when (request.event) {
             PluginCallRequest.EVENT_PROBE -> PluginCallResult(
                 ok = true,
@@ -208,5 +213,36 @@ class PluginToolExecutorTest {
         assertThat(result.output).contains("not available in this chat")
         assertThat(result.output).contains("plugin_com_example_wordcount_count_words")
         assertThat(result.output).doesNotContain("unknown tool")
+    }
+
+    @Test
+    fun `the executor's generator flows to the tool event`() = runBlocking<Unit> {
+        // Resolved at EXECUTE time, not construction — the test hands the
+        // wrapper a supplier and asserts the tool event ran with what it
+        // answered, which is the whole contract the turn path relies on.
+        val generator = PluginGenerateCall { _ -> "composed" }
+        val repo = repoWith(listOf(plugin), listOf(binding))
+        val runtime = AgentPluginRuntime(context, profile = null, call = call)
+        val executor = PluginToolExecutor(
+            inner = neverReachedInner(),
+            runtime = runtime,
+            catalog = AgentPluginCatalog(repo, runtime),
+            sessionId = 7L,
+            onCards = { _, _ -> },
+            generate = { generator }
+        )
+        executor.execute("plugin_com_example_wordcount_count_words", "{}")
+        val toolEvent = calls.indexOfFirst { it.event == PluginCallRequest.EVENT_TOOL }
+        assertThat(toolEvent).isAtLeast(0)
+        assertThat(generators[toolEvent]).isEqualTo(generator)
+    }
+
+    @Test
+    fun `without a generator the tool event runs with none`() = runBlocking<Unit> {
+        val executor = executorWith(listOf(plugin), listOf(binding), neverReachedInner())
+        executor.execute("plugin_com_example_wordcount_count_words", "{}")
+        // Probe and tool alike: the default is no handler, and the runtime
+        // answers any reverse ask with its own not-available words.
+        assertThat(generators).containsExactly(null, null)
     }
 }

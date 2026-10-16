@@ -157,7 +157,9 @@ granted there — adds tools of its own to this list, named
 description. They are gated like every other action: Plan mode refuses them,
 the profile's "Plugin tools" permission can withhold them, they spend the
 turn's action budget, and scheduled and headless runs refuse them outright;
-their output is fenced as untrusted data before the model reads it. The
+their output is fenced as untrusted data before the model reads it. A plugin
+granted `agent.generate` may also ask **this chat's own model** — the same
+provider and model the chat already uses — to compose its texts for it. The
 plugin SDK, manifest, sandbox model and packaging tools are documented in
 [PLUGINS.md](PLUGINS.md).
 

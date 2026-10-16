@@ -20,12 +20,17 @@ import com.roombrowser.node.NodeRunner
 import com.roombrowser.node.PluginCallRequest
 import com.roombrowser.node.PluginCallResult
 import com.roombrowser.node.PluginChatEntry
+import com.roombrowser.node.PluginGenerateRequest
 import com.roombrowser.node.PluginWireManifest
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
 import java.io.File
 
 /**
@@ -34,16 +39,72 @@ import java.io.File
  * because NodeRunner is a final class that owns a real Android context; every
  * other seam in this package ([AgentNodeRuntime]) hides its runner the same
  * way, and a plugin's failure must be testable without starting one.
+ *
+ * [generate] is the chat's own text generator, or null when this call has
+ * none. The production route wraps it into the blocking reverse handler
+ * ([reverseGenerateHandler]) that answers `room.agent.generate` while the
+ * plugin runs; null carries no handler at all, and NodeClient then refuses
+ * any reverse request in its own words — the honest answer for a chat with
+ * no session, provider or model to generate with.
  */
 fun interface PluginCall {
-    suspend operator fun invoke(request: PluginCallRequest): PluginCallResult
+    suspend operator fun invoke(
+        request: PluginCallRequest,
+        generate: PluginGenerateCall?
+    ): PluginCallResult
 
     companion object {
         /** The production route: the one process-wide runner, one call at a time. */
         fun throughRunner(context: Context): PluginCall {
             val runner = NodeRunner(context)
-            return PluginCall { request -> runner.plugin(request) }
+            return PluginCall { request, generate ->
+                runner.plugin(request, generate?.let(::reverseGenerateHandler))
+            }
         }
+    }
+}
+
+/**
+ * One `room.agent.generate` call — the plugin's request for THIS chat's own
+ * AI to write one piece of text, riding the reverse channel while its own
+ * command or tool runs. Throws on failure; the thrown words surface in the
+ * reverse line's error envelope, which is the only place the plugin can
+ * read them. The [PluginGenerateRequest] it is handed is already clamped by
+ * [PluginGenerateRequest.of], so a generator is never asked to police the
+ * wire's caps itself.
+ */
+fun interface PluginGenerateCall {
+    suspend operator fun invoke(request: PluginGenerateRequest): String
+}
+
+/**
+ * The blocking reverse handler one [PluginGenerateCall] becomes on
+ * NodeClient's read loop: parse the request out of the reverse line, run the
+ * generator under [AgentPluginRuntime.GENERATE_BUDGET_MS], and hand back the
+ * `{"text": …}` object the reply envelope carries as its result.
+ *
+ * THIS CATCHES NOTHING on purpose. A generator that fails, times out or
+ * refuses is NodeClient's to answer — it turns any throw into the reverse
+ * line's own error envelope with the thrown words — and a wrap that caught
+ * here would have to invent words of its own instead. runBlocking is safe
+ * because the call already sits on a Dispatchers.IO thread inside
+ * [AgentPluginRuntime.run]; the generation suspends on the provider's own
+ * threads, and the NodeRunner lock is held by THIS thread, which the
+ * generation never re-enters.
+ *
+ * Internal rather than private: [PluginCall.throughRunner] wires it in, and
+ * the runtime's test wraps a fake generator with it — the wrap is part of
+ * the seam's contract, so the test drives the production code rather than a
+ * copy of it.
+ */
+internal fun reverseGenerateHandler(
+    generate: PluginGenerateCall
+): (JsonObject) -> JsonObject = { line ->
+    runBlocking {
+        val text = withTimeout(AgentPluginRuntime.GENERATE_BUDGET_MS) {
+            generate(PluginGenerateRequest.of(line))
+        }
+        buildJsonObject { put("text", text) }
     }
 }
 
@@ -90,6 +151,12 @@ class AgentPluginRuntime(
      * cards still JSON. [history] is the chat's transcript as
      * [historyOf] shapes it; it is put on the wire only when this call's
      * effective grants include `chat.context`.
+     *
+     * [generate] rides to the seam unchanged — the blocking wrap that answers
+     * `room.agent.generate` is the production route's job
+     * ([PluginCall.throughRunner] through [reverseGenerateHandler]), so a
+     * fake seam observes the generator itself and the wrap lives in exactly
+     * one place.
      */
     suspend fun run(
         sessionId: Long,
@@ -98,7 +165,8 @@ class AgentPluginRuntime(
         event: String,
         payload: JsonObject = JsonObject(emptyMap()),
         history: List<PluginChatEntry> = emptyList(),
-        budgetMs: Long = DEFAULT_BUDGET_MS
+        budgetMs: Long = DEFAULT_BUDGET_MS,
+        generate: PluginGenerateCall? = null
     ): PluginCallResult = withContext(Dispatchers.IO) {
         val manifest = plugin.toManifest()
         val effective = PluginPermissions.effectiveGrants(
@@ -126,7 +194,7 @@ class AgentPluginRuntime(
             userAgent = userAgent(),
             history = history.takeIf { it.isNotEmpty() && PluginPermissions.CHAT_CONTEXT in effective }
         )
-        runCatching { call(request) }.getOrElse { err ->
+        runCatching { call(request, generate) }.getOrElse { err ->
             PluginCallResult(
                 ok = false,
                 output = err.message ?: "the plugin call failed: ${err.javaClass.simpleName}"
@@ -140,6 +208,9 @@ class AgentPluginRuntime(
      * (the plugin's words are not trusted for having come from our own
      * runtime), a failure carried as its own words unfenced the way
      * [AgentNodeRuntime] carries one, and any cards it pushed for the user.
+     *
+     * [generate] is the chat's own generator for the plugin to ask while its
+     * tool runs — the same one the turn or command path resolved.
      */
     suspend fun runTool(
         sessionId: Long,
@@ -147,7 +218,8 @@ class AgentPluginRuntime(
         binding: ChatPluginEntity,
         toolName: String,
         argsJson: String,
-        history: List<PluginChatEntry> = emptyList()
+        history: List<PluginChatEntry> = emptyList(),
+        generate: PluginGenerateCall? = null
     ): PluginToolRun {
         val payload = JsonObject(
             mapOf(
@@ -161,7 +233,8 @@ class AgentPluginRuntime(
             binding = binding,
             event = PluginCallRequest.EVENT_TOOL,
             payload = payload,
-            history = history
+            history = history,
+            generate = generate
         )
         return PluginToolRun(
             result = if (result.ok) {
@@ -223,6 +296,15 @@ class AgentPluginRuntime(
          * between a slow reply and an app that looks hung.
          */
         const val MESSAGE_HOOK_BUDGET_MS = 10_000L
+
+        /**
+         * One `room.agent.generate` call's own budget, in milliseconds. Long
+         * enough that a real model gets to answer, short enough that a plugin
+         * waiting on one cannot hold its command's 30 s budget hostage — and
+         * the 10 s message hook will usually not fit a generation at all,
+         * which is honest arithmetic rather than a bug (the docs say so).
+         */
+        const val GENERATE_BUDGET_MS = 20_000L
 
         const val PLUGINS_DIR = "plugins"
         const val DATA_DIR = "plugin-data"

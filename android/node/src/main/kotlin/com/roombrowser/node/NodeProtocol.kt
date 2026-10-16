@@ -8,6 +8,7 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.decodeFromJsonElement
 import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.jsonObject
@@ -115,6 +116,130 @@ data class PluginCallRequest(
     }
 }
 
+/**
+ * The style block of a [PluginGenerateRequest]: every member optional, so an
+ * absent one reads as "no constraint" rather than as a default the plugin
+ * never asked for. Booleans are true-when-set — `oneSentence = false` and an
+ * absent `oneSentence` are the same instruction to the model.
+ */
+data class PluginGenerateStyle(
+    val language: String? = null,
+    val maxWords: Int? = null,
+    val oneSentence: Boolean = false,
+    val lowercase: Boolean = false,
+    val forbiddenChars: String? = null,
+    val tone: String? = null
+) {
+    /** The style block with only the members that are set — [PluginGenerateRequest.toJson]'s inner half. */
+    internal fun toJson(): JsonObject = buildJsonObject {
+        language?.let { put("language", it) }
+        maxWords?.let { put("maxWords", it) }
+        if (oneSentence) put("oneSentence", true)
+        if (lowercase) put("lowercase", true)
+        forbiddenChars?.let { put("forbiddenChars", it) }
+        tone?.let { put("tone", it) }
+    }
+}
+
+/**
+ * One `agent.generate` request — the §4 object a plugin's reverse request
+ * carries, as flat fields.
+ *
+ * The plugin supplies STRUCTURED fields, never a raw prompt; the prompt is
+ * rendered by the app (domain's `PluginGeneratePrompt`) from [toJson], which
+ * re-emits the CLAMPED fields — so a request that arrived over-long is
+ * shortened before it reaches the model, and the prompt renderer's own caps
+ * are a second gate rather than the only one. [of] is lenient on shapes
+ * (unknown members ignored, non-strings read as absent) and strict on the two
+ * fields a generation cannot stand without: a blank purpose or instruction
+ * is a refusal in words, because the host already validated them and a
+ * request that failed twice is the host's bug to read about.
+ */
+data class PluginGenerateRequest(
+    val purpose: String,
+    val instruction: String,
+    val context: String? = null,
+    val hint: String? = null,
+    val style: PluginGenerateStyle = PluginGenerateStyle(),
+    val avoid: List<String> = emptyList()
+) {
+    companion object {
+        /**
+         * Parses one request leniently and clamps every field to its §4 cap.
+         *
+         * Accepts the §4 object bare OR wrapped in a reverse request line's
+         * `request` member: the read loop hands whole lines here, while a
+         * caller that already peeled the object (or a test) hands the inner
+         * one — and a `request` member is not a §4 field, so the two shapes
+         * cannot collide.
+         */
+        fun of(json: JsonObject): PluginGenerateRequest {
+            val root = (json["request"] as? JsonObject) ?: json
+            val purpose = root.text("purpose", PURPOSE_CHARS)
+            require(!purpose.isNullOrEmpty()) { "the generate request carried no purpose" }
+            val instruction = root.text("instruction", INSTRUCTION_CHARS)
+            require(!instruction.isNullOrEmpty()) { "the generate request carried no instruction" }
+            val style = root["style"] as? JsonObject
+            return PluginGenerateRequest(
+                purpose = purpose,
+                instruction = instruction,
+                context = root.text("context", CONTEXT_CHARS),
+                hint = root.text("hint", HINT_CHARS),
+                style = PluginGenerateStyle(
+                    language = style?.text("language", LANGUAGE_CHARS),
+                    maxWords = (style?.get("maxWords") as? JsonPrimitive)?.intOrNull
+                        ?.coerceIn(1, MAX_WORDS),
+                    oneSentence = style?.flag("oneSentence") ?: false,
+                    lowercase = style?.flag("lowercase") ?: false,
+                    forbiddenChars = style?.text("forbiddenChars", FORBIDDEN_CHARS),
+                    tone = style?.text("tone", TONE_CHARS)
+                ),
+                avoid = avoidTexts(root)
+            )
+        }
+
+        /** The texts not to repeat: strings only, blanks dropped, count and length clamped. */
+        private fun avoidTexts(root: JsonObject): List<String> =
+            ((root["avoid"] as? JsonArray)?.mapNotNull { (it as? JsonPrimitive)?.contentOrNull })
+                .orEmpty()
+                .filter { it.isNotBlank() }
+                .take(MAX_AVOID_ENTRIES)
+                .map { it.take(AVOID_ENTRY_CHARS) }
+
+        /** The member as a trimmed, non-blank string clamped to [cap], or null when it says nothing. */
+        private fun JsonObject.text(key: String, cap: Int): String? =
+            (this[key] as? JsonPrimitive)?.contentOrNull
+                ?.trim()
+                ?.take(cap)
+                ?.takeIf { it.isNotEmpty() }
+
+        /** The member as a flag: absent, non-boolean and false all read as false. */
+        private fun JsonObject.flag(key: String): Boolean =
+            (this[key] as? JsonPrimitive)?.booleanOrNull ?: false
+
+        private const val PURPOSE_CHARS = 64
+        private const val INSTRUCTION_CHARS = 500
+        private const val CONTEXT_CHARS = 4_000
+        private const val HINT_CHARS = 200
+        private const val LANGUAGE_CHARS = 24
+        private const val MAX_WORDS = 200
+        private const val FORBIDDEN_CHARS = 64
+        private const val TONE_CHARS = 64
+        private const val MAX_AVOID_ENTRIES = 50
+        private const val AVOID_ENTRY_CHARS = 200
+    }
+
+    /** The clamped §4 object, with only the members that carry a value — the prompt renderer's input. */
+    fun toJson(): JsonObject = buildJsonObject {
+        put("purpose", purpose)
+        put("instruction", instruction)
+        context?.let { put("context", it) }
+        hint?.let { put("hint", it) }
+        if (style != PluginGenerateStyle()) put("style", style.toJson())
+        if (avoid.isNotEmpty()) put("avoid", JsonArray(avoid.map { JsonPrimitive(it) }))
+    }
+}
+
 /** One tool a plugin's probe or activate reported, as the agent catalogue wants it. */
 @Serializable
 data class PluginToolSpec(
@@ -148,11 +273,18 @@ data class PluginCallResult(
 /**
  * One line of JSON each way. The other end is `assets/node/bridge.js`, and the
  * two spellings are one protocol: `id`, `cmd`, `token`, `userAgent` going out;
- * `id`, `ok`, `result` or `error` coming back.
+ * `id`, `ok`, `result` or `error` coming back — plus, while a plugin call is
+ * executing, REVERSE REQUESTS: lines the runtime writes mid-call to ask the
+ * app something (design §3, vocabulary of one: `agent_generate`).
  */
 internal object NodeProtocol {
 
+    /** The one reverse command this build answers. */
+    const val REVERSE_GENERATE = "agent_generate"
+
     private val json = Json { ignoreUnknownKeys = true }
+
+    fun parse(line: String): JsonObject = json.parseToJsonElement(line).jsonObject
 
     fun request(
         id: Int,
@@ -175,8 +307,14 @@ internal object NodeProtocol {
         }.toString()
 
     /** The reply's `result`, or the runtime's own error as an exception. */
-    fun result(line: String, expectedId: Int): JsonObject {
-        val reply = json.parseToJsonElement(line).jsonObject
+    fun result(line: String, expectedId: Int): JsonObject = resultOf(parse(line), expectedId)
+
+    /**
+     * The same read over an already-parsed reply. The read loop parses every
+     * line once — a reverse request and the plugin reply it precedes are one
+     * parse, not two.
+     */
+    fun resultOf(reply: JsonObject, expectedId: Int): JsonObject {
         val id = reply["id"]?.jsonPrimitive?.intOrNull
         require(id == expectedId) { "the runtime answered request $id, not $expectedId" }
         val ok = reply["ok"]?.jsonPrimitive?.booleanOrNull ?: false
@@ -187,6 +325,29 @@ internal object NodeProtocol {
         }
         return reply["result"]!!.jsonObject
     }
+
+    /**
+     * Whether a parsed line is a REVERSE REQUEST rather than the reply an
+     * exchange is waiting for. Discrimination is safe in both directions
+     * because the wire never mixes the two: a command (forward or reverse)
+     * always carries `cmd`, and a reply never does — so a `cmd` member while
+     * waiting can only be the runtime asking something of this side.
+     */
+    fun isReverse(line: JsonObject): Boolean = "cmd" in line
+
+    /** The reverse reply line: the requesting line's own id, the answer as its `result`. */
+    fun reverseReply(id: String, result: JsonObject): String = buildJsonObject {
+        put("id", id)
+        put("ok", true)
+        put("result", result)
+    }.toString()
+
+    /** The reverse reply line for a request this side could not or would not answer. */
+    fun reverseError(id: String, error: String): String = buildJsonObject {
+        put("id", id)
+        put("ok", false)
+        put("error", error)
+    }.toString()
 
     fun statusOf(result: JsonObject): NodeStatus =
         json.decodeFromJsonElement(NodeStatus.serializer(), result)

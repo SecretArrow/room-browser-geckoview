@@ -39,7 +39,7 @@ object PluginManifestValidator {
     private const val AUTHOR_FIELD_CHARS = 200
     private const val LICENSE_CHARS = 64
     private const val ENTRY_CHARS = 200
-    private const val MAX_PERMISSIONS = 4
+    private const val MAX_PERMISSIONS = 5
     private const val MAX_NETWORK_HOSTS = 20
     private const val MAX_CONFIG_FIELDS = 12
     private const val CONFIG_TITLE_CHARS = 64

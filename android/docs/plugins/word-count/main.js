@@ -1,9 +1,12 @@
 'use strict';
 
-// One agent tool, three permissions and a config knob — the parts of the SDK
+// One agent tool, four permissions and a config knob — the parts of the SDK
 // a plugin that works alongside the AI needs. count_words is what the chat's
 // agent can call; the lifetime total is what storage is for; the activation
-// card reads the chat it landed in, which is what chat.context is for.
+// card reads the chat it landed in, which is what chat.context is for; and
+// /compose asks this chat's own AI for a sentence, which is what
+// agent.generate is for — the smallest honest example of a plugin whose
+// words are written by the model the user already configured.
 
 exports.activate = async (room) => {
   const messages = room.chat.history().length;
@@ -15,6 +18,42 @@ exports.activate = async (room) => {
     fields: [['messages in this chat', String(messages)]],
     style: 'info',
   });
+};
+
+exports.commands = {
+  // The minimal agent.generate consumer: count the words, then ask this
+  // chat's own model to write one short sentence about them. Every way it
+  // can fail is a card with the failure's own words, because "the model
+  // could not be reached" is something the user can act on and an empty
+  // chat bubble is not.
+  compose: {
+    run: async (room, args) => {
+      const text = typeof args === 'string' ? args.trim() : '';
+      const words = text.split(/\s+/).filter((word) => word.length > 0).length;
+      try {
+        const sentence = await room.agent.generate({
+          purpose: 'word-count demo',
+          instruction:
+            'Write one short casual sentence that mentions the number ' +
+            (words > 0 ? words + ' and what was counted: "' + text + '"' : 'zero, because nothing was counted'),
+          style: { language: 'en', maxWords: 16, oneSentence: true, tone: 'casual' },
+        });
+        room.ui.card({
+          title: 'The chat\'s AI composed',
+          text: sentence,
+          fields: [['words counted', String(words)]],
+          style: 'success',
+        });
+      } catch (err) {
+        room.ui.card({
+          title: 'The chat\'s AI could not compose',
+          text: String(err && err.message ? err.message : err),
+          fields: [['words counted', String(words)]],
+          style: 'warn',
+        });
+      }
+    },
+  },
 };
 
 exports.tools = {

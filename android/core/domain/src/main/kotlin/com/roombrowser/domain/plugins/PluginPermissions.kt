@@ -4,7 +4,7 @@ package com.roombrowser.domain.plugins
  * The permissions a plugin manifest can declare, and the human text each one
  * is consented with.
  *
- * All four are denied until the chat that enables the plugin grants them, and
+ * All five are denied until the chat that enables the plugin grants them, and
  * the grant is stored per chat binding — a plugin is never consented once for
  * the whole app, because "this chat" is the whole isolation model. The names
  * are the wire spelling (what plugin.json declares and what the host gates
@@ -23,8 +23,18 @@ object PluginPermissions {
     const val AGENT_TOOLS = "agent.tools"
     const val CHAT_CONTEXT = "chat.context"
 
+    /**
+     * The plugin may ask THIS chat's own AI to write one piece of text — the
+     * session's provider and model, never the plugin's own. The grant is the
+     * plugin's route to `room.agent.generate`, and the consent sentence says
+     * whose AI is doing the writing, because "an AI wrote it" without the
+     * whose would read as the plugin carrying its own model (and key) — the
+     * one thing this permission must never let it look like.
+     */
+    const val AGENT_GENERATE = "agent.generate"
+
     /** Every permission this build knows, for the grant dialog and the tests. */
-    val PERMISSIONS = setOf(STORAGE, NETWORK, AGENT_TOOLS, CHAT_CONTEXT)
+    val PERMISSIONS = setOf(STORAGE, NETWORK, AGENT_TOOLS, CHAT_CONTEXT, AGENT_GENERATE)
 
     /**
      * Where the host list is cut off in a label. Long enough that an honest
@@ -68,6 +78,7 @@ object PluginPermissions {
             }
             AGENT_TOOLS -> "Add tools the AI agent can call"
             CHAT_CONTEXT -> "Read this chat's conversation"
+            AGENT_GENERATE -> "Have this chat's AI write text for it"
             else -> permission
         }
 }

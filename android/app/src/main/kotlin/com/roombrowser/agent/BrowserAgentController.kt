@@ -30,6 +30,7 @@ import com.roombrowser.domain.agent.AgentTools
 import com.roombrowser.domain.agent.AgentVisionSupport
 import com.roombrowser.domain.agent.AutoModelPicker
 import com.roombrowser.domain.agent.ChatMessage
+import com.roombrowser.domain.agent.ChatRequest
 import com.roombrowser.domain.agent.LocalAiTuning
 import com.roombrowser.domain.agent.SessionApprovals
 import com.roombrowser.domain.agent.SiteMemory
@@ -40,10 +41,12 @@ import com.roombrowser.domain.download.DownloadFormat
 import com.roombrowser.domain.model.ProfileId
 import com.roombrowser.domain.model.SearchEngines
 import com.roombrowser.domain.plugins.PluginCard
+import com.roombrowser.domain.plugins.PluginGeneratePrompt
 import com.roombrowser.domain.plugins.toJson
 import com.roombrowser.domain.task.AiTaskPermissions
 import com.roombrowser.engine.EngineSession
 import com.roombrowser.node.PluginCallRequest
+import com.roombrowser.node.PluginGenerateRequest
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
@@ -459,7 +462,8 @@ class BrowserAgentController(
         createSession = { title -> createSessionForPlugins(title) },
         onCard = { session, card, name -> appendPluginCard(session, card, name) },
         onNotice = { text, error -> note(text, error) },
-        history = { session -> AgentPluginRuntime.historyOf(repo.messages(session)) }
+        history = { session -> AgentPluginRuntime.historyOf(repo.messages(session)) },
+        generate = { session -> pluginGeneratorFor(session) }
     )
 
     // ------------------------------------------------------------- lifecycle
@@ -1151,6 +1155,16 @@ class BrowserAgentController(
                 note("None of ${provider.name}'s models answered. Pick one by hand.", error = true)
                 return
             }
+            // The turn's own generator: a plugin that asks for text while its
+            // command, tool or message hook runs gets THIS turn's gateway and
+            // THIS turn's model — the same conversation it is already part
+            // of, riding the turn's own retry policy. Resolved once here so
+            // every plugin surface the turn touches (the executor chain, the
+            // message hooks) hands the plugin the same AI, and the model is
+            // settled before any of them can hold it.
+            val turnGenerate = PluginGenerateCall { request ->
+                generateWith(gateway, model, request)
+            }
             // WHERE the turn runs is settled here too, and for the same reason
             // as the model: a conversation that recorded a request no surface
             // could carry out would claim a run that did not happen.
@@ -1268,7 +1282,7 @@ class BrowserAgentController(
             // does — sequential, budgeted, and never fatal to the turn: the
             // message was addressed to the agent, not to the plugin, and a
             // plugin that fails on it is said about and skipped.
-            dispatchPluginMessageHooks(sessionId, text)
+            dispatchPluginMessageHooks(sessionId, text, turnGenerate)
 
             // The plugin executor wraps the page tools INNERMOST, so every
             // gate above it applies to a plugin tool exactly as it does to a
@@ -1289,7 +1303,8 @@ class BrowserAgentController(
                 history = { AgentPluginRuntime.historyOf(repo.messages(sessionId)) },
                 onCards = { cards, name ->
                     cards.forEach { card -> appendPluginCard(sessionId, card, name) }
-                }
+                },
+                generate = { turnGenerate }
             )
             val budget = ActionBudgetGate(pluginExecutor)
             // The profile's withheld agent permissions sit outside the budget
@@ -1527,8 +1542,17 @@ class BrowserAgentController(
      * plugin. Sequential on purpose: the plugins see the chat one after the
      * other under one budget each, never side by side under the runtime's
      * one-call-at-a-time lock.
+     *
+     * [generate] is the turn's own generator — the hook's 10 s budget will
+     * usually not fit a 20 s generation, and the plugin then reads the
+     * timeout words as the hook's failure rather than the turn never
+     * starting, which is the honest order of those two disappointments.
      */
-    private suspend fun dispatchPluginMessageHooks(sessionId: Long, text: String) {
+    private suspend fun dispatchPluginMessageHooks(
+        sessionId: Long,
+        text: String,
+        generate: PluginGenerateCall?
+    ) {
         val hooked = runCatching {
             pluginCatalog.sessionPlugins(sessionId).filter { "message" in it.hooks }
         }.getOrDefault(emptyList())
@@ -1543,7 +1567,8 @@ class BrowserAgentController(
                     event = PluginCallRequest.EVENT_MESSAGE,
                     payload = PluginPayloads.message(text),
                     history = AgentPluginRuntime.historyOf(repo.messages(sessionId)),
-                    budgetMs = AgentPluginRuntime.MESSAGE_HOOK_BUDGET_MS
+                    budgetMs = AgentPluginRuntime.MESSAGE_HOOK_BUDGET_MS,
+                    generate = generate
                 )
                 if (result.ok) {
                     PluginCard.parseList(JsonArray(result.cards)).forEach { card ->
@@ -1559,6 +1584,63 @@ class BrowserAgentController(
             }
         }
         setStatus(null)
+    }
+
+    /**
+     * The chat's own generator for plugin COMMANDS and activations — the
+     * SESSION's provider and model, not the panel's current selection,
+     * because a command can run in a chat whose turn is long gone and the
+     * promise of `agent.generate` is "this chat's AI", not "whatever the
+     * header happens to show".
+     *
+     * A fresh gateway per resolution, with NO retry and NO tuning: a
+     * generation is one attempt by design, and the command path must not
+     * inherit a turn's retry policy it was never part of. A missing session,
+     * provider or model answers null — no handler is wired, and the
+     * runtime's own ask is answered with the honest "agent generation is not
+     * available" words rather than a guess this chat never made.
+     */
+    private suspend fun pluginGeneratorFor(sessionId: Long): PluginGenerateCall? {
+        val session = runCatching { repo.session(sessionId) }.getOrNull() ?: return null
+        val provider = runCatching { repo.provider(session.providerId) }.getOrNull() ?: return null
+        val model = session.model.ifBlank { provider.defaultModel }
+        if (model.isBlank()) return null
+        val gateway = AgentGateways.forProvider(
+            callFactory,
+            provider,
+            apiKeyFor(provider).orEmpty(),
+            appContext = appContext
+        )
+        return PluginGenerateCall { request -> generateWith(gateway, model, request) }
+    }
+
+    /**
+     * One generation, per design §2: the chat's own model asked ONCE,
+     * non-streaming, no tools, temperature 0.7, the prompt rendered by
+     * [PluginGeneratePrompt] from the clamped request — and an empty answer
+     * refused rather than returned, because "the chat's model wrote no text"
+     * is a failure the plugin can act on while an empty string would read
+     * as success. Throws on failure; the thrown words are what the reverse
+     * line's error envelope carries.
+     */
+    private suspend fun generateWith(
+        gateway: AgentGateway,
+        model: String,
+        request: PluginGenerateRequest
+    ): String {
+        val reply = gateway.chat(
+            ChatRequest(
+                model = model,
+                messages = PluginGeneratePrompt.messagesOf(request.toJson()),
+                stream = false,
+                tools = null,
+                temperature = 0.7
+            ),
+            events = {}
+        )
+        val text = reply.content?.trim().orEmpty()
+        require(text.isNotEmpty()) { "the chat's model wrote no text" }
+        return text.take(2000)
     }
 
     /**

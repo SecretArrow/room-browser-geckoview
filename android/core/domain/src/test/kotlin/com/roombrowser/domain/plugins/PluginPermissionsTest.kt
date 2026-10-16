@@ -7,9 +7,12 @@ import org.junit.Test
 class PluginPermissionsTest {
 
     @Test
-    fun `the vocabulary is exactly the four the manifest may declare`() {
+    fun `the vocabulary is exactly the five the manifest may declare`() {
         assertThat(PluginPermissions.PERMISSIONS)
-            .containsExactly("storage", "network", "agent.tools", "chat.context")
+            .containsExactly(
+                "storage", "network", "agent.tools", "chat.context", "agent.generate"
+            )
+            .inOrder()
     }
 
     @Test
@@ -22,6 +25,16 @@ class PluginPermissionsTest {
             .isEqualTo("Read this chat's conversation")
         assertThat(PluginPermissions.labelOf(PluginPermissions.NETWORK))
             .isEqualTo("Reach the internet")
+    }
+
+    @Test
+    fun `agent generate consents with whose AI is doing the writing`() {
+        // The sentence has to name the chat's own AI: a label that said only
+        // "let an AI write text" would read as the plugin carrying its own
+        // model and key, which is the one thing this permission must never
+        // look like.
+        assertThat(PluginPermissions.labelOf(PluginPermissions.AGENT_GENERATE))
+            .isEqualTo("Have this chat's AI write text for it")
     }
 
     @Test

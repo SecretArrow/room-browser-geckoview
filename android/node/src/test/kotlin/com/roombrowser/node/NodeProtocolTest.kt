@@ -2,9 +2,12 @@ package com.roombrowser.node
 
 import com.google.common.truth.Truth.assertThat
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.put
 import org.junit.Assert.assertThrows
 import org.junit.Test
 
@@ -220,6 +223,138 @@ class NodeProtocolTest {
         assertThat(plugin.ms).isEqualTo(0)
     }
 
+    // -------------------------------------------------------- reverse requests
+
+    @Test
+    fun a_reverse_request_line_is_told_apart_from_a_plugin_reply() {
+        // Hand-written in the shape bridge.js writes: a STRING id ("gen-" +
+        // counter, unique per connection), the cmd member that marks a
+        // reverse request, the run's token, and the §4 object under
+        // `request`. The plugin reply below carries no cmd — that absence is
+        // the whole discrimination, and it is what the read loop keys on.
+        val reverse = NodeProtocol.parse(REVERSE_REQUEST)
+        assertThat(NodeProtocol.isReverse(reverse)).isTrue()
+        assertThat(NodeProtocol.isReverse(NodeProtocol.parse(PLUGIN_REPLY))).isFalse()
+        assertThat(NodeProtocol.REVERSE_GENERATE).isEqualTo("agent_generate")
+    }
+
+    @Test
+    fun the_reverse_reply_envelope_carries_the_reverse_line_own_id() {
+        assertThat(
+            NodeProtocol.reverseReply("gen-1", buildJsonObject { put("text", "hi there") })
+        ).isEqualTo("""{"id":"gen-1","ok":true,"result":{"text":"hi there"}}""")
+    }
+
+    @Test
+    fun the_reverse_error_envelope_carries_the_reverse_line_own_id_and_the_words() {
+        assertThat(NodeProtocol.reverseError("gen-2", "agent generation is not available"))
+            .isEqualTo("""{"id":"gen-2","ok":false,"error":"agent generation is not available"}""")
+    }
+
+    @Test
+    fun a_generate_request_is_read_out_of_the_reverse_line_or_handed_bare() {
+        // `of` accepts the whole reverse line or the bare §4 object, and the
+        // two must agree — the read loop hands lines, a caller that already
+        // peeled the object hands the inner one.
+        val fromLine = PluginGenerateRequest.of(NodeProtocol.parse(REVERSE_REQUEST))
+        val bare = PluginGenerateRequest.of(NodeProtocol.parse(GENERATE_REQUEST))
+        assertThat(fromLine).isEqualTo(bare)
+        assertThat(bare.purpose).isEqualTo("chat-reply")
+        assertThat(bare.instruction).isEqualTo("Reply to the last message in the general channel")
+        assertThat(bare.context).isEqualTo("alice: anyone tried the new puzzle app")
+        assertThat(bare.hint).isEqualTo("keep it casual")
+        assertThat(bare.style.language).isEqualTo("en")
+        assertThat(bare.style.maxWords).isEqualTo(24)
+        assertThat(bare.style.oneSentence).isTrue()
+        assertThat(bare.style.lowercase).isFalse()
+        assertThat(bare.style.forbiddenChars).isEqualTo("!:—–?;")
+        assertThat(bare.style.tone).isEqualTo("casual")
+        assertThat(bare.avoid).containsExactly("i keep coming back to the puzzle app")
+    }
+
+    @Test
+    fun a_generate_request_clamps_every_field_to_its_own_cap() {
+        val flood = "x".repeat(9_999)
+        val request = PluginGenerateRequest.of(
+            JsonObject(
+                mapOf(
+                    "purpose" to JsonPrimitive(flood),
+                    "instruction" to JsonPrimitive(flood),
+                    "context" to JsonPrimitive(flood),
+                    "hint" to JsonPrimitive(flood),
+                    "style" to JsonObject(
+                        mapOf(
+                            "language" to JsonPrimitive(flood),
+                            "maxWords" to JsonPrimitive(5_000),
+                            "forbiddenChars" to JsonPrimitive(flood),
+                            "tone" to JsonPrimitive(flood)
+                        )
+                    ),
+                    "avoid" to JsonArray((1..60).map { JsonPrimitive(flood) })
+                )
+            )
+        )
+        assertThat(request.purpose).isEqualTo("x".repeat(64))
+        assertThat(request.instruction).isEqualTo("x".repeat(500))
+        assertThat(request.context).isEqualTo("x".repeat(4_000))
+        assertThat(request.hint).isEqualTo("x".repeat(200))
+        assertThat(request.style.language).isEqualTo("x".repeat(24))
+        assertThat(request.style.maxWords).isEqualTo(200)
+        assertThat(request.style.forbiddenChars).isEqualTo("x".repeat(64))
+        assertThat(request.style.tone).isEqualTo("x".repeat(64))
+        // The avoid list keeps fifty entries of two hundred — the count and
+        // the length are clamped independently, exactly as §4 says.
+        assertThat(request.avoid).hasSize(50)
+        assertThat(request.avoid.all { it.length == 200 }).isTrue()
+    }
+
+    @Test
+    fun a_missing_purpose_or_instruction_is_refused_with_clear_words() {
+        val noPurpose = assertThrows(IllegalArgumentException::class.java) {
+            PluginGenerateRequest.of(JsonObject(mapOf("instruction" to JsonPrimitive("i"))))
+        }
+        assertThat(noPurpose.message).isEqualTo("the generate request carried no purpose")
+        val noInstruction = assertThrows(IllegalArgumentException::class.java) {
+            PluginGenerateRequest.of(JsonObject(mapOf("purpose" to JsonPrimitive("p"))))
+        }
+        assertThat(noInstruction.message).isEqualTo("the generate request carried no instruction")
+        // Blank is missing: the words are trimmed before they are judged.
+        assertThrows(IllegalArgumentException::class.java) {
+            PluginGenerateRequest.of(
+                JsonObject(
+                    mapOf(
+                        "purpose" to JsonPrimitive("   "),
+                        "instruction" to JsonPrimitive("i")
+                    )
+                )
+            )
+        }
+    }
+
+    @Test
+    fun the_clamped_request_re_emits_only_the_members_that_carry_a_value() {
+        // toJson is the prompt renderer's input, so it carries the CLAMPED
+        // truth and omits what says nothing — an unset style member never
+        // reaches the prompt as a surprise.
+        val request = PluginGenerateRequest.of(NodeProtocol.parse(GENERATE_REQUEST))
+        assertThat(request.toJson().toString()).isEqualTo(
+            """{"purpose":"chat-reply","instruction":"Reply to the last message in the general """ +
+                """channel","context":"alice: anyone tried the new puzzle app",""" +
+                """"hint":"keep it casual","style":{"language":"en","maxWords":24,""" +
+                """"oneSentence":true,"forbiddenChars":"!:—–?;","tone":"casual"},""" +
+                """"avoid":["i keep coming back to the puzzle app"]}"""
+        )
+        val sparse = PluginGenerateRequest.of(
+            JsonObject(
+                mapOf(
+                    "purpose" to JsonPrimitive("p"),
+                    "instruction" to JsonPrimitive("i")
+                )
+            )
+        )
+        assertThat(sparse.toJson().toString()).isEqualTo("""{"purpose":"p","instruction":"i"}""")
+    }
+
     private fun pluginCall(
         userAgent: String?,
         history: List<PluginChatEntry>? = HISTORY
@@ -272,6 +407,29 @@ class NodeProtocolTest {
 
         const val PLUGIN_SPARSE =
             """{"id":4,"ok":true,"result":{"ok":true}}"""
+
+        // The reverse request of design §3, whole: a string id, the one
+        // reverse command, the run's 48-hex token, and the §4 object under
+        // `request` — hand-written so these pin the wire format rather than
+        // the encoder that will produce it.
+        const val REVERSE_REQUEST =
+            """{"id":"gen-1","cmd":"agent_generate",""" +
+                """"token":"0123456789abcdef0123456789abcdef0123456789abcdef",""" +
+                """"request":{"purpose":"chat-reply",""" +
+                """"instruction":"Reply to the last message in the general channel",""" +
+                """"context":"alice: anyone tried the new puzzle app","hint":"keep it casual",""" +
+                """"style":{"language":"en","maxWords":24,"oneSentence":true,""" +
+                """"forbiddenChars":"!:—–?;","tone":"casual"},""" +
+                """"avoid":["i keep coming back to the puzzle app"]}}"""
+
+        // The same §4 object, bare — what `of` also accepts.
+        const val GENERATE_REQUEST =
+            """{"purpose":"chat-reply",""" +
+                """"instruction":"Reply to the last message in the general channel",""" +
+                """"context":"alice: anyone tried the new puzzle app","hint":"keep it casual",""" +
+                """"style":{"language":"en","maxWords":24,"oneSentence":true,""" +
+                """"forbiddenChars":"!:—–?;","tone":"casual"},""" +
+                """"avoid":["i keep coming back to the puzzle app"]}"""
 
         // The history the chat.context grant buys a plugin: user and
         // assistant turns, oldest first.

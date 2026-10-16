@@ -1,0 +1,28 @@
+{
+  "id": "io.onhomeroom.daily",
+  "name": "OnHomeroom Daily",
+  "version": "1.0.0",
+  "description": "Runs the app.onhomeroom.com routine from this chat - votes, the challenge board, and one-line replies composed live by this chat's own AI.",
+  "author": { "name": "Room Browser" },
+  "license": "MIT",
+  "api": 1,
+  "entry": "main.js",
+  "permissions": ["storage", "network", "agent.generate", "agent.tools"],
+  "network": { "allow": ["*.onhomeroom.com"] },
+  "config": { "schema": [
+    { "key": "channel", "type": "string", "default": "general", "title": "Chat channel", "description": "The channel the chat task replies in" },
+    { "key": "text_gap_seconds", "type": "number", "default": 60, "title": "Text gap (s)", "description": "Minimum seconds between any two sent texts" },
+    { "key": "task_gap_seconds", "type": "number", "default": 180, "title": "Task gap (s)", "description": "Minimum seconds between two run_task actions" },
+    { "key": "max_words", "type": "number", "default": 24, "title": "Max words per text", "description": "Word cap the composer is told to respect" },
+    { "key": "dwell_chunk_seconds", "type": "number", "default": 15, "title": "Dwell chunk (s)", "description": "App-try dwell reported per run_task call" },
+    { "key": "dwell_target_seconds", "type": "number", "default": 180, "title": "Dwell target (s)", "description": "Total dwell per app before it counts as tried" },
+    { "key": "quiet_minutes", "type": "number", "default": 10, "title": "Quiet window (min)", "description": "Stay quiet this long after your own channel message" }
+  ]},
+  "commands": [
+    { "name": "status", "title": "Status", "description": "Show the routine's current state" },
+    { "name": "login", "title": "Log in", "description": "Save credentials for this chat: /login email password" },
+    { "name": "step", "title": "Step", "description": "Run one bounded unit of the routine now" },
+    { "name": "reset", "title": "Reset", "description": "Wipe this chat's plugin state (credentials too)" }
+  ],
+  "hooks": []
+}

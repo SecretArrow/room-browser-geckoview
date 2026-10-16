@@ -72,7 +72,17 @@ class PluginUiState(
     /** Appends a plain notice line to the chat. */
     private val onNotice: (text: String, error: Boolean) -> Unit,
     /** The chat's transcript as a `chat.context` grant reads it. */
-    private val history: suspend (sessionId: Long) -> List<PluginChatEntry>
+    private val history: suspend (sessionId: Long) -> List<PluginChatEntry>,
+    /**
+     * The chat's own text generator, resolved per event: the session's own
+     * provider and model (the controller's [pluginGeneratorFor]-shape
+     * wiring), or null when the chat has none — in which case the plugin's
+     * askAgent is answered by the runtime's own "not available" words
+     * rather than by this class inventing an error of its own. Read per
+     * event and not once at construction, because a command or activation
+     * can be the first thing that ever creates the session it names.
+     */
+    private val generate: suspend (sessionId: Long) -> PluginGenerateCall? = { null }
 ) {
 
     var installed by mutableStateOf<List<PluginEntity>>(emptyList())
@@ -320,7 +330,8 @@ class PluginUiState(
             plugin = plugin,
             binding = binding,
             event = PluginCallRequest.EVENT_ACTIVATE,
-            history = history(session)
+            history = history(session),
+            generate = generate(session)
         )
         if (activated.ok) {
             appendCards(session, activated.cards, plugin.name)
@@ -375,7 +386,8 @@ class PluginUiState(
             binding = owner.binding,
             event = PluginCallRequest.EVENT_COMMAND,
             payload = PluginPayloads.command(name, args),
-            history = history(chat)
+            history = history(chat),
+            generate = generate(chat)
         )
         if (result.ok) {
             appendCards(chat, result.cards, owner.plugin.name)

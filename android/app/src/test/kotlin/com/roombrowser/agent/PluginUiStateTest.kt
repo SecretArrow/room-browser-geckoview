@@ -46,8 +46,13 @@ class PluginUiStateTest {
     private val context: Context = mockk<Context>().apply { every { filesDir } returns root }
 
     private val calls = mutableListOf<PluginCallRequest>()
-    private val call = PluginCall { request ->
+
+    /** The generator each event's call was handed, event for event with [calls]. */
+    private val generators = mutableListOf<PluginGenerateCall?>()
+
+    private val call = PluginCall { request, generate ->
         calls.add(request)
+        generators.add(generate)
         when (request.event) {
             PluginCallRequest.EVENT_PROBE -> PluginCallResult(
                 ok = true,
@@ -108,7 +113,10 @@ class PluginUiStateTest {
         return PluginRepository(db, File(root, "plugins"), File(root, "plugin-data"))
     }
 
-    private fun ui(session: Long? = 7L): PluginUiState {
+    private fun ui(
+        session: Long? = 7L,
+        generate: suspend (sessionId: Long) -> PluginGenerateCall? = { null }
+    ): PluginUiState {
         val repo = repo()
         val runtime = AgentPluginRuntime(context, profile = null, call = call)
         val catalog = AgentPluginCatalog(repo, runtime)
@@ -121,7 +129,8 @@ class PluginUiStateTest {
             createSession = { null },
             onCard = { _, _, _ -> },
             onNotice = { _, _ -> },
-            history = { emptyList() }
+            history = { emptyList() },
+            generate = generate
         )
     }
 
@@ -243,6 +252,49 @@ class PluginUiStateTest {
         val consumed = state.interceptChatCommand("/greet Room", sessionAtTap = null)
         assertThat(consumed).isFalse()
         assertThat(calls).isEmpty()
+    }
+
+    @Test
+    fun `a command's generator is the chat the command ran in`() = runBlocking<Unit> {
+        // The generator is resolved per EVENT against the session the command
+        // actually dispatched into — the wiring the controller's
+        // pluginGeneratorFor supplies — so the test asserts the event carried
+        // exactly the generator its chat answered with.
+        val generator = PluginGenerateCall { _ -> "composed" }
+        val state = ui(generate = { session ->
+            if (session == 7L) generator else null
+        })
+        stored = ChatPluginEntity(
+            id = 1L,
+            sessionId = 7L,
+            pluginId = plugin.id,
+            enabled = true,
+            grantedPermissionsJson = """["storage"]""",
+            configJson = "",
+            createdAt = 1L,
+            updatedAt = 1L
+        )
+        val consumed = state.interceptChatCommand("/greet Room", sessionAtTap = 7L)
+        assertThat(consumed).isTrue()
+        awaitEvent("command")
+        val commandIndex = calls.indexOfFirst { it.event == PluginCallRequest.EVENT_COMMAND }
+        assertThat(commandIndex).isAtLeast(0)
+        assertThat(generators[commandIndex]).isEqualTo(generator)
+    }
+
+    @Test
+    fun `an activation can compose through the chat's own generator`() = runBlocking<Unit> {
+        // A welcome message composed by the chat's AI is a legitimate
+        // activate use, which is why enableNow passes the generator too.
+        val generator = PluginGenerateCall { _ -> "welcome text" }
+        val state = ui(generate = { _ -> generator })
+        state.setEnabled(plugin.id, true)
+        awaitState { state.pendingGrant != null }
+        state.submitGrants(listOf("storage"))
+        awaitEvent("activate")
+        val activateIndex = calls.indexOfFirst { it.event == PluginCallRequest.EVENT_ACTIVATE }
+        assertThat(activateIndex).isAtLeast(0)
+        assertThat(generators[activateIndex]).isEqualTo(generator)
     }
 
     /** Waits up to 5 s for [condition], then lets the caller assert honestly. */

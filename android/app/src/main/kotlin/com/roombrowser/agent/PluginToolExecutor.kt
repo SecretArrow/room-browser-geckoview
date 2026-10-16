@@ -25,6 +25,12 @@ import com.roombrowser.node.PluginChatEntry
  * because a plugin's words are equally not instructions. What the USER reads
  * is the cards the plugin pushed while its tool ran, which ride beside the
  * tool card rather than inside the model's result.
+ *
+ * WHAT THE PLUGIN MAY ASK WHILE ITS TOOL RUNS is the chat's own AI — see
+ * [generate]. The generator is the turn's own on a chat turn (same gateway,
+ * same model), so a plugin tool that composes text spends exactly the tokens
+ * the chat was already spending, and the gates above this wrap apply to the
+ * tool itself while the generation rides its own 20 s budget inside it.
  */
 class PluginToolExecutor(
     private val inner: ToolExecutor,
@@ -39,7 +45,16 @@ class PluginToolExecutor(
      */
     private val history: suspend () -> List<PluginChatEntry> = { emptyList() },
     /** Cards a tool run pushed for the user; the turn appends them to the chat. */
-    private val onCards: suspend (cards: List<PluginCard>, pluginName: String) -> Unit = { _, _ -> }
+    private val onCards: suspend (cards: List<PluginCard>, pluginName: String) -> Unit = { _, _ -> },
+    /**
+     * The chat's own text generator, resolved at CALL time rather than at
+     * construction: a tool call can arrive several steps into a turn, and a
+     * command can arrive before the session that owns it exists — the
+     * generator the plugin should be able to ask is the one the chat has
+     * then, not the one this wrapper was built under. Null (the default)
+     * means generation is not available on this path at all.
+     */
+    private val generate: suspend () -> PluginGenerateCall? = { null }
 ) : ToolExecutor {
 
     override suspend fun execute(name: String, argsJson: String): ToolResult {
@@ -57,7 +72,8 @@ class PluginToolExecutor(
             binding = owner.sessionPlugin.binding,
             toolName = owner.toolName,
             argsJson = argsJson,
-            history = history()
+            history = history(),
+            generate = generate()
         )
         if (run.cards.isNotEmpty()) {
             runCatching { onCards(run.cards, owner.sessionPlugin.plugin.name) }

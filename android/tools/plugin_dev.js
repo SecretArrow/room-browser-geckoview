@@ -21,9 +21,9 @@ const HOST = path.resolve(__dirname, '../node/src/main/assets/node/plugin_host.j
 
 const USAGE = [
   'usage: node plugin_dev.js <pluginDir> <event> [payloadJson]',
-  '                   [--config {json}] [--perms storage,agent.tools,chat.context,network]',
+  '                   [--config {json}] [--perms storage,agent.tools,chat.context,network,agent.generate]',
   '                   [--net api.example.com,*.example.com] [--timeout 30000]',
-  '                   [--data-root <dir>] [--history [{"role":"user","text":"hi"}]]',
+  '                   [--data-root <dir>] [--history [{"role":"user","text":"hi"}]] [--no-gen]',
   '',
   'events: probe activate deactivate command message tool config',
   "payload per event: command {\"name\":\"greet\",\"args\":\"World\"}",
@@ -44,6 +44,12 @@ function parseArgs(argv) {
     if (arg === '--help' || arg === '-h') {
       process.stdout.write(USAGE + '\n');
       process.exit(0);
+    }
+    if (arg === '--no-gen') {
+      // A switch rather than a setting: it carries no value, so it must not
+      // eat the next argument the way every valued flag does.
+      flags['no-gen'] = true;
+      continue;
     }
     if (arg.indexOf('--') === 0) {
       const name = arg.slice(2);
@@ -141,6 +147,30 @@ function main() {
   const history = readJsonFlag(flags, 'history') || [];
   if (!Array.isArray(history)) fail('--history must be a JSON array of {role, text}');
 
+  // The app's side of room.agent.generate, faked deterministically: no
+  // bridge, no model, no tokens — the same shape of answer every run, so a
+  // plugin's generate path is testable from a desktop. --no-gen withdraws it,
+  // which lands the plugin on the honest refusal a host with no channel
+  // answers with. Every call is logged to stderr so a run can show it asked.
+  const noGen = flags['no-gen'] === true;
+  const askAgent = noGen
+    ? undefined
+    : function (request) {
+        const purpose = request && typeof request.purpose === 'string' ? request.purpose : '';
+        const instruction =
+          request && typeof request.instruction === 'string' ? request.instruction : '';
+        process.stderr.write(
+          '[GEN] purpose=' + purpose + ' instruction=' + instruction.slice(0, 60) + '\n'
+        );
+        const words = instruction
+          .trim()
+          .split(/\s+/)
+          .filter((word) => word.length > 0)
+          .slice(0, 8)
+          .join(' ');
+        return Promise.resolve({ text: '(composed) ' + purpose + ': ' + words });
+      };
+
   const timeout =
     flags.timeout !== undefined ? Number(flags.timeout) : undefined;
   if (flags.timeout !== undefined && (!Number.isFinite(timeout) || timeout <= 0)) {
@@ -168,6 +198,9 @@ function main() {
     payload: payload,
     config: config,
     history: history,
+    // Supplied unless --no-gen said otherwise; plugin_host reports the
+    // absence in words when a plugin asks to generate anyway.
+    askAgent: askAgent,
     timeoutMs:
       timeout !== undefined
         ? timeout

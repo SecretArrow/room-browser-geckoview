@@ -52,7 +52,7 @@ const SYNC_CAP_MS = 10000;
 const MAX_OUTPUT_CHARS = 20000; // the bridge's own reply cap; stay under it
 const MAX_ERROR_CHARS = 4000; // a trimmed stack, per the envelope
 
-const PERMISSIONS = ['storage', 'network', 'agent.tools', 'chat.context'];
+const PERMISSIONS = ['storage', 'network', 'agent.tools', 'chat.context', 'agent.generate'];
 
 // The require whitelist. Anything node ships that is not on this list is
 // refused — the interesting names are the ones it leaves out: files, sockets,
@@ -102,6 +102,22 @@ const TOOL_DESCRIPTION_MAX = 500;
 const TOOL_NAME_MAX = 60;
 const HISTORY_LIMIT_MAX = 200;
 const HISTORY_SUMMARY_CHARS = 4000;
+
+// The generation request (agent.generate): every plugin-supplied string is
+// clamped before it travels, because the app renders those fields into its
+// own prompt — a field that grew without a cap would be a prompt the plugin
+// wrote, which is exactly what the structured request exists to prevent.
+const GEN_PURPOSE_MAX = 64;
+const GEN_INSTRUCTION_MAX = 500;
+const GEN_CONTEXT_MAX = 4000;
+const GEN_HINT_MAX = 200;
+const GEN_LANGUAGE_MAX = 24;
+const GEN_FORBIDDEN_MAX = 64;
+const GEN_TONE_MAX = 64;
+const GEN_MAX_WORDS_CAP = 200;
+const GEN_AVOID_ENTRIES = 50;
+const GEN_AVOID_TEXT_MAX = 200;
+const GEN_ANSWER_MAX = 2000;
 
 // ---- the one process-wide tolerance ---------------------------------------
 
@@ -236,7 +252,7 @@ function manifestErrors(manifest) {
   const permissions = manifest.permissions;
   if (
     !Array.isArray(permissions) ||
-    permissions.length > 4 ||
+    permissions.length > 5 ||
     new Set(permissions).size !== permissions.length ||
     permissions.some(function (p) { return PERMISSIONS.indexOf(p) < 0; })
   ) {
@@ -311,6 +327,18 @@ function readRequest(opts) {
     // not one invented field): room.chat reads it from here when a caller has
     // some, and answers an empty chat when it does not.
     history: Array.isArray(opts.history) ? opts.history : [],
+    // The profile's own user agent as the command carried it — null when the
+    // app supplied none. room.meta.userAgent shows the plugin what its
+    // requests ride as; nothing else reads it, so the string arrives cleaned
+    // exactly once, here.
+    userAgent:
+      typeof opts.userAgent === 'string' && opts.userAgent.trim()
+        ? opts.userAgent.trim()
+        : null,
+    // The reverse-request channel room.agent.generate speaks over. Absent
+    // (a host that wired none) is a state the namespace reports in words
+    // rather than by hanging — the same trade every gated call makes.
+    askAgent: typeof opts.askAgent === 'function' ? opts.askAgent : null,
   };
 }
 
@@ -321,6 +349,79 @@ function sessionIdOf(dataRoot) {
   const at = parts.lastIndexOf('plugin-data');
   if (at >= 0 && at + 1 < parts.length && parts[at + 1]) return parts[at + 1];
   return null;
+}
+
+// ---- the generation request -----------------------------------------------
+//
+// What room.agent.generate sends over the reverse channel: structured fields,
+// never a raw prompt. The app renders the prompt itself and the system prompt
+// is app-owned, so everything here is data — clamped data, so a plugin bug
+// cannot turn one of its fields into an instruction. The app validates and
+// clamps the same shape again on receipt; this side clamps before sending
+// (defense in depth, and the error a plugin reads is this side's).
+
+function shapeGenerateRequest(options) {
+  if (!options || typeof options !== 'object' || Array.isArray(options)) {
+    throw new Error('the generation request was malformed: expected an options object');
+  }
+  if (typeof options.purpose !== 'string' || !options.purpose.trim()) {
+    throw new Error(
+      'the generation request needs a purpose: a non-blank string of at most ' +
+        GEN_PURPOSE_MAX + ' characters'
+    );
+  }
+  if (typeof options.instruction !== 'string' || !options.instruction.trim()) {
+    throw new Error(
+      'the generation request needs an instruction: a non-blank string of at most ' +
+        GEN_INSTRUCTION_MAX + ' characters'
+    );
+  }
+  const request = {
+    purpose: clipPlain(options.purpose.trim(), GEN_PURPOSE_MAX),
+    instruction: clipPlain(options.instruction.trim(), GEN_INSTRUCTION_MAX),
+  };
+  if (typeof options.context === 'string') {
+    request.context = clipPlain(options.context, GEN_CONTEXT_MAX);
+  }
+  if (typeof options.hint === 'string') {
+    request.hint = clipPlain(options.hint, GEN_HINT_MAX);
+  }
+  const style =
+    options.style && typeof options.style === 'object' && !Array.isArray(options.style)
+      ? options.style
+      : null;
+  if (style) {
+    // Wrong-typed members are dropped rather than refused: style is advisory
+    // (the app does not guarantee it), so a sloppy member costs its own
+    // constraint, never the whole generation.
+    const shaped = {};
+    if (typeof style.language === 'string') {
+      shaped.language = clipPlain(style.language, GEN_LANGUAGE_MAX);
+    }
+    if (Number.isFinite(style.maxWords)) {
+      shaped.maxWords = Math.max(1, Math.min(GEN_MAX_WORDS_CAP, Math.floor(style.maxWords)));
+    }
+    if (typeof style.oneSentence === 'boolean') shaped.oneSentence = style.oneSentence;
+    if (typeof style.lowercase === 'boolean') shaped.lowercase = style.lowercase;
+    if (typeof style.forbiddenChars === 'string') {
+      shaped.forbiddenChars = clipPlain(style.forbiddenChars, GEN_FORBIDDEN_MAX);
+    }
+    if (typeof style.tone === 'string') shaped.tone = clipPlain(style.tone, GEN_TONE_MAX);
+    if (Object.keys(shaped).length > 0) request.style = shaped;
+  }
+  if (Array.isArray(options.avoid)) {
+    const avoid = [];
+    for (
+      let index = 0;
+      index < options.avoid.length && avoid.length < GEN_AVOID_ENTRIES;
+      index++
+    ) {
+      const text = options.avoid[index];
+      if (typeof text === 'string') avoid.push(clipPlain(text, GEN_AVOID_TEXT_MAX));
+    }
+    if (avoid.length > 0) request.avoid = avoid;
+  }
+  return request;
 }
 
 // ---- cards -----------------------------------------------------------------
@@ -1267,6 +1368,28 @@ function newCall(request, startedAt) {
     }),
   };
 
+  // room.agent.generate: THIS chat's own model, asked to write one piece of
+  // text. The permission names the grant; the channel comes with the call —
+  // the bridge's reverse-request wiring on a device, a fake in the desktop
+  // harness, nothing in a host that cannot generate. The prompt itself is the
+  // app's business: this side shapes and clamps the structured request, and
+  // re-validates the answer, because the app does not guarantee the style
+  // constraints it was told.
+  const agentApi = {
+    generate: gated('agent.generate', async function (options) {
+      const payload = shapeGenerateRequest(options);
+      if (typeof request.askAgent !== 'function') {
+        throw new Error('agent generation is not available in this host');
+      }
+      const answer = await request.askAgent(payload);
+      const text = answer && typeof answer.text === 'string' ? answer.text.trim() : '';
+      if (!text) {
+        throw new Error('the chat agent wrote no text');
+      }
+      return clipPlain(text, GEN_ANSWER_MAX);
+    }),
+  };
+
   function pushCard(card) {
     if (!card) return;
     if (state.cards.length >= CARD_MAX_COUNT) {
@@ -1305,6 +1428,10 @@ function newCall(request, startedAt) {
       sessionId: sessionIdOf(dataRoot),
       apiVersion: API_VERSION,
       event: event,
+      // The identity this profile presents — the same string room.net.fetch
+      // already rides as, now visible to the plugin instead of only enforced;
+      // null when the app supplied none.
+      userAgent: request.userAgent,
     }),
     config: Object.freeze({ get: configGet }),
     storage: Object.freeze({
@@ -1313,6 +1440,7 @@ function newCall(request, startedAt) {
     }),
     net: Object.freeze(netApi),
     chat: Object.freeze(chatApi),
+    agent: Object.freeze(agentApi),
     ui: Object.freeze(uiApi),
     log: Object.freeze(logApi),
     util: Object.freeze({
@@ -1579,4 +1707,8 @@ async function runPluginCall(opts) {
   return successResult(call, outcome.value);
 }
 
-module.exports = { runPluginCall: runPluginCall, matchesAllowHost: matchesAllowHost };
+module.exports = {
+  runPluginCall: runPluginCall,
+  matchesAllowHost: matchesAllowHost,
+  shapeGenerateRequest: shapeGenerateRequest,
+};

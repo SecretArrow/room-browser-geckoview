@@ -64,6 +64,10 @@ export interface RoomMeta {
   /** The event this call is answering: probe | activate | deactivate |
    *  command | message | tool | config. */
   readonly event: string;
+  /** The browser identity this profile presents — the same user agent the
+   *  plugin's own room.net.fetch requests ride as, chosen by the user; null
+   *  when the app supplied none. Read-only. */
+  readonly userAgent: string | null;
 }
 
 /** Per-chat config values (manifest schema defaults merged with this chat's
@@ -164,6 +168,60 @@ export interface RoomChat {
   summary(): string;
 }
 
+/** Style constraints a generation may ask the chat's model to honour. Every
+ *  member is optional and advisory — the app does not guarantee them, so a
+ *  plugin that cares (the onhomeroom gate, for one) re-validates the text it
+ *  gets back. */
+export interface RoomGenerateStyle {
+  /** Language to write in ("en"), ≤ 24 chars. */
+  language?: string;
+  /** At most this many words; 1..200. */
+  maxWords?: number;
+  /** Exactly one sentence. */
+  oneSentence?: boolean;
+  /** All lowercase. */
+  lowercase?: boolean;
+  /** Characters the text must not use ("!:—–?;"), ≤ 64 chars. */
+  forbiddenChars?: string;
+  /** Tone ("casual"), ≤ 64 chars. */
+  tone?: string;
+}
+
+/** One generation request — structured fields, never a raw prompt: the app
+ *  renders the prompt itself from these, so a plugin cannot smuggle one.
+ *  Every field is clamped by the host before it travels (purpose ≤ 64,
+ *  instruction ≤ 500, context ≤ 4000, hint ≤ 200, avoid ≤ 50 entries of
+ *  ≤ 200 chars). */
+export interface RoomGenerateOptions {
+  /** What the text is FOR ("chat-reply"). Required, non-blank, ≤ 64 chars. */
+  purpose: string;
+  /** What is needed ("Reply to the last message ..."). Required, non-blank,
+   *  ≤ 500 chars. */
+  instruction: string;
+  /** Live context the plugin gathered, ≤ 4000 chars. Optional. */
+  context?: string;
+  /** An extra angle, ≤ 200 chars. Optional. */
+  hint?: string;
+  /** Advisory style constraints. Optional. */
+  style?: RoomGenerateStyle;
+  /** Texts not to repeat (an anti-repeat memory), ≤ 50 entries of ≤ 200
+   *  chars each. Optional. */
+  avoid?: string[];
+}
+
+/** This chat's own AI — requires the `agent.generate` permission. The
+ *  provider and model are the chat session's own; the plugin never sees
+ *  them, their key, or the prompt they were handed. */
+export interface RoomAgent {
+  /** Asks the chat's model to write one piece of text and resolves with it
+   *  (trimmed, 1..2000 chars). One attempt, no retry: a failure rejects with
+   *  the app's own words for it. Serial inside a call — two fired in parallel
+   *  are answered in order. Budget: 20 s per generation, inside the call's
+   *  own budget (30 s commands and tools; the 10 s message hook will usually
+   *  not fit one). */
+  generate(options: RoomGenerateOptions): Promise<string>;
+}
+
 /** Cards — no permission needed: a card cannot leave the call. At most 5 per
  *  call (extras dropped with one warn log); each card validated, clamped and
  *  dropped per the PluginCard caps. */
@@ -193,8 +251,8 @@ export interface RoomUtil {
 /** The `room` object handed to every entry-point handler. Frozen; the same
  *  instance for the whole call; per-chat by construction.
  *
- *  The permission-gated namespaces (`storage`, `net`, `chat`) exist even
- *  without their grant — every call on them throws
+ *  The permission-gated namespaces (`storage`, `net`, `chat`, `agent`) exist
+ *  even without their grant — every call on them throws
  *  `Error("plugin permission not granted: <name>")` until the chat granted
  *  it, so a forgotten permission is an error that names itself. */
 export interface Room {
@@ -206,6 +264,7 @@ export interface Room {
   };
   readonly net: RoomNet;
   readonly chat: RoomChat;
+  readonly agent: RoomAgent;
   readonly ui: RoomUi;
   readonly log: RoomLog;
   readonly util: RoomUtil;

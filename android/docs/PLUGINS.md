@@ -8,10 +8,11 @@ its own `/commands`, and its own agent tools.
 
 This is the reference for the whole system: the package format, the manifest,
 the permissions, the `room` SDK, the events, the caps, the packaging tools and
-the desktop harness. The two complete example plugins live beside this file
-(`docs/plugins/hello-world`, `docs/plugins/word-count`) and are annotated at
-the end of this document. The prose is dense on purpose; every number in it is
-a number the implementation enforces.
+the desktop harness. The three complete example plugins live beside this file
+(`docs/plugins/hello-world`, `docs/plugins/word-count`, and the big one,
+`docs/plugins/onhomeroom-daily`) and are annotated at the end of this
+document. The prose is dense on purpose; every number in it is a number the
+implementation enforces.
 
 An honest summary before anything else: a plugin runs code you wrote on the
 user's phone, inside this app. The system's answer to that is a capability
@@ -33,10 +34,11 @@ left for you to discover.
   through the host, checked against the manifest's allowlist **before** every
   request and again on every redirect. Storage is a kv store and a files
   directory under a per-chat root the plugin cannot name.
-* **Explicit permissions, denied by default.** The four capabilities that can
-  leave the call or read the chat — `storage`, `network`, `agent.tools`,
-  `chat.context` — are off until the person enabling the plugin in that chat
-  grants them, with the network hosts listed in the dialog. Everything else
+* **Explicit permissions, denied by default.** The five capabilities that can
+  leave the call, read the chat, or spend the chat's own model — `storage`,
+  `network`, `agent.tools`, `chat.context`, `agent.generate` — are off until
+  the person enabling the plugin in that chat grants them, with the network
+  hosts listed in the dialog. Everything else
   (cards, config, logs, util, console, timers) is inert by construction and
   needs no declaration.
 * **Read-only code, per-call teardown.** The plugin's extracted directory is
@@ -168,7 +170,7 @@ manifest's permissions is re-consented at the chat, not silently widened.
   "license": "MIT",
   "api": 1,
   "entry": "main.js",
-  "permissions": ["storage", "network", "agent.tools", "chat.context"],
+  "permissions": ["storage", "network", "agent.tools", "chat.context", "agent.generate"],
   "network": { "allow": ["api.example.com", "*.example.com"] },
   "config": {
     "schema": [
@@ -195,7 +197,7 @@ is fixed in one pass, not three.
 | `license` | no | 0..64 chars. |
 | `api` | yes | the integer `1`, exactly. Any other number is refused with this build's version in the message. |
 | `entry` | yes | relative `.js` path, 1..200 chars, no `..`, no absolute path, no backslash; must exist in the package. |
-| `permissions` | no | array, unique, each one of `storage` `network` `agent.tools` `chat.context`, at most 4. |
+| `permissions` | no | array, unique, each one of `storage` `network` `agent.tools` `chat.context` `agent.generate`, at most 5. |
 | `network` | see rule | object with `allow`: 1..20 host patterns. **Required (non-empty) iff `permissions` contains `network`** — and refused as a surprise when it does not. |
 | `config.schema` | no | 0..12 items; `key` `^[a-z][a-z0-9_]{0,31}$`, unique; `type` one of `string` `number` `boolean`; `default` (when present) must match the type — absent means the type's zero value (`""` / `0` / `false`); `title` 0..64; `description` 0..200. |
 | `commands` | no | 0..12 items; `name` `^[a-z][a-z0-9_-]{0,23}$`, unique, **must not be `plugins`** (reserved by the app); `title` 0..64; `description` 0..200. |
@@ -229,6 +231,7 @@ list before it is followed.
 | `network` | `room.net.fetch`, restricted to the manifest's allowlist | "Reach the internet (hosts: …)" — the hosts listed, cut at ~120 chars | denied |
 | `agent.tools` | `exports.tools` are registered as agent tools **in this chat** | "Add tools the AI agent can call" | denied |
 | `chat.context` | `room.chat.history()` / `summary()` for the **current** chat only | "Read this chat's conversation" | denied |
+| `agent.generate` | `room.agent.generate(options)` — asks **this chat's own AI** (the session's provider + model) to write one piece of text | "Have this chat's AI write text for it" | denied |
 
 **Implicit — no declaration, no dialog:** `room.meta`, `room.config`,
 `room.ui` (cards), `room.log`, `room.util`, `console`, timers. None of those
@@ -323,7 +326,7 @@ The object every handler receives. Frozen, and the same instance for the
 whole call.
 
 ```
-room.meta      { pluginId, pluginName, pluginVersion, sessionId, apiVersion, event }
+room.meta      { pluginId, pluginName, pluginVersion, sessionId, apiVersion, event, userAgent }
 room.config    { get(key) }
 room.storage   [storage]   .kv { get, set, delete, clear, keys, size }
                            .files { read, readBytes, write, writeBytes, append, delete, exists, list, size }
@@ -331,6 +334,7 @@ room.net       [network]   .fetch(url, options) -> Promise<response>
                            .allowed(host) -> bool
 room.chat      [chat.context] .history(limit?) -> [{ role, text }]
                                .summary() -> string
+room.agent     [agent.generate] .generate(options) -> Promise<string>
 room.ui        { card(cardObj), text(str) }
 room.log       { info(m), warn(m), error(m) }
 room.util      { now(), uuid(), b64encode(str), b64decode(b64) }
@@ -338,11 +342,16 @@ room.util      { now(), uuid(), b64encode(str), b64decode(b64) }
 
 ### `room.meta`
 
-`{ pluginId, pluginName, pluginVersion, sessionId, apiVersion, event }` —
-plain strings/number, no methods. `sessionId` is the chat's session id (the
-host reads it out of the injected data-root layout; it is null only in a
-harness that was handed an arbitrary root). There is no `process` in the
-sandbox — `room.meta` replaces it.
+`{ pluginId, pluginName, pluginVersion, sessionId, apiVersion, event,
+userAgent }` — plain strings/number, no methods, all read-only. `sessionId`
+is the chat's session id (the host reads it out of the injected data-root
+layout; it is null only in a harness that was handed an arbitrary root).
+`userAgent` is the browser identity the profile presents — the exact string
+every `room.net.fetch` the plugin makes already rides as, now visible to read
+instead of only enforced, so a plugin can show or log the identity its
+requests leave under; it is `null` when the app supplied none, and always
+`null` in the desktop harness, which supplies no identity. There is no
+`process` in the sandbox — `room.meta` replaces it.
 
 ### `room.config`
 
@@ -455,13 +464,102 @@ is absent and `history()` answers `[]`, `summary()` answers `""`. Other
 chats are unreachable by construction: no API names one, and the data roots
 are per chat.
 
-> **Status in this build:** the Kotlin side shapes and sends the history
-> exactly as above, and the host consumes it when it arrives — but the
-> bridge's `plugin` branch does not yet relay the `history` field to the
-> host (one line), so on the device `room.chat` currently answers empty even
-> with the grant, until that relay lands. The desktop harness (`--history`)
-> and the host side are already wired; plugin_dev.js is the honest place to
-> exercise chat-context code today.
+### `room.agent` — requires `agent.generate`
+
+```js
+const text = await room.agent.generate({
+  purpose: 'chat-reply',                     // REQUIRED, non-blank, ≤ 64 chars
+  instruction: 'Reply to the last message',  // REQUIRED, non-blank, ≤ 500 chars
+  context: 'alice: anyone tried the new puzzle app',  // optional, ≤ 4000 chars
+  hint: 'keep it light',                     // optional, ≤ 200 chars
+  style: {
+    language: 'en',                          // optional, ≤ 24 chars
+    maxWords: 24,                            // optional, 1..200
+    oneSentence: true,                       // optional
+    lowercase: false,                        // optional
+    forbiddenChars: '!:—–?;',                // optional, ≤ 64 chars
+    tone: 'casual',                          // optional, ≤ 64 chars
+  },
+  avoid: ['i keep coming back to the puzzle app'],    // optional, ≤ 50 × ≤ 200
+});
+```
+
+Asks **this chat's own AI** — the provider and model the chat's session
+already names, or the live turn's when the call rides one — to write one
+piece of text, and resolves with it: trimmed, non-blank, at most **2000
+chars**. That is the whole point of the permission: the plugin's words are
+written by the model the user already configured for this chat, not by a
+model (or key) the plugin brought. The full options reference:
+
+| Field | Required | Cap | Meaning |
+|---|---|---|---|
+| `purpose` | yes | non-blank, ≤ 64 chars | what the text is FOR ("chat-reply") |
+| `instruction` | yes | non-blank, ≤ 500 chars | what is needed ("Reply to the last message…") |
+| `context` | no | ≤ 4000 chars | live context the plugin gathered |
+| `hint` | no | ≤ 200 chars | an extra angle |
+| `style` | no | object | advisory constraints — every member optional |
+| `style.language` | no | ≤ 24 chars | language to write in ("en") |
+| `style.maxWords` | no | 1..200 (floored, clamped) | at most this many words |
+| `style.oneSentence` | no | boolean | exactly one sentence |
+| `style.lowercase` | no | boolean | all lowercase |
+| `style.forbiddenChars` | no | ≤ 64 chars | characters the text must not use |
+| `style.tone` | no | ≤ 64 chars | tone ("casual") |
+| `avoid` | no | ≤ 50 entries, each ≤ 200 chars | texts not to repeat (an anti-repeat memory) |
+
+Everything is validated and clamped **before it travels**. A non-object
+argument throws `the generation request was malformed: expected an options
+object`; a missing or blank purpose throws `the generation request needs a
+purpose: a non-blank string of at most 64 characters`; a missing or blank
+instruction throws `the generation request needs an instruction: a non-blank
+string of at most 500 characters`. Over-length strings are clipped, not
+refused; `maxWords` is floored and held in 1..200; wrong-typed **style**
+members are dropped rather than refused — style is advisory, so a sloppy
+member costs its own constraint, never the generation — and non-string
+`avoid` entries are dropped the same way, while `false` booleans are kept
+(because `false` means something). The app re-validates and re-clamps the
+same shape on receipt with its own words (`the generate request carried no
+purpose`, `the generate request carried no instruction`) — defense in depth;
+a plugin normally reads only the host's refusal, because the host validated
+first.
+
+**The return contract: it throws on every failure.** No permission →
+`plugin permission not granted: agent.generate` (the namespace exists
+un-granted, like the others). No channel in this host → `agent generation
+is not available in this host` (the desktop harness with `--no-gen`; see
+below). The model answered nothing → `the chat agent wrote no text`, or —
+when the app itself caught the emptiness — `the chat's model wrote no
+text`. The app refused the request (its provider call failed, or the 20 s
+generation ceiling fired) → the app's own words in the rejection. The app
+never answered at all → `the app did not answer the generation request
+within 20s`. Catch and decide: staying quiet is a legitimate answer, and
+the onhomeroom-daily example (below) does exactly that.
+
+**The injection posture — read this before composing a prompt in your
+head.** The plugin supplies *structured fields*, never a raw prompt: the app
+renders the prompt itself, and the system prompt is app-owned and fixed, so
+the only instructions the model reads are the app's. Your fields travel
+clamped (the caps above) and land as labelled data lines under a system
+prompt that commands "Answer with the finished text only". The model is
+THIS chat's own — the session's provider and model for commands and
+activations, the live turn's for tools and message hooks — asked **once**:
+no retry, no tools, non-streaming, temperature 0.7. The plugin never sees
+the provider, its key, its URL, or the system prompt; no API exposes any of
+them. And the app does **not** guarantee the style constraints — they are
+rendered as instructions to the model, not enforced on its output, so a
+model that answers `Nice!` against `forbiddenChars: '!'` will hand you
+exactly that. A plugin that cares re-validates what it gets back before
+sending it anywhere; the onhomeroom-daily example keeps the original bot's
+validation gate over every generation and stays quiet when the gate
+rejects — that is the pattern to copy.
+
+**Budgets.** One generation is capped at **20 s** of its own and counts
+against the event's budget too: a 30 s `command`/`tool` call fits **one**
+generation comfortably (two only if the model answers fast); the **10 s
+message hook usually cannot fit a generation at all** — 20 > 10 is honest
+arithmetic, not a bug, so don't ask for text from `onMessage`.
+Generations are serial: the app answers one before the next, so a plugin
+firing two in parallel gets them served in arrival order — and pays both
+waits.
 
 ### `room.ui`
 
@@ -565,6 +663,21 @@ Notes that matter:
   at a time across the whole app; a slow plugin queues everyone behind it.
   A runtime that cannot start (no `libnode.so` for the device's CPU) answers
   every call `this build carries no Node runtime for this device's CPU`.
+* **A generation spends the event's budget too.** `room.agent.generate` is
+  capped at 20 s of its own *inside* the call's budget (see `room.agent`):
+  a 30 s command or tool call fits one generation, two only if the model
+  answers fast; the 10 s message hook usually cannot fit one at all —
+  that is arithmetic, not a bug. Generations are serial, and each one also
+  holds the one-client lock for as long as it runs.
+
+**Internals, for the curious:** while a plugin call executes, the runtime may
+write additional lines to the same connection it is already on — reverse
+requests shaped `{"id":"gen-N","cmd":"agent_generate","token":…,"request":{…}}`
+— which the app authenticates with the run's own token and answers on that
+same connection. That is how a `room.agent.generate` call travels without a
+second channel, and it is the only wire change the feature made. Plugin
+authors never see any of it; the SDK call is the whole story on your side of
+the bridge.
 
 ## Cards
 
@@ -603,7 +716,8 @@ of the conversation that happened.
 ## Agent tools
 
 `exports.tools` is how a plugin extends the AI agent — the word-count
-example is one tool and nothing else. It takes the `agent.tools` permission,
+example is one tool (and, since it grew a `/compose` command, the smallest
+honest pairing of both). It takes the `agent.tools` permission,
 granted per chat.
 
 ```js
@@ -767,9 +881,9 @@ nothing from a package is ever executed at install time.
 
 ```sh
 node android/tools/plugin_dev.js <pluginDir> <event> [payloadJson]
-                   [--config {json}] [--perms storage,agent.tools,chat.context,network]
+                   [--config {json}] [--perms storage,agent.tools,chat.context,network,agent.generate]
                    [--net api.example.com,*.example.com] [--timeout 30000]
-                   [--data-root <dir>] [--history [{"role":"user","text":"hi"}]]
+                   [--data-root <dir>] [--history [{"role":"user","text":"hi"}]] [--no-gen]
 ```
 
 It plays the part the app plays on a device: reads the manifest, builds the
@@ -781,12 +895,13 @@ The real flags:
 
 | Flag | Meaning |
 |---|---|
-| `--perms` | the grant decision — a comma list from `storage,agent.tools,chat.context,network`. **Defaults to NONE**, the same deny-by-default order the app runs in; pass what a user would have accepted. |
+| `--perms` | the grant decision — a comma list from `storage,agent.tools,chat.context,network,agent.generate`. **Defaults to NONE**, the same deny-by-default order the app runs in; pass what a user would have accepted. |
 | `--config` | a JSON object of config overrides (merged over the manifest defaults). |
 | `--net` | the network allowlist, comma-separated. Defaults to the manifest's `network.allow` when present — unlike `--perms`, the harness assumes you meant what you declared. |
 | `--timeout` | the call's budget in ms (default 30000; deactivate 10000). |
 | `--data-root` | an explicit data root. Default is deterministic per plugin under the OS temp dir — `<tmp>/room-plugin-dev/plugin-data/1/<sanitized>` — so a second run sees the first run's kv; point it somewhere fresh to start over. |
 | `--history` | a JSON array of `{role, text}` — what a `chat.context` grant would deliver on-device. |
+| `--no-gen` | a valueless switch that withdraws the fake generator (below), so a `room.agent.generate` call lands on the honest `agent generation is not available in this host` refusal — the no-channel path, testable without a device. |
 | `--help` / `-h` | the usage block. |
 
 Payloads per event (third positional, JSON):
@@ -804,6 +919,19 @@ is the whole debugging surface: cards you expected but do not see are
 usually in `logs` ("a card was dropped: …"), a permission you forgot is the
 `output` throw, and `tools`/`commands`/`hooks` are exactly what the app
 would register from your probe.
+
+**The fake generator.** The harness has no bridge and no model, so it wires
+a deterministic fake in the app's place: every `room.agent.generate` call
+resolves `(composed) <purpose>: <first 8 words of the instruction>` —
+clearly labelled as fake, the same answer every run, so a plugin's generate
+path is testable from a desk — and logs one stderr line per call,
+`[GEN] purpose=<purpose> instruction=<first 60 chars>`, so a run can *show*
+it asked. The fake pays no attention to style, which is honest: the app
+guarantees nothing there either — a plugin that gates its texts (onhomeroom)
+stays quiet under the fake exactly as it would under a sloppy model. Pass
+`--no-gen` to withdraw the channel and exercise the refusal path. The
+harness supplies no user agent, so `room.meta.userAgent` reads `null` — on a
+device it is the profile's selected identity.
 
 ## API versioning
 
@@ -825,7 +953,13 @@ one it fully understands), and a chat whose stored grants no longer cover
 the new declared set re-consents at the next enable rather than being
 silently widened.
 
-## The bundled examples, annotated
+## The examples, annotated
+
+Three complete plugins live beside this file. Hello-world and word-count
+are the bundled pair — their pre-zipped copies ship in the APK's assets,
+one tap to install from the manager. OnHomeroom Daily is the big sample: a
+real bot ported whole, built with the packer and sideloaded — the APK
+itself stays neutral.
 
 ### Hello World — cards, a command, storage
 
@@ -909,13 +1043,14 @@ node android/tools/plugin_dev.js android/docs/plugins/hello-world command \
 — and the counter climbs across runs because the harness's data root is
 deterministic per plugin.
 
-### Word Count — an agent tool, three permissions
+### Word Count — an agent tool, a generated sentence
 
-`docs/plugins/word-count/` — no commands, no network: what it adds is a
-tool the chat's AI agent can call. It declares all three load-bearing v1
-permissions — `agent.tools` for the tool itself, `chat.context` for the
-activation card's look at the conversation, `storage` for the lifetime word
-total — and one boolean config value, `ignore_case`.
+`docs/plugins/word-count/` — no network: what it adds is a tool the chat's
+AI agent can call, and a `/compose` command that asks that same AI for one
+sentence. It declares all four load-bearing v1 permissions — `agent.tools`
+for the tool itself, `chat.context` for the activation card's look at the
+conversation, `storage` for the lifetime word total, `agent.generate` for
+`/compose` — and one boolean config value, `ignore_case`.
 
 ```json
 {
@@ -927,13 +1062,17 @@ total — and one boolean config value, `ignore_case`.
   "license": "MIT",
   "api": 1,
   "entry": "main.js",
-  "permissions": ["agent.tools", "chat.context", "storage"],
+  "permissions": ["agent.tools", "chat.context", "storage", "agent.generate"],
   "config": {
     "schema": [
       { "key": "ignore_case", "type": "boolean", "default": true,
         "title": "Ignore case", "description": "Count words case-insensitively" }
     ]
-  }
+  },
+  "commands": [
+    { "name": "compose", "title": "Compose",
+      "description": "Ask this chat's AI to write one sentence about the words counted" }
+  ]
 }
 ```
 
@@ -947,6 +1086,34 @@ exports.activate = async (room) => {
     fields: [['messages in this chat', String(messages)]],
     style: 'info',
   });
+};
+
+exports.commands = {
+  // The minimal agent.generate consumer: count the words, then ask THIS
+  // chat's own model to write one short sentence about them. Every way it
+  // can fail is a card with the failure's own words — an empty bubble is
+  // not an answer.
+  compose: {
+    run: async (room, args) => {
+      const text = typeof args === 'string' ? args.trim() : '';
+      const words = text.split(/\s+/).filter((word) => word.length > 0).length;
+      try {
+        const sentence = await room.agent.generate({
+          purpose: 'word-count demo',
+          instruction:
+            'Write one short casual sentence that mentions the number ' +
+            (words > 0 ? words + ' and what was counted: "' + text + '"' : 'zero, because nothing was counted'),
+          style: { language: 'en', maxWords: 16, oneSentence: true, tone: 'casual' },
+        });
+        room.ui.card({ title: 'The chat\'s AI composed', text: sentence,
+                       fields: [['words counted', String(words)]], style: 'success' });
+      } catch (err) {
+        room.ui.card({ title: 'The chat\'s AI could not compose',
+                       text: String(err && err.message ? err.message : err),
+                       fields: [['words counted', String(words)]], style: 'warn' });
+      }
+    },
+  },
 };
 
 exports.tools = {
@@ -985,18 +1152,106 @@ so the model reads exactly those words, fenced as untrusted data. The
 lifetime total is kv again — per chat, so "lifetime" means this
 conversation's.
 
+`/compose` is the whole `agent.generate` story in one command: structured
+fields (a purpose, an instruction with the count in it, a style), a
+`try`/`catch` around the await, and the failure shown with its own words —
+the model being unreachable is something the person can act on and a silent
+bubble is not. Run it without the grant and it fails with `plugin
+permission not granted: agent.generate`; under the harness the fake
+generator answers; with `--no-gen` it fails with `agent generation is not
+available in this host`. That is every failure path of the API in one
+place, which is why it is the example.
+
 Try it:
 
 ```sh
 node android/tools/plugin_dev.js android/docs/plugins/word-count probe \
-  --perms agent.tools,chat.context,storage
+  --perms agent.tools,chat.context,storage,agent.generate
 node android/tools/plugin_dev.js android/docs/plugins/word-count tool \
   '{"name":"count_words","argsJson":"{\"text\":\"call me maybe\"}"}' \
   --perms agent.tools,storage
+node android/tools/plugin_dev.js android/docs/plugins/word-count command \
+  '{"name":"compose","args":"call me maybe"}' \
+  --perms agent.generate
 ```
 
 The probe's `tools` array is what the app registers; the tool run's
-`output` is what the model would read back.
+`output` is what the model would read back; the compose run prints the
+`[GEN]` line to stderr and a success card to stdout — add `--no-gen` to
+watch the refusal path instead.
+
+### OnHomeroom Daily — a whole routine composed live
+
+`docs/plugins/onhomeroom-daily/` — the big one: a port of the standalone
+OnHomeroom bot (a 1878-line Node script that worked app.onhomeroom.com's
+challenge board, votes, chat and app-try routine, paced like a person) into
+a plugin whose every sentence is written **live by this chat's own AI**. It
+is the reference consumer of `agent.generate`, `room.net.fetch`,
+`room.meta.userAgent`, state-driven pacing and kv-as-state — read it when
+your plugin outgrows word-count.
+
+**The manifest asks for four permissions** — `storage` (its state),
+`network` (restricted to `*.onhomeroom.com`, the whole site plus every
+per-app subdomain the routine visits), `agent.generate` (the composer), and
+`agent.tools` (two tools for the chat's agent). Seven config keys carry the
+original bot's pacing knobs (`text_gap_seconds`, `task_gap_seconds`,
+`max_words`, `dwell_chunk_seconds`, `dwell_target_seconds`,
+`quiet_minutes`, `channel`); four commands (`status`, `login`, `step`,
+`reset`) and two tools (`run_task`, `status`, registered as
+`plugin_io_onhomeroom_daily_run_task` / `…_status`) complete it.
+
+**The loop is `/login` → `/step` → `run_task`.** `/login email password`
+attempts the login immediately and stores the credentials and session
+cookie in this chat's plugin kv (plain JSON in that chat's storage — use a
+dedicated account; `/reset` wipes everything). `/step` and the `run_task`
+tool both run **one bounded unit** — under the 30 s budget, with a 22 s
+internal deadline and 8 s fetches: no credentials → the clean
+`no credentials — ask the user to run /login` card, no network; the task
+gap not elapsed → `next action allowed in Ns`, also without touching the
+network; otherwise a priority ladder — answer one pending homeroom-bot DM
+card, work the next incomplete challenge's next bounded step (join, one
+dwell chunk, one vote, one chat reply, one feedback note, one
+issue+DM-nudge step; the propose/build pipelines advance one step per
+unit), one yes vote on a promoted proposal, one channel reply when the
+quiet rules allow. The model steers by calling `run_task` and relaying what
+it answers ("voted yes on …", "next action allowed in 132s").
+
+**The Composer is gone; the gate stayed.** The original bot assembled every
+sentence from safe fragments; the plugin composes each one with
+`room.agent.generate` — structured fields (purpose, instruction, context,
+hint, style `{language: 'en', maxWords, oneSentence: true, forbiddenChars:
+'!:—–?;', tone: 'casual'}`, an `avoid` list fed by the anti-repeat memory
+`recentTexts`) — then passes the answer through the original validation
+gate, kept **verbatim**: one casual English sentence, no `.!?;` inside,
+never the characters `!:—–?;`, no emoji, at most `max_words` words. On any
+failure — the generation throws, the model answers nothing, the gate
+rejects — the plugin **stays quiet** for that text, exactly like the
+original: nothing invalid is ever sent. Proposal titles/bodies ask for one
+`"TITLE | BODY"` generation, split on `' | '`, one generation per text so a
+unit stays inside its budget. That gate is the pattern the `room.agent`
+section prescribes: the app does not enforce your style constraints, so
+re-validate everything you send.
+
+**Pacing is state, not sleeps.** The standalone bot slept minutes between
+tasks and ran forever; a plugin call is one shot. So the gaps become
+persisted timestamps (`lastActionAt` for the task gap, `lastTextAt` for
+the text gap) that the next call reads before doing anything, and app-try
+dwell is chunked — one activity POST of `dwell_chunk_seconds` per unit,
+progress tracked in `dwellProgress`, one iframe visit
+(`GET https://{slug}.onhomeroom.com/?token=…`, covered by the
+`*.onhomeroom.com` allowlist) before an app's first chunk. The API port
+keeps the original's headers, its 401 → one re-login → replay, and its
+`breathe()` pauses (500–1800 ms) between calls, on `room.net.fetch` — every
+request riding the profile's selected browser identity, which `/login`'s
+success card echoes from `room.meta.userAgent` ("riding as …").
+
+**Where its ZIP comes from:** the directory is a sample, not a bundled
+example — the APK stays neutral. Build it with
+`python3 android/tools/make_plugin_zip.py
+android/docs/plugins/onhomeroom-daily out.zip` (byte-reproducible) and
+sideload it through the plugin manager's **Install from ZIP** (the SAF file
+picker). Its README carries the full config table, the command and tool
+reference, and the honest differences from the standalone bot.
 
 ## Troubleshooting / FAQ
 
@@ -1006,6 +1261,37 @@ the person enabled the plugin and accepted a dialog that predates a newer
 manifest's bigger ask (re-consent happens on the next enable). The
 namespace exists on purpose so the error names the exact permission; there
 is no way to "try" past it — the host enforces the effective set.
+
+**`agent generation is not available…`** — two spellings, two causes.
+`agent generation is not available in this host` means the host itself
+wired no generator: the desktop harness under `--no-gen`, or a host that
+cannot generate. `agent generation is not available` (without "in this
+host") is the app's answer on a device and means THIS chat has no model to
+ask — its session names no provider, the provider row is gone, or neither
+the session's model nor the provider's default is set. The permission
+promise is "this chat's AI", so a chat that configured no AI answers
+honestly instead of borrowing another chat's: configure the chat's provider
+and model, then retry. Probes never wire a generator either — they must
+not spend tokens — so a generate from a probe answers the same words.
+
+**The message hook times out when it generates** — honest arithmetic: a
+generation is capped at 20 s of its own, and the `message` hook's whole
+budget is 10 s. The call is stopped with `the plugin was still running
+after 10000ms and was stopped` and the turn proceeds without your text —
+the hook sits in front of every message, so it gets the tight cap. Compose
+from a `command` or `tool` handler (30 s) instead, where one generation
+fits.
+
+**The style constraints were violated anyway** — they are advisory, and
+deliberately so: the app renders `style` and `avoid` as instructions to the
+model and does **not** enforce them on its output ("Honour every style
+constraint exactly" is a request, not a gate). `maxWords`,
+`forbiddenChars`, `oneSentence`, the works — re-validate whatever you got
+back before you send it anywhere, and drop or retry when it fails. The
+onhomeroom-daily example keeps the original bot's `validate` gate over
+every generation and stays quiet on rejection — that is the pattern; the
+word-count example just shows the text, which is the honest choice for a
+demo.
 
 **`plugin kv quota exceeded` / `plugin files quota exceeded` /
 `plugin network quota exceeded`** — you hit a cap (16 KB per kv value, 128
@@ -1025,12 +1311,15 @@ to declare it and the chat remembers typing it, but no enabled plugin
 declares it now (disabled, uninstalled, or the command came from a manifest
 that never had it).
 
-**A plugin sees no history even with `chat.context`** — two honest causes.
-Without the permission the history field is absent by design (absent means
-"not granted", never "granted and empty"). With it, on this build the
-bridge does not yet relay the field to the host — see the "Status in this
-build" note under `room.chat`; exercise chat-context code with the harness's
-`--history` until that lands.
+**A plugin sees no history even with `chat.context`** — without the
+permission the history field is absent by design (absent means "not
+granted", never "granted and empty"), so `history()` answers `[]` and
+`summary()` answers `""`. With the grant the app shapes and sends the last
+60 user/assistant turns and the bridge relays them — if it still reads
+empty, check that the manifest declares the permission *and* the chat
+granted it (the effective set is the intersection), and that the chat has
+user/assistant turns at all. The harness's `--history` flag feeds the same
+path on a desk.
 
 **Everything is slow / calls queue behind each other** — the runtime is one
 client app-wide: probes, tool events and `node_run` all serialize under one
@@ -1074,12 +1363,12 @@ For the curious, and for filing issues where they belong:
 
 | Piece | File |
 |---|---|
-| Sandbox host + `room` SDK | `android/node/src/main/assets/node/plugin_host.js` |
-| Bridge delegation (the `plugin` command) | `android/node/src/main/assets/node/bridge.js` |
-| Wire DTOs (request/result/history) | `android/node/src/main/kotlin/com/roombrowser/node/NodeProtocol.kt` |
+| Sandbox host + `room` SDK (incl. `room.agent.generate` shaping) | `android/node/src/main/assets/node/plugin_host.js` |
+| Bridge delegation (the `plugin` command; reverse requests minted here, answered app-side in `NodeClient.kt`) | `android/node/src/main/assets/node/bridge.js` |
+| Wire DTOs (request/result/history, the generate DTO + reverse replies) | `android/node/src/main/kotlin/com/roombrowser/node/NodeProtocol.kt` |
 | One-call runner (lock, start, teardown) | `android/node/src/main/kotlin/com/roombrowser/node/NodeRunner.kt`; assets sync in `NodeRuntime.kt` |
 | Manifest model + validator | `android/core/domain/src/main/kotlin/com/roombrowser/domain/plugins/` (`PluginManifest.kt`, `PluginManifestValidator.kt`) |
-| Permissions + labels, command grammar, tool naming, card model, `API_VERSION` | same directory (`PluginPermissions.kt`, `PluginCommandParser.kt`, `PluginToolNaming.kt`, `PluginCard.kt`, `PluginApi.kt`) |
+| Permissions + labels, command grammar, tool naming, card model, the generation prompt renderer, `API_VERSION` | same directory (`PluginPermissions.kt`, `PluginCommandParser.kt`, `PluginToolNaming.kt`, `PluginCard.kt`, `PluginGeneratePrompt.kt`, `PluginApi.kt`) |
 | ZIP installer (guards, atomic extract) | `android/app/src/main/kotlin/com/roombrowser/data/plugins/PluginZipInstaller.kt` |
 | Rows, bindings, sweep, config | `android/app/src/main/kotlin/com/roombrowser/data/repo/PluginRepository.kt`; tables in `data/db/` (Room v17) |
 | App-side engine (request build, grants, fencing, budgets, history shaping) | `android/app/src/main/kotlin/com/roombrowser/agent/AgentPluginRuntime.kt` |
@@ -1089,5 +1378,5 @@ For the curious, and for filing issues where they belong:
 | UI (sheet, grant dialog, cards, manager) | `android/app/src/main/kotlin/com/roombrowser/agent/ui/` (`PluginSheets.kt`, `PluginPermissionDialog.kt`, `PluginCardView.kt`, `PluginManagerActivity.kt`) |
 | Agent-side gates (plan/permission/unattended) | `domain/agent/PlanModePolicy.kt`, `AgentPermissions.kt`; `agent/HeadlessToolExecutor.kt`, `ScheduledRunToolGate.kt`; `domain/task/AiTaskPermissions.kt` |
 | Packer + dev harness | `android/tools/make_plugin_zip.py`, `android/tools/plugin_dev.js` |
-| Example sources | `android/docs/plugins/hello-world/`, `android/docs/plugins/word-count/` (pre-zipped copies ship in `android/node/src/main/assets/node/plugins/`) |
+| Example sources | `android/docs/plugins/hello-world/`, `android/docs/plugins/word-count/` (pre-zipped copies ship in `android/node/src/main/assets/node/plugins/`); `android/docs/plugins/onhomeroom-daily/` (the big sample — packed with the packer and sideloaded, not bundled) |
 | SDK typings (editor support) | `android/docs/plugins/sdk/plugin-sdk.d.ts` |

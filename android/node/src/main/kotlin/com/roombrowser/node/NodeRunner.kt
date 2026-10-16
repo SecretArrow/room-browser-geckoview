@@ -2,6 +2,7 @@ package com.roombrowser.node
 
 import android.content.Context
 import android.os.SystemClock
+import kotlinx.serialization.json.JsonObject
 import java.io.IOException
 import java.io.InterruptedIOException
 import java.util.concurrent.locks.ReentrantLock
@@ -60,13 +61,24 @@ class NodeRunner(context: Context) {
      * start/connect/close lifecycle as [run] — one call at a time, a runtime
      * started for the call and torn down after it.
      *
+     * [onReverse] is passed straight through to [NodeClient.plugin]: the
+     * blocking handler that answers `room.agent.generate` while the plugin
+     * runs, or null when this call has none — in which case the runtime's
+     * own ask is answered with "agent generation is not available" rather
+     * than ignored, and the plugin call carries on.
+     *
      * Never throws, for the same reasons [run] never throws: the runtime
-     * being absent, failing to start, or dying mid-plugin is a FAILED RESULT
-     * carrying the words, because a plugin that could not run is an answer
-     * the chat has to read (and the turn has to carry on past), not an
-     * exception the caller has to word itself.
+     * being absent, failing to start, dying mid-plugin, or refusing a request
+     * is a FAILED RESULT carrying the words, because a plugin that could not
+     * run is an answer the chat has to read (and the turn has to carry on
+     * past), not an exception the caller has to word itself. A handler that
+     * throws is not this method's problem either — [NodeClient] turns it
+     * into the reverse line's own error envelope before it can get here.
      */
-    fun plugin(call: PluginCallRequest): PluginCallResult {
+    fun plugin(
+        call: PluginCallRequest,
+        onReverse: ((JsonObject) -> JsonObject)? = null
+    ): PluginCallResult {
         if (!NodeRuntime.available) {
             return PluginCallResult(
                 ok = false,
@@ -75,7 +87,7 @@ class NodeRunner(context: Context) {
         }
         lock.lock()
         try {
-            return pluginOnce(call)
+            return pluginOnce(call, onReverse)
         } finally {
             lock.unlock()
         }
@@ -117,7 +129,10 @@ class NodeRunner(context: Context) {
         }
     }
 
-    private fun pluginOnce(call: PluginCallRequest): PluginCallResult {
+    private fun pluginOnce(
+        call: PluginCallRequest,
+        onReverse: ((JsonObject) -> JsonObject)?
+    ): PluginCallResult {
         val startedAt = SystemClock.elapsedRealtime()
         val client = try {
             NodeClient.connect(appContext)
@@ -128,7 +143,7 @@ class NodeRunner(context: Context) {
             )
         }
         return try {
-            client.plugin(call)
+            client.plugin(call, onReverse)
         } catch (err: InterruptedIOException) {
             PluginCallResult(
                 ok = false,

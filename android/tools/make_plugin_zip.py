@@ -32,7 +32,7 @@ MAX_ENTRY_BYTES = 2 * 1024 * 1024
 MAX_MANIFEST_BYTES = 64 * 1024
 MAX_NAME_CHARS = 200
 
-PERMISSIONS = ("storage", "network", "agent.tools", "chat.context")
+PERMISSIONS = ("storage", "network", "agent.tools", "chat.context", "agent.generate")
 HOOKS = ("message",)
 CONFIG_TYPES = ("string", "number", "boolean")
 MANIFEST_KEYS = {
@@ -115,7 +115,7 @@ def manifest_error(data: object) -> list[str]:
         errors.append('entry must end in ".js"')
 
     permissions = data.get("permissions")
-    if not isinstance(permissions, list) or len(permissions) > 4 \
+    if not isinstance(permissions, list) or len(permissions) > 5 \
             or len(set(permissions)) != len(permissions) \
             or any(item not in PERMISSIONS for item in permissions):
         errors.append(f"permissions must be unique and drawn from {', '.join(PERMISSIONS)}")
