@@ -440,8 +440,19 @@ class PluginE2eTest {
             clickDesc(counterSwitch, 10_000)
         )
         assertTrue("The sheet must close for the re-run's card", dismissPluginsSheet())
+        // Which path the re-enable took, before the count is asked about: the
+        // immediate run says "is on", a failed start-up says so, and a wrong
+        // staging says "first message". The failure message carries the tree
+        // so the next round knows exactly which of the three it was.
         assertTrue(
-            "The re-activation must count 2 in the same chat",
+            "The re-enable must speak: on-for-this-chat, start-up failed, or staged. " +
+                "UI:\n" + uiTree(),
+            hasTextContains("Hello Counter is on for this chat", 30_000) ||
+                hasTextContains("Hello Counter is on, but its start-up failed", 30_000) ||
+                hasTextContains("Hello Counter is on for this chat. It runs with this chat's first message", 30_000)
+        )
+        assertTrue(
+            "The re-activation must count 2 in the same chat. UI:\n" + uiTree(),
             hasTextContains("Activations in THIS chat: 2", 60_000)
         )
 
