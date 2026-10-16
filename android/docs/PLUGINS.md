@@ -1453,6 +1453,135 @@ reply). `chat_plugins` gains `inputs_values_json` — this chat's answers to
 the module's form. The v17 → v18 migration is purely additive ALTER TABLEs;
 the old rows read as plugin.json rows with no form and nothing staged.
 
+### The module SDK — `zagents.*` (the runtime side)
+
+A `format: "zagents"` call runs in the SAME sandbox, over the SAME per-chat
+data root, but with a SECOND SDK spelled the way ZAgents modules spell it:
+the vm context gets a frozen `zagents` global, and `require('zagents-sdk')`
+returns it. The `room` SDK stays available beside it (the documented
+superset — a module's entry runs outside any handler invocation, so `room`
+is a global there rather than the first argument every plugin handler
+receives). For a plugin-format call nothing changes at all: `room` arrives
+the way it always has and `zagents` does not exist.
+
+**Entry semantics.** The host does NOT call `exports.activate`. It loads the
+entry as a CommonJS module (the same loader, whitelist built-ins
+`assert buffer crypto events path punycode querystring string_decoder url
+util zlib`, relative + bare + `package.json` main resolution, JSON modules,
+BOM and shebang stripped), takes `module.exports`, awaits it when it is
+thenable — `module.exports = main()` is the shape every ZAgents sample uses —
+and reports it as the call's `result` (JSON-encoded, **never rendered**:
+the upstream divergence; a module that wants the user to see something emits
+or logs it). Every event other than `activate` answers empty and runs
+nothing: a module's lifecycle lives in the app, not in its code.
+
+**The message body** is composed once, at answer time: the
+`zagents.chat.emit` texts in arrival order, then the console/`zagents.log`
+lines after one blank line, then — when the run failed —
+`Module run failed: <error>` after two blank lines. Capped at ZAgents' own
+400 lines / 32 KB with its exact suffixes (`…[output truncated at 400
+lines]`, `…[output truncated at 32768 bytes]`); the timeout sentence is
+`Module timed out after <n>s.`
+
+| API | Behavior | Errors / limits (exact) |
+|---|---|---|
+| `zagents.info` | `{ name, version, title, sessionId, entry }` always; `userAgent` only when the profile identity is non-null; `prompt` only when this run IS the staged activation; `inputs` (Room extension) only when stored input values exist | — |
+| `zagents.log(...args)` | the console channel; args joined with `' '` | always ok |
+| `zagents.storage.get/set/keys/remove` | the SAME per-chat `kv.json` under the module quota profile: 64 KB per value (JSON-encoded length), 1 MB the whole store, a 4096-key safety cap | `Permission denied: storage`; `Storage key must not be empty`; `Storage value exceeds the 65536-byte limit`; `Module storage exceeds the 4096-key budget`; `Module storage exceeds the 1048576-byte budget` (store not written) |
+| `zagents.fs.readFile/writeFile/appendFile/readdir/mkdir/unlink/stat` | a path-addressed sandbox rooted at the per-chat `state/` directory (created on demand); relative paths resolve against the state dir — the documented contract, not upstream's CWD-first latent bug; containment on the REAL path, so a symlink planted inside cannot point out; `stat` → `{isDirectory, size, modified}` (ISO-8601) | `Permission denied: files`; `fs path is outside the app sandbox`; Room quotas kept: ≤ 256 files, ≤ 10 MB total |
+| `zagents.http.request(url, opts?)` | the host net layer: allowlist checked before the request and again on every redirect; ZAgents' exact JS coercion; response wrapper `{ok, status, body, headers (lowercased), text(), json()}` | `Permission denied: network`; `Host is not allowed by this module (allowedHosts)`; blocked headers `host content-length connection accept-encoding transfer-encoding upgrade keep-alive user-agent` (the profile identity wins); ≤ 24 headers, values ≤ 8192 chars; `timeoutMs` clamped 1..60000 (room.net's 15 s cap raised to ZAgents' 60 s for module calls); network failure ⇒ `{status: 0, body: '', headers: {}}`, `ok: false` — an answer, never a rejection |
+| `zagents.chat.emit(text)` | appends `text` + `\n` to the module message body | `Permission denied: chat`; after termination, silently ok (delivery stops, persisted storage stays) |
+| `zagents.agent.compose(opts)` | the compose gate, below | `Permission denied: agent`; `Agent composer is unavailable`; `agent.compose requires a non-empty context`; `composer output kept violating the rules (<violations>)` |
+| `require('zagents-sdk')` | returns the injected global | outside a zagents run: `zagents SDK is only available inside ZAgents chat sessions (run the module with /plugins or from the Modules screen).` |
+
+**The compose gate.** `zagents.agent.compose` is the one path on which the
+chat's own model writes text the module sends onward. The request rides the
+reverse `agent_generate` channel as a STRUCTURED request, never a raw
+prompt: the module's `task` as the purpose, its `context` verbatim, the
+instruction carrying the hard rules line ("one casual sentence, at most N
+words, no ! : ; — – ?, no emoji, ends with a single period / does not end
+with a period, do not sound like an assistant"), and the `avoid` list (first
+20 non-blank entries). `maxWords` defaults to 24, clamped 1..40;
+`trailingPeriod` only when exactly true. Every sentence the model writes is
+validated on the JS side — forbidden characters `[!?:;—–]`, emoji ranges, the
+word count, internal sentence punctuation `[.!?;]` versus the trailing
+period, repeats of an avoided text, empty output — and a violation earns
+exactly ONE corrective retry whose note names the violations. A second
+violation falls through to the deterministic sanitize (strip wrapping
+quotes, drop emoji, soften `: ; — –`, remove `!?`, internal periods →
+spaces, re-add the trailing period only if `trailingPeriod` and the original
+ended with one, cut to the word budget) and one final re-validation: a
+repeat cannot be repaired, and that is the throw —
+`composer output kept violating the rules (<violations>)`.
+
+**The runtime budget pauses.** A module's overall budget is its own
+`timeoutSeconds` (default 30 s, clamped 1..120), and while a reverse request
+— `agent_generate` or `user_input` — is outstanding the deadline is STOPPED:
+waiting for the model or the user is not compute the module is charged for.
+Each pause carries a hard backstop of 360 s, far above the bridge's own
+reverse timeouts, so a channel that neither answered nor failed cannot hold
+a call forever.
+
+### The wire (protocol notes)
+
+The `plugin` request gains the module fields, each OMITTED when not
+applicable (a plugin.json row sends none of them, and the host reads every
+absence as its own default rather than an empty value): `format`
+(`"zagents"`), `prompt`, `timeoutSeconds`, `inputsValues`, `stateRoot`
+(absolute), `title`, `zagentsVersion`, `zagentsName`. The host reads each
+strictly — a wrong shape refuses the call (fail-closed) — and a module's
+`timeoutSeconds` wins over the caller's `timeoutMs`, so the app's own read
+timeout derives from the number the runtime actually works to.
+
+Reverse requests are a REGISTRY now, on both ends of the wire. bridge.js
+carries one entry per command — `agent_generate` (id prefix `gen-`, 20 s)
+and `user_input` (id prefix `form-`, 300 s) — and hands every plugin call
+both channels; the app side registers the handlers it can answer, in
+`NodeClient`, through `ReverseHandlers`:
+
+```kotlin
+ReverseHandlers()
+    .register(NodeProtocol.REVERSE_GENERATE, generateHandler)
+    .register(NodeProtocol.REVERSE_USER_INPUT, formHandler)
+// …then
+runner.plugin(request, handlers)
+```
+
+A command nobody registered is answered in its own default words —
+`agent generation is not available` (exactly as before), or, for
+`user_input`, `No interactive UI is available for this call` — so probes,
+scheduled runs and legacy call sites behave the same as a host that wired
+no dialog, and the plugin reads the refusal and carries on. The runtime's
+own `user_input` timeout is 300 s (`NodeProtocol.REVERSE_USER_INPUT_TIMEOUT_MS`),
+and a registered form handler is BLOCKING — it may hold the exchange for
+minutes while a person reads the dialog, which is safe precisely because no
+read is pending while it runs and the module's budget is paused for the
+whole wait.
+
+### The vendored samples
+
+Five ZAgents sample modules ship inside the APK beside `hello-world.zip`,
+in `android/node/src/main/assets/node/plugins/` — installable bundled
+examples and the fixtures of the compat proof:
+
+| ZIP | module | what it exercises |
+|---|---|---|
+| `zagents-counter.zip` | `hello-counter` | per-chat storage: counts 1 → 2 in one chat, resets in the next |
+| `zagents-network-fetcher.zip` | `network-fetcher` | `zagents.http` with `allowedHosts`, the UA rule (`user-agent` dropped, the profile identity sent), `chat.emit` |
+| `zagents-file-notes.zip` | `file-notes` | the `state/` round-trip: readFile absent → mkdir → appendFile → readdir → stat |
+| `zagents-chat-streamer.zip` | `chat-streamer` | emits accumulate into ONE module message |
+| `zagents-onhomeroom-daily.zip` | `onhomeroom-daily` | the staged prompt commands (`setup <email> <password>` / `status` / `reset`), storage-backed config, the compose pipeline, its own 120 s budget |
+
+Provenance: byte-identical copies of the ZAgents repository's
+`samples/*.zip` at commit `d41ea94da7996ea98d2e4ee08289b8f8d0d2f33c`. The
+local proof that they run natively is
+`node android/tools/test_zagents_compat.js` — it loads the same
+`plugin_host.js` the runtime ships, feeds each sample the call a zagents row
+produces, and fakes the app side (net layer with the status:0 convention,
+canned compose sentences including ones that violate the gate, canned form
+answers). `ZAGENTS_COMPAT_OFFLINE=1` runs the same proof with the network
+fully withdrawn.
+
 ## Interactive input forms — the `inputs` schema
 
 Both manifest formats may declare an optional `inputs` array: the form a
@@ -1520,6 +1649,41 @@ the other way. A binding with required inputs unanswered is exactly what the
 agent tool's missing-inputs gate checks — the tool raises the form instead of
 running, because input the plugin was promised is input it must have.
 
+### The runtime form — `room.ui.form` / `zagents.ui.form`
+
+Both formats may ALSO ask for input mid-execution, from code:
+
+```js
+const { values } = await room.ui.form({
+  title: 'Your account',               // 1..64 chars, required
+  description: 'Needed for this chat', // optional, ≤ 200 chars
+  fields: [ /* the same schema a manifest `inputs` array uses, 1..12 */ ],
+});
+```
+
+`zagents.ui.form` is the same channel under the module's spelling — one form
+API, two names. The request rides the reverse `user_input` line while the
+call is paused (the module's budget does not burn while the user reads), and
+the answer is `{ values }` — the validated, normalized object the dialog
+produced. The fields travel as the module declared them; the dialog and the
+validator they describe live in the app, which owns the one schema both
+formats share.
+
+The words the module reads, exactly:
+
+* a host with no dialog wired (a probe, a scheduled run, a headless turn):
+  `No interactive UI is available for this call`
+* the user dismissed the dialog: `Form was cancelled`
+* the wait outlived the runtime's 300 s: `Form timed out`
+* a second form while one is already pending: `a form is already pending for this call`
+* malformed requests: `a form needs a title of at most 64 characters`,
+  `a form needs between 1 and 12 fields`, `every form field must be an object`
+
+One outstanding form per call — the dialog is modal to the run, and a second
+request while the first is up is a busy answer, not a queue. Every wait is
+bounded twice: the bridge's own 300 s reverse timeout, and the 360 s hard
+backstop the sandbox puts on any paused reverse wait.
+
 ## Where the code lives
 
 For the curious, and for filing issues where they belong:
@@ -1542,6 +1706,6 @@ For the curious, and for filing issues where they belong:
 | Chat surface (commands, grants, enable/disable) | `android/app/src/main/kotlin/com/roombrowser/agent/PluginUiState.kt`; turn wiring in `BrowserAgentController.kt` |
 | UI (sheet, grant dialog, cards, manager) | `android/app/src/main/kotlin/com/roombrowser/agent/ui/` (`PluginSheets.kt`, `PluginPermissionDialog.kt`, `PluginCardView.kt`, `PluginManagerActivity.kt`) |
 | Agent-side gates (plan/permission/unattended) | `domain/agent/PlanModePolicy.kt`, `AgentPermissions.kt`; `agent/HeadlessToolExecutor.kt`, `ScheduledRunToolGate.kt`; `domain/task/AiTaskPermissions.kt` |
-| Packer + dev harness | `android/tools/make_plugin_zip.py`, `android/tools/plugin_dev.js` |
-| Example sources | `android/docs/plugins/hello-world/`, `android/docs/plugins/word-count/` (pre-zipped copies ship in `android/node/src/main/assets/node/plugins/`); `android/docs/plugins/onhomeroom-daily/` (the big sample — packed with the packer and sideloaded, not bundled) |
+| Packer + dev harness | `android/tools/make_plugin_zip.py`, `android/tools/plugin_dev.js` (plugins), `android/tools/test_zagents_compat.js` (the ZAgents compat proof — the five vendored samples plus the gate fixtures) |
+| Example sources | `android/docs/plugins/hello-world/`, `android/docs/plugins/word-count/` (pre-zipped copies ship in `android/node/src/main/assets/node/plugins/`); the five ZAgents samples vendored byte-identical beside them (`zagents-*.zip`, see the compat section); `android/docs/plugins/onhomeroom-daily/` (the big sample — packed with the packer and sideloaded, not bundled) |
 | SDK typings (editor support) | `android/docs/plugins/sdk/plugin-sdk.d.ts` |

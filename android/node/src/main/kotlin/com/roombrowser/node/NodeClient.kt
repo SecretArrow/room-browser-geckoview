@@ -6,8 +6,6 @@ import android.net.LocalSocket
 import android.net.LocalSocketAddress
 import android.os.Process
 import kotlinx.serialization.json.JsonObject
-import kotlinx.serialization.json.JsonPrimitive
-import kotlinx.serialization.json.contentOrNull
 import java.io.BufferedReader
 import java.io.Closeable
 import java.io.File
@@ -16,6 +14,61 @@ import java.io.InputStreamReader
 import java.io.OutputStreamWriter
 import java.security.SecureRandom
 import java.util.concurrent.atomic.AtomicInteger
+
+/**
+ * The registry of reverse-request handlers one plugin call wires: which
+ * command this side can answer while the plugin runs, and what answers it.
+ *
+ * The family on the wire is `agent_generate` (the chat's own model writing a
+ * piece of text for `room.agent.generate` / `zagents.agent.compose`) and
+ * `user_input` (the runtime form `room.ui.form` / `zagents.ui.form` shows a
+ * person). Registering a handler is the ONLY way a command gets answered;
+ * a command nobody registered is answered in its own default words — a
+ * generation is "not available", a form gets [NO_INTERACTIVE_UI] — so a
+ * probe or a legacy call site behaves exactly like a host that wired none,
+ * and the plugin reads the refusal and carries on rather than waiting out
+ * the runtime's own timeout.
+ *
+ * Handlers are BLOCKING and run on the exchange's read, one reverse line at
+ * a time (the loop answers one before reading the next, so a plugin firing
+ * several gets them served in arrival order); each is budgeted by whoever
+ * registered it. Building one:
+ *
+ * ```
+ * ReverseHandlers()
+ *     .register(NodeProtocol.REVERSE_GENERATE, generateHandler)
+ *     .register(NodeProtocol.REVERSE_USER_INPUT, formHandler)
+ * ```
+ */
+class ReverseHandlers {
+
+    private val handlers = LinkedHashMap<String, (JsonObject) -> JsonObject>()
+
+    /**
+     * Registers [handler] as the answerer of the reverse command [cmd],
+     * replacing any earlier one. Returns this, so registrations read as one
+     * wiring statement. The handler receives the WHOLE reverse line (its
+     * `request` member is the payload) and returns the result object the
+     * reply carries; anything it throws is answered as the line's own error
+     * envelope with the thrown words.
+     */
+    fun register(cmd: String, handler: (JsonObject) -> JsonObject): ReverseHandlers = apply {
+        handlers[cmd] = handler
+    }
+
+    /** The registered answerer of [cmd], or null when this call wired none. */
+    internal fun handlerFor(cmd: String?): ((JsonObject) -> JsonObject)? = handlers[cmd]
+
+    companion object {
+        /**
+         * The sentence a `user_input` request is answered with when nobody
+         * registered a form handler — the same words the runtime form itself
+         * refuses with, so the plugin cannot tell a dialog that never opened
+         * from a host that wires none.
+         */
+        const val NO_INTERACTIVE_UI = "No interactive UI is available for this call"
+    }
+}
 
 /**
  * The app side of the bridge: it starts the runtime's process, connects to it
@@ -74,23 +127,44 @@ class NodeClient private constructor(
      * words, while a plugin that failed is an answer inside a successful
      * envelope — see [PluginCallResult].
      *
-     * [onReverse] answers the reverse requests the runtime may write while
-     * the plugin runs — `room.agent.generate` riding back over the same
-     * connection. It is BLOCKING and runs on this exchange's read. Null (the
-     * default) means this call has no generation wired, and any reverse
-     * request is answered with "agent generation is not available" rather
-     * than ignored: the plugin reads the refusal in its own words and the
-     * call itself carries on.
+     * [onReverse] is the one-command shorthand this call's
+     * `room.agent.generate` has always been answered by, registered under
+     * [NodeProtocol.REVERSE_GENERATE]. Null (the default) means this call has
+     * no generation wired, and any reverse request is answered with "agent
+     * generation is not available" rather than ignored: the plugin reads the
+     * refusal in its own words and the call itself carries on.
      */
     @Synchronized
     fun plugin(
         call: PluginCallRequest,
         onReverse: ((JsonObject) -> JsonObject)? = null
+    ): PluginCallResult = plugin(
+        call = call,
+        reverse = onReverse?.let { handler ->
+            ReverseHandlers().register(NodeProtocol.REVERSE_GENERATE, handler)
+        }
+    )
+
+    /**
+     * Runs one plugin event with the reverse commands answered by a REGISTRY:
+     * [NodeProtocol.REVERSE_GENERATE] for `room.agent.generate` (a module's
+     * `zagents.agent.compose` rides the same channel),
+     * [NodeProtocol.REVERSE_USER_INPUT] for the runtime form
+     * (`room.ui.form` / `zagents.ui.form`). Every command the registry does
+     * not carry is answered with its own default refusal — the form's is
+     * [ReverseHandlers.NO_INTERACTIVE_UI] — so a call that wired only a
+     * generator still behaves honestly the moment a module asks for a dialog,
+     * and null wires nothing at all.
+     */
+    @Synchronized
+    fun plugin(
+        call: PluginCallRequest,
+        reverse: ReverseHandlers?
     ): PluginCallResult = exchange(
         request = { id -> NodeProtocol.pluginRequest(id, token, call) },
         read = NodeProtocol::pluginOf,
         readTimeoutMillis = readTimeoutFor(call.timeoutMs),
-        onReverse = onReverse
+        reverse = reverse
     )
 
     @Synchronized
@@ -111,23 +185,24 @@ class NodeClient private constructor(
      * Writes one request line and reads lines until the reply arrives — the
      * whole of the protocol, plus the one wrinkle a plugin call adds: while
      * the runtime runs the plugin it may write REVERSE REQUESTS, and each is
-     * answered HERE (token-checked, one command deep, [onReverse] doing the
-     * work) before the read goes back to waiting for the reply the exchange
-     * is actually owed. A line with no `cmd` member is that reply — the
-     * existing id-checked path, unchanged.
+     * answered HERE (token-checked, one command deep, the registered handler
+     * doing the work) before the read goes back to waiting for the reply the
+     * exchange is actually owed. A line with no `cmd` member is that reply —
+     * the existing id-checked path, unchanged.
      *
-     * Anything the handler throws is answered as the reverse line's own
-     * error envelope and the wait continues — a failed generation is an
-     * answer the plugin reads, not a broken call. Generations are serial by
-     * construction: the loop answers one reverse line before reading the
-     * next, so a plugin firing several gets them served in arrival order.
+     * A registered handler is BLOCKING — a form's dialog may hold this read
+     * for minutes, which the protocol budgets for
+     * ([NodeProtocol.REVERSE_USER_INPUT_TIMEOUT_MS] on the runtime's side) —
+     * and that is safe precisely because no read is pending while it runs:
+     * the socket's own timeout only ever bounds the wait for the NEXT line,
+     * which is a compute stretch the module's paused budget already caps.
      */
     @Synchronized
     private fun <T> exchange(
         request: (Int) -> String,
         read: (JsonObject) -> T,
         readTimeoutMillis: Long,
-        onReverse: ((JsonObject) -> JsonObject)? = null
+        reverse: ReverseHandlers? = null
     ): T {
         val id = ++nextId
         out.write(request(id))
@@ -140,46 +215,12 @@ class NodeClient private constructor(
             val line = input.readLine() ?: throw IOException("the Node runtime closed the connection")
             val parsed = NodeProtocol.parse(line)
             if (NodeProtocol.isReverse(parsed)) {
-                out.write(answerReverse(parsed, onReverse))
+                out.write(NodeProtocol.reverseAnswer(parsed, token, reverse ?: ReverseHandlers()))
                 out.write("\n")
                 out.flush()
                 continue
             }
             return read(NodeProtocol.resultOf(parsed, id))
-        }
-    }
-
-    /**
-     * One reverse request's answer as the line to write back. The envelope
-     * borrows the runtime's own reply shape and carries the REVERSE line's
-     * id — the bridge settles its pending promise by id, so answering with
-     * anything else would leave it waiting on a line it cannot match. Every
-     * refusal keeps the id and carries its words; the read that called here
-     * keeps waiting for the plugin reply either way.
-     */
-    private fun answerReverse(line: JsonObject, onReverse: ((JsonObject) -> JsonObject)?): String {
-        val id = (line["id"] as? JsonPrimitive)?.contentOrNull ?: ""
-        val carried = (line["token"] as? JsonPrimitive)?.contentOrNull
-        if (carried != token) {
-            return NodeProtocol.reverseError(id, "the reverse request did not carry this run's token")
-        }
-        val cmd = (line["cmd"] as? JsonPrimitive)?.contentOrNull
-        if (cmd != NodeProtocol.REVERSE_GENERATE) {
-            return NodeProtocol.reverseError(id, "unknown reverse command: $cmd")
-        }
-        val handler = onReverse
-            ?: return NodeProtocol.reverseError(id, "agent generation is not available")
-        return try {
-            NodeProtocol.reverseReply(id, handler(line))
-        } catch (err: Exception) {
-            // The handler is blocking and budgeted by its own caller; whatever
-            // it raised (a generation timeout included) is the generation's
-            // honest outcome, and its words are the most useful thing the
-            // plugin can be told.
-            NodeProtocol.reverseError(
-                id,
-                err.message ?: "the generation failed: ${err.javaClass.simpleName}"
-            )
         }
     }
 

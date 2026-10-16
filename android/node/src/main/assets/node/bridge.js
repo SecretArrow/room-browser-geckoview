@@ -244,65 +244,89 @@ function status() {
 
 // ---- reverse requests -----------------------------------------------------
 //
-// While a plugin call is executing, the plugin may ask the app's own chat
-// agent to write a piece of text (room.agent.generate). That question travels
-// the SAME connection in the opposite direction: the runtime writes a line
-// shaped like one of the app's commands — id, cmd, token, request — and the
-// app answers with a line shaped like this runtime's own replies. The
-// discriminator is the id: commands keep numeric ids, while a reverse reply
-// carries the string id the runtime minted and no cmd of its own, so the two
-// directions can never be mistaken for one another. Reverse lines exist only
-// inside a plugin call's execution, which is also the only time the app is
-// reading anything other than the reply it is waiting for.
+// While a plugin call is executing, it may ask the app's side for something
+// only the app can do: the chat's own agent to write a piece of text
+// (`agent_generate`, room.agent.generate / zagents.agent.compose), or the
+// user to fill a form (`user_input`, room.ui.form / zagents.ui.form). Both
+// travel the SAME connection in the opposite direction over the SAME
+// machinery: the runtime writes a line shaped like one of the app's commands
+// — id, cmd, token, request — and the app answers with a line shaped like
+// this runtime's own replies. The discriminator is the id: commands keep
+// numeric ids, while a reverse reply carries the string id the runtime minted
+// and no cmd of its own, so the two directions can never be mistaken for one
+// another. Reverse lines exist only inside a plugin call's execution, which
+// is also the only time the app is reading anything other than the reply it
+// is waiting for.
+//
+// The registry is the whole vocabulary: one entry per command, each with its
+// id prefix, its own timeout and the noun its error sentences name. Adding a
+// third reverse command is an entry here and a handler app-side — nothing in
+// the routing, the settling or the token rule is anyone's to re-derive.
 
-const REVERSE_TIMEOUT_MS = 20000;
+const REVERSE_COMMANDS = {
+  agent_generate: { prefix: 'gen', timeoutMs: 20000, what: 'generation' },
+  user_input: { prefix: 'form', timeoutMs: 300000, what: 'form' },
+};
 
 let reverseCounter = 0;
-const pendingReverse = new Map(); // "gen-N" -> { resolve, reject, timer }
+const pendingReverse = new Map(); // "gen-N" / "form-N" -> { resolve, reject, timer, what }
 
-// The generation channel one plugin call is handed. Nothing is armed until
-// the plugin actually asks, so a call that never generates pays nothing for
-// the channel existing, and the counter keeps every id unique for the
-// connection's lifetime (which is the runtime's lifetime).
-function makeAskAgent(connection) {
+// One reverse channel a plugin call is handed: unarmed until the plugin
+// actually asks, so a call that never asks pays nothing for the channel
+// existing, and the counter keeps every id unique for the connection's
+// lifetime (which is the runtime's lifetime).
+function makeReverseAsk(connection, cmd) {
+  const spec = REVERSE_COMMANDS[cmd];
   return function (request) {
     return new Promise(function (resolve, reject) {
       reverseCounter += 1;
-      const id = 'gen-' + reverseCounter;
-      const entry = { resolve: resolve, reject: reject, timer: null };
+      const id = spec.prefix + '-' + reverseCounter;
+      const entry = { resolve: resolve, reject: reject, timer: null, what: spec.what };
       pendingReverse.set(id, entry);
-      // The app answers, or this fires: a generation that neither arrived nor
+      // The app answers, or this fires: a request that neither arrived nor
       // failed would otherwise hold the plugin until the call's own budget
       // with no words for what went missing.
       entry.timer = setTimeout(function () {
         pendingReverse.delete(id);
         reject(
           new Error(
-            'the app did not answer the generation request within ' +
-              REVERSE_TIMEOUT_MS / 1000 +
+            'the app did not answer the ' + spec.what + ' request within ' +
+              spec.timeoutMs / 1000 +
               's'
           )
         );
-      }, REVERSE_TIMEOUT_MS);
+      }, spec.timeoutMs);
       try {
         connection.write(
-          JSON.stringify({ id: id, cmd: 'agent_generate', token: token, request: request }) + '\n'
+          JSON.stringify({ id: id, cmd: cmd, token: token, request: request }) + '\n'
         );
       } catch (err) {
-        // A line nobody could receive costs the generation, not the runtime —
+        // A line nobody could receive costs the request, not the runtime —
         // the same trade reply() makes, minus the silence: the plugin gets
         // told instead of waiting out the timeout above.
         clearTimeout(entry.timer);
         pendingReverse.delete(id);
         reject(
           new Error(
-            'the generation request could not be sent: ' +
+            'the ' + spec.what + ' request could not be sent: ' +
               (err && err.message ? err.message : String(err))
           )
         );
       }
     });
   };
+}
+
+// The generation channel one plugin call is handed — `agent_generate` under
+// its own name, exactly the deal room.agent.generate has always had.
+function makeAskAgent(connection) {
+  return makeReverseAsk(connection, 'agent_generate');
+}
+
+// The form channel: `user_input`, the same machinery with a patient timeout,
+// because a person reading a dialog is not a model answering a prompt.
+function makeAskUserForm(connection) {
+  return makeReverseAsk(connection, 'user_input');
 }
 
 // A reply line settles the one pending entry it names. ok:false carries the
@@ -319,25 +343,32 @@ function settleReverse(line) {
       new Error(
         typeof line.error === 'string' && line.error
           ? line.error
-          : 'the app refused the generation request'
+          : 'the app refused the ' + entry.what + ' request'
       )
     );
   }
 }
 
-function rejectPendingReverse(reason) {
+// Every pending entry is rejected in its own words: a teardown has to speak
+// for a generation and a form at once, and each still says WHICH kind of
+// request it belonged to — the generation's sentence stays exactly the one
+// it has always been.
+function rejectPendingReverse() {
   const ids = Array.from(pendingReverse.keys());
   for (let index = 0; index < ids.length; index++) {
     const entry = pendingReverse.get(ids[index]);
     pendingReverse.delete(ids[index]);
     clearTimeout(entry.timer);
-    entry.reject(new Error(reason));
+    entry.reject(
+      new Error('the app closed the connection before answering the ' + entry.what + ' request')
+    );
   }
 }
 
 // One look decides who a line belongs to before the dispatcher spends its own
 // parse on it: a pending reverse id with no cmd is the app answering a
-// generation; every other line is a command, token-checked exactly as today.
+// generation or a form; every other line is a command, token-checked exactly
+// as today.
 function route(connection, line) {
   let parsed;
   try {
@@ -494,7 +525,10 @@ function handle(connection, line) {
         // The plugin host owns everything past the wire: this branch relays
         // the call's own fields and answers with the envelope it produced, so
         // the sandbox, its quotas and its permissions live in one place beside
-        // the plugins it runs rather than in the dispatcher.
+        // the plugins it runs rather than in the dispatcher. A command that
+        // carries none of the module fields is a plugin-format call exactly
+        // as before — the host defaults every absent field, and a field of the
+        // wrong shape is the host's refusal to make, not this side's guess.
         const call = {
           pluginRoot: command.pluginRoot,
           dataRoot: command.dataRoot,
@@ -514,10 +548,28 @@ function handle(connection, line) {
           // own room.net.fetch requests ride as, now visible instead of only
           // enforced.
           userAgent: command.userAgent,
-          // The reverse channel room.agent.generate speaks over: unarmed
-          // until the plugin asks, and authenticated by this run's token when
-          // it does.
+          // The module.json fields the row kept verbatim, relayed as they
+          // arrived: format ('zagents' switches the sandbox to the module
+          // SDK; absent stays the plugin SDK), the staged-activation prompt,
+          // the module's own budget, this chat's stored form answers, the
+          // per-chat state directory and the display strings a module's
+          // zagents.info reports. Each is read strictly by the host.
+          format: command.format,
+          prompt: command.prompt,
+          timeoutSeconds: command.timeoutSeconds,
+          inputsValues: command.inputsValues,
+          stateRoot: command.stateRoot,
+          title: command.title,
+          zagentsVersion: command.zagentsVersion,
+          zagentsName: command.zagentsName,
+          // The reverse channels, one per command the family speaks: the
+          // generation channel room.agent.generate (and a module's
+          // zagents.agent.compose) rides, and the form channel
+          // room.ui.form / zagents.ui.form answers on. Both unarmed until
+          // the plugin asks, and both authenticated by this run's token when
+          // they do.
           askAgent: makeAskAgent(connection),
+          askUser: makeAskUserForm(connection),
         };
         require('./plugin_host.js')
           .runPluginCall(call)
@@ -564,12 +616,10 @@ const server = net.createServer((connection) => {
   });
   connection.on('error', () => {});
   connection.on('close', () => {
-    // A generation still waiting loses the app that owed it an answer. The
+    // A request still waiting loses the app that owed it an answer. The
     // process is about to exit with the connection anyway; rejecting first is
     // for the honesty of the rejection, not the recovery.
-    rejectPendingReverse(
-      'the app closed the connection before answering the generation request'
-    );
+    rejectPendingReverse();
     process.exit(0);
   });
 });

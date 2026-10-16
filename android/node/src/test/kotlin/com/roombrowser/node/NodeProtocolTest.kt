@@ -1,6 +1,7 @@
 package com.roombrowser.node
 
 import com.google.common.truth.Truth.assertThat
+import com.google.common.truth.Truth.assertWithMessage
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
@@ -178,6 +179,80 @@ class NodeProtocolTest {
         assertThat(empty.containsKey("history")).isFalse()
     }
 
+    // ---------------------------------------------------------- the module half
+
+    @Test
+    fun a_zagents_request_carries_every_module_field_the_host_checks() {
+        val sent = Json.parseToJsonElement(
+            NodeProtocol.pluginRequest(7, "tok", zagentsCall())
+        ).jsonObject
+        assertThat(sent["format"].toString()).isEqualTo("\"zagents\"")
+        assertThat(sent["prompt"].toString()).isEqualTo("\"setup a@b.com pw123456\"")
+        assertThat(sent["timeoutSeconds"].toString()).isEqualTo("120")
+        assertThat(sent["inputsValues"].toString()).isEqualTo("""{"token":"abc123"}""")
+        assertThat(sent["stateRoot"].toString())
+            .isEqualTo("\"/data/plugin-data/42/zagents_onhomeroom-daily/state\"")
+        assertThat(sent["title"].toString()).isEqualTo("\"OnHomeroom Daily\"")
+        assertThat(sent["zagentsVersion"].toString()).isEqualTo("\"1.1.0\"")
+        assertThat(sent["zagentsName"].toString()).isEqualTo("\"onhomeroom-daily\"")
+        // The module's own permission vocabulary rides the manifest verbatim —
+        // the ZAgents names, not the Room ones the row maps them onto.
+        assertThat(sent["manifest"].toString()).isEqualTo(
+            """{"id":"zagents.onhomeroom-daily","name":"OnHomeroom Daily",""" +
+                """"version":"0.0.0","permissions":["storage","network","agent"],""" +
+                """"networkAllow":["*.onhomeroom.com"]}"""
+        )
+    }
+
+    @Test
+    fun a_plugin_request_sends_none_of_the_module_fields() {
+        // The plugin.json spelling the wire has always spoken: every module
+        // field is absent, which the host reads as the plugin SDK and its own
+        // defaults — never as an empty value.
+        val sent = Json.parseToJsonElement(
+            NodeProtocol.pluginRequest(7, "tok", pluginCall(userAgent = "UA/1"))
+        ).jsonObject
+        for (field in listOf(
+            "format", "prompt", "timeoutSeconds", "inputsValues", "stateRoot",
+            "title", "zagentsVersion", "zagentsName"
+        )) {
+            assertWithMessage("$field should be absent").that(sent.containsKey(field)).isFalse()
+        }
+    }
+
+    @Test
+    fun blank_or_missing_module_fields_are_left_out_rather_than_sent_empty() {
+        // Same rule as userAgent: a blank module string is not a module
+        // string, and a null is an absence — the host must never mistake
+        // either for an empty prompt, an empty title or an empty form.
+        val sent = Json.parseToJsonElement(
+            NodeProtocol.pluginRequest(
+                7, "tok",
+                zagentsCall(
+                    format = "   ",
+                    prompt = "",
+                    timeoutSeconds = null,
+                    inputsValues = null,
+                    stateRoot = "  ",
+                    title = "",
+                    zagentsVersion = "",
+                    zagentsName = ""
+                )
+            )
+        ).jsonObject
+        for (field in listOf(
+            "format", "prompt", "timeoutSeconds", "inputsValues", "stateRoot",
+            "title", "zagentsVersion", "zagentsName"
+        )) {
+            assertWithMessage("$field should be absent").that(sent.containsKey(field)).isFalse()
+        }
+    }
+
+    @Test
+    fun the_module_format_constant_is_the_zagents_spelling() {
+        assertThat(PluginCallRequest.FORMAT_ZAGENTS).isEqualTo("zagents")
+    }
+
     @Test
     fun a_plugin_reply_decodes_its_whole_result() {
         val result = NodeProtocol.result(PLUGIN_REPLY, 7)
@@ -236,6 +311,124 @@ class NodeProtocolTest {
         assertThat(NodeProtocol.isReverse(reverse)).isTrue()
         assertThat(NodeProtocol.isReverse(NodeProtocol.parse(PLUGIN_REPLY))).isFalse()
         assertThat(NodeProtocol.REVERSE_GENERATE).isEqualTo("agent_generate")
+    }
+
+    @Test
+    fun a_user_input_reverse_request_is_told_apart_and_answered_by_its_handler() {
+        // The form channel's own line, hand-written in the shape bridge.js
+        // writes for `user_input`: the same string-id + cmd + token shape,
+        // the form request under `request` — one family, two commands.
+        val reverse = NodeProtocol.parse(USER_INPUT_REQUEST)
+        assertThat(NodeProtocol.isReverse(reverse)).isTrue()
+        assertThat(NodeProtocol.isReverse(NodeProtocol.parse(PLUGIN_REPLY))).isFalse()
+        assertThat(NodeProtocol.REVERSE_USER_INPUT).isEqualTo("user_input")
+        val handlers = ReverseHandlers().register(NodeProtocol.REVERSE_USER_INPUT) { line ->
+            // The handler reads the form out of the whole reverse line.
+            assertThat((line["request"] as? JsonObject)?.get("title")?.toString())
+                .isEqualTo("\"Your account\"")
+            buildJsonObject {
+                put("values", buildJsonObject { put("email", "a@b.com") })
+            }
+        }
+        assertThat(NodeProtocol.reverseAnswer(reverse, TOKEN, handlers)).isEqualTo(
+            """{"id":"form-1","ok":true,"result":{"values":{"email":"a@b.com"}}}"""
+        )
+    }
+
+    @Test
+    fun the_registry_answers_each_command_with_its_own_handler() {
+        val handlers = ReverseHandlers()
+            .register(NodeProtocol.REVERSE_GENERATE) { buildJsonObject { put("text", "hi") } }
+            .register(NodeProtocol.REVERSE_USER_INPUT) { buildJsonObject { put("values", JsonObject(emptyMap())) } }
+        assertThat(NodeProtocol.reverseAnswer(NodeProtocol.parse(REVERSE_REQUEST), TOKEN, handlers))
+            .isEqualTo("""{"id":"gen-1","ok":true,"result":{"text":"hi"}}""")
+        assertThat(NodeProtocol.reverseAnswer(NodeProtocol.parse(USER_INPUT_REQUEST), TOKEN, handlers))
+            .isEqualTo("""{"id":"form-1","ok":true,"result":{"values":{}}}""")
+    }
+
+    @Test
+    fun a_user_input_request_nobody_registered_to_answer_gets_the_no_ui_sentence() {
+        // Probes and legacy call sites wire no dialog; the refusal is the
+        // same sentence the runtime form itself uses, and the call carries
+        // on instead of waiting out the runtime's own 300 s.
+        val answer = NodeProtocol.reverseAnswer(
+            NodeProtocol.parse(USER_INPUT_REQUEST),
+            TOKEN,
+            ReverseHandlers()
+        )
+        assertThat(answer).isEqualTo(
+            """{"id":"form-1","ok":false,"error":"No interactive UI is available for this call"}"""
+        )
+    }
+
+    @Test
+    fun the_generation_channel_keeps_its_own_default_words() {
+        // agent_generate exactly as before the registry existed: nobody
+        // registered means not available, its own words, its own id.
+        val answer = NodeProtocol.reverseAnswer(NodeProtocol.parse(REVERSE_REQUEST), TOKEN, ReverseHandlers())
+        assertThat(answer).isEqualTo(
+            """{"id":"gen-1","ok":false,"error":"agent generation is not available"}"""
+        )
+    }
+
+    @Test
+    fun a_reverse_request_without_this_run_s_token_is_refused() {
+        // Whatever the command, the token rule comes first — a line that does
+        // not carry this run's token is nobody's to answer.
+        val handlers = ReverseHandlers()
+            .register(NodeProtocol.REVERSE_USER_INPUT) { JsonObject(emptyMap()) }
+        val answer = NodeProtocol.reverseAnswer(
+            NodeProtocol.parse(USER_INPUT_REQUEST),
+            "not this run's token",
+            handlers
+        )
+        assertThat(answer).isEqualTo(
+            """{"id":"form-1","ok":false,"error":"the reverse request did not carry this run's token"}"""
+        )
+    }
+
+    @Test
+    fun a_handler_that_threw_is_answered_with_its_own_words() {
+        // A dismissed dialog, a timed-out generation: the handler's outcome
+        // is the request's honest answer, and the read keeps waiting for the
+        // plugin reply either way.
+        val handlers = ReverseHandlers()
+            .register(NodeProtocol.REVERSE_USER_INPUT) { throw IllegalStateException("Form was cancelled") }
+        assertThat(NodeProtocol.reverseAnswer(NodeProtocol.parse(USER_INPUT_REQUEST), TOKEN, handlers)).isEqualTo(
+            """{"id":"form-1","ok":false,"error":"Form was cancelled"}"""
+        )
+    }
+
+    @Test
+    fun an_unknown_reverse_command_is_refused_in_words() {
+        val answer = NodeProtocol.reverseAnswer(
+            NodeProtocol.parse(UNKNOWN_REVERSE_REQUEST),
+            TOKEN,
+            ReverseHandlers()
+        )
+        assertThat(answer).isEqualTo(
+            """{"id":"zz-1","ok":false,"error":"unknown reverse command: something_else"}"""
+        )
+    }
+
+    @Test
+    fun the_form_wait_is_the_protocol_three_hundred_seconds() {
+        // The wire's own number, the one bridge.js arms for `user_input`: a
+        // person reading a dialog is the one wait allowed to take minutes,
+        // and the module's budget is paused for every second of it.
+        assertThat(NodeProtocol.REVERSE_USER_INPUT_TIMEOUT_MS).isEqualTo(300_000L)
+    }
+
+    @Test
+    fun a_form_reply_and_its_errors_carry_the_form_line_own_id() {
+        assertThat(
+            NodeProtocol.reverseReply(
+                "form-3",
+                buildJsonObject { put("values", buildJsonObject { put("email", "a@b.com") }) }
+            )
+        ).isEqualTo("""{"id":"form-3","ok":true,"result":{"values":{"email":"a@b.com"}}}""")
+        assertThat(NodeProtocol.reverseError("form-4", "Form was timed out"))
+            .isEqualTo("""{"id":"form-4","ok":false,"error":"Form was timed out"}""")
     }
 
     @Test
@@ -377,6 +570,41 @@ class NodeProtocolTest {
         history = history
     )
 
+    /** A module.json row's call: the module half of the request, filled in. */
+    private fun zagentsCall(
+        format: String? = PluginCallRequest.FORMAT_ZAGENTS,
+        prompt: String? = "setup a@b.com pw123456",
+        timeoutSeconds: Int? = 120,
+        inputsValues: JsonObject? = JsonObject(mapOf("token" to JsonPrimitive("abc123"))),
+        stateRoot: String? = "/data/plugin-data/42/zagents_onhomeroom-daily/state",
+        title: String? = "OnHomeroom Daily",
+        zagentsVersion: String? = "1.1.0",
+        zagentsName: String? = "onhomeroom-daily"
+    ): PluginCallRequest = PluginCallRequest(
+        pluginRoot = "/data/plugins/zagents_onhomeroom-daily",
+        dataRoot = "/data/plugin-data/42/zagents_onhomeroom-daily",
+        entry = "main.js",
+        manifest = PluginWireManifest(
+            id = "zagents.onhomeroom-daily",
+            name = "OnHomeroom Daily",
+            version = "0.0.0",
+            permissions = listOf("storage", "network", "agent"),
+            networkAllow = listOf("*.onhomeroom.com")
+        ),
+        event = PluginCallRequest.EVENT_ACTIVATE,
+        timeoutMs = 120_000,
+        userAgent = "UA/1",
+        format = format,
+        prompt = prompt,
+        timeoutSeconds = timeoutSeconds,
+        inputsValues = inputsValues,
+        stateRoot = stateRoot,
+        title = title,
+        zagentsVersion = zagentsVersion,
+        zagentsName = zagentsName,
+        history = null
+    )
+
     private companion object {
         // Hand-written, in the shape assets/node/bridge.js actually writes:
         // these pin the wire format rather than the encoder that produced it.
@@ -430,6 +658,23 @@ class NodeProtocolTest {
                 """"style":{"language":"en","maxWords":24,"oneSentence":true,""" +
                 """"forbiddenChars":"!:—–?;","tone":"casual"},""" +
                 """"avoid":["i keep coming back to the puzzle app"]}"""
+
+        // The run's token the reverse requests carry: hand-written so these
+        // pin the wire format rather than the encoder that produced it.
+        const val TOKEN = "0123456789abcdef0123456789abcdef0123456789abcdef"
+
+        // The reverse request of the form channel, whole: the same line shape
+        // with its own id prefix and command, the §3.1 form under `request`.
+        const val USER_INPUT_REQUEST =
+            """{"id":"form-1","cmd":"user_input",""" +
+                """"token":"$TOKEN",""" +
+                """"request":{"title":"Your account",""" +
+                """"description":"This module needs it for this chat",""" +
+                """"fields":[{"key":"email","type":"string","title":"Email","required":true}]}}"""
+
+        // A command this build does not know: refused in words, id kept.
+        const val UNKNOWN_REVERSE_REQUEST =
+            """{"id":"zz-1","cmd":"something_else","token":"$TOKEN","request":{}}"""
 
         // The history the chat.context grant buys a plugin: user and
         // assistant turns, oldest first.

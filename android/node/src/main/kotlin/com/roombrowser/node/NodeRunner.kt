@@ -72,12 +72,33 @@ class NodeRunner(context: Context) {
      * is a FAILED RESULT carrying the words, because a plugin that could not
      * run is an answer the chat has to read (and the turn has to carry on
      * past), not an exception the caller has to word itself. A handler that
-     * throws is not this method's problem either — [NodeClient] turns it
-     * into the reverse line's own error envelope before it can get here.
+     * throws is not this method's problem either — the reverse answer turns
+     * it into the reverse line's own error envelope before it can get here.
      */
     fun plugin(
         call: PluginCallRequest,
         onReverse: ((JsonObject) -> JsonObject)? = null
+    ): PluginCallResult = plugin(
+        call = call,
+        reverse = onReverse?.let { handler ->
+            ReverseHandlers().register(NodeProtocol.REVERSE_GENERATE, handler)
+        }
+    )
+
+    /**
+     * Runs one plugin event with the reverse commands answered by a
+     * [ReverseHandlers] registry — `agent_generate` for generation, and
+     * `user_input` for the runtime form, each answered by whoever registered
+     * it, each defaulting to its own refusal when nobody did. The module
+     * fields of [call] ([PluginCallRequest.format] and its siblings) ride to
+     * the wire unchanged, so a zagents-format row runs under the module SDK
+     * with its own prompt, budget, state root and stored form answers.
+     *
+     * Never throws either, for the same reasons as the shorthand above.
+     */
+    fun plugin(
+        call: PluginCallRequest,
+        reverse: ReverseHandlers?
     ): PluginCallResult {
         if (!NodeRuntime.available) {
             return PluginCallResult(
@@ -87,7 +108,7 @@ class NodeRunner(context: Context) {
         }
         lock.lock()
         try {
-            return pluginOnce(call, onReverse)
+            return pluginOnce(call, reverse)
         } finally {
             lock.unlock()
         }
@@ -131,7 +152,7 @@ class NodeRunner(context: Context) {
 
     private fun pluginOnce(
         call: PluginCallRequest,
-        onReverse: ((JsonObject) -> JsonObject)?
+        reverse: ReverseHandlers?
     ): PluginCallResult {
         val startedAt = SystemClock.elapsedRealtime()
         val client = try {
@@ -143,7 +164,7 @@ class NodeRunner(context: Context) {
             )
         }
         return try {
-            client.plugin(call, onReverse)
+            client.plugin(call, reverse)
         } catch (err: InterruptedIOException) {
             PluginCallResult(
                 ok = false,

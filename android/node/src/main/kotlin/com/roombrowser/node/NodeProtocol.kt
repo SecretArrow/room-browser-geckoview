@@ -79,6 +79,12 @@ data class PluginChatEntry(
  * companion names rather than an enum on the wire: the host reads `event`
  * leniently and answers an unknown one in words, and an enum here would turn
  * a forward-compatible host reply into a decode failure on this side.
+ *
+ * The module half of the request — everything from [format] down — is the
+ * ZAgents compatibility surface: absent (null) on a plugin.json row, where
+ * the host reads the absence as the plugin SDK and its own defaults, and
+ * strictly typed on a module.json row, where the host refuses a wrong shape
+ * rather than guessing what the caller meant.
  */
 data class PluginCallRequest(
     /** `<filesDir>/plugins/<sanitized>` — the plugin's own code, read-only at run time. */
@@ -94,6 +100,26 @@ data class PluginCallRequest(
     val timeoutMs: Long = 30_000,
     /** Blank is left out of the line — the runtime refuses requests without one. */
     val userAgent: String? = null,
+    /**
+     * The row's manifest format: [FORMAT_ZAGENTS] for a module.json package, or
+     * null (or "plugin") for the plugin.json spelling the wire has always
+     * spoken. Null stays off the wire, which the host reads as the plugin SDK.
+     */
+    val format: String? = null,
+    /** The FIRST message of a fresh chat a module was staged on — its activation prompt. */
+    val prompt: String? = null,
+    /** The module's own budget from `module.json` `timeoutSeconds` (1..120), not the caller's. */
+    val timeoutSeconds: Int? = null,
+    /** This chat's stored answers to the module's `inputs` form, as the manifest keyed them. */
+    val inputsValues: JsonObject? = null,
+    /** This chat's per-module state directory — the root of the module's `zagents.fs` sandbox. */
+    val stateRoot: String? = null,
+    /** The module's display title, verbatim from `module.json` (falls back to the name). */
+    val title: String? = null,
+    /** The module's version string, verbatim — module.json versions are not semver. */
+    val zagentsVersion: String? = null,
+    /** The module's sanitized name, verbatim from the row. */
+    val zagentsName: String? = null,
     /**
      * The CURRENT chat's transcript (user and assistant turns only), most
      * recent last, sent ONLY when `chat.context` is in the effective grant
@@ -113,6 +139,9 @@ data class PluginCallRequest(
         const val EVENT_MESSAGE = "message"
         const val EVENT_TOOL = "tool"
         const val EVENT_CONFIG = "config"
+
+        /** The `format` a module.json row carries — the plugin.json spelling needs no constant. */
+        const val FORMAT_ZAGENTS = "zagents"
     }
 }
 
@@ -275,12 +304,30 @@ data class PluginCallResult(
  * two spellings are one protocol: `id`, `cmd`, `token`, `userAgent` going out;
  * `id`, `ok`, `result` or `error` coming back — plus, while a plugin call is
  * executing, REVERSE REQUESTS: lines the runtime writes mid-call to ask the
- * app something (design §3, vocabulary of one: `agent_generate`).
+ * app something (design §3). The family has two commands — `agent_generate`
+ * and `user_input` — and extends through the registry, not through protocol
+ * surgery: a new command is an entry in bridge.js's table, a [ReverseHandlers]
+ * registration here, and nothing else.
  */
 internal object NodeProtocol {
 
-    /** The one reverse command this build answers. */
+    /** The reverse command a plugin's `room.agent.generate` (and a module's compose) rides. */
     const val REVERSE_GENERATE = "agent_generate"
+
+    /** The reverse command the runtime form (`room.ui.form` / `zagents.ui.form`) rides. */
+    const val REVERSE_USER_INPUT = "user_input"
+
+    /**
+     * How long the runtime waits for the app to answer ONE `user_input`
+     * request before it gives up on the form — the wire's own number, the
+     * same 300 s bridge.js arms, kept here so the app side and the doc read
+     * one constant instead of two spellings of a timeout neither owns alone.
+     * A dialog awaiting a person is the one wait in the protocol that is
+     * allowed to take minutes, and the module's own budget is PAUSED for
+     * every second of it (plugin_host.js pauses the deadline while a reverse
+     * request is outstanding).
+     */
+    const val REVERSE_USER_INPUT_TIMEOUT_MS = 300_000L
 
     private val json = Json { ignoreUnknownKeys = true }
 
@@ -349,6 +396,56 @@ internal object NodeProtocol {
         put("error", error)
     }.toString()
 
+    /**
+     * One reverse request's answer as the line to write back — the whole of
+     * the reverse policy in one pure function, so the token rule, the
+     * per-command defaults and the handler dispatch are testable without a
+     * socket. The envelope borrows the runtime's own reply shape and carries
+     * the REVERSE line's id (the bridge settles its pending promise by id, so
+     * answering with anything else would leave it waiting on a line it cannot
+     * match), and every refusal keeps the id and carries its words: a failed
+     * generation or form is an answer the plugin reads, not a broken call.
+     *
+     * The handler is BLOCKING and budgeted by whoever registered it; anything
+     * it raises is the request's honest outcome and its words are the most
+     * useful thing the plugin can be told.
+     */
+    fun reverseAnswer(line: JsonObject, token: String, handlers: ReverseHandlers): String {
+        val id = (line["id"] as? JsonPrimitive)?.contentOrNull ?: ""
+        val carried = (line["token"] as? JsonPrimitive)?.contentOrNull
+        if (carried != token) {
+            return reverseError(id, "the reverse request did not carry this run's token")
+        }
+        val cmd = (line["cmd"] as? JsonPrimitive)?.contentOrNull
+        val handler = handlers.handlerFor(cmd)
+            ?: return reverseError(id, reverseDefaultError(cmd))
+        return try {
+            reverseReply(id, handler(line))
+        } catch (err: Exception) {
+            reverseError(
+                id,
+                err.message ?: when (cmd) {
+                    REVERSE_GENERATE -> "the generation failed: ${err.javaClass.simpleName}"
+                    else -> "the reverse request failed: ${err.javaClass.simpleName}"
+                }
+            )
+        }
+    }
+
+    /**
+     * The words for a reverse command nobody registered to answer. A
+     * generation is "not available" (the call has no model wired); a form is
+     * answered with the exact sentence the runtime form's own refusal uses,
+     * so a probe or a legacy call site — nobody registered a dialog — behaves
+     * the same as a host that wired none: the plugin reads the refusal and the
+     * call carries on. Anything else is a command this build does not know.
+     */
+    internal fun reverseDefaultError(cmd: String?): String = when (cmd) {
+        REVERSE_GENERATE -> "agent generation is not available"
+        REVERSE_USER_INPUT -> ReverseHandlers.NO_INTERACTIVE_UI
+        else -> "unknown reverse command: $cmd"
+    }
+
     fun statusOf(result: JsonObject): NodeStatus =
         json.decodeFromJsonElement(NodeStatus.serializer(), result)
 
@@ -382,6 +479,17 @@ internal object NodeProtocol {
             put("payload", call.payload)
             put("config", call.config)
             put("timeoutMs", call.timeoutMs)
+            // The module half: same omit-when-absent rule as userAgent and
+            // history — a plugin.json row sends none of it, and the host reads
+            // each absence as its own default rather than as an empty value.
+            if (!call.format.isNullOrBlank()) put("format", call.format)
+            if (!call.prompt.isNullOrBlank()) put("prompt", call.prompt)
+            call.timeoutSeconds?.let { put("timeoutSeconds", it) }
+            call.inputsValues?.let { put("inputsValues", it) }
+            if (!call.stateRoot.isNullOrBlank()) put("stateRoot", call.stateRoot)
+            if (!call.title.isNullOrBlank()) put("title", call.title)
+            if (!call.zagentsVersion.isNullOrBlank()) put("zagentsVersion", call.zagentsVersion)
+            if (!call.zagentsName.isNullOrBlank()) put("zagentsName", call.zagentsName)
             // Same omit-when-empty rule as userAgent above: absent means "not
             // granted", never "granted and empty".
             if (!call.history.isNullOrEmpty()) {
