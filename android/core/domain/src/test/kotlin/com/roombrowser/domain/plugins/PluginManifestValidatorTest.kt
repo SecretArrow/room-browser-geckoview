@@ -311,6 +311,24 @@ class PluginManifestValidatorTest {
     }
 
     @Test
+    fun `commands may not be named make_plugins either - the second reserved word`() {
+        // Design §5.1: a manifest declaring a command named make_plugins is
+        // refused at install, exactly the sentence the first reserved word
+        // earns — one rule, both app-owned words.
+        val errors = PluginManifestValidator.validate(
+            valid("commands" to jsonArray(command("make_plugins")))
+        )
+        assertThat(errors).hasSize(1)
+        assertThat(errors.single()).isEqualTo("command name \"make_plugins\" is reserved by the app")
+        // And the first word's refusal is unchanged by the second arriving.
+        val plugins = PluginManifestValidator.validate(
+            valid("commands" to jsonArray(command("plugins")))
+        )
+        assertThat(plugins).hasSize(1)
+        assertThat(plugins.single()).isEqualTo("command name \"plugins\" is reserved by the app")
+    }
+
+    @Test
     fun `hooks are a subset of message`() {
         assertThat(
             PluginManifestValidator.validate(valid("hooks" to jsonArray("message")))

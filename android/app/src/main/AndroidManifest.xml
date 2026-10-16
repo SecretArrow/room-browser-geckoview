@@ -217,6 +217,16 @@
             android:exported="false"
             android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboard|keyboardHidden|density|uiMode" />
         <!--
+          The plugin file editor — its OWN activity in the default process,
+          launched from the plugin manager's row Edit icon. It edits the text
+          of an installed plugin's existing files only, and a save is a full
+          reinstall through the one installer door (never the Node runtime).
+        -->
+        <activity
+            android:name=".agent.ui.PluginEditorActivity"
+            android:exported="false"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboard|keyboardHidden|density|uiMode" />
+        <!--
           The default-context editor — its OWN activity (default process, no
           WebView), reached from the agent panel's context chip and from AI
           Agent settings, so a paragraph has a screen to be written on.

@@ -35,9 +35,18 @@ MAX_NAME_CHARS = 200
 PERMISSIONS = ("storage", "network", "agent.tools", "chat.context", "agent.generate")
 HOOKS = ("message",)
 CONFIG_TYPES = ("string", "number", "boolean")
+INPUT_TYPES = ("string", "number", "boolean", "choice", "secret")
+TEXT_TYPES = ("string", "secret")
+PLACEHOLDER_TYPES = ("string", "number", "secret")
+INPUT_KEYS = {
+    "key", "type", "title", "description", "required", "default",
+    "placeholder", "pattern", "patternError", "minLength", "maxLength",
+    "min", "max", "options",
+}
 MANIFEST_KEYS = {
     "id", "name", "version", "description", "author", "license", "api",
     "entry", "permissions", "network", "config", "commands", "hooks",
+    "inputs",
 }
 
 ID_RE = re.compile(r"^[a-z][a-z0-9]*(\.[a-z0-9-]+){1,4}$")
@@ -143,6 +152,8 @@ def manifest_error(data: object) -> list[str]:
         else:
             errors.extend(schema_errors(config.get("schema", [])))
 
+    errors.extend(inputs_errors(data.get("inputs")))
+
     commands = data.get("commands", [])
     if not isinstance(commands, list) or len(commands) > 12:
         errors.append("commands must be an array of at most 12 items")
@@ -208,6 +219,113 @@ def default_matches(kind: str, default: object) -> bool:
         # bool is an int in python; a default of true is not a number here.
         return isinstance(default, (int, float)) and not isinstance(default, bool)
     return isinstance(default, str)
+
+
+def inputs_errors(inputs: object) -> list[str]:
+    """The `inputs` array's rules, mirroring PluginInputsSchema.validate over
+    everything a source tree can prove; absent/None reads as no form."""
+    if inputs is None:
+        return []
+    if not isinstance(inputs, list):
+        return ["inputs must be an array of field objects"]
+    errors: list[str] = []
+    if len(inputs) > 12:
+        errors.append("inputs must hold at most 12 items")
+    keys: list[str] = []
+    for index, item in enumerate(inputs):
+        if not isinstance(item, dict):
+            errors.append(f"inputs entry {index + 1} must be an object")
+            continue
+        key = item.get("key")
+        who = f"key {key!r}" if isinstance(key, str) and key else f"entry {index + 1}"
+        if not isinstance(key, str) or not CONFIG_KEY_RE.match(key):
+            errors.append(f"inputs {who}: key must match ^[a-z][a-z0-9_]{{0,31}}$")
+        elif key in keys:
+            errors.append(f"inputs {who}: keys must be unique")
+        else:
+            keys.append(key)
+        kind = item.get("type")
+        if kind not in INPUT_TYPES:
+            errors.append(f"inputs {who}: type must be one of {', '.join(INPUT_TYPES)}")
+        title = item.get("title")
+        if not isinstance(title, str) or not 1 <= len(title) <= 64:
+            errors.append(f"inputs {who}: title must be 1..64 characters")
+        description = item.get("description", "")
+        if isinstance(description, str) and len(description) > 200:
+            errors.append(f"inputs {who}: description must be at most 200 characters")
+        if "required" in item and not isinstance(item["required"], bool):
+            errors.append(f"inputs {who}: required must be a boolean")
+        options = item.get("options")
+        if options is not None and (not isinstance(options, list) or
+                                    any(not isinstance(option, dict) for option in options)):
+            errors.append(f"inputs {who}: options must be an array of objects")
+            options = None
+        values: list[str] = []
+        if isinstance(options, list):
+            if kind != "choice":
+                errors.append(f"inputs {who}: only choice fields may list options")
+            elif not 1 <= len(options) <= 12:
+                errors.append(f"inputs {who}: options must hold 1..12 items")
+            for option in options:
+                value = option.get("value")
+                if not isinstance(value, str) or not 1 <= len(value) <= 64:
+                    errors.append(f"inputs {who}: option values must be 1..64 characters")
+                elif value in values:
+                    errors.append(f"inputs {who}: option values must be unique")
+                else:
+                    values.append(value)
+                label = option.get("label", "")
+                if isinstance(label, str) and len(label) > 64:
+                    errors.append(f"inputs {who}: option labels must be at most 64 characters")
+        if "default" in item and item["default"] is not None:
+            if kind == "choice":
+                if item["default"] not in values:
+                    errors.append(f"inputs {who}: default must be one of the listed options")
+            elif not default_matches(kind if kind in INPUT_TYPES else "string", item["default"]):
+                errors.append(f"inputs {who}: default does not match its type")
+        placeholder = item.get("placeholder", "")
+        if isinstance(placeholder, str):
+            if placeholder and kind not in PLACEHOLDER_TYPES:
+                errors.append(f"inputs {who}: only string, number and secret fields may have a placeholder")
+            if len(placeholder) > 100:
+                errors.append(f"inputs {who}: placeholder must be at most 100 characters")
+        pattern = item.get("pattern", "")
+        if isinstance(pattern, str):
+            if pattern and kind not in TEXT_TYPES:
+                errors.append(f"inputs {who}: only string and secret fields may have a pattern")
+            if len(pattern) > 200:
+                errors.append(f"inputs {who}: pattern must be at most 200 characters")
+            if pattern and kind in TEXT_TYPES:
+                try:
+                    re.compile(pattern)
+                except re.error:
+                    errors.append(f"inputs {who}: pattern must be a valid regular expression")
+        pattern_error_text = item.get("patternError", "")
+        if isinstance(pattern_error_text, str) and len(pattern_error_text) > 200:
+            errors.append(f"inputs {who}: patternError must be at most 200 characters")
+        for bound in ("minLength", "maxLength"):
+            if bound in item:
+                if kind not in TEXT_TYPES:
+                    errors.append(f"inputs {who}: only string and secret fields may have a {bound}")
+                elif not isinstance(item[bound], int) or isinstance(item[bound], bool) or item[bound] < 0:
+                    errors.append(f"inputs {who}: {bound} must be a non-negative integer")
+        if all(isinstance(item.get(bound), int) and not isinstance(item.get(bound), bool)
+               for bound in ("minLength", "maxLength")) and \
+                "minLength" in item and "maxLength" in item and item["minLength"] > item["maxLength"]:
+            errors.append(f"inputs {who}: minLength must not exceed maxLength")
+        for bound in ("min", "max"):
+            if bound in item:
+                if kind != "number":
+                    errors.append(f"inputs {who}: only number fields may have a {bound}")
+                elif not isinstance(item[bound], (int, float)) or isinstance(item[bound], bool):
+                    errors.append(f"inputs {who}: {bound} must be a number")
+        if all(isinstance(item.get(bound), (int, float)) and not isinstance(item.get(bound), bool)
+               for bound in ("min", "max")) and "min" in item and "max" in item and \
+                item["min"] > item["max"]:
+            errors.append(f"inputs {who}: min must not exceed max")
+        for name in sorted(set(item) - INPUT_KEYS):
+            errors.append(f"inputs {who}: unknown field {name!r}")
+    return errors
 
 
 def pattern_error(pattern: object) -> str | None:

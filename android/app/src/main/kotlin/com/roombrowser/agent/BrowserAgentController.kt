@@ -41,6 +41,7 @@ import com.roombrowser.domain.download.DownloadFormat
 import com.roombrowser.domain.model.ProfileId
 import com.roombrowser.domain.model.SearchEngines
 import com.roombrowser.domain.plugins.PluginCard
+import com.roombrowser.domain.plugins.PluginComposePrompt
 import com.roombrowser.domain.plugins.PluginGeneratePrompt
 import com.roombrowser.domain.plugins.toJson
 import com.roombrowser.domain.task.AiTaskPermissions
@@ -470,7 +471,11 @@ class BrowserAgentController(
             runCatching { repo.messages(session) }.getOrDefault(emptyList())
                 .none { it.role == "user" }
         },
-        generate = { session -> pluginGeneratorFor(session) }
+        generate = { session -> pluginGeneratorFor(session) },
+        // /make_plugins composes with the SAME session resolution rule — the
+        // chat's own AI, read per command — so the maker's promise and
+        // agent.generate's are one promise.
+        compose = { session -> pluginComposerFor(session) }
     )
 
     // ------------------------------------------------------------- lifecycle
@@ -1672,6 +1677,62 @@ class BrowserAgentController(
     }
 
     /**
+     * The chat's own composer for /make_plugins — the SESSION's provider and
+     * model, not the panel's current selection, same rule as
+     * [pluginGeneratorFor]: the promise is "this chat's AI". Fresh gateway,
+     * no retry, no tuning; the maker's own one-retry rule lives above this
+     * seam, in [PluginUiState.makePlugins].
+     */
+    private suspend fun pluginComposerFor(sessionId: Long): PluginComposeCall? {
+        val session = runCatching { repo.session(sessionId) }.getOrNull() ?: return null
+        val provider = runCatching { repo.provider(session.providerId) }.getOrNull() ?: return null
+        val model = session.model.ifBlank { provider.defaultModel }
+        if (model.isBlank()) return null
+        val gateway = AgentGateways.forProvider(
+            callFactory,
+            provider,
+            apiKeyFor(provider).orEmpty(),
+            appContext = appContext
+        )
+        return PluginComposeCall { description, retryNote ->
+            composeWith(gateway, model, description, retryNote)
+        }
+    }
+
+    /**
+     * One composition, design §5.3: the chat's own model asked ONCE,
+     * non-streaming, no tools, temperature 0.2 — NOT [generateWith]'s 0.7:
+     * composition is code, and the divergence is deliberate. The budget is
+     * its own ([COMPOSE_BUDGET_MS] — code is slower than a 24-word sentence,
+     * and no turn is running), the reply clamped to [COMPOSE_REPLY_CHARS]
+     * above the parser's own code cap, and an empty answer refused rather
+     * than returned, exactly as a generation is. Throws on failure; the
+     * thrown words are what the maker's retry and definitive refusal read.
+     */
+    private suspend fun composeWith(
+        gateway: AgentGateway,
+        model: String,
+        description: String,
+        retryNote: String?
+    ): String {
+        val reply = withTimeout(COMPOSE_BUDGET_MS) {
+            gateway.chat(
+                ChatRequest(
+                    model = model,
+                    messages = PluginComposePrompt.messagesOf(description, retryNote),
+                    stream = false,
+                    tools = null,
+                    temperature = 0.2
+                ),
+                events = {}
+            )
+        }
+        val text = reply.content?.trim().orEmpty()
+        require(text.isNotEmpty()) { "the chat's model wrote no text" }
+        return text.take(COMPOSE_REPLY_CHARS)
+    }
+
+    /**
      * One generation, per design §2: the chat's own model asked ONCE,
      * non-streaming, no tools, temperature 0.7, the prompt rendered by
      * [PluginGeneratePrompt] from the clamped request — and an empty answer
@@ -2111,6 +2172,21 @@ class BrowserAgentController(
          * long — the action then falls back to the Confirm actions rule.
          */
         private const val DECISION_TIMEOUT_MS = 30_000L
+
+        /**
+         * How long one /make_plugins composition may run — its own budget,
+         * because no turn is running while it does, and code is slower than
+         * the sentence a plugin generation asks for. The maker gets TWO of
+         * these at most (the attempt and its one corrective retry).
+         */
+        private const val COMPOSE_BUDGET_MS = 120_000L
+
+        /**
+         * The transport clamp on a composed reply — far above the parser's
+         * own 128 KB code cap, which is the real line; this only keeps a
+         * rambling model from billing the user for its preamble.
+         */
+        private const val COMPOSE_REPLY_CHARS = 200_000
 
         /**
          * What a headless chat may reach on its hidden page.

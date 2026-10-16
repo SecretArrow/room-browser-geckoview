@@ -14,6 +14,10 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedButton
@@ -27,6 +31,7 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.roombrowser.agent.PluginForms
 import com.roombrowser.data.db.ChatPluginEntity
 import com.roombrowser.data.db.PluginEntity
 import com.roombrowser.data.repo.decodePermissions
@@ -48,6 +53,12 @@ import com.roombrowser.ui.common.RoomSheetHeader
  * Turning a plugin on is per-chat BY DESIGN: the sheet says so in one line,
  * because a reader who cannot see that would read the switch as an app-wide
  * setting and the isolation the whole system is built on would be invisible.
+ *
+ * A row whose manifest declares an input form also shows the edit pencil —
+ * [onEditInputs] opens that form prefilled with this chat's stored answers,
+ * because editing is the ONLY way to change them besides a reinstall. The
+ * pencil shows on every row with a form, enabled binding or not: editing a
+ * plugin this chat has off just saves its answers for the next enable.
  */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
@@ -57,7 +68,8 @@ fun ChatPluginsSheet(
     onEnable: (String, Boolean) -> Unit,
     onDismiss: () -> Unit,
     onInstallRequest: () -> Unit,
-    onManage: () -> Unit
+    onManage: () -> Unit,
+    onEditInputs: (String) -> Unit
 ) {
     ModalBottomSheet(onDismissRequest = onDismiss, shape = RoomBottomSheetShape) {
         Column(
@@ -89,7 +101,8 @@ fun ChatPluginsSheet(
                     PluginRow(
                         plugin = plugin,
                         chatPlugins = chatPlugins,
-                        onEnable = onEnable
+                        onEnable = onEnable,
+                        onEditInputs = onEditInputs
                     )
                 }
             }
@@ -119,7 +132,8 @@ fun ChatPluginsSheet(
  * One installed plugin in the picker: name and version, the permissions it
  * would run with as one honest line (the same sentences the grant dialog
  * consents with, so the sheet is where an upgrade that grew the manifest
- * becomes visible), and the chat binding's switch.
+ * becomes visible), the chat binding's switch, and — when the manifest
+ * declares an input form — the edit pencil for this chat's stored answers.
  *
  * The permission line carries the network hosts inline because that is what
  * [PluginPermissions.labelOf] does for the network grant — the hosts ARE the
@@ -130,7 +144,8 @@ fun ChatPluginsSheet(
 private fun PluginRow(
     plugin: PluginEntity,
     chatPlugins: List<ChatPluginEntity>,
-    onEnable: (String, Boolean) -> Unit
+    onEnable: (String, Boolean) -> Unit,
+    onEditInputs: (String) -> Unit
 ) {
     val hosts = decodePermissions(plugin.networkAllowJson)
     val permissionLine = decodePermissions(plugin.permissionsJson)
@@ -170,6 +185,17 @@ private fun PluginRow(
             )
         }
         Spacer(Modifier.width(8.dp))
+        // Only a row whose manifest declares a form can have its answers
+        // edited — a plugin without one has nothing to edit, so it never
+        // grows a pencil that would open nothing.
+        if (PluginForms.schemaOf(plugin).fields.isNotEmpty()) {
+            IconButton(
+                onClick = { onEditInputs(plugin.id) },
+                modifier = Modifier.semantics { contentDescription = "plugin_edit_inputs_${plugin.dirName}" }
+            ) {
+                Icon(Icons.Filled.Edit, contentDescription = null)
+            }
+        }
         Switch(
             checked = enabled,
             onCheckedChange = { checked -> onEnable(plugin.id, checked) },

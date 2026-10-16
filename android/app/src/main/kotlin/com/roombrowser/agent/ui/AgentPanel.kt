@@ -143,6 +143,7 @@ import com.roombrowser.agent.AgentAttachment
 import com.roombrowser.agent.AgentEntry
 import com.roombrowser.agent.ApprovalAnswer
 import com.roombrowser.agent.BrowserAgentController
+import com.roombrowser.agent.PluginFormContext
 import com.roombrowser.browser.BrowserViewModel
 import com.roombrowser.data.db.AgentProviderEntity
 import com.roombrowser.data.plugins.PluginInstallResult
@@ -1298,9 +1299,10 @@ private fun AgentApprovalDialog(
 
 /**
  * The plugin surfaces of BOTH agent windows — the picker sheet, the
- * enable-time grant dialog, and the ZIP install the sheet's footer starts —
- * collected in one place so the floating panel and the full-screen agent
- * behave identically without either duplicating them.
+ * enable-time grant dialog (with its form half when the manifest declares
+ * one), the input-form dialog the gates raise, and the ZIP install the
+ * sheet's footer starts — collected in one place so the floating panel and
+ * the full-screen agent behave identically without either duplicating them.
  *
  * The ZIP install goes through the app graph's plugin repository, the same
  * door the manager activity uses, because the repository is the one writer
@@ -1312,6 +1314,13 @@ private fun AgentApprovalDialog(
 private fun PluginSurfaces(agent: BrowserAgentController) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
+    // The plugin whose form the sheet's edit pencil opened, or null. The
+    // state raises an edit as an ordinary ACTIVATION-context form, so the
+    // dialog needs this one UI-local fact to spell its chrome ("Edit inputs
+    // for …" / "Save and run") — set on the pencil's own tap, cleared the
+    // moment the form it named retires, so it can never mislabel a form some
+    // other gate later raised for the same plugin.
+    var editingPluginId by remember { mutableStateOf<String?>(null) }
 
     // SAF: the system file picker — the one door a plugin ZIP enters through,
     // and it opens for a file the person chose, never for a path the app
@@ -1340,21 +1349,66 @@ private fun PluginSurfaces(agent: BrowserAgentController) {
             onInstallRequest = {
                 installLauncher.launch(arrayOf("application/zip", "application/octet-stream"))
             },
-            onManage = { PluginManagerActivity.launch(context) }
+            onManage = { PluginManagerActivity.launch(context) },
+            onEditInputs = { pluginId ->
+                editingPluginId = pluginId
+                agent.pluginUi.editInputs(pluginId)
+            }
         )
     }
     val pending = agent.pluginUi.pendingGrant
     if (pending != null) {
         PluginPermissionDialog(
             pending = pending,
-            onAccept = { granted ->
-                agent.pluginUi.submitGrants(granted)
+            onAccept = { granted, inputs ->
+                agent.pluginUi.submitGrants(granted, inputs)
                 // The confirmation is the conversation itself — the activation
                 // card and the "is on" notice land there — so the sheet steps
                 // out of the way rather than covering them.
                 agent.pluginUi.dismissPicker()
             },
             onCancel = { agent.pluginUi.cancelGrant() }
+        )
+    }
+    // The form a gate raised: the activation backstop, the agent tool's
+    // missing-inputs gate, the runtime's mid-run question, the sheet's edit.
+    // The CONSENT dialog wins when both could ever be up — the gates' forms
+    // only appear after consent was given — so this one renders only when no
+    // grant dialog is showing; its raiser keeps waiting either way, with the
+    // state's own 300 s cap as the ceiling on the wait.
+    val form = agent.pluginUi.pendingForm
+    if (pending == null && form != null) {
+        PluginFormDialog(
+            form = form,
+            isEdit = form.context == PluginFormContext.ACTIVATION && form.pluginId == editingPluginId,
+            onSubmit = { values ->
+                editingPluginId = null
+                agent.pluginUi.submitForm(values)
+            },
+            onCancel = {
+                editingPluginId = null
+                agent.pluginUi.cancelForm()
+            }
+        )
+    }
+    // A form that retired without either handler — its raiser's own timeout
+    // retires it — must not leave the edit flag behind to mislabel the next
+    // form that rises for the same plugin.
+    LaunchedEffect(form) {
+        if (form == null) editingPluginId = null
+    }
+    // The /make_plugins approval form: one composed draft waiting on the
+    // person's Allow and Create — beside the grant dialog's slot in the same
+    // convention, and independent of both form slots (a creation is not a
+    // plugin event waiting on a gate; nothing is suspended behind it).
+    val creation = agent.pluginUi.pendingCreation
+    if (creation != null) {
+        PluginCreateDialog(
+            pending = creation,
+            onSubmit = { name, description, permissions, hosts ->
+                agent.pluginUi.submitCreation(name, description, permissions, hosts)
+            },
+            onCancel = { agent.pluginUi.cancelCreation() }
         )
     }
 }

@@ -16,8 +16,15 @@ package com.roombrowser.domain.plugins
  */
 object PluginCommandParser {
 
-    /** The command the app owns; a manifest may not declare it (see the validator). */
-    private const val RESERVED = "plugins"
+    /**
+     * The command words the app owns, decided BEFORE any plugin-command
+     * lookup — a chat whose own enabled plugin declares one of these names
+     * still routes to the app's command, never the plugin's. A manifest may
+     * not declare any of them: [PluginManifestValidator] refuses both words
+     * with the same sentence, so this set is the single spelling of the
+     * reserved vocabulary.
+     */
+    val RESERVED = setOf("plugins", "make_plugins")
 
     /**
      * Parses [text] against [commands], the command names this chat's enabled
@@ -32,8 +39,15 @@ object PluginCommandParser {
         val name = body.substringBefore(' ').trim()
         if (name.isEmpty()) return PluginCommand.NotACommand
         val args = body.substringAfter(' ', "").trim()
-        if (name == RESERVED) {
+        if (name == "plugins") {
             return if (args.isEmpty()) PluginCommand.ListPlugins else PluginCommand.Toggle(args)
+        }
+        if (name == "make_plugins") {
+            // The bare form carries an empty description — the instructive
+            // notice and the 1000-character cap are the interceptor's answers
+            // (design §5.1/§5.2), because they are notices, and this function
+            // only routes text.
+            return PluginCommand.MakePlugins(args)
         }
         val owners = commands[name].orEmpty()
         return when {
@@ -56,6 +70,15 @@ sealed interface PluginCommand {
      * caller's to resolve against the installed list and the chat's bindings.
      */
     data class Toggle(val query: String) : PluginCommand
+
+    /**
+     * `/make_plugins <description>`: the plugin maker — this chat's own AI
+     * drafts a plugin from the description and the person reviews it before
+     * anything installs. The bare form is the empty description; the grammar
+     * is the same one `/plugins` rides (word boundary, case-sensitive token),
+     * so `/make_pluginsx` is NOT the command and falls through to the agent.
+     */
+    data class MakePlugins(val description: String) : PluginCommand
 
     /** `/<name> <args>` that exactly one enabled plugin declares. */
     data class Plugin(val name: String, val args: String) : PluginCommand

@@ -27,9 +27,6 @@ object PluginManifestValidator {
     private val CONFIG_KEY = Regex("^[a-z][a-z0-9_]{0,31}$")
     private val COMMAND_NAME = Regex("^[a-z][a-z0-9_-]{0,23}$")
 
-    /** The one command name this app owns; `/plugins` is never a plugin's. */
-    private const val RESERVED_COMMAND = "plugins"
-
     private val CONFIG_TYPES = setOf("string", "number", "boolean")
     private val HOOKS = setOf("message")
 
@@ -217,8 +214,11 @@ object PluginManifestValidator {
             if (!COMMAND_NAME.matches(commandName)) {
                 errors.add("command name \"$commandName\" is not a lowercase identifier (a..z, 0..9, _, -, at most 24 chars)")
             }
-            if (commandName == RESERVED_COMMAND) {
-                errors.add("command name \"$RESERVED_COMMAND\" is reserved by the app")
+            if (commandName in PluginCommandParser.RESERVED) {
+                // Both app-owned words — `plugins` and `make_plugins` — refuse
+                // with the same sentence; the parser's RESERVED set is the one
+                // spelling of the vocabulary, so neither side can drift.
+                errors.add("command name \"$commandName\" is reserved by the app")
             }
             if (command.string("title").orEmpty().length > COMMAND_TITLE_CHARS) {
                 errors.add("command \"$commandName\" has a title longer than $COMMAND_TITLE_CHARS characters")

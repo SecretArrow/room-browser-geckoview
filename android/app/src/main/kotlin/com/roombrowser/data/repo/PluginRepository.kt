@@ -95,6 +95,19 @@ class PluginRepository(
         runCatching { File(pluginsDir, entity.dirName).deleteRecursively() }
     }
 
+    /**
+     * The code directory of an installed plugin — `<filesDir>/plugins/<dirName>`
+     * — or null when no row for [pluginId] exists: the manager's files-missing
+     * check, and the editor's and the export's dir source. Whether the
+     * directory is still THERE is the caller's read (`isDirectory`): a row
+     * whose dir was lost still answers here, so the manager can say so —
+     * "Files missing — reinstall from a ZIP or remove." — instead of this
+     * answer quietly inventing a directory that is not on disk.
+     */
+    suspend fun pluginDir(pluginId: String): File? = withContext(Dispatchers.IO) {
+        pluginDao.byId(pluginId)?.let { File(pluginsDir, it.dirName) }
+    }
+
     // ------------------------------------------------------------ per chat
 
     fun observeChatPlugins(sessionId: Long): Flow<List<ChatPluginEntity>> =
@@ -256,7 +269,12 @@ internal fun PluginManifest.toEntity(
         zagentsVersion = zagents?.version,
         zagentsEntry = zagents?.entry,
         timeoutSeconds = zagents?.timeoutSeconds,
-        inputsJson = zagents?.inputsJson,
+        // BOTH formats' form: the module's own spelling when the install was
+        // one, else the plugin.json manifest's — the gates read this column
+        // through PluginForms.schemaOf, and a native manifest that declared
+        // `inputs` was validated against the same schema rules, so dropping
+        // it here would install a form nothing would ever raise.
+        inputsJson = zagents?.inputsJson ?: manifest.inputs.toJsonOrNull(),
         promptStaged = false
     )
 

@@ -91,7 +91,8 @@ data class ZAgentsManifest(
         networkAllow = allowedHosts,
         configSchema = emptyList(),
         commands = emptyList(),
-        hooks = emptyList()
+        hooks = emptyList(),
+        inputs = inputs
     )
 
     /**

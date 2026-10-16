@@ -200,7 +200,7 @@ is fixed in one pass, not three.
 | `permissions` | no | array, unique, each one of `storage` `network` `agent.tools` `chat.context` `agent.generate`, at most 5. |
 | `network` | see rule | object with `allow`: 1..20 host patterns. **Required (non-empty) iff `permissions` contains `network`** — and refused as a surprise when it does not. |
 | `config.schema` | no | 0..12 items; `key` `^[a-z][a-z0-9_]{0,31}$`, unique; `type` one of `string` `number` `boolean`; `default` (when present) must match the type — absent means the type's zero value (`""` / `0` / `false`); `title` 0..64; `description` 0..200. |
-| `commands` | no | 0..12 items; `name` `^[a-z][a-z0-9_-]{0,23}$`, unique, **must not be `plugins`** (reserved by the app); `title` 0..64; `description` 0..200. |
+| `commands` | no | 0..12 items; `name` `^[a-z][a-z0-9_-]{0,23}$`, unique, **must be neither `plugins` nor `make_plugins`** (both are reserved by the app, and the refusal names the word); `title` 0..64; `description` 0..200. |
 | `hooks` | no | a subset of `["message"]`, unique, at most one entry. |
 | `inputs` | no | 0..12 items; the interactive input form — the field schema and its validation rules are their own section below ("Interactive input forms"). |
 | unknown fields | — | **rejected.** The API is versioned by `api`; a manifest carrying a field this build never heard of fails loudly at install rather than silently misbehaving. |
@@ -357,8 +357,11 @@ layout; it is null only in a harness that was handed an arbitrary root).
 every `room.net.fetch` the plugin makes already rides as, now visible to read
 instead of only enforced, so a plugin can show or log the identity its
 requests leave under; it is `null` when the app supplied none, and always
-`null` in the desktop harness, which supplies no identity. There is no
-`process` in the sandbox — `room.meta` replaces it.
+`null` in the desktop harness, which supplies no identity. A plugin whose
+manifest declares an `inputs` form also reads `meta.inputs` — the chat's
+stored answers, present only when the binding has some (the same object
+`zagents.info.inputs` carries for a module run; see "Interactive input
+forms"). There is no `process` in the sandbox — `room.meta` replaces it.
 
 ### `room.config`
 
@@ -834,15 +837,18 @@ surface, not the model's):
 | `/plugins` | opens the chat-plugins sheet (also the composer's puzzle-piece button) |
 | `/plugins <id-or-name>` | toggles that plugin for the chat — exact id or exact name; enabling raises the grant dialog when consents are missing; a notice answers either way |
 | `/plugins <no match>` | a notice listing what *is* installed (or the "install one from a ZIP" line when nothing is) |
+| `/make_plugins <description…>` | asks **this chat's own AI** to draft a whole plugin from the description — manifest plus entry code — and raises the review form; on **Allow and Create** it installs as a normal plugin (see "Making a plugin with `/make_plugins`"). Bare `/make_plugins` answers with instructions; a description over 1000 characters is refused with `/make_plugins needs a description of at most 1000 characters.` |
 | `/<name> <args…>` | dispatched when **exactly one** enabled plugin's *manifest* declares `<name>` — the command event runs, cards land, no turn starts |
 | `/<name>` declared by 2+ enabled plugins | an ambiguity notice naming both — enable one, or switch the other off |
 | anything else | falls through to the agent as ordinary chat (a leading slash is not an error) |
 
-`plugins` is reserved and a manifest may not declare it. A brand-new chat
-with no session row yet still works: the first enable or plugin command
-creates the chat's row bound to the panel's tab — which needs an AI provider
-to be configured ("Configure an AI provider first (Agent → settings)"),
-since a chat row names one.
+`plugins` and `make_plugins` are both reserved words, and a manifest may
+not declare either — the validator refuses
+`command name "make_plugins" is reserved by the app` at install. A
+brand-new chat with no session row yet still works: the first enable or
+plugin command creates the chat's row bound to the panel's tab — which
+needs an AI provider to be configured ("Configure an AI provider first
+(Agent → settings)"), since a chat row names one.
 
 ## Packaging
 
@@ -883,6 +889,141 @@ rejected at install, because native code would load into the runtime's own
 process and out of the sandbox's reach entirely — the sandbox's promises are
 about JavaScript. A package that needs a build step will not work either;
 nothing from a package is ever executed at install time.
+
+## Editing and exporting installed plugins
+
+The plugin manager (Agent → the puzzle piece → "Manage plugins") gives every
+installed row two more actions beside remove: **Edit files** (pencil) opens
+the file editor, **Export as ZIP** (download arrow) writes a shareable
+`.zip` through the system file picker. Both are app-wide code management on
+the default process; the per-chat sheet stays what it always was — the
+binding surface.
+
+### What the editor edits
+
+The editor lists **every file of the plugin's code directory** — the exact
+tree the installer extracted. A file is editable iff ALL of:
+
+| Rule | Value |
+|---|---|
+| it is a regular file, no symlink | guaranteed by the install-time walk; re-checked on save |
+| size | ≤ 256 KB — a text field holding more is unusable on a phone |
+| it decodes as strict UTF-8 (round-trip) | text-only edits; binary stays binary |
+| extension | one of `js mjs cjs json txt md css html htm xml yml yaml csv` |
+
+Anything else renders greyed with an "(not editable)" suffix. **There is no
+create, rename or delete** — the file set the person consented to at install
+is the file set forever; an edit changes bytes, nothing else. That one rule
+keeps manifest-declared entry and command routing honest (a manifest may
+only point at paths that already exist) and makes the security story one
+sentence. Both formats edit their own manifest (`plugin.json` or
+`module.json`, validated by that format's rules on save).
+
+### Save = reinstall
+
+Saving a file re-zips the whole directory in memory (the one edited file's
+bytes substituted) and pushes it through the **same install door a
+sideloaded ZIP enters**: every guard re-runs, the manifest is re-validated,
+the directory is swapped atomically, and the row is rebuilt from the
+(possibly edited) manifest. Chats that had the plugin enabled keep their
+bindings; a manifest whose declared permission set **grew** re-consents at
+the next enable; a set that shrank narrows by construction (declared ∩
+granted). Per-chat data roots are untouched — install never writes
+`plugin-data/`.
+
+An **invalid manifest cannot be saved** — the refusal is the installer's
+own sentence list (`The file was not saved:` + one `— <error>` per reason,
+nothing changed on disk) — but it CAN be edited: the editor opens any text
+file regardless of current validity, and a directory whose manifest is
+broken shows the banner
+`This plugin's files do not validate:` with every current reason. Fixing a
+broken manifest is one full edit plus one save. That is also what "repair"
+is: there is no separate repair button — saving even the unchanged manifest
+re-derives every row column from the directory's files.
+
+**Identity changes fork, they do not rename.** The row's id comes from the
+manifest (a `plugin.json`'s `id`; a module's sanitized `name` under the
+`zagents.` prefix). If your edited manifest moves that identity, the editor
+warns before the tap —
+`Saving this manifest installs it as a NEW plugin — "<new id>" — the old one stays installed too.`
+— and the save installs a second plugin; the old row, its directory and
+its bindings are untouched. No implicit deletion, no binding theft.
+
+A row whose code directory was lost under the app (deleted from storage,
+say) renders `Files missing — reinstall from a ZIP or remove.` with the
+remove icon as its only action: there are no files left to edit, export or
+repair. After a cross-process save the chat-side catalogue re-probes on the
+row's next changed `updated_at` — an edit in the manager's process is
+visible to the ':browser' process without a disable/enable dance.
+
+### Export
+
+Export writes the code directory — and ONLY the code directory — as a
+`.zip` through SAF `CreateDocument("application/zip")`, with the default
+name `<name>-<version>.zip` (filename-hostile characters fold to `-`; a
+module uses its own verbatim version). The archive is deterministic in the
+packer's discipline: entries at the archive root, sorted, every one dated
+1980-01-01 00:00:00 UTC, DEFLATE, no directory entries — so two exports of
+an unmodified plugin are byte-equal and an exported-and-rebuilt tree diffs
+clean. **Per-chat runtime data never rides along**: kv, files and state
+live under `plugin-data/<sessionId>/`, structurally outside the walk — not
+filtered out, unreachable.
+
+Refusals, checked before a byte is written: a symlink anywhere under the
+directory; a file the installer would refuse (native suffixes); more than
+512 files; more than 20 MB — each with its own sentence under
+`The plugin was not exported:`. A failed write is `Export failed: <reason>`.
+The round trip is the guarantee: export → uninstall → install produces a
+plugin whose row, directory and behavior are identical, because the archive
+is exactly the shape the installer re-validates.
+
+## Making a plugin with `/make_plugins`
+
+`/make_plugins a tiny plugin that counts greetings per chat and answers
+with a card` — typed in the composer, intercepted before any turn — asks
+**this chat's own AI** (the session's provider and model, never the panel's
+current selection) to write a whole plugin from your description: one
+`plugin.json` manifest and one entry file, composed in a single
+non-streaming generation (temperature 0.2, no tools, a 120 s budget). The
+prompt is app-owned and fixed; your description travels as labelled data.
+
+The caps: description ≤ 1000 characters, composed code ≤ 128 KB, manifest
+≤ 64 KB — the same numbers the install door enforces. A first draft that
+breaks the plugin rules earns **exactly one corrective retry** (the parser's
+own error list rides back to the model); a second failure is definitive:
+`The chat's AI could not produce a valid plugin:` with every reason. A
+chat with no provider/model configured is told to configure one.
+
+What you review before anything installs — the **Allow and Create** form:
+
+* an editable **name** and **description** (pre-filled from the draft);
+* the draft's **id, version and declared commands, read-only** — a review
+  that could re-point `entry` or re-spell the id would be a code review a
+  form cannot honestly perform;
+* **permission checkboxes** for the five-name vocabulary, pre-checked to the
+  draft's asks — unchecking is always allowed, and a permission the draft
+  never asked for can still be checked;
+* the **network hosts** in an editable field (visible when `network` is
+  checked) — the allowlist is reviewed, never trusted from the draft;
+* the **full entry code**, monospace and collapsible, before your eyes.
+
+**Allow and Create stays disabled until the REWRITTEN manifest passes the
+same validator that gates installs** — the permissions and hosts that
+install are re-derived from the form, never taken from what the model wrote
+(a blank name, an over-long description, or network checked with an empty
+or invalid hosts list all keep it disabled, with the validator's own
+sentences under the hosts field). On approval the two composed files enter
+through the ordinary install door; drafts conventionally ship
+`"version": "0.1.0"`, which is the closest thing to a "made by
+/make_plugins" marker (there is no column for one — the row IS the
+manifest). The plugin is then OFF everywhere: switch it on per chat with
+`/plugins`, consent, use it.
+
+The whole loop, end to end: `/make_plugins <description>` → review →
+**Allow and Create** → `/plugins` → consent → use (`/commands`, tools,
+cards) → "Manage plugins" → **Edit files** (fix, tune, grow — every save
+re-validates and re-consents where the manifest grew) → **Export as ZIP**
+(save, share, reinstall on any device). One loop, three surfaces, one door.
 
 ## The desktop dev harness (`plugin_dev.js`)
 
@@ -1699,12 +1840,14 @@ For the curious, and for filing issues where they belong:
 | Input-form schema + the single form validator + the system-prompt blocks | same directory (`PluginInputsSchema.kt`, `PluginFormValidator.kt`, `PluginSystemPrompt.kt`) |
 | Permissions + labels, command grammar, tool naming, card model, the generation prompt renderer, `API_VERSION` | same directory (`PluginPermissions.kt`, `PluginCommandParser.kt`, `PluginToolNaming.kt`, `PluginCard.kt`, `PluginGeneratePrompt.kt`, `PluginApi.kt`) |
 | ZIP installer (guards, atomic extract) | `android/app/src/main/kotlin/com/roombrowser/data/plugins/PluginZipInstaller.kt` |
-| Rows, bindings, sweep, config, input values, staged flag | `android/app/src/main/kotlin/com/roombrowser/data/repo/PluginRepository.kt`; tables in `data/db/` (Room v18) |
+| The deterministic dir zipper (an edit's save, an export, `/make_plugins`' in-memory package) + `PluginZipOut` | `android/app/src/main/kotlin/com/roombrowser/data/plugins/PluginDirZipper.kt` |
+| Rows, bindings, sweep, config, input values, staged flag, the dir accessor | `android/app/src/main/kotlin/com/roombrowser/data/repo/PluginRepository.kt`; tables in `data/db/` (Room v18) |
 | App-side engine (request build, grants, fencing, budgets, history shaping) | `android/app/src/main/kotlin/com/roombrowser/agent/AgentPluginRuntime.kt` |
 | Per-chat catalogue (probe cache, tool defs, command owners) | `android/app/src/main/kotlin/com/roombrowser/agent/AgentPluginCatalog.kt` |
 | Tool interception (innermost executor) | `android/app/src/main/kotlin/com/roombrowser/agent/PluginToolExecutor.kt` |
-| Chat surface (commands, grants, enable/disable) | `android/app/src/main/kotlin/com/roombrowser/agent/PluginUiState.kt`; turn wiring in `BrowserAgentController.kt` |
-| UI (sheet, grant dialog, cards, manager) | `android/app/src/main/kotlin/com/roombrowser/agent/ui/` (`PluginSheets.kt`, `PluginPermissionDialog.kt`, `PluginCardView.kt`, `PluginManagerActivity.kt`) |
+| `/make_plugins` state: the composer seam (`PluginComposeCall`) and the approval draft (`PendingPluginCreation`) | `android/app/src/main/kotlin/com/roombrowser/agent/PluginMaker.kt`; the compose prompt and the fenced-block parser beside the other domain pieces (`PluginComposePrompt.kt`, `PluginComposeParser.kt`) |
+| Chat surface (commands, grants, enable/disable, the maker flow) | `android/app/src/main/kotlin/com/roombrowser/agent/PluginUiState.kt`; turn wiring + the session composer (`pluginComposerFor`) in `BrowserAgentController.kt` |
+| UI (sheet, grant dialog, form dialogs, cards, manager, the Allow-and-Create dialog, the file editor) | `android/app/src/main/kotlin/com/roombrowser/agent/ui/` (`PluginSheets.kt`, `PluginPermissionDialog.kt`, `PluginFormDialog.kt`/`PluginFormFields.kt`, `PluginCardView.kt`, `PluginManagerActivity.kt`, `PluginCreateDialog.kt`, `PluginEditorActivity.kt`) |
 | Agent-side gates (plan/permission/unattended) | `domain/agent/PlanModePolicy.kt`, `AgentPermissions.kt`; `agent/HeadlessToolExecutor.kt`, `ScheduledRunToolGate.kt`; `domain/task/AiTaskPermissions.kt` |
 | Packer + dev harness | `android/tools/make_plugin_zip.py`, `android/tools/plugin_dev.js` (plugins), `android/tools/test_zagents_compat.js` (the ZAgents compat proof — the five vendored samples plus the gate fixtures) |
 | Example sources | `android/docs/plugins/hello-world/`, `android/docs/plugins/word-count/` (pre-zipped copies ship in `android/node/src/main/assets/node/plugins/`); the five ZAgents samples vendored byte-identical beside them (`zagents-*.zip`, see the compat section); `android/docs/plugins/onhomeroom-daily/` (the big sample — packed with the packer and sideloaded, not bundled) |

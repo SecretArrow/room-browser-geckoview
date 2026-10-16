@@ -67,7 +67,9 @@ data class PluginManifest(
     val networkAllow: List<String>,
     val configSchema: List<PluginConfigField>,
     val commands: List<PluginCommandDecl>,
-    val hooks: List<String>
+    val hooks: List<String>,
+    /** The interactive input form the manifest declared, both formats' shared feature. */
+    val inputs: PluginInputsSchema = PluginInputsSchema(emptyList())
 ) {
     /**
      * The plugin's directory name on disk: the id with `.` → `_`. The id's own
@@ -109,7 +111,8 @@ data class PluginManifest(
                 networkAllow = (obj["network"] as? JsonObject)?.let { it.strings("allow") }.orEmpty(),
                 configSchema = parseConfigSchema(obj["config"]),
                 commands = parseCommands(obj["commands"]),
-                hooks = obj.strings("hooks")
+                hooks = obj.strings("hooks"),
+                inputs = PluginInputsSchema.parse(obj["inputs"])
             )
         }
 

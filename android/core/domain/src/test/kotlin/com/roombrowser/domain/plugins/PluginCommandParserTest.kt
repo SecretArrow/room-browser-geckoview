@@ -62,6 +62,68 @@ class PluginCommandParserTest {
             .isEqualTo(PluginCommand.NotACommand)
     }
 
+    // ------------------------------------------------------------ make_plugins
+
+    @Test
+    fun `bare make_plugins is the maker command with no description`() {
+        assertThat(PluginCommandParser.parse("/make_plugins", COMMANDS))
+            .isEqualTo(PluginCommand.MakePlugins(""))
+        assertThat(PluginCommandParser.parse("  /make_plugins  ", COMMANDS))
+            .isEqualTo(PluginCommand.MakePlugins(""))
+        // The reserved vocabulary the parser owns on the app's behalf.
+        assertThat(PluginCommandParser.RESERVED).containsExactly("plugins", "make_plugins")
+    }
+
+    @Test
+    fun `make_plugins carries its description verbatim`() {
+        assertThat(PluginCommandParser.parse("/make_plugins a tiny counter plugin", COMMANDS))
+            .isEqualTo(PluginCommand.MakePlugins("a tiny counter plugin"))
+        // Outer whitespace is trimmed, inner spacing is the user's own.
+        assertThat(PluginCommandParser.parse("/make_plugins   counts   greetings  ", COMMANDS))
+            .isEqualTo(PluginCommand.MakePlugins("counts   greetings"))
+    }
+
+    @Test
+    fun `a long description is carried whole - the cap is the interceptor's notice`() {
+        // The 1000-character cap is a NOTICE (design §5.1), and notices are
+        // the interceptor's business: the parser only routes text, so the
+        // description arrives whole and the cap decision is made where it
+        // can be answered.
+        val long = "x".repeat(1001)
+        assertThat(PluginCommandParser.parse("/make_plugins $long", COMMANDS))
+            .isEqualTo(PluginCommand.MakePlugins(long))
+    }
+
+    @Test
+    fun `make_plugins without a whitespace boundary is not the command`() {
+        assertThat(PluginCommandParser.parse("/make_pluginsx", COMMANDS))
+            .isEqualTo(PluginCommand.NotACommand)
+        assertThat(PluginCommandParser.parse("/make_plugins:hi", COMMANDS))
+            .isEqualTo(PluginCommand.NotACommand)
+    }
+
+    @Test
+    fun `make_plugins is matched exactly, not case-insensitively`() {
+        // Command names are lowercase by grammar; a mixed-case spelling is a
+        // different word, and it falls through exactly as today.
+        assertThat(PluginCommandParser.parse("/Make_Plugins hi", COMMANDS))
+            .isEqualTo(PluginCommand.NotACommand)
+        assertThat(PluginCommandParser.parse("/MAKE_PLUGINS", COMMANDS))
+            .isEqualTo(PluginCommand.NotACommand)
+    }
+
+    @Test
+    fun `a plugin declaring make_plugins does not own the word`() {
+        // Reserved-before-plugin-command: the app's word wins even in a chat
+        // whose own enabled plugin declares it — routing to the plugin here
+        // would hand the maker flow to untrusted manifest code.
+        val owners = mapOf("make_plugins" to listOf("Evil Plugin"))
+        assertThat(PluginCommandParser.parse("/make_plugins hi", owners))
+            .isEqualTo(PluginCommand.MakePlugins("hi"))
+        assertThat(PluginCommandParser.parse("/make_plugins", owners))
+            .isEqualTo(PluginCommand.MakePlugins(""))
+    }
+
     private companion object {
         val COMMANDS = mapOf("greet" to listOf("Hello World"))
         val AMBIGUOUS = mapOf("count" to listOf("A", "B"))

@@ -1800,8 +1800,7 @@ function newCall(request, startedAt) {
 
   // A module call extends meta with what the module SDK is built from, so
   // the room global reports the same truths zagents.info does — the format,
-  // the verbatim module strings, the staged prompt, the form's stored input.
-  // A plugin call's meta stays exactly the six fields it has always been.
+  // the verbatim module strings, the staged prompt.
   const meta = {
     pluginId: manifest.id,
     pluginName: manifest.name,
@@ -1820,8 +1819,14 @@ function newCall(request, startedAt) {
     meta.zagentsName = request.zagentsName !== null ? request.zagentsName : manifest.name;
     meta.zagentsVersion = request.zagentsVersion !== null ? request.zagentsVersion : manifest.version;
     if (request.prompt !== null) meta.prompt = request.prompt;
-    if (request.inputsValues !== null) meta.inputs = request.inputsValues;
   }
+  // The form's stored answers ride EVERY format's call — the app sends them
+  // for plugin rows exactly as for module rows, because inputs are a shared
+  // feature — so a plugin's own code reads them off the same meta the module
+  // SDK does. Only a call with answers to show carries the field: a plugin
+  // that declares no form never sees it, and its meta stays the fields it
+  // has always had.
+  if (request.inputsValues !== null) meta.inputs = request.inputsValues;
 
   const room = {
     meta: Object.freeze(meta),

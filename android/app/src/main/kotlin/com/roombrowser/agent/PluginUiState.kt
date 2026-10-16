@@ -6,16 +6,20 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import com.roombrowser.data.db.ChatPluginEntity
 import com.roombrowser.data.db.PluginEntity
+import com.roombrowser.data.plugins.PluginDirZipper
 import com.roombrowser.data.plugins.PluginInstallResult
 import com.roombrowser.data.repo.PluginRepository
 import com.roombrowser.data.repo.decodePermissions
 import com.roombrowser.domain.plugins.PluginCard
 import com.roombrowser.domain.plugins.PluginCommand
 import com.roombrowser.domain.plugins.PluginCommandParser
+import com.roombrowser.domain.plugins.PluginComposeParser
+import com.roombrowser.domain.plugins.PluginComposePrompt
 import com.roombrowser.domain.plugins.PluginFormValidator
 import com.roombrowser.domain.plugins.PluginFormat
 import com.roombrowser.domain.plugins.PluginInputField
 import com.roombrowser.domain.plugins.PluginInputsSchema
+import com.roombrowser.domain.plugins.PluginManifestValidator
 import com.roombrowser.domain.plugins.PluginPermissions
 import com.roombrowser.node.PluginCallRequest
 import com.roombrowser.node.PluginChatEntry
@@ -155,7 +159,16 @@ class PluginUiState(
      * event and not once at construction, because a command or activation
      * can be the first thing that ever creates the session it names.
      */
-    private val generate: suspend (sessionId: Long) -> PluginGenerateCall? = { null }
+    private val generate: suspend (sessionId: Long) -> PluginGenerateCall? = { null },
+    /**
+     * The chat's own plugin composer, resolved per command: the session's
+     * own provider and model, or null when the chat has none. Read per
+     * command and not once at construction, for the same reason [generate]
+     * is — a `/make_plugins` on a brand-new chat can be the first thing that
+     * ever creates the session it names, and the composer must resolve
+     * against what the chat became, not what it was.
+     */
+    private val compose: suspend (sessionId: Long) -> PluginComposeCall? = { null }
 ) {
 
     var installed by mutableStateOf<List<PluginEntity>>(emptyList())
@@ -176,6 +189,17 @@ class PluginUiState(
         private set
 
     /**
+     * One composed plugin waiting on the person's Allow-and-Create answer, or
+     * null — the `pendingGrant`/`pendingForm` convention again: the dialog
+     * layer reads it, recomposition is the notification, and only
+     * [submitCreation] and [cancelCreation] retire it. Nothing is installed
+     * while it is up; the manifest it carries is a validated DRAFT, and the
+     * form's rewritten manifest is the only thing that ever installs.
+     */
+    var pendingCreation by mutableStateOf<PendingPluginCreation?>(null)
+        private set
+
+    /**
      * This surface as a [PluginFormCall] — the host every event IT runs
      * (activations, commands, the staged module runs) wires, and the host the
      * controller hands the turn's executor and hooks. One instance so every
@@ -192,7 +216,23 @@ class PluginUiState(
      * re-subscribe whenever the panel moves to another chat.
      */
     fun start() {
-        scope.launch { repo.observeInstalled().collect { installed = it } }
+        scope.launch {
+            // Catalogue freshness across processes (design §2.5): the probe
+            // cache is invalidated ONLY when an emission actually changed
+            // some row's updated_at — the fingerprint an install upsert moves
+            // and a prompt_staged toggle re-emits unchanged. Without this, an
+            // editor or manager save in the DEFAULT process would leave this
+            // ':browser' process serving stale tools/hooks until the plugin's
+            // next disable/enable; with it, a toggle costs no re-probe (the
+            // first emission's clear lands on an empty cache, a no-op).
+            var stamps: Map<String, Long>? = null
+            repo.observeInstalled().collect { list ->
+                installed = list
+                val fresh = list.associate { it.id to it.updatedAt }
+                if (stamps != fresh) catalog.invalidateAll()
+                stamps = fresh
+            }
+        }
         scope.launch {
             snapshotFlow { sessionId() }.collect { id ->
                 chatPluginsJob?.cancel()
@@ -242,6 +282,10 @@ class PluginUiState(
             }
             is PluginCommand.Plugin -> {
                 dispatchCommand(command.name, command.args, sessionAtTap)
+                true
+            }
+            is PluginCommand.MakePlugins -> {
+                makePlugins(command.description, sessionAtTap)
                 true
             }
             is PluginCommand.Ambiguous -> {
@@ -427,6 +471,160 @@ class PluginUiState(
                 )
             }
         }
+    }
+
+    // ---------------------------------------------------------- the plugin maker
+
+    /**
+     * The `/make_plugins <description>` flow (design §5.2): the chat's OWN
+     * AI composes a plugin from the description, ONE non-streaming
+     * generation per attempt, with exactly ONE corrective retry whose input
+     * is the parser's own error list — a slow model that wanders costs the
+     * user two notices and no loop, and a model that cannot produce a valid
+     * plugin is told so definitively rather than retried forever.
+     *
+     * A `Draft` raises [pendingCreation] and stops — the person's review is
+     * the only thing that installs anything. The model's reply is untrusted
+     * input end to end: the parser holds it to the install validator before
+     * a draft exists, and the form's REWRITTEN manifest (not the draft) is
+     * what a later submit installs.
+     */
+    private suspend fun makePlugins(description: String, sessionAtTap: Long?) {
+        // The cap is checked before anything else composes: a description
+        // over the cap is refused before a single provider byte is spent.
+        if (description.length > PluginComposePrompt.DESCRIPTION_CHARS) {
+            onNotice(
+                "/make_plugins needs a description of at most " +
+                    "${PluginComposePrompt.DESCRIPTION_CHARS} characters.",
+                false
+            )
+            return
+        }
+        if (description.isBlank()) {
+            onNotice(
+                "/make_plugins <description> asks this chat's own AI to draft a plugin from " +
+                    "your description. You review the draft — name, description, permissions, " +
+                    "network hosts, and the full code — before anything installs. Example: " +
+                    "/make_plugins a tiny plugin that counts greetings per chat and answers " +
+                    "with a card.",
+                false
+            )
+            return
+        }
+        val session = sessionAtTap ?: createSession("Plugin maker") ?: return
+        val composer = compose(session) ?: run {
+            onNotice(
+                "This chat has no AI to compose with — configure the chat's provider and " +
+                    "model, then try /make_plugins again.",
+                true
+            )
+            return
+        }
+        onNotice("Composing a plugin from your description with this chat's AI…", false)
+        when (val first = composeAttempt(composer, description, retryNote = null)) {
+            is PluginComposeParser.Parsed.Draft -> {
+                pendingCreation = PendingPluginCreation(first.manifest, first.entrySource)
+                return
+            }
+            is PluginComposeParser.Parsed.Invalid -> {
+                onNotice(
+                    "The first draft broke the plugin rules — asking the chat's AI to correct it…",
+                    false
+                )
+                when (
+                    val second = composeAttempt(
+                        composer,
+                        description,
+                        PluginComposeParser.retryNote(first.errors)
+                    )
+                ) {
+                    is PluginComposeParser.Parsed.Draft ->
+                        pendingCreation = PendingPluginCreation(second.manifest, second.entrySource)
+                    is PluginComposeParser.Parsed.Invalid -> onNotice(
+                        "The chat's AI could not produce a valid plugin:\n" +
+                            second.errors.joinToString("\n") { "— $it" },
+                        true
+                    )
+                }
+            }
+        }
+    }
+
+    /**
+     * One composition attempt: the composer's raw reply parsed, or the
+     * failure's own words as the error list — a provider error, the budget
+     * timeout and "the chat's model wrote no text" travel the same list the
+     * parse refusals do, so the retry and the definitive refusal read them
+     * identically.
+     */
+    private suspend fun composeAttempt(
+        composer: PluginComposeCall,
+        description: String,
+        retryNote: String?
+    ): PluginComposeParser.Parsed {
+        val reply = runCatching { composer(description, retryNote) }.getOrElse { err ->
+            return PluginComposeParser.Parsed.Invalid(
+                listOf(err.message ?: err.javaClass.simpleName)
+            )
+        }
+        return PluginComposeParser.parse(reply)
+    }
+
+    /**
+     * The creation dialog's Allow and Create: the form's answer rewritten
+     * through [PendingPluginCreation.candidate], the single validator as the
+     * backstop (the dialog gated on this same answer; a submit that somehow
+     * slips past it changes nothing and the form stays up — the
+     * Allow-and-Run rule), and the install built in memory — `plugin.json`
+     * plus the composed entry at the manifest's own declared path — and fed
+     * through the SAME [PluginRepository.install] door a sideloaded ZIP
+     * enters. Nothing was installed before this; nothing auto-enables after.
+     */
+    fun submitCreation(
+        name: String,
+        description: String,
+        permissions: List<String>,
+        hosts: List<String>
+    ) {
+        val pending = pendingCreation ?: return
+        scope.launch {
+            val manifest = pending.candidate(name, description, permissions, hosts)
+            if (PluginManifestValidator.validate(manifest).isNotEmpty()) return@launch
+            val zip = PluginDirZipper.compose(
+                listOf(
+                    "plugin.json" to manifest.toString(),
+                    pending.entryPath to pending.entrySource.toByteArray(Charsets.UTF_8)
+                )
+            )
+            when (val result = repo.install(zip.inputStream())) {
+                is PluginInstallResult.ManifestOk -> {
+                    catalog.invalidateAll()
+                    pendingCreation = null
+                    onNotice(
+                        "${result.manifest.name} ${result.manifest.version} installed. Review or " +
+                            "edit its files from Manage plugins, then turn it on for this chat " +
+                            "with /plugins.",
+                        false
+                    )
+                }
+                is PluginInstallResult.Invalid ->
+                    // Near-impossible (the same validator passed twice); still
+                    // the honest shape: every reason, and the form stays up to
+                    // fix them.
+                    onNotice(
+                        "The plugin was not installed:\n" +
+                            result.errors.joinToString("\n") { "— $it" },
+                        true
+                    )
+            }
+        }
+    }
+
+    /** The creation dialog's Cancel: the draft is discarded, nothing was installed. */
+    fun cancelCreation() {
+        if (pendingCreation == null) return
+        pendingCreation = null
+        onNotice("The plugin draft was discarded — nothing was installed.", false)
     }
 
     // ------------------------------------------------------------- internals

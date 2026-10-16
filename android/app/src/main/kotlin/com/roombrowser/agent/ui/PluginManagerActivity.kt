@@ -34,6 +34,8 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.FileDownload
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -44,6 +46,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -59,22 +62,28 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.roombrowser.RoomBrowserApp
 import com.roombrowser.data.db.PluginEntity
+import com.roombrowser.data.plugins.PluginDirZipper
 import com.roombrowser.data.plugins.PluginInstallResult
+import com.roombrowser.data.plugins.PluginZipOut
 import com.roombrowser.data.repo.PluginRepository
 import com.roombrowser.data.repo.decodePermissions
+import com.roombrowser.domain.plugins.PluginFormat
 import com.roombrowser.domain.plugins.PluginPermissions
 import com.roombrowser.node.NodeRuntime
 import com.roombrowser.ui.common.EmptyState
 import com.roombrowser.ui.common.RoomBrowserTheme
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 /**
  * The installed chat plugins — its OWN activity in the default process, like
  * the other agent screens, and the one place a plugin's presence in the app
  * is managed: install from a ZIP through the system file picker, install the
- * bundled example, and uninstall (always confirmed, because it deletes every
- * chat's data for the plugin — the code comes back with a reinstall, the
- * chats' kv does not).
+ * bundled example, edit an installed plugin's files (the editor activity),
+ * export one as a shareable `.zip`, and uninstall (always confirmed, because
+ * it deletes every chat's data for the plugin — the code comes back with a
+ * reinstall, the chats' kv does not).
  *
  * Like the npm-packages screen it is patterned on, it never starts the Node
  * runtime to draw the list — the rows are the Room table the installer
@@ -114,6 +123,23 @@ private fun PluginManagerRoot(repo: PluginRepository, onClose: () -> Unit) {
     var installFailed by remember { mutableStateOf(false) }
     var removeTarget by remember { mutableStateOf<PluginEntity?>(null) }
 
+    // Which rows still hold a code directory — one cheap File check per row
+    // (design §2.4): a row whose dir was lost under the app renders the
+    // files-missing note and keeps only the remove action, because there are
+    // no files to edit or export. Re-read whenever the list changes, the same
+    // invalidation the rows themselves ride.
+    var filesPresent by remember { mutableStateOf<Map<String, Boolean>>(emptyMap()) }
+    LaunchedEffect(plugins) {
+        filesPresent = plugins.associate { row ->
+            row.id to (runCatching { repo.pluginDir(row.id) }.getOrNull()?.isDirectory == true)
+        }
+    }
+
+    // The row whose ZIP the person chose a destination for — read in the
+    // launcher's callback, cleared the moment the callback answers (a
+    // cancelled picker clears it too: nothing exports twice).
+    var exportTarget by remember { mutableStateOf<PluginEntity?>(null) }
+
     /** What an install produced, said inline — every reason, not the first. */
     fun report(result: PluginInstallResult) {
         when (result) {
@@ -140,6 +166,52 @@ private fun PluginManagerRoot(repo: PluginRepository, onClose: () -> Unit) {
                 context.contentResolver.openInputStream(uri)?.use { stream -> repo.install(stream) }
             }.getOrNull() ?: PluginInstallResult.Invalid(listOf("the ZIP could not be opened"))
             report(result)
+        }
+    }
+
+    // SAF CreateDocument: the zip is built AFTER the destination is chosen —
+    // no gathering on a tap the person can cancel (the sessions screen's
+    // precedent). The walk covers ONLY the plugin's code directory, so an
+    // export can structurally never carry a chat's kv, files or state.
+    val exportLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument("application/zip")
+    ) { uri ->
+        val plugin = exportTarget
+        exportTarget = null
+        if (uri == null || plugin == null) return@rememberLauncherForActivityResult
+        scope.launch {
+            val dir = runCatching { repo.pluginDir(plugin.id) }.getOrNull()
+            if (dir == null || !dir.isDirectory) {
+                installMessage = "The plugin was not exported:\n— the plugin directory is missing"
+                installFailed = true
+                return@launch
+            }
+            when (val zipped = PluginDirZipper.zipDir(dir)) {
+                is PluginZipOut.Refused -> {
+                    installMessage = "The plugin was not exported:\n" +
+                        zipped.errors.joinToString("\n") { "— $it" }
+                    installFailed = true
+                }
+                is PluginZipOut.Ok -> {
+                    val failure = runCatching {
+                        withContext(Dispatchers.IO) {
+                            context.contentResolver.openOutputStream(uri)?.use { stream ->
+                                stream.write(zipped.bytes)
+                            } ?: error("the chosen location could not be opened for writing")
+                        }
+                    }.exceptionOrNull()
+                    if (failure == null) {
+                        installMessage = "Exported ${plugin.name} to the chosen location."
+                        installFailed = false
+                    } else {
+                        // The user is told WHAT failed, not just that something
+                        // did — the sessions screen's sentence shape.
+                        installMessage =
+                            "Export failed: ${failure.message ?: failure.javaClass.simpleName}"
+                        installFailed = true
+                    }
+                }
+            }
         }
     }
 
@@ -238,6 +310,12 @@ private fun PluginManagerRoot(repo: PluginRepository, onClose: () -> Unit) {
                 items(plugins, key = { it.id }) { plugin ->
                     ManagerPluginRow(
                         plugin = plugin,
+                        filesPresent = filesPresent[plugin.id] ?: false,
+                        onEdit = { PluginEditorActivity.launch(context, plugin.id) },
+                        onExport = {
+                            exportTarget = plugin
+                            exportLauncher.launch(exportFileName(plugin))
+                        },
                         onUninstall = { removeTarget = plugin }
                     )
                 }
@@ -275,7 +353,13 @@ private fun PluginManagerRoot(repo: PluginRepository, onClose: () -> Unit) {
 }
 
 @Composable
-private fun ManagerPluginRow(plugin: PluginEntity, onUninstall: () -> Unit) {
+private fun ManagerPluginRow(
+    plugin: PluginEntity,
+    filesPresent: Boolean,
+    onEdit: () -> Unit,
+    onExport: () -> Unit,
+    onUninstall: () -> Unit
+) {
     val hosts = decodePermissions(plugin.networkAllowJson)
     val permissionLine = decodePermissions(plugin.permissionsJson)
         .joinToString(" · ") { PluginPermissions.labelOf(it, hosts) }
@@ -319,6 +403,32 @@ private fun ManagerPluginRow(plugin: PluginEntity, onUninstall: () -> Unit) {
                 maxLines = 2,
                 overflow = TextOverflow.Ellipsis
             )
+            if (!filesPresent) {
+                // The row whose code directory is gone (design §2.4): it
+                // cannot be repaired — nothing re-zips — so it says so, and
+                // the delete icon is its only action.
+                Text(
+                    "Files missing — reinstall from a ZIP or remove.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error
+                )
+            }
+        }
+        if (filesPresent) {
+            IconButton(
+                onClick = onEdit,
+                modifier = Modifier
+                    .semantics { contentDescription = "plugin_manager_edit_${plugin.dirName}" }
+            ) {
+                Icon(Icons.Filled.Edit, contentDescription = null)
+            }
+            IconButton(
+                onClick = onExport,
+                modifier = Modifier
+                    .semantics { contentDescription = "plugin_manager_export_${plugin.dirName}" }
+            ) {
+                Icon(Icons.Filled.FileDownload, contentDescription = null)
+            }
         }
         IconButton(
             onClick = onUninstall,
@@ -328,6 +438,22 @@ private fun ManagerPluginRow(plugin: PluginEntity, onUninstall: () -> Unit) {
             Icon(Icons.Filled.Delete, contentDescription = null)
         }
     }
+}
+
+/**
+ * The export's default SAF filename: `<name>-<version>.zip`, with the row's
+ * own spellings — the semver column for a plugin row, the module's own
+ * verbatim version for a module row. Hostile filename characters fold to
+ * '-' inside [PluginDirZipper.exportFileName]; spaces stay (SAF handles
+ * them).
+ */
+private fun exportFileName(plugin: PluginEntity): String {
+    val version = if (plugin.format == PluginFormat.ZAGENTS) {
+        plugin.zagentsVersion ?: plugin.version
+    } else {
+        plugin.version
+    }
+    return PluginDirZipper.exportFileName(plugin.name, version)
 }
 
 /** The example shipped inside the APK, synced from `assets/node/plugins/`. */

@@ -121,7 +121,22 @@ class PluginUiStateTest {
     /** The staged-flag writes the flows made, so "never staged" is assertable. */
     private val stagedWrites = mutableListOf<Pair<String, Boolean>>()
 
+    /** The rows the flows upserted through the repository's install door. */
+    private val upserts = mutableListOf<PluginEntity>()
+
+    /** The canned VALID reply a composer returns — a draft the parser accepts. */
+    private val composedReply = """Here is your plugin:
+
+```json
+{"id":"com.example.made","name":"Made Plugin","version":"0.1.0","description":"Composed draft.","api":1,"entry":"main.js","permissions":["storage","network"],"network":{"allow":["api.example.com"]},"commands":[{"name":"greet","title":"Greet","description":""}]}
+```
+
+```js
+exports.commands = { greet: { run: () => 'hello' } };
+```"""
+
     private fun module(
+        permissions: String = """["storage"]""",
         inputs: String? = """[{"key":"email","type":"string","title":"Email","description":"","required":true}]"""
     ) = PluginEntity(
         id = "zagents.greeter",
@@ -132,7 +147,7 @@ class PluginUiStateTest {
         license = "",
         entry = "main.js",
         apiVersion = 1,
-        permissionsJson = """["storage"]""",
+        permissionsJson = permissions,
         networkAllowJson = "[]",
         configSchemaJson = "[]",
         commandsJson = "[]",
@@ -160,6 +175,16 @@ class PluginUiStateTest {
                 moduleRow = moduleRow.copy(promptStaged = secondArg())
                 Unit
             }
+            // The install door's row writer: a composed plugin's upsert is
+            // the proof an install happened, and byId answers what upsert
+            // wrote (null before that) — the repository's own replace rule.
+            coEvery { byId(any()) } answers {
+                upserts.lastOrNull { it.id == firstArg() }
+            }
+            coEvery { upsert(any()) } answers {
+                upserts.add(firstArg())
+                Unit
+            }
         }
         val chatDao = mockk<ChatPluginDao> {
             coEvery { forSession(any()) } answers { listOfNotNull(stored) }
@@ -178,6 +203,7 @@ class PluginUiStateTest {
     private fun ui(
         session: Long? = 7L,
         generate: suspend (sessionId: Long) -> PluginGenerateCall? = { null },
+        compose: suspend (sessionId: Long) -> PluginComposeCall? = { null },
         freshChat: Boolean = false
     ): PluginUiState {
         val repo = repo()
@@ -194,7 +220,8 @@ class PluginUiStateTest {
             onNotice = { text, _ -> notices.add(text) },
             history = { emptyList() },
             freshChat = { freshChat },
-            generate = generate
+            generate = generate,
+            compose = compose
         )
     }
 
@@ -359,6 +386,177 @@ class PluginUiStateTest {
         val activateIndex = calls.indexOfFirst { it.event == PluginCallRequest.EVENT_ACTIVATE }
         assertThat(activateIndex).isAtLeast(0)
         assertThat(generators[activateIndex]).isEqualTo(generator)
+    }
+
+    // ------------------------------------------------------- the plugin maker
+
+    @Test
+    fun `a bare make_plugins command answers with instructions`() = runBlocking<Unit> {
+        val state = ui()
+        val consumed = state.interceptChatCommand("/make_plugins", sessionAtTap = 7L)
+        assertThat(consumed).isTrue()
+        awaitState { notices.isNotEmpty() }
+        // The instructive notice, verbatim shape: what the command asks for,
+        // what gets reviewed, and a working example — and nothing composed.
+        assertThat(notices.single()).startsWith(
+            "/make_plugins <description> asks this chat's own AI to draft a plugin from " +
+                "your description."
+        )
+        assertThat(notices.single()).contains("Example: /make_plugins a tiny plugin")
+        assertThat(state.pendingCreation).isNull()
+        assertThat(calls).isEmpty()
+    }
+
+    @Test
+    fun `make_plugins composes through the chat's own composer and raises the creation form`() =
+        runBlocking<Unit> {
+            val composer = PluginComposeCall { _, _ -> composedReply }
+            val state = ui(compose = { _ -> composer })
+            val consumed = state.interceptChatCommand(
+                "/make_plugins a tiny plugin that greets",
+                sessionAtTap = 7L
+            )
+            assertThat(consumed).isTrue()
+            awaitState { state.pendingCreation != null }
+            assertThat(notices.any { it.contains("Composing a plugin from your description") })
+                .isTrue()
+            // The draft that rose is the parsed, validator-clean manifest —
+            // the composer's raw reply never reaches state unvalidated.
+            val pending = state.pendingCreation!!
+            assertThat(pending.idText).isEqualTo("com.example.made")
+            assertThat(pending.displayName).isEqualTo("Made Plugin")
+            assertThat(pending.versionText).isEqualTo("0.1.0")
+            assertThat(pending.entryPath).isEqualTo("main.js")
+            assertThat(pending.declaredPermissions).containsExactly("storage", "network")
+            assertThat(pending.declaredHosts).containsExactly("api.example.com")
+            assertThat(pending.entrySource).contains("greet")
+            // Nothing installed yet: the review is the only route to a row.
+            assertThat(upserts).isEmpty()
+        }
+
+    @Test
+    fun `an invalid first draft earns exactly one corrective retry`() = runBlocking<Unit> {
+        val notes = mutableListOf<String?>()
+        val composer = PluginComposeCall { _, retryNote ->
+            notes.add(retryNote)
+            if (retryNote == null) "no code blocks in here at all" else composedReply
+        }
+        val state = ui(compose = { _ -> composer })
+        val consumed = state.interceptChatCommand("/make_plugins a plugin", sessionAtTap = 7L)
+        assertThat(consumed).isTrue()
+        awaitState { state.pendingCreation != null }
+        // Exactly two attempts: the first, then the one retry whose input is
+        // the parser's own error list — never a third.
+        assertThat(notes).hasSize(2)
+        assertThat(notes[0]).isNull()
+        assertThat(notes[1]).startsWith("Your previous attempt was refused for these reasons:")
+        assertThat(notes[1]).contains("- no fenced code blocks were found")
+        assertThat(notices.any { it.contains("The first draft broke the plugin rules") }).isTrue()
+        assertThat(state.pendingCreation).isNotNull()
+    }
+
+    @Test
+    fun `a second invalid draft is the definitive notice`() = runBlocking<Unit> {
+        val composer = PluginComposeCall { _, _ -> "still not a plugin" }
+        val state = ui(compose = { _ -> composer })
+        val consumed = state.interceptChatCommand("/make_plugins a plugin", sessionAtTap = 7L)
+        assertThat(consumed).isTrue()
+        awaitState { notices.any { it.startsWith("The chat's AI could not produce a valid plugin:") } }
+        val definitive = notices.single { it.startsWith("The chat's AI could not produce a valid plugin:") }
+        assertThat(definitive).contains("— no fenced code blocks were found")
+        // Definitive: nothing pending, nothing installed, no third attempt.
+        assertThat(state.pendingCreation).isNull()
+        assertThat(upserts).isEmpty()
+    }
+
+    @Test
+    fun `a chat with no composer is told so`() = runBlocking<Unit> {
+        val state = ui(compose = { null })
+        val consumed = state.interceptChatCommand("/make_plugins a plugin", sessionAtTap = 7L)
+        assertThat(consumed).isTrue()
+        awaitState {
+            notices.any { it.startsWith("This chat has no AI to compose with") }
+        }
+        assertThat(notices.single { it.startsWith("This chat has no AI to compose with") })
+            .contains("configure the chat's provider and model, then try /make_plugins again")
+        assertThat(state.pendingCreation).isNull()
+        assertThat(calls).isEmpty()
+    }
+
+    @Test
+    fun `a description over the cap is refused before composing`() = runBlocking<Unit> {
+        var resolutions = 0
+        val state = ui(compose = { _ ->
+            resolutions++
+            PluginComposeCall { _, _ -> composedReply }
+        })
+        val consumed = state.interceptChatCommand(
+            "/make_plugins ${"x".repeat(1001)}",
+            sessionAtTap = 7L
+        )
+        assertThat(consumed).isTrue()
+        assertThat(resolutions).isEqualTo(0)
+        assertThat(notices.single())
+            .isEqualTo("/make_plugins needs a description of at most 1000 characters.")
+        assertThat(state.pendingCreation).isNull()
+    }
+
+    @Test
+    fun `submitting the creation form installs the plugin and says so`() = runBlocking<Unit> {
+        val state = ui(compose = { _ -> PluginComposeCall { _, _ -> composedReply } })
+        state.interceptChatCommand("/make_plugins a tiny plugin that greets", sessionAtTap = 7L)
+        awaitState { state.pendingCreation != null }
+        // The form's answer: storage only — network UNCHECKED — so the row
+        // installs with the reviewed set, not the draft's asks.
+        state.submitCreation(
+            name = "Reviewed",
+            description = "Reviewed and narrowed.",
+            permissions = listOf("storage"),
+            hosts = emptyList()
+        )
+        awaitState { upserts.isNotEmpty() }
+        val row = upserts.single()
+        assertThat(row.id).isEqualTo("com.example.made")
+        assertThat(row.name).isEqualTo("Reviewed")
+        assertThat(row.description).isEqualTo("Reviewed and narrowed.")
+        assertThat(row.version).isEqualTo("0.1.0")
+        assertThat(row.permissionsJson).isEqualTo("""["storage"]""")
+        assertThat(row.networkAllowJson).isEqualTo("[]")
+        assertThat(row.entry).isEqualTo("main.js")
+        // The install went through the REAL zipper and the REAL installer:
+        // the directory materialized with both composed files on disk.
+        assertThat(File(File(root, "plugins"), "com_example_made").isDirectory).isTrue()
+        assertThat(File(File(root, "plugins"), "com_example_made/main.js").readText())
+            .contains("greet")
+        assertThat(File(File(root, "plugins"), "com_example_made/plugin.json").readText())
+            .contains("\"name\":\"Reviewed\"")
+        assertThat(state.pendingCreation).isNull()
+        awaitState {
+            notices.any { it.contains("installed. Review or edit its files from Manage plugins") }
+        }
+        assertThat(
+            notices.any {
+                it.contains(
+                    "Reviewed 0.1.0 installed. Review or edit its files from Manage plugins, " +
+                        "then turn it on for this chat with /plugins."
+                )
+            }
+        ).isTrue()
+    }
+
+    @Test
+    fun `cancelling the creation installs nothing`() = runBlocking<Unit> {
+        val state = ui(compose = { _ -> PluginComposeCall { _, _ -> composedReply } })
+        state.interceptChatCommand("/make_plugins a tiny plugin that greets", sessionAtTap = 7L)
+        awaitState { state.pendingCreation != null }
+        state.cancelCreation()
+        assertThat(state.pendingCreation).isNull()
+        assertThat(upserts).isEmpty()
+        assertThat(notices.single { it.contains("discarded") })
+            .isEqualTo("The plugin draft was discarded — nothing was installed.")
+        // The install door was never opened: no directory was materialized.
+        assertThat(File(root, "plugins").listFiles().orEmpty().map { it.name })
+            .doesNotContain("com_example_made")
     }
 
     // ---------------------------------------------------- the activation gate
