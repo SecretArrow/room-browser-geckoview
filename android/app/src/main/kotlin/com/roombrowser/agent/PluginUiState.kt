@@ -12,12 +12,19 @@ import com.roombrowser.data.repo.decodePermissions
 import com.roombrowser.domain.plugins.PluginCard
 import com.roombrowser.domain.plugins.PluginCommand
 import com.roombrowser.domain.plugins.PluginCommandParser
+import com.roombrowser.domain.plugins.PluginFormValidator
+import com.roombrowser.domain.plugins.PluginFormat
+import com.roombrowser.domain.plugins.PluginInputField
+import com.roombrowser.domain.plugins.PluginInputsSchema
 import com.roombrowser.domain.plugins.PluginPermissions
 import com.roombrowser.node.PluginCallRequest
 import com.roombrowser.node.PluginChatEntry
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 
@@ -28,13 +35,72 @@ import kotlinx.serialization.json.JsonObject
  * along so a dialog that wants to list them separately can — the hosts ARE
  * the scope of what is being agreed to, and a dialog that hid them would be
  * consenting to something wider than the allowlist the plugin can ever use.
+ *
+ * The combined dialog's form half rides here too (design §3.2): [format] is
+ * the row's manifest format (the title and the accept button spell by it),
+ * [fields] is the manifest's `inputs` schema (an empty list is a plain
+ * permission dialog — nothing to edit), and [existingValues] is what this
+ * chat already stored (an edit's pre-fill, the keep-old secret rule's
+ * "old"). [permissionNames] is the DECLARED set as names — the dialog's
+ * bullets carry sentences, and mapping a sentence back to its name through
+ * [PluginPermissions.labelOf] cannot recover the module-only `files`
+ * permission, so the names ride along for the accept call to hand straight
+ * through.
  */
 data class PendingPluginGrant(
     val pluginId: String,
     val pluginName: String,
     val permissionLabels: List<String>,
-    val networkHosts: List<String>
+    val networkHosts: List<String>,
+    /** The row's manifest format — see [PluginFormat]; the combined dialog titles by it. */
+    val format: String = PluginFormat.PLUGIN,
+    /** The manifest's `inputs` fields; empty when the plugin declares no form. */
+    val fields: List<PluginInputField> = emptyList(),
+    /** What this chat already stored for those fields — the edit pre-fill and the keep-old rule's old. */
+    val existingValues: JsonObject = JsonObject(emptyMap()),
+    /** The declared permission NAMES, in the dialog's bullet order — what the accept hands back. */
+    val permissionNames: List<String> = emptyList()
 )
+
+/**
+ * One input form waiting on the person — the state every form gate raises,
+ * exactly the shape the dialog layer renders: which plugin is asking, which
+ * fields (the manifest's or the runtime request's), at which
+ * [PluginFormContext] moment, and what the chat already stored for those
+ * fields (the keep-old secret rule's "old", and an edit dialog's
+ * pre-fill).
+ *
+ * [title] and [description] carry the RUNTIME request's own headline and
+ * helper line; the activation and tool-call contexts leave them null and
+ * title themselves off [pluginName] and [context]. [networkHosts] is the
+ * row's allowlist frozen at raise time — the dialog's permission-context
+ * line when the plugin holds network.
+ *
+ * The completion is the dialog's whole contract: [PluginUiState.submitForm]
+ * completes it with the validated, normalized values; [PluginUiState.cancelForm]
+ * completes it with null. Whoever raised the form awaits it (with the
+ * 300 s cap [askForm] enforces) and reads the answer as a
+ * [PluginFormOutcome].
+ */
+class PendingPluginForm(
+    val pluginId: String,
+    val pluginName: String,
+    val context: PluginFormContext,
+    val fields: List<PluginInputField>,
+    val title: String? = null,
+    val description: String? = null,
+    val existingValues: JsonObject = JsonObject(emptyMap()),
+    val networkHosts: List<String> = emptyList()
+) {
+    private val completion = CompletableDeferred<JsonObject?>()
+
+    /** The values the person submitted, or null when they did not. */
+    internal suspend fun await(): JsonObject? = completion.await()
+
+    internal fun complete(values: JsonObject?) {
+        completion.complete(values)
+    }
+}
 
 /**
  * The plugin surface of the chat panel, controller-owned: the installed
@@ -74,6 +140,13 @@ class PluginUiState(
     /** The chat's transcript as a `chat.context` grant reads it. */
     private val history: suspend (sessionId: Long) -> List<PluginChatEntry>,
     /**
+     * Whether the chat has sent no user message yet — the fresh-chat question
+     * staged activation turns on. The controller owns the answer (it is the
+     * one that can read the rows); the default says "not fresh", so a caller
+     * that wires nothing keeps today's immediate activation.
+     */
+    private val freshChat: suspend (sessionId: Long) -> Boolean = { false },
+    /**
      * The chat's own text generator, resolved per event: the session's own
      * provider and model (the controller's [pluginGeneratorFor]-shape
      * wiring), or null when the chat has none — in which case the plugin's
@@ -93,6 +166,22 @@ class PluginUiState(
         private set
     var pendingGrant by mutableStateOf<PendingPluginGrant?>(null)
         private set
+
+    /**
+     * The input form a gate raised and is waiting on, or null. Same state
+     * convention as [pendingGrant]: the dialog layer reads it, recomposition
+     * is the notification, and only [submitForm] and [cancelForm] retire it.
+     */
+    var pendingForm by mutableStateOf<PendingPluginForm?>(null)
+        private set
+
+    /**
+     * This surface as a [PluginFormCall] — the host every event IT runs
+     * (activations, commands, the staged module runs) wires, and the host the
+     * controller hands the turn's executor and hooks. One instance so every
+     * ask lands on the same state.
+     */
+    val formHost: PluginFormCall = PluginFormCall { request -> askForm(request) }
 
     private var chatPluginsJob: Job? = null
 
@@ -188,15 +277,20 @@ class PluginUiState(
     /**
      * The grant dialog's Accept: [granted] is what the person agreed to
      * (the whole declared set, as the dialog presents it), stored as given.
+     * [inputsValues] is the form half of a COMBINED consent dialog — the
+     * manifest's `inputs` answers collected in the same dialog as the
+     * permissions, stored with the grants so the activation (immediate or
+     * staged) finds them already answered. Null is the plain permission
+     * dialog this build has always had.
      */
-    fun submitGrants(granted: List<String>) {
+    fun submitGrants(granted: List<String>, inputsValues: JsonObject? = null) {
         val request = pendingGrant ?: return
         pendingGrant = null
         scope.launch {
             val plugin = repo.installedOnce().firstOrNull { it.id == request.pluginId } ?: return@launch
             val session = sessionId() ?: createSession(plugin.name) ?: return@launch
             val declared = decodePermissions(plugin.permissionsJson)
-            enableNow(plugin, session, granted.filter { it in declared })
+            enableNow(plugin, session, granted.filter { it in declared }, inputsValues)
         }
     }
 
@@ -205,6 +299,84 @@ class PluginUiState(
         val request = pendingGrant ?: return
         pendingGrant = null
         onNotice("${request.pluginName} was not enabled — no permissions were granted.", false)
+    }
+
+    /**
+     * The form dialog's submit: [values] is the whole editor state. The
+     * single validator is the backstop here — a submit that does not pass it
+     * changes nothing (the form stays up, the raiser keeps waiting) because
+     * "an empty error map is the only thing that unlocks" has to be true
+     * even behind a dialog that forgot to disable its own button. A valid
+     * submit retires the form and completes it with the NORMALIZED values —
+     * keep-old secrets resolved, defaults filled, unknown keys dropped —
+     * which is the one shape anything downstream stores or runs with.
+     */
+    fun submitForm(values: JsonObject) {
+        val form = pendingForm ?: return
+        val schema = PluginInputsSchema(form.fields)
+        if (PluginFormValidator.validate(schema, values, form.existingValues).isNotEmpty()) return
+        val normalized = PluginFormValidator.normalizedValues(schema, values, form.existingValues)
+        pendingForm = null
+        form.complete(normalized)
+    }
+
+    /** The form dialog's Cancel: the form retires unanswered, and nothing runs on it. */
+    fun cancelForm() {
+        val form = pendingForm ?: return
+        pendingForm = null
+        form.complete(null)
+    }
+
+    /**
+     * The sheet's "Edit inputs" pencil (design §3.2): re-asks the plugin's
+     * form with the values this chat already stored as the starting state —
+     * editing is the ONLY way to change stored values besides a reinstall.
+     * A completed edit stores the new answers and, for a module this chat
+     * has enabled, runs its activate again with them ("Save and run"); a
+     * native plugin only saves — its activations are not per-answer — and a
+     * plugin whose manifest declares no inputs has nothing to edit, so the
+     * pencil never appears and this returns without a dialog.
+     */
+    fun editInputs(pluginId: String) {
+        scope.launch {
+            val session = sessionId() ?: return@launch
+            val plugin = repo.installedOnce().firstOrNull { it.id == pluginId } ?: return@launch
+            val binding = repo.chatPluginsOnce(session).firstOrNull { it.pluginId == pluginId }
+                ?: return@launch
+            val schema = PluginForms.schemaOf(plugin)
+            if (schema.fields.isEmpty()) return@launch
+            val stored = PluginForms.storedValues(binding.inputsValuesJson)
+            val outcome = askForm(
+                PluginFormRequest(
+                    pluginId = plugin.id,
+                    pluginName = plugin.name,
+                    context = PluginFormContext.ACTIVATION,
+                    fields = schema.fields,
+                    existingValues = stored,
+                    networkHosts = decodePermissions(plugin.networkAllowJson)
+                )
+            )
+            if (outcome !is PluginFormOutcome.Submitted) {
+                onNotice("${plugin.name}'s inputs were not changed.", false)
+                return@launch
+            }
+            repo.setInputsValues(session, plugin.id, outcome.values.toString())
+            if (plugin.format != PluginFormat.ZAGENTS || !binding.enabled) {
+                onNotice("${plugin.name}'s inputs were saved.", false)
+                return@launch
+            }
+            // A module this chat has on runs again with the new answers — its
+            // whole point is the entry run, and the person just changed what
+            // the entry will read.
+            val fresh = repo.chatPluginsOnce(session).firstOrNull { it.pluginId == plugin.id }
+                ?: return@launch
+            runActivation(
+                session = session,
+                plugin = plugin,
+                binding = fresh,
+                successNotice = "${plugin.name} ran again with the new inputs."
+            )
+        }
     }
 
     /**
@@ -290,8 +462,8 @@ class PluginUiState(
      */
     private suspend fun enablePlugin(plugin: PluginEntity, session: Long) {
         val declared = decodePermissions(plugin.permissionsJson)
-        val granted = repo.chatPluginsOnce(session)
-            .firstOrNull { it.pluginId == plugin.id }
+        val existing = repo.chatPluginsOnce(session).firstOrNull { it.pluginId == plugin.id }
+        val granted = existing
             ?.let { decodePermissions(it.grantedPermissionsJson) }
             .orEmpty()
         if (declared.isNotEmpty() && !declared.all { it in granted }) {
@@ -300,17 +472,42 @@ class PluginUiState(
                 pluginId = plugin.id,
                 pluginName = plugin.name,
                 permissionLabels = declared.map { PluginPermissions.labelOf(it, hosts) },
-                networkHosts = hosts
+                networkHosts = hosts,
+                format = plugin.format,
+                fields = PluginForms.schemaOf(plugin).fields,
+                existingValues = PluginForms.storedValues(existing?.inputsValuesJson),
+                permissionNames = declared
             )
             return
         }
         enableNow(plugin, session, if (declared.all { it in granted }) granted else declared)
     }
 
-    private suspend fun enableNow(plugin: PluginEntity, session: Long, granted: List<String>) {
+    private suspend fun enableNow(
+        plugin: PluginEntity,
+        session: Long,
+        granted: List<String>,
+        inputsValues: JsonObject? = null
+    ) {
         repo.setEnabled(session, plugin.id, enabled = true, grantedPermissions = granted)
+        // The combined consent dialog's form half, when the manifest asks for
+        // one and the dialog carried it: validated and normalized HERE, so the
+        // stored shape is the canonical one even behind a dialog that skipped
+        // its own normalization — and an INVALID set is not stored at all, the
+        // gate below re-raising it instead of running on garbage.
+        inputsValues?.let { values ->
+            val schema = PluginForms.schemaOf(plugin)
+            val existing = PluginForms.storedValues(repo.inputsValues(session, plugin.id))
+            if (PluginFormValidator.validate(schema, values, existing).isEmpty()) {
+                repo.setInputsValues(
+                    session,
+                    plugin.id,
+                    PluginFormValidator.normalizedValues(schema, values, existing).toString()
+                )
+            }
+        }
         catalog.invalidate(session)
-        val binding = repo.chatPluginsOnce(session).firstOrNull { it.pluginId == plugin.id }
+        var binding = repo.chatPluginsOnce(session).firstOrNull { it.pluginId == plugin.id }
             ?: return
         // The probe is the catalogue's own (invalidate + read re-probes every
         // binding); its failure is said here because the enable is the moment
@@ -325,17 +522,97 @@ class PluginUiState(
                     true
                 )
             }
+        // A module enabled on a chat that has sent nothing yet does NOT run
+        // now — it stages: the chat's FIRST user message becomes the entry's
+        // prompt (design §1.3), which is the message order every ZAgents
+        // module was written against. The plugin.json format keeps its
+        // immediate activation below, unchanged.
+        if (plugin.format == PluginFormat.ZAGENTS && freshChat(session)) {
+            repo.setPromptStaged(plugin.id, true)
+            onNotice(
+                "${plugin.name} is on for this chat. It runs with this chat's first message.",
+                false
+            )
+            return
+        }
+        // The activation gate: a plugin whose manifest declares required
+        // inputs runs only after they were answered — the backstop behind the
+        // consent dialog's own form half, and the only gate on the re-run and
+        // edit-inputs paths. A form the person does not complete activates
+        // nothing; the binding keeps what it had, and the next run asks again.
+        val schema = PluginForms.schemaOf(plugin)
+        val stored = PluginForms.storedValues(binding.inputsValuesJson)
+        if (PluginForms.incomplete(schema, stored)) {
+            val outcome = askForm(
+                PluginFormRequest(
+                    pluginId = plugin.id,
+                    pluginName = plugin.name,
+                    context = PluginFormContext.ACTIVATION,
+                    fields = schema.fields,
+                    existingValues = stored,
+                    networkHosts = decodePermissions(plugin.networkAllowJson)
+                )
+            )
+            when (outcome) {
+                is PluginFormOutcome.Submitted -> {
+                    // Stored before anything re-reads the binding, so the
+                    // activation below — and the catalogue's next probe — see
+                    // the answers the person just gave.
+                    repo.setInputsValues(session, plugin.id, outcome.values.toString())
+                    repo.chatPluginsOnce(session).firstOrNull { it.pluginId == plugin.id }
+                        ?.let { binding = it }
+                }
+                else -> {
+                    // An immediate activation cancels with nothing run; a stale
+                    // staging from an earlier fresh-chat enable clears with it,
+                    // so the module cannot wake up mid-chat unasked.
+                    if (plugin.format == PluginFormat.ZAGENTS) repo.setPromptStaged(plugin.id, false)
+                    onNotice("${plugin.name} was not run — its input form was not completed.", false)
+                    return
+                }
+            }
+        }
+        // The immediate activation spends a module's once — any staging left
+        // over from a fresh-chat enable that never ran clears with it. A
+        // plugin.json row was never stageable, so it writes nothing here.
+        runActivation(
+            session = session,
+            plugin = plugin,
+            binding = binding,
+            successNotice = "${plugin.name} is on for this chat."
+        )
+    }
+
+    /**
+     * One activate run and its reporting — the shared tail of an enable and an
+     * edit's "Save and run". The success wording is the caller's ("is on" and
+     * "ran again" are different promises); the failure wording is one
+     * sentence, because a start-up failure reads the same wherever it
+     * started. The staged first-message run reports differently (the module's
+     * message body is the point there) and keeps its own tail.
+     */
+    private suspend fun runActivation(
+        session: Long,
+        plugin: PluginEntity,
+        binding: ChatPluginEntity,
+        successNotice: String
+    ) {
+        // A module's activation spends its once — any staging left over from a
+        // fresh-chat enable that never ran clears with it. A plugin.json row
+        // was never stageable, so it writes nothing here.
+        if (plugin.format == PluginFormat.ZAGENTS) repo.setPromptStaged(plugin.id, false)
         val activated = runtime.run(
             sessionId = session,
             plugin = plugin,
             binding = binding,
             event = PluginCallRequest.EVENT_ACTIVATE,
             history = history(session),
-            generate = generate(session)
+            generate = generate(session),
+            form = formHost
         )
         if (activated.ok) {
             appendCards(session, activated.cards, plugin.name)
-            onNotice("${plugin.name} is on for this chat.", false)
+            onNotice(successNotice, false)
         } else {
             onNotice(
                 "${plugin.name} is on, but its start-up failed: " + firstLine(activated.output),
@@ -367,6 +644,12 @@ class PluginUiState(
                 )
             }
         }
+        // A module a chat switches off is not staged either: the flag is the
+        // enable's promise to run on the first message, and a disable is the
+        // chat taking that promise back.
+        if (plugin.format == PluginFormat.ZAGENTS) {
+            repo.setPromptStaged(plugin.id, false)
+        }
         catalog.invalidate(session)
         onNotice("${plugin.name} is off for this chat.", false)
     }
@@ -387,7 +670,8 @@ class PluginUiState(
             event = PluginCallRequest.EVENT_COMMAND,
             payload = PluginPayloads.command(name, args),
             history = history(chat),
-            generate = generate(chat)
+            generate = generate(chat),
+            form = formHost
         )
         if (result.ok) {
             appendCards(chat, result.cards, owner.plugin.name)
@@ -414,4 +698,154 @@ class PluginUiState(
 
     private fun firstLine(text: String?): String =
         text.orEmpty().lineSequence().firstOrNull().orEmpty()
+
+    // -------------------------------------------------------- the form state
+
+    /**
+     * Raises [request]'s form and waits for the person, with the wire's own
+     * [FORM_WAIT_MS] cap — every gate's one await, so the timeout, the cancel
+     * and the no-dialog answers mean the same thing wherever a form was
+     * raised.
+     *
+     * A form still up from an interrupted gate is CANCELLED rather than
+     * orphaned: its raiser is gone, the dialog would never be answered, and
+     * the state slot must be free for whoever is asking now.
+     *
+     * The state write may arrive off the main thread — the one caller that
+     * does is the runtime's reverse bridge, whose runBlocking sits on an IO
+     * thread — and the Compose snapshot system applies a write from any
+     * thread safely, so the dialog still appears and the raiser still waits.
+     * No chat on screen is [PluginFormOutcome.NoUi]: a host with nowhere to
+     * put a dialog answers the caller in words it can pass on.
+     */
+    suspend fun askForm(
+        request: PluginFormRequest,
+        timeoutMs: Long = FORM_WAIT_MS
+    ): PluginFormOutcome {
+        if (sessionId() == null) return PluginFormOutcome.NoUi
+        pendingForm?.let { cancelForm() }
+        val form = PendingPluginForm(
+            pluginId = request.pluginId,
+            pluginName = request.pluginName,
+            context = request.context,
+            fields = request.fields,
+            title = request.title,
+            description = request.description,
+            existingValues = request.existingValues,
+            networkHosts = request.networkHosts
+        )
+        pendingForm = form
+        return try {
+            when (val values = withTimeout(timeoutMs) { form.await() }) {
+                null -> PluginFormOutcome.Cancelled
+                else -> PluginFormOutcome.Submitted(values)
+            }
+        } catch (err: TimeoutCancellationException) {
+            // The wait outlived the person's patience: retire the form so no
+            // dialog outlives its raiser, and answer the caller in the
+            // outcome its own context words for a timeout.
+            if (pendingForm === form) pendingForm = null
+            PluginFormOutcome.TimedOut
+        }
+    }
+
+    // -------------------------------------------------- the staged activation
+
+    /**
+     * Runs the modules this chat staged, with the message that unstaged them.
+     *
+     * Called by the turn between the user row and the agent's own model call,
+     * so the transcript's order is the one every ZAgents module was written
+     * against: user → module message → assistant reply. For every
+     * zagents-format binding still carrying the staged flag — the fresh-chat
+     * enable set it, and nothing has run the entry since — the module runs
+     * ONCE with [message] as its prompt, its composed message body joins the
+     * conversation as the module's card (beside any cards it pushed), and the
+     * flag clears whether it worked or not, because "once per activation" is
+     * the promise and a module that failed must not silently retry on the
+     * next message.
+     *
+     * A module whose required inputs are still unanswered asks for them HERE
+     * — the staged path's activation gate, raised right before the run — and
+     * a form the person does not complete clears the flag too: the module
+     * goes dormant rather than asking again on every message, and the re-run
+     * paths (a toggle off and on, the sheet's edit-inputs) are how it comes
+     * back.
+     */
+    suspend fun runStagedActivations(sessionId: Long, message: String) {
+        val staged = runCatching { repo.zagentsModulesOnce().filter { it.promptStaged } }
+            .getOrDefault(emptyList())
+        if (staged.isEmpty()) return
+        val bindings = runCatching { repo.chatPluginsOnce(sessionId) }.getOrDefault(emptyList())
+        staged.forEach { module ->
+            // Not enabled in THIS chat means the flag belongs to another
+            // chat's staging — leave it for that chat's own first message.
+            val binding = bindings.firstOrNull { it.pluginId == module.id && it.enabled }
+                ?: return@forEach
+            var fresh = binding
+            val schema = PluginForms.schemaOf(module)
+            val stored = PluginForms.storedValues(binding.inputsValuesJson)
+            if (PluginForms.incomplete(schema, stored)) {
+                val outcome = askForm(
+                    PluginFormRequest(
+                        pluginId = module.id,
+                        pluginName = module.name,
+                        context = PluginFormContext.ACTIVATION,
+                        fields = schema.fields,
+                        existingValues = stored,
+                        networkHosts = decodePermissions(module.networkAllowJson)
+                    )
+                )
+                val values = (outcome as? PluginFormOutcome.Submitted)?.values
+                if (values == null) {
+                    repo.setPromptStaged(module.id, false)
+                    onNotice("${module.name} was not run — its input form was not completed.", false)
+                    return@forEach
+                }
+                repo.setInputsValues(sessionId, module.id, values.toString())
+                runCatching { repo.chatPluginsOnce(sessionId) }.getOrDefault(emptyList())
+                    .firstOrNull { it.pluginId == module.id }
+                    ?.let { fresh = it }
+            }
+            val result = runtime.run(
+                sessionId = sessionId,
+                plugin = module,
+                binding = fresh,
+                event = PluginCallRequest.EVENT_ACTIVATE,
+                history = history(sessionId),
+                generate = generate(sessionId),
+                prompt = message,
+                form = formHost
+            )
+            repo.setPromptStaged(module.id, false)
+            if (result.ok) {
+                appendCards(sessionId, result.cards, module.name)
+                // The module's message body IS its message — the emits and
+                // console lines the host composed — rendered as the card the
+                // conversation keeps (the row's `result` value never renders,
+                // the upstream divergence).
+                if (result.output.isNotBlank()) {
+                    runCatching {
+                        onCard(
+                            sessionId,
+                            PluginCard(text = result.output.take(PLUGIN_MESSAGE_CHARS)),
+                            module.name
+                        )
+                    }
+                } else if (result.cards.isEmpty()) {
+                    onNotice("${module.name} ran on this chat's first message and showed nothing.", false)
+                }
+            } else {
+                onNotice(
+                    "${module.name} is on, but its start-up failed: " + firstLine(result.output),
+                    true
+                )
+            }
+        }
+    }
+
+    private companion object {
+        /** The card text cap — the same number [PluginCard.parse] clamps to. */
+        const val PLUGIN_MESSAGE_CHARS = 4000
+    }
 }

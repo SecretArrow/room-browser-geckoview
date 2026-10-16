@@ -8,8 +8,10 @@ import com.roombrowser.data.repo.toManifest
 import com.roombrowser.domain.agent.ToolDef
 import com.roombrowser.domain.agent.ToolFunction
 import com.roombrowser.domain.plugins.PluginCommandDecl
+import com.roombrowser.domain.plugins.PluginFormat
 import com.roombrowser.domain.plugins.PluginManifest
 import com.roombrowser.domain.plugins.PluginPermissions
+import com.roombrowser.domain.plugins.PluginSystemPrompt
 import com.roombrowser.domain.plugins.PluginToolNaming
 import com.roombrowser.node.PluginCallRequest
 import com.roombrowser.node.PluginToolSpec
@@ -214,6 +216,37 @@ class AgentPluginCatalog(
         } else {
             tool.parameters
         }
+
+    companion object {
+        /**
+         * The system-prompt addition for a chat's enabled plugins: one
+         * [PluginSystemPrompt.blockOf] per binding, joined by blank lines, in
+         * the order the chat enabled them — or "" for a chat with none, so a
+         * pluginless chat's prompt stays byte-identical to the one before
+         * plugins existed.
+         *
+         * Every ENABLED plugin introduces itself, loaded or not: the model may
+         * be asked ABOUT a plugin whose probe failed even when it cannot call
+         * one, and the block is the model's only honest picture of what else
+         * runs in the conversation. The version is the VERBATIM string — a
+         * module's own `zagents_version` spelling, a plugin's semver column.
+         * Pure, so the wording and the join are pinned without a database.
+         */
+        fun systemPromptAddition(sessionPlugins: List<SessionPlugin>): String =
+            sessionPlugins.joinToString("\n\n") { sessionPlugin ->
+                val plugin = sessionPlugin.plugin
+                PluginSystemPrompt.blockOf(
+                    displayName = plugin.name,
+                    version = if (plugin.format == PluginFormat.ZAGENTS) {
+                        plugin.zagentsVersion ?: plugin.version
+                    } else {
+                        plugin.version
+                    },
+                    description = plugin.description,
+                    format = plugin.format
+                )
+            }
+    }
 }
 
 /**

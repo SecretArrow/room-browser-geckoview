@@ -15,13 +15,18 @@ import com.roombrowser.domain.model.Profile
 import com.roombrowser.domain.model.UserAgents
 import com.roombrowser.domain.plugins.PluginCard
 import com.roombrowser.domain.plugins.PluginConfigField
+import com.roombrowser.domain.plugins.PluginFormat
+import com.roombrowser.domain.plugins.PluginInputField
+import com.roombrowser.domain.plugins.PluginInputsSchema
 import com.roombrowser.domain.plugins.PluginPermissions
+import com.roombrowser.domain.plugins.ZAgentsManifest
 import com.roombrowser.node.NodeRunner
 import com.roombrowser.node.PluginCallRequest
 import com.roombrowser.node.PluginCallResult
 import com.roombrowser.node.PluginChatEntry
 import com.roombrowser.node.PluginGenerateRequest
 import com.roombrowser.node.PluginWireManifest
+import com.roombrowser.node.ReverseHandlers
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
@@ -30,8 +35,154 @@ import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.put
 import java.io.File
+
+/**
+ * Which moment of a plugin's life an input form is being asked at — the one
+ * thing the dialog needs to know besides the fields themselves, because the
+ * three gates title and footnote themselves differently (an enable-time form
+ * is consent, a tool-call form is a missing piece the model was promised, a
+ * runtime form is the plugin's own mid-run question).
+ */
+enum class PluginFormContext {
+    /** Enabling (or re-running) a plugin: the form stands between consent and the activate run. */
+    ACTIVATION,
+
+    /** The agent called a tool whose required inputs the chat never answered. */
+    TOOL_CALL,
+
+    /** The plugin's own code asked, mid-run, over the reverse `user_input` channel. */
+    RUNTIME_REQUEST
+}
+
+/**
+ * One input form the gates raise: which plugin, which fields, at which
+ * moment. [fields] is the schema as the row's `inputs_json` column (or the
+ * runtime request's wire fields) parsed it — the same [PluginInputField]
+ * model the validator reads, so the dialog that renders this request and
+ * the gate that raised it agree on one shape.
+ *
+ * [title] and [description] are the RUNTIME request's own headline and
+ * helper line, as the plugin's code wrote them; the app-raised contexts
+ * leave them null and title themselves off [pluginName] and [context].
+ * [existingValues] is what this chat already stored for these fields — the
+ * keep-old secret rule's "old", and what an edit dialog pre-fills.
+ * [networkHosts] is the row's allowlist as the gate read it — the dialog's
+ * permission-context line when the plugin holds network, frozen at the
+ * moment the form was raised so an install changing under a dialog cannot
+ * change what the person is looking at.
+ */
+data class PluginFormRequest(
+    val pluginId: String,
+    val pluginName: String,
+    val context: PluginFormContext,
+    val fields: List<PluginInputField>,
+    val title: String? = null,
+    val description: String? = null,
+    val existingValues: JsonObject = JsonObject(emptyMap()),
+    val networkHosts: List<String> = emptyList()
+) {
+    companion object {
+        /**
+         * The request a reverse `user_input` line carries: its `request`
+         * member's title, description and fields, bound to the plugin the
+         * call belongs to. Parsed with [PluginInputsSchema.parse]'s lenient
+         * rule — the host has already refused the shapes this cannot render,
+         * so a field that reads as absent here is a broken line, not a form
+         * the app should refuse to show. [networkHosts] is the CALL's own
+         * allowlist, which the caller hands because the line itself does not
+         * carry it.
+         */
+        fun of(
+            line: JsonObject,
+            pluginId: String,
+            pluginName: String,
+            networkHosts: List<String> = emptyList()
+        ): PluginFormRequest {
+            val request = line["request"] as? JsonObject ?: JsonObject(emptyMap())
+            return PluginFormRequest(
+                pluginId = pluginId,
+                pluginName = pluginName,
+                context = PluginFormContext.RUNTIME_REQUEST,
+                fields = PluginInputsSchema.parse(request["fields"]).fields,
+                title = request.string("title"),
+                description = request.string("description"),
+                networkHosts = networkHosts
+            )
+        }
+
+        private fun JsonObject.string(key: String): String? =
+            (this[key] as? JsonPrimitive)?.contentOrNull?.takeIf { it.isNotBlank() }
+    }
+}
+
+/**
+ * What a raised form came back as — the one answer shape all three gates
+ * read. [Submitted]'s values are the dialog's answers already validated and
+ * normalized by the single validator, so a gate that sees [Submitted] may
+ * store and run without re-asking anything; the other three are refusals
+ * each gate words in its own context (a notice, a tool refusal, the
+ * runtime's error envelope).
+ */
+sealed class PluginFormOutcome {
+
+    /** The person completed the form: the values are valid and normalized. */
+    data class Submitted(val values: JsonObject) : PluginFormOutcome()
+
+    /** The person dismissed or cancelled the dialog. */
+    object Cancelled : PluginFormOutcome()
+
+    /** Nobody answered within the wait. */
+    object TimedOut : PluginFormOutcome()
+
+    /** No dialog for this call — a probe, a background run, a wrong context. */
+    object NoUi : PluginFormOutcome()
+}
+
+/**
+ * The host that raises the input form and awaits the person's answer — the
+ * chat panel's own plugin surface ([PluginUiState]) in production, a fake in
+ * the tests. The three gates call it with a [PluginFormRequest] and read a
+ * [PluginFormOutcome]; a host that cannot ask (nobody on screen) answers
+ * [PluginFormOutcome.NoUi] rather than throwing, because "no dialog here" is
+ * an answer the caller has honest words for.
+ *
+ * The same shape as [PluginGenerateCall] on purpose: one suspend call, one
+ * answer, no partial states — the runtime's reverse channel and the gates'
+ * interactive waits are both just "ask and await".
+ */
+fun interface PluginFormCall {
+    suspend operator fun invoke(request: PluginFormRequest): PluginFormOutcome
+}
+
+/** The wire's words for a form the person dismissed. */
+internal const val FORM_CANCELLED_ERROR = "Form was cancelled"
+
+/** The wire's words for a form nobody answered in time. */
+internal const val FORM_TIMED_OUT_ERROR = "Form timed out"
+
+/**
+ * How long the app side waits for a raised form before it answers for the
+ * person — 300 s, the same number the runtime's own `user_input` timeout
+ * carries (`NodeProtocol.REVERSE_USER_INPUT_TIMEOUT_MS`, module-internal on
+ * the node side, so this is the app's own spelling of the wire's constant).
+ * A dialog awaiting a person is the one wait in this feature allowed to take
+ * minutes, and the module's compute budget is PAUSED for every second of it.
+ */
+internal const val FORM_WAIT_MS = 300_000L
+
+/**
+ * The reverse command names the app side registers when a call wires a form
+ * host. The node module owns the canonical constants but keeps them
+ * module-internal, so these are the app's spellings of the same two strings
+ * the wire defines — the registry matches by value, which is all it ever
+ * does, and a drift here is caught by the JVM tests that drive the handler.
+ */
+internal const val REVERSE_GENERATE_CMD = "agent_generate"
+
+internal const val REVERSE_USER_INPUT_CMD = "user_input"
 
 /**
  * One plugin event's route to the runtime — [NodeRunner.plugin] in production,
@@ -41,24 +192,36 @@ import java.io.File
  * way, and a plugin's failure must be testable without starting one.
  *
  * [generate] is the chat's own text generator, or null when this call has
- * none. The production route wraps it into the blocking reverse handler
- * ([reverseGenerateHandler]) that answers `room.agent.generate` while the
- * plugin runs; null carries no handler at all, and NodeClient then refuses
- * any reverse request in its own words — the honest answer for a chat with
- * no session, provider or model to generate with.
+ * none. [form] is the host a runtime form request (`room.ui.form`, a module's
+ * `zagents.ui.form`) is bridged to while the event runs, or null when this
+ * call has nobody to ask — the probe, the deactivates and every unattended
+ * path pass none, and the runtime then answers the plugin in its own honest
+ * no-dialog words. The production route wraps the two into the reverse
+ * registry ([reverseHandlers]) that answers both commands while the plugin
+ * runs; null on both carries no registry at all, exactly as a null generator
+ * always has.
  */
 fun interface PluginCall {
     suspend operator fun invoke(
         request: PluginCallRequest,
-        generate: PluginGenerateCall?
+        generate: PluginGenerateCall?,
+        form: PluginFormCall? = null
     ): PluginCallResult
 
     companion object {
         /** The production route: the one process-wide runner, one call at a time. */
         fun throughRunner(context: Context): PluginCall {
             val runner = NodeRunner(context)
-            return PluginCall { request, generate ->
-                runner.plugin(request, generate?.let(::reverseGenerateHandler))
+            return PluginCall { request, generate, form ->
+                // The legacy shorthand when no form host is wired: byte-for-byte
+                // today's route, so every call without a dialog behaves exactly
+                // as it did before forms existed. The registry path lights up
+                // only when there is someone to show one to.
+                if (form == null) {
+                    runner.plugin(request, generate?.let(::reverseGenerateHandler))
+                } else {
+                    runner.plugin(request, reverseHandlers(request, generate, form))
+                }
             }
         }
     }
@@ -105,6 +268,73 @@ internal fun reverseGenerateHandler(
             generate(PluginGenerateRequest.of(line))
         }
         buildJsonObject { put("text", text) }
+    }
+}
+
+/**
+ * The reverse registry one call's two interactive halves become: the
+ * generator under the generate command (as today), the form host under
+ * `user_input`. Built only when a form host exists — a call with a generator
+ * and no host keeps today's legacy route untouched — and registered by the
+ * app's own spellings of the command names (see [REVERSE_GENERATE_CMD]),
+ * which the node module's registry matches by value.
+ *
+ * The form handler is bound to THIS call's plugin identity: a reverse line
+ * does not carry it, and the dialog it raises must say who is asking.
+ */
+internal fun reverseHandlers(
+    request: PluginCallRequest,
+    generate: PluginGenerateCall?,
+    form: PluginFormCall
+): ReverseHandlers {
+    val handlers = ReverseHandlers()
+    if (generate != null) {
+        handlers.register(REVERSE_GENERATE_CMD, reverseGenerateHandler(generate))
+    }
+    handlers.register(
+        REVERSE_USER_INPUT_CMD,
+        reverseFormHandler(
+            form,
+            request.manifest.id,
+            request.manifest.name,
+            // The call's own allowlist — the dialog's network context line —
+            // which the reverse line itself does not carry.
+            request.manifest.networkAllow
+        )
+    )
+    return handlers
+}
+
+/**
+ * The blocking reverse handler one [PluginFormCall] becomes on NodeClient's
+ * read loop: parse the `user_input` line into a [PluginFormRequest], hand it
+ * to the host, and answer `{"values": …}` when the person completed it.
+ *
+ * EVERY OTHER OUTCOME RAISES, in the wire's exact words — cancelled, timed
+ * out, no dialog — because the reverse line's error envelope is the only
+ * channel those travel on, and a wrap that caught here would have to invent
+ * words of its own instead. This is the same deliberate rule
+ * [reverseGenerateHandler] follows: NodeClient turns any throw into the
+ * envelope, so the throw IS the answer.
+ *
+ * runBlocking is safe for the same reason the generate handler's is: the call
+ * already sits on a Dispatchers.IO thread inside [AgentPluginRuntime.run],
+ * the dialog completes the deferred on the main thread, and the NodeRunner
+ * lock is held by THIS thread, which the dialog never re-enters.
+ */
+internal fun reverseFormHandler(
+    form: PluginFormCall,
+    pluginId: String,
+    pluginName: String,
+    networkHosts: List<String> = emptyList()
+): (JsonObject) -> JsonObject = { line ->
+    runBlocking {
+        when (val outcome = form(PluginFormRequest.of(line, pluginId, pluginName, networkHosts))) {
+            is PluginFormOutcome.Submitted -> buildJsonObject { put("values", outcome.values) }
+            PluginFormOutcome.Cancelled -> error(FORM_CANCELLED_ERROR)
+            PluginFormOutcome.TimedOut -> error(FORM_TIMED_OUT_ERROR)
+            PluginFormOutcome.NoUi -> error(ReverseHandlers.NO_INTERACTIVE_UI)
+        }
     }
 }
 
@@ -157,6 +387,14 @@ class AgentPluginRuntime(
      * ([PluginCall.throughRunner] through [reverseGenerateHandler]), so a
      * fake seam observes the generator itself and the wrap lives in exactly
      * one place.
+     *
+     * A module.json row (`format='zagents'`) is built into the MODULE half of
+     * the request here — its own budget, its state directory, its verbatim
+     * spellings, the module permission vocabulary — read back from the same
+     * row the installer validated, never from a file the module could have
+     * exchanged since. [prompt] is the staged activation's message (the only
+     * run that carries one); [form] is the host a mid-run form request is
+     * bridged to, or null when this event runs unattended.
      */
     suspend fun run(
         sessionId: Long,
@@ -166,35 +404,59 @@ class AgentPluginRuntime(
         payload: JsonObject = JsonObject(emptyMap()),
         history: List<PluginChatEntry> = emptyList(),
         budgetMs: Long = DEFAULT_BUDGET_MS,
-        generate: PluginGenerateCall? = null
+        generate: PluginGenerateCall? = null,
+        prompt: String? = null,
+        form: PluginFormCall? = null
     ): PluginCallResult = withContext(Dispatchers.IO) {
         val manifest = plugin.toManifest()
         val effective = PluginPermissions.effectiveGrants(
             manifest.permissions,
             decodePermissions(binding.grantedPermissionsJson)
         )
+        val module = plugin.format == PluginFormat.ZAGENTS
+        val dataRoot = File(
+            File(File(context.filesDir, DATA_DIR), sessionId.toString()),
+            plugin.dirName
+        ).absolutePath
+        val timeoutSeconds = plugin.timeoutSeconds ?: ZAgentsManifest.DEFAULT_TIMEOUT_SECONDS
         val request = PluginCallRequest(
             pluginRoot = File(File(context.filesDir, PLUGINS_DIR), plugin.dirName).absolutePath,
-            dataRoot = File(
-                File(File(context.filesDir, DATA_DIR), sessionId.toString()),
-                plugin.dirName
-            ).absolutePath,
+            dataRoot = dataRoot,
             entry = plugin.entry,
             manifest = PluginWireManifest(
                 id = plugin.id,
                 name = plugin.name,
                 version = plugin.version,
-                permissions = effective,
+                // A module call speaks the MODULE vocabulary the host
+                // re-validates against — the mapping of the row's own names,
+                // applied to the effective set and never to the declared one,
+                // so the consent's meaning does not change with the format.
+                permissions = if (module) modulePermissions(effective) else effective,
                 networkAllow = manifest.networkAllow
             ),
             event = event,
             payload = payload,
             config = mergedConfig(manifest.configSchema, binding.configJson),
-            timeoutMs = budgetMs,
+            // A module's budget is the number its manifest asked for and it
+            // wins host-side; the app's read timeout derives from timeoutMs,
+            // so a module call hands the wire the module's number both ways.
+            timeoutMs = if (module) timeoutSeconds * 1000L else budgetMs,
             userAgent = userAgent(),
+            format = if (module) PluginCallRequest.FORMAT_ZAGENTS else null,
+            prompt = prompt?.takeIf { module },
+            timeoutSeconds = if (module) timeoutSeconds else null,
+            // Inputs are a shared feature: whatever the binding stored for
+            // the row's form rides for either format, and an absent or empty
+            // store is simply omitted.
+            inputsValues = PluginForms.storedValues(binding.inputsValuesJson)
+                .takeIf { it.isNotEmpty() },
+            stateRoot = if (module) File(dataRoot, STATE_DIR).absolutePath else null,
+            title = if (module) plugin.name else null,
+            zagentsVersion = if (module) plugin.zagentsVersion else null,
+            zagentsName = if (module) plugin.zagentsName else null,
             history = history.takeIf { it.isNotEmpty() && PluginPermissions.CHAT_CONTEXT in effective }
         )
-        runCatching { call(request, generate) }.getOrElse { err ->
+        runCatching { call(request, generate, form) }.getOrElse { err ->
             PluginCallResult(
                 ok = false,
                 output = err.message ?: "the plugin call failed: ${err.javaClass.simpleName}"
@@ -210,7 +472,10 @@ class AgentPluginRuntime(
      * [AgentNodeRuntime] carries one, and any cards it pushed for the user.
      *
      * [generate] is the chat's own generator for the plugin to ask while its
-     * tool runs — the same one the turn or command path resolved.
+     * tool runs — the same one the turn or command path resolved. [form] is
+     * the host a mid-run form request is bridged to — the missing-inputs
+     * gate's caller wires the chat's own host, so a tool that asks for a
+     * dialog mid-run gets the same one its gate did.
      */
     suspend fun runTool(
         sessionId: Long,
@@ -219,7 +484,8 @@ class AgentPluginRuntime(
         toolName: String,
         argsJson: String,
         history: List<PluginChatEntry> = emptyList(),
-        generate: PluginGenerateCall? = null
+        generate: PluginGenerateCall? = null,
+        form: PluginFormCall? = null
     ): PluginToolRun {
         val payload = JsonObject(
             mapOf(
@@ -234,7 +500,8 @@ class AgentPluginRuntime(
             event = PluginCallRequest.EVENT_TOOL,
             payload = payload,
             history = history,
-            generate = generate
+            generate = generate,
+            form = form
         )
         return PluginToolRun(
             result = if (result.ok) {
@@ -281,6 +548,34 @@ class AgentPluginRuntime(
         )
     }
 
+    /**
+     * The row's effective permissions in the MODULE vocabulary the host
+     * re-validates a zagents call against: storage→storage, network→network,
+     * files→files, chat.context→chat, agent.generate→agent. The intersection
+     * is already computed (the consent's meaning never changes with the
+     * format); this is only its spelling. Storage and files together collapse
+     * to files — the row cannot tell a module that declared `files` from one
+     * that declared `storage` and `files` (install maps `files` to both), and
+     * the collapse is the direction that never widens: a module that asked
+     * for files alone must not gain the kv store, and one that asked for both
+     * still gets the path-addressed sandbox the pair was stored to mean.
+     * `agent.tools` has no module spelling and a module never declares it, so
+     * it maps to nothing.
+     */
+    private fun modulePermissions(effective: List<String>): List<String> {
+        val mapped = effective.mapNotNull { permission ->
+            when (permission) {
+                PluginPermissions.STORAGE -> "storage"
+                PluginPermissions.NETWORK -> "network"
+                PluginPermissions.FILES -> "files"
+                PluginPermissions.CHAT_CONTEXT -> "chat"
+                PluginPermissions.AGENT_GENERATE -> "agent"
+                else -> null
+            }
+        }
+        return if ("files" in mapped) mapped.filter { it != "storage" } else mapped
+    }
+
     companion object {
         /** probe/activate/command/config/tool — the design §5 default. */
         const val DEFAULT_BUDGET_MS = 30_000L
@@ -308,6 +603,14 @@ class AgentPluginRuntime(
 
         const val PLUGINS_DIR = "plugins"
         const val DATA_DIR = "plugin-data"
+
+        /**
+         * The per-chat directory a module's `zagents.fs` sandbox is rooted at
+         * — `<dataRoot>/state/`, the same spelling the host falls back to, so
+         * a module's state lives beside its kv under the one data root this
+         * call was already handed.
+         */
+        const val STATE_DIR = "state"
 
         /**
          * How much of the chat a `chat.context` grant buys: the last

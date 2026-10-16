@@ -463,6 +463,13 @@ class BrowserAgentController(
         onCard = { session, card, name -> appendPluginCard(session, card, name) },
         onNotice = { text, error -> note(text, error) },
         history = { session -> AgentPluginRuntime.historyOf(repo.messages(session)) },
+        // Staged activation's one question: a chat that has sent no user
+        // message yet is fresh, and a module enabled into it stages rather
+        // than activates — the first message becomes its prompt.
+        freshChat = { session ->
+            runCatching { repo.messages(session) }.getOrDefault(emptyList())
+                .none { it.role == "user" }
+        },
         generate = { session -> pluginGeneratorFor(session) }
     )
 
@@ -1276,13 +1283,35 @@ class BrowserAgentController(
             // list in memory. Landing anywhere else takes the row's, so a chat
             // deleted underneath us cannot lend its list to its replacement.
             if (sessionId != previousId) plan = AgentPlan.decode(known?.planJson)
+            // Staged activation's one moment: the flag only ever means "this
+            // chat's FIRST message runs the module", so the question is asked
+            // BEFORE the row is written — a chat that already spoke has had its
+            // moment, and letting it spend another chat's staging would run a
+            // module mid-conversation that its own chat never got (the flag
+            // lives on the plugin row, shared by every chat that enabled it).
+            val chatIsFresh = runCatching { repo.messages(sessionId).none { it.role == "user" } }
+                .getOrDefault(false)
             repo.addMessage(sessionId, "user", display)
+
+            // A module staged by this chat's fresh enable runs with the
+            // message that unstaged it — BEFORE the hooks and the model, so
+            // the transcript's order is the one the module was written
+            // against: user → module message → assistant reply. Later
+            // messages never re-run it (the gate above, then the flag the
+            // run clears), and a plugin.json row was never staged to begin
+            // with.
+            if (chatIsFresh) pluginUi.runStagedActivations(sessionId, text)
 
             // The chat's hooked plugins see the message BEFORE the model
             // does — sequential, budgeted, and never fatal to the turn: the
             // message was addressed to the agent, not to the plugin, and a
             // plugin that fails on it is said about and skipped.
-            dispatchPluginMessageHooks(sessionId, text, turnGenerate)
+            dispatchPluginMessageHooks(
+                sessionId,
+                text,
+                turnGenerate,
+                if (settings.chatHeadless) null else pluginUi.formHost
+            )
 
             // The plugin executor wraps the page tools INNERMOST, so every
             // gate above it applies to a plugin tool exactly as it does to a
@@ -1304,7 +1333,14 @@ class BrowserAgentController(
                 onCards = { cards, name ->
                     cards.forEach { card -> appendPluginCard(sessionId, card, name) }
                 },
-                generate = { turnGenerate }
+                generate = { turnGenerate },
+                // The interactive halves of the plugin tool path: the chat's
+                // form host for the missing-inputs gate and a mid-run form —
+                // wired only when the turn is an attended one, because a
+                // headless turn has nobody to show a dialog to and its gate
+                // answers the instructive refusal instead.
+                form = if (settings.chatHeadless) null else pluginUi.formHost,
+                repo = pluginRepo
             )
             val budget = ActionBudgetGate(pluginExecutor)
             // The profile's withheld agent permissions sit outside the budget
@@ -1320,10 +1356,16 @@ class BrowserAgentController(
             val mode = settings.chatMode
             // A Plan turn says so up front: otherwise the model plans a
             // click, is refused, and spends its steps probing what is left.
-            val prompt = when (mode) {
+            val modePrompt = when (mode) {
                 AgentMode.PLAN -> basePrompt + AgentPrompts.PLAN_CLAUSE + AgentPrompts.TODO_CLAUSE
                 else -> basePrompt + AgentPrompts.TODO_CLAUSE
             }
+            // The chat's enabled plugins introduce themselves after the
+            // prompt's own text — one block each, the order the chat enabled
+            // them — so the model knows what else runs in the conversation
+            // and treats its messages as data; a chat with none adds nothing,
+            // and its prompt is byte-identical to the pre-plugin one.
+            val prompt = modePrompt + pluginContextAddition(sessionId)
             val config = com.roombrowser.domain.agent.AgentConfig(
                 model = model,
                 maxSteps = settings.maxSteps,
@@ -1535,6 +1577,19 @@ class BrowserAgentController(
     // ------------------------------------------------------------- chat plugins
 
     /**
+     * The system-prompt addition for this chat's enabled plugins — one block
+     * per binding, joined and worded by the catalogue's pure
+     * [AgentPluginCatalog.systemPromptAddition]. Empty for a chat with no
+     * enabled plugins, so the turn's prompt is unchanged when none are on;
+     * reading it also settles the catalogue's cache for the tool definitions
+     * the turn resolves further down (the same probe, paid once).
+     */
+    private suspend fun pluginContextAddition(sessionId: Long): String =
+        AgentPluginCatalog.systemPromptAddition(
+            runCatching { pluginCatalog.sessionPlugins(sessionId) }.getOrDefault(emptyList())
+        )
+
+    /**
      * The chat's message hooks: every plugin enabled with the `message` hook
      * sees the user's text BEFORE the turn starts — its cards join the
      * conversation, its failure is one honest notice line, and the turn runs
@@ -1551,7 +1606,8 @@ class BrowserAgentController(
     private suspend fun dispatchPluginMessageHooks(
         sessionId: Long,
         text: String,
-        generate: PluginGenerateCall?
+        generate: PluginGenerateCall?,
+        form: PluginFormCall? = null
     ) {
         val hooked = runCatching {
             pluginCatalog.sessionPlugins(sessionId).filter { "message" in it.hooks }
@@ -1568,7 +1624,8 @@ class BrowserAgentController(
                     payload = PluginPayloads.message(text),
                     history = AgentPluginRuntime.historyOf(repo.messages(sessionId)),
                     budgetMs = AgentPluginRuntime.MESSAGE_HOOK_BUDGET_MS,
-                    generate = generate
+                    generate = generate,
+                    form = form
                 )
                 if (result.ok) {
                     PluginCard.parseList(JsonArray(result.cards)).forEach { card ->

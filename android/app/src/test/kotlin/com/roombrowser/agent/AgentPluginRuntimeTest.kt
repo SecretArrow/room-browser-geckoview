@@ -6,15 +6,18 @@ import com.roombrowser.data.db.AgentMessageEntity
 import com.roombrowser.data.db.ChatPluginEntity
 import com.roombrowser.data.db.PluginEntity
 import com.roombrowser.domain.agent.UntrustedContent
+import com.roombrowser.domain.plugins.PluginFormat
 import com.roombrowser.node.PluginCallRequest
 import com.roombrowser.node.PluginCallResult
 import com.roombrowser.node.PluginChatEntry
 import com.roombrowser.node.PluginGenerateRequest
+import com.roombrowser.node.ReverseHandlers
 import io.mockk.every
 import io.mockk.mockk
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.booleanOrNull
+import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
@@ -36,6 +39,12 @@ import java.nio.file.Files
  * the plugin's words are data to the model, and its failures are its own
  * words, unfenced, exactly like a `node_run` failure.
  *
+ * The same driving covers the two halves a module.json row adds: the MODULE
+ * half of the request (its own budget, state directory, verbatim spellings,
+ * module permission vocabulary after the intersection) and the FORM bridge
+ * (the reverse `user_input` handler the chat's form host becomes on the
+ * read loop — its answer and its three refusal words).
+ *
  * Every test ends on a VOID-returning Truth call: a Kotlin function whose
  * last expression has a value compiles to a non-void method, and JUnit4 then
  * refuses the whole class. `runBlocking<Unit>` is the other half of that
@@ -55,11 +64,15 @@ class AgentPluginRuntimeTest {
      */
     private val reverseHandlers = mutableListOf<((JsonObject) -> JsonObject)?>()
 
-    private val call = PluginCall { request, generate ->
+    private val call = PluginCall { request, generate, form ->
         calls.add(request)
         reverseHandlers.add(generate?.let(::reverseGenerateHandler))
+        forms.add(form)
         PluginCallResult(ok = true, output = "ran ${request.event}")
     }
+
+    /** The form host each event's call was handed, event for event with [calls]. */
+    private val forms = mutableListOf<PluginFormCall?>()
 
     private fun plugin(
         permissions: String = """["agent.tools","chat.context","storage"]""",
@@ -85,7 +98,8 @@ class AgentPluginRuntimeTest {
 
     private fun binding(
         granted: String = """["agent.tools","chat.context","storage"]""",
-        config: String = """{"ignore_case":false,"surprise":"dropped"}"""
+        config: String = """{"ignore_case":false,"surprise":"dropped"}""",
+        inputs: String? = null
     ) = ChatPluginEntity(
         id = 1L,
         sessionId = 7L,
@@ -93,6 +107,57 @@ class AgentPluginRuntimeTest {
         enabled = true,
         grantedPermissionsJson = granted,
         configJson = config,
+        inputsValuesJson = inputs,
+        createdAt = 1L,
+        updatedAt = 1L
+    )
+
+    /**
+     * A module.json row, as the installer writes it: the format marker, the
+     * module's own spellings, its own budget, and its `inputs` schema — the
+     * columns a zagents-format call is built from.
+     */
+    private fun module(
+        permissions: String = """["storage","files","network","chat.context","agent.generate"]""",
+        inputs: String? = """[{"key":"email","type":"string","title":"Email","description":"","required":true}]"""
+    ) = PluginEntity(
+        id = "zagents.greeter",
+        name = "Greeter Module",
+        version = "0.0.0",
+        description = "Greets.",
+        authorName = "",
+        license = "",
+        entry = "main.js",
+        apiVersion = 1,
+        permissionsJson = permissions,
+        networkAllowJson = "[]",
+        configSchemaJson = "[]",
+        commandsJson = "[]",
+        hooksJson = "[]",
+        dirName = "zagents_greeter",
+        installedAt = 1L,
+        updatedAt = 1L,
+        format = PluginFormat.ZAGENTS,
+        zagentsName = "greeter",
+        zagentsVersion = "1.2-beta",
+        zagentsEntry = "main.js",
+        timeoutSeconds = 45,
+        inputsJson = inputs,
+        promptStaged = false
+    )
+
+    /** The module's binding: the row vocabulary's grants, and this chat's form answers. */
+    private fun moduleBinding(
+        granted: String = """["storage","files","network","chat.context","agent.generate"]""",
+        inputs: String? = """{"email":"a@b.c"}"""
+    ) = ChatPluginEntity(
+        id = 2L,
+        sessionId = 7L,
+        pluginId = "zagents.greeter",
+        enabled = true,
+        grantedPermissionsJson = granted,
+        configJson = "",
+        inputsValuesJson = inputs,
         createdAt = 1L,
         updatedAt = 1L
     )
@@ -194,7 +259,7 @@ class AgentPluginRuntimeTest {
 
     @Test
     fun `a tool's failure is the plugin's own words, unfenced`() = runBlocking<Unit> {
-        val failing = PluginCall { _, _ -> PluginCallResult(ok = false, output = "boom: bad schema") }
+        val failing = PluginCall { _, _, _ -> PluginCallResult(ok = false, output = "boom: bad schema") }
         val runtime = AgentPluginRuntime(context, profile = null, call = failing)
         val run = runtime.runTool(7L, plugin(), binding(), "count_words", "{}")
         assertThat(run.result.ok).isFalse()
@@ -204,7 +269,7 @@ class AgentPluginRuntimeTest {
 
     @Test
     fun `a seam failure is an answer, not an exception`() = runBlocking<Unit> {
-        val throwing = PluginCall { _, _ -> error("the runtime is absent") }
+        val throwing = PluginCall { _, _, _ -> error("the runtime is absent") }
         val runtime = AgentPluginRuntime(context, profile = null, call = throwing)
         val result = runtime.run(7L, plugin(), binding(), PluginCallRequest.EVENT_PROBE)
         assertThat(result.ok).isFalse()
@@ -258,6 +323,208 @@ class AgentPluginRuntimeTest {
         val generator = PluginGenerateCall { _ -> "text" }
         runtime().runTool(7L, plugin(), binding(), "count_words", "{}", generate = generator)
         assertThat(reverseHandlers.single()).isNotNull()
+    }
+
+    // ------------------------------------------------- the module half of a call
+
+    @Test
+    fun `a module call carries the module half of the request`() = runBlocking<Unit> {
+        val host = PluginFormCall { _ -> PluginFormOutcome.Cancelled }
+        runtime().run(
+            7L, module(), moduleBinding(), PluginCallRequest.EVENT_ACTIVATE,
+            prompt = "hello there", form = host
+        )
+        val request = calls.single()
+        assertThat(request.format).isEqualTo(PluginCallRequest.FORMAT_ZAGENTS)
+        assertThat(request.prompt).isEqualTo("hello there")
+        // The module's own budget wins both ways: the wire's timeoutSeconds
+        // and the read timeout's timeoutMs are the manifest's number.
+        assertThat(request.timeoutSeconds).isEqualTo(45)
+        assertThat(request.timeoutMs).isEqualTo(45_000L)
+        assertThat(request.stateRoot).isEqualTo(
+            File(File(File(File(root, "plugin-data"), "7"), "zagents_greeter"), "state").absolutePath
+        )
+        assertThat(request.title).isEqualTo("Greeter Module")
+        assertThat(request.zagentsVersion).isEqualTo("1.2-beta")
+        assertThat(request.zagentsName).isEqualTo("greeter")
+        assertThat(request.inputsValues?.get("email")?.jsonPrimitive?.content).isEqualTo("a@b.c")
+        // The form host rode the seam: a mid-run room.ui.form has someone to ask.
+        assertThat(forms.single()).isEqualTo(host)
+    }
+
+    @Test
+    fun `a module's grants intersect before the vocabulary mapping`() = runBlocking<Unit> {
+        // The row declares the full set; the chat granted storage+files+network
+        // only — so chat and agent are absent from the wire BEFORE the mapping
+        // is even asked, because the consent's meaning must not change with the
+        // format. Storage collapses away under files (the row's files spelling
+        // is install's storage+files pair), leaving the path-addressed sandbox.
+        runtime().run(
+            7L,
+            module(),
+            moduleBinding(granted = """["storage","files","network"]"""),
+            PluginCallRequest.EVENT_PROBE
+        )
+        assertThat(calls.single().manifest.permissions).containsExactly("files", "network")
+    }
+
+    @Test
+    fun `the module vocabulary maps every row name it has a spelling for`() = runBlocking<Unit> {
+        // With everything granted, each row name finds its module spelling —
+        // and the one that cannot (agent.tools, which a module never declares)
+        // maps to nothing rather than to a name the host would refuse.
+        runtime().run(
+            7L,
+            module(permissions = """["storage","files","network","chat.context","agent.generate","agent.tools"]"""),
+            moduleBinding(granted = """["storage","files","network","chat.context","agent.generate","agent.tools"]"""),
+            PluginCallRequest.EVENT_PROBE
+        )
+        assertThat(calls.single().manifest.permissions)
+            .containsExactly("files", "network", "chat", "agent")
+    }
+
+    @Test
+    fun `a module with only storage keeps the kv store, no files granted`() = runBlocking<Unit> {
+        runtime().run(
+            7L,
+            module(permissions = """["storage"]"""),
+            moduleBinding(granted = """["storage"]"""),
+            PluginCallRequest.EVENT_PROBE
+        )
+        assertThat(calls.single().manifest.permissions).containsExactly("storage")
+    }
+
+    @Test
+    fun `a plugin row keeps the row vocabulary and sends none of the module fields`() = runBlocking<Unit> {
+        runtime().run(
+            7L,
+            plugin(),
+            binding(inputs = """{"email":"a@b.c"}"""),
+            PluginCallRequest.EVENT_ACTIVATE,
+            // A caller that passes a prompt anyway: a plugin.json row was never
+            // staged, so the field stays off the wire whatever it was handed.
+            prompt = "hello there"
+        )
+        val request = calls.single()
+        assertThat(request.format).isNull()
+        assertThat(request.prompt).isNull()
+        assertThat(request.timeoutSeconds).isNull()
+        assertThat(request.stateRoot).isNull()
+        assertThat(request.title).isNull()
+        assertThat(request.zagentsVersion).isNull()
+        assertThat(request.zagentsName).isNull()
+        // Inputs are a shared feature: a plugin-format binding's stored answers
+        // ride its calls exactly the same way a module's do.
+        assertThat(request.inputsValues?.get("email")?.jsonPrimitive?.content).isEqualTo("a@b.c")
+    }
+
+    // -------------------------------------------------------- the form bridge
+
+    /** One reverse `user_input` line, in the shape bridge.js writes. */
+    private fun formLine(): JsonObject = buildJsonObject {
+        put("id", "form-1")
+        put("cmd", "user_input")
+        put("token", "0123456789abcdef0123456789abcdef0123456789abcdef")
+        put(
+            "request",
+            buildJsonObject {
+                put("title", "Your account")
+                put("description", "Needed for this chat")
+                put(
+                    "fields",
+                    buildJsonArray {
+                        add(
+                            buildJsonObject {
+                                put("key", "email")
+                                put("type", "string")
+                                put("title", "Email")
+                                put("required", true)
+                            }
+                        )
+                    }
+                )
+            }
+        )
+    }
+
+    @Test
+    fun `a completed form answers the values object the host normalized`() {
+        val seen = mutableListOf<PluginFormRequest>()
+        val host = PluginFormCall { request ->
+            seen.add(request)
+            PluginFormOutcome.Submitted(buildJsonObject { put("email", "a@b.c") })
+        }
+        // The call's own allowlist rides the handler — the dialog's network
+        // context line, which the reverse line itself does not carry.
+        val handler = reverseFormHandler(
+            host,
+            "zagents.greeter",
+            "Greeter Module",
+            listOf("api.github.com")
+        )
+        val answer = handler(formLine())
+        // The reply the wire carries is the result member's shape exactly.
+        assertThat(answer.toString()).isEqualTo("""{"values":{"email":"a@b.c"}}""")
+        // The host saw the request the line carried — title, description and
+        // fields parsed — bound to THIS call's plugin identity, because the
+        // reverse line itself cannot say who is asking.
+        val request = seen.single()
+        assertThat(request.pluginId).isEqualTo("zagents.greeter")
+        assertThat(request.pluginName).isEqualTo("Greeter Module")
+        assertThat(request.context).isEqualTo(PluginFormContext.RUNTIME_REQUEST)
+        assertThat(request.title).isEqualTo("Your account")
+        assertThat(request.description).isEqualTo("Needed for this chat")
+        assertThat(request.fields.single().key).isEqualTo("email")
+        assertThat(request.fields.single().required).isTrue()
+        assertThat(request.networkHosts).containsExactly("api.github.com")
+    }
+
+    @Test
+    fun `a dismissed form raises the wire's own cancelled words`() {
+        val handler = reverseFormHandler(
+            PluginFormCall { _ -> PluginFormOutcome.Cancelled },
+            "zagents.greeter",
+            "Greeter Module"
+        )
+        val thrown = assertThrows(IllegalStateException::class.java) { handler(formLine()) }
+        assertThat(thrown.message).isEqualTo(FORM_CANCELLED_ERROR)
+    }
+
+    @Test
+    fun `an unanswered form raises the wire's own timeout words`() {
+        val handler = reverseFormHandler(
+            PluginFormCall { _ -> PluginFormOutcome.TimedOut },
+            "zagents.greeter",
+            "Greeter Module"
+        )
+        val thrown = assertThrows(IllegalStateException::class.java) { handler(formLine()) }
+        assertThat(thrown.message).isEqualTo(FORM_TIMED_OUT_ERROR)
+    }
+
+    @Test
+    fun `a host with no dialog raises the no-UI words`() {
+        val handler = reverseFormHandler(
+            PluginFormCall { _ -> PluginFormOutcome.NoUi },
+            "zagents.greeter",
+            "Greeter Module"
+        )
+        val thrown = assertThrows(IllegalStateException::class.java) { handler(formLine()) }
+        assertThat(thrown.message).isEqualTo(ReverseHandlers.NO_INTERACTIVE_UI)
+    }
+
+    @Test
+    fun `the app's reverse spellings are the wire's own words`() {
+        // The node module keeps the canonical constants module-internal, so
+        // these app-side spellings are pinned HERE to the same literals the
+        // node protocol tests pin theirs to — a drift between the two sides
+        // of the registry fails one of the two suites, not the wire silently.
+        assertThat(REVERSE_GENERATE_CMD).isEqualTo("agent_generate")
+        assertThat(REVERSE_USER_INPUT_CMD).isEqualTo("user_input")
+        assertThat(FORM_WAIT_MS).isEqualTo(300_000L)
+        // The wait the app-side form gate allows itself is the same number the
+        // runtime's own user_input timeout carries — one patience, both sides.
+        assertThat(ReverseHandlers.NO_INTERACTIVE_UI)
+            .isEqualTo("No interactive UI is available for this call")
     }
 
     @Test
