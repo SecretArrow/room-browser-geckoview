@@ -210,28 +210,26 @@ object PluginDirZipper {
     /** The filename-hostile characters — backslash, slash, colon, star, question mark, quotes, angles, bar — fold to '-'. Spaces stay: SAF handles them. */
     private fun String.foldHostile(): String = replace(HOSTILE, "-")
 
-    private companion object {
-        const val MB = 1024L * 1024L
+    private const val MB = 1024L * 1024L
 
-        /**
-         * The installer's own caps, mirrored here because its copy is private:
-         * both sides refusing the same numbers is the two-direction guarantee
-         * (§7.7) — export refuses what import would refuse anyway.
-         */
-        const val MAX_ENTRIES = 512
-        const val MAX_TOTAL_BYTES = 20 * MB
-        const val ENTRY_NAME_CHARS = 200
+    /**
+     * The installer's own caps, mirrored here because its copy is private:
+     * both sides refusing the same numbers is the two-direction guarantee
+     * (§7.7) — export refuses what import would refuse anyway.
+     */
+    private const val MAX_ENTRIES = 512
+    private const val MAX_TOTAL_BYTES = 20 * MB
+    private const val ENTRY_NAME_CHARS = 200
 
-        /**
-         * The installer's forbidden set, mirrored for the same reason: native
-         * addons load code into the runtime's own process; the rest are
-         * executables or packages a chat extension has no business being.
-         */
-        val FORBIDDEN_EXTENSIONS = setOf(
-            "node", "so", "dll", "exe", "bat", "sh", "jar", "apk"
-        )
+    /**
+     * The installer's forbidden set, mirrored for the same reason: native
+     * addons load code into the runtime's own process; the rest are
+     * executables or packages a chat extension has no business being.
+     */
+    private val FORBIDDEN_EXTENSIONS = setOf(
+        "node", "so", "dll", "exe", "bat", "sh", "jar", "apk"
+    )
 
-        /** The characters a default export filename may not carry. */
-        val HOSTILE = Regex("""[\\/:*?"<>|]""")
-    }
+    /** The characters a default export filename may not carry. */
+    private val HOSTILE = Regex("""[\\/:*?"<>|]""")
 }

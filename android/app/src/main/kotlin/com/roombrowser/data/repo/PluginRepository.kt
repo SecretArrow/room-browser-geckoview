@@ -274,7 +274,7 @@ internal fun PluginManifest.toEntity(
         // through PluginForms.schemaOf, and a native manifest that declared
         // `inputs` was validated against the same schema rules, so dropping
         // it here would install a form nothing would ever raise.
-        inputsJson = zagents?.inputsJson ?: manifest.inputs.toJsonOrNull(),
+        inputsJson = zagents?.inputsJson ?: inputs.toJsonOrNull(),
         promptStaged = false
     )
 

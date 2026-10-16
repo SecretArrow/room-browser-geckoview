@@ -592,7 +592,7 @@ class PluginUiState(
             if (PluginManifestValidator.validate(manifest).isNotEmpty()) return@launch
             val zip = PluginDirZipper.compose(
                 listOf(
-                    "plugin.json" to manifest.toString(),
+                    "plugin.json" to manifest.toString().toByteArray(Charsets.UTF_8),
                     pending.entryPath to pending.entrySource.toByteArray(Charsets.UTF_8)
                 )
             )

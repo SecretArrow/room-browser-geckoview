@@ -205,7 +205,7 @@ fun interface PluginCall {
     suspend operator fun invoke(
         request: PluginCallRequest,
         generate: PluginGenerateCall?,
-        form: PluginFormCall? = null
+        form: PluginFormCall?
     ): PluginCallResult
 
     companion object {

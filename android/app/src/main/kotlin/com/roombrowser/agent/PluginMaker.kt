@@ -20,7 +20,7 @@ import kotlinx.serialization.json.contentOrNull
  * AI", not "whatever the header happens to show".
  */
 fun interface PluginComposeCall {
-    suspend operator fun invoke(description: String, retryNote: String? = null): String
+    suspend operator fun invoke(description: String, retryNote: String?): String
 }
 
 /**
