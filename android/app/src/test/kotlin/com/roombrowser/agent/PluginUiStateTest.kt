@@ -852,7 +852,11 @@ exports.commands = { greet: { run: () => 'hello' } };
         state.editInputs(plugin.id)
         awaitState { state.pendingForm != null }
         state.submitForm(buildJsonObject { put("email", "new@x.y") })
-        awaitState { stored?.inputsValuesJson?.contains("new@x.y") == true }
+        // The notice is the last observable — the save hops Dispatchers.IO
+        // before it lands, so waiting on the stored row alone races the very
+        // assertion that follows it.
+        awaitState { notices.any { it.contains("inputs were saved") } }
+        assertThat(stored?.inputsValuesJson).contains("new@x.y")
         // A native plugin's edit only saves — its activations are not
         // per-answer, so "Save" is the whole promise.
         assertThat(calls.none { it.event == PluginCallRequest.EVENT_ACTIVATE }).isTrue()

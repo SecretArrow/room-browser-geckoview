@@ -248,10 +248,12 @@ data class PluginInputsSchema(val fields: List<PluginInputField>) {
                     errors.add("inputs $who has a patternError longer than $PATTERN_ERROR_CHARS characters")
                 }
 
-                (field["minLength"] as? JsonPrimitive)?.takeIf { it.intOrNull == null }?.let {
+                (field["minLength"] as? JsonPrimitive)
+                    ?.takeIf { it.isString || it.intOrNull == null }?.let {
                     errors.add("inputs $who has a minLength that is not a plain integer")
                 }
-                (field["maxLength"] as? JsonPrimitive)?.takeIf { it.intOrNull == null }?.let {
+                (field["maxLength"] as? JsonPrimitive)
+                    ?.takeIf { it.isString || it.intOrNull == null }?.let {
                     errors.add("inputs $who has a maxLength that is not a plain integer")
                 }
                 field["minLength"]?.takeIf { type !in TEXT_TYPES }?.let {
@@ -272,10 +274,12 @@ data class PluginInputsSchema(val fields: List<PluginInputField>) {
                     errors.add("inputs $who has a minLength greater than its maxLength")
                 }
 
-                (field["min"] as? JsonPrimitive)?.takeIf { it.doubleOrNull == null }?.let {
+                (field["min"] as? JsonPrimitive)
+                    ?.takeIf { it.isString || it.doubleOrNull == null }?.let {
                     errors.add("inputs $who has a min that is not a number")
                 }
-                (field["max"] as? JsonPrimitive)?.takeIf { it.doubleOrNull == null }?.let {
+                (field["max"] as? JsonPrimitive)
+                    ?.takeIf { it.isString || it.doubleOrNull == null }?.let {
                     errors.add("inputs $who has a max that is not a number")
                 }
                 field["min"]?.takeIf { type != "number" }?.let {

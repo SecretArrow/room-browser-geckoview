@@ -182,7 +182,7 @@ class ZAgentsManifestTest {
     @Test
     fun `the description and title are clamped for display sanity`() {
         val manifest = ZAgentsManifest.parse(
-            """{"name":"m","title":"${"t".repeat(70)}","description":"${"d".repeat(600)}}"""
+            """{"name":"m","title":"${"t".repeat(70)}","description":"${"d".repeat(600)}"}"""
         )!!
         assertThat(manifest.title).hasLength(64)
         assertThat(manifest.description).hasLength(500)
@@ -213,7 +213,7 @@ class ZAgentsManifestTest {
 
     @Test
     fun `an entry that leaves the module is refused by name`() {
-        listOf("../evil.js", "/abs.js", "a/../../evil.js", "back\\slash.js").forEach { bad ->
+        listOf("../evil.js", "/abs.js", "a/../../evil.js", "back\\\\slash.js").forEach { bad ->
             val errors = ZAgentsManifest.validate(
                 AgentJson.parseToJsonElement("""{"name":"m","entry":"$bad"}""").jsonObject
             )

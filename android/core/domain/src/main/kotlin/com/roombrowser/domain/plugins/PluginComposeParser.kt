@@ -127,8 +127,12 @@ object PluginComposeParser {
      * person and the model read the same sentences.
      */
     fun retryNote(errors: List<String>): String =
-        "Your previous attempt was refused for these reasons:\n" +
-            errors.joinToString("\n") { "- $it" }
+        if (errors.isEmpty()) {
+            "Your previous attempt was refused for these reasons:"
+        } else {
+            "Your previous attempt was refused for these reasons:\n" +
+                errors.joinToString("\n") { "- $it" }
+        }
 
     /** One fenced block as the parser sees it: its position, its info string, its body verbatim. */
     private data class Fenced(val index: Int, val info: String, val body: String) {

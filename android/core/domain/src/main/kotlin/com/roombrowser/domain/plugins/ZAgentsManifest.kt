@@ -245,6 +245,6 @@ data class ZAgentsManifest(
         }
 
         private fun JsonObject.string(key: String): String? =
-            (this[key] as? JsonPrimitive)?.contentOrNull
+            (this[key] as? JsonPrimitive)?.takeIf { it.isString }?.contentOrNull
     }
 }

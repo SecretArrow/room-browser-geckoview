@@ -129,8 +129,11 @@ class PluginDirZipperTest {
         val out = PluginDirZipper.zipDir(dir)
         val bytes = (out as PluginZipOut.Ok).bytes
         // Determinism: a second walk of an unmodified dir is byte-equal —
-        // two exports of the same plugin diff clean.
-        assertThat(PluginDirZipper.zipDir(dir)).isEqualTo(PluginZipOut.Ok(bytes))
+        // two exports of the same plugin diff clean. The bytes are compared
+        // directly because PluginZipOut.Ok is a data class carrying an array,
+        // and an array's equals is identity — the CONTENT is the claim here.
+        val second = PluginDirZipper.zipDir(dir)
+        assertThat((second as PluginZipOut.Ok).bytes).isEqualTo(bytes)
 
         val ok = installer.install(ByteArrayInputStream(bytes)) as PluginInstallResult.ManifestOk
         assertThat(ok.manifest.id).isEqualTo("com.example.hello")

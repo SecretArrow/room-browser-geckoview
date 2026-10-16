@@ -47,9 +47,9 @@ class PluginFormValidatorTest {
         // Blank means the empty string AND the absent key alike — the dialog
         // sends both spellings depending on how its editors clear.
         listOf(
-            """{"email":"","count":42,"verified":true,"cadence":"daily","password":"x"}""",
-            """{"count":42,"verified":true,"cadence":"daily","password":"x"}""",
-            """{"email":"   ","count":42,"verified":true,"cadence":"daily","password":"x"}"""
+            """{"email":"","count":42,"verified":true,"cadence":"daily","password":"hunter2"}""",
+            """{"count":42,"verified":true,"cadence":"daily","password":"hunter2"}""",
+            """{"email":"   ","count":42,"verified":true,"cadence":"daily","password":"hunter2"}"""
         ).forEach { body ->
             val errors = PluginFormValidator.validate(schema(), values(body))
             assertThat(errors).containsEntry("email", "Email is required")
@@ -62,7 +62,7 @@ class PluginFormValidatorTest {
         // answer the form accepts, not a gap to report.
         val errors = PluginFormValidator.validate(
             schema(),
-            values("""{"email":"you@example.com","count":42,"verified":true,"password":"x"}""")
+            values("""{"email":"you@example.com","count":42,"verified":true,"password":"hunter2"}""")
         )
         assertThat(errors).doesNotContainKey("cadence")
         assertThat(errors).isEmpty()
@@ -93,14 +93,16 @@ class PluginFormValidatorTest {
     fun `a blank secret with nothing stored is a gap like any other`() {
         // The form showed no "leave blank to keep" line — there is nothing to
         // keep — so a required secret reports required, and an optional one
-        // stays quiet.
+        // stays quiet. The optional half needs its own fixture: the SCHEMA's
+        // password is required, and an absent required field would (rightly)
+        // report itself.
         val required = PluginFormValidator.validate(
             schema(),
             values("""{"email":"you@example.com","count":1,"verified":true,"cadence":"daily","password":""}""")
         )
         assertThat(required).containsEntry("password", "Password is required")
         val optional = PluginFormValidator.validate(
-            schema(),
+            schema(SECRET_OPTIONAL),
             values("""{"email":"you@example.com","count":1,"verified":true,"cadence":"daily"}""")
         )
         assertThat(optional).doesNotContainKey("password")
@@ -110,7 +112,7 @@ class PluginFormValidatorTest {
     fun `a pattern failure names the pattern's own error`() {
         val errors = PluginFormValidator.validate(
             schema(),
-            values("""{"email":"not-an-email","count":1,"verified":true,"cadence":"daily","password":"x"}""")
+            values("""{"email":"not-an-email","count":1,"verified":true,"cadence":"daily","password":"hunter2"}""")
         )
         assertThat(errors).containsEntry("email", "Enter a valid email")
     }
@@ -182,11 +184,11 @@ class PluginFormValidatorTest {
     fun `a choice must be one of the listed options`() {
         val errors = PluginFormValidator.validate(
             schema(),
-            values("""{"email":"you@example.com","count":1,"verified":true,"cadence":"hourly","password":"x"}""")
+            values("""{"email":"you@example.com","count":1,"verified":true,"cadence":"hourly","password":"hunter2"}""")
         )
         assertThat(errors).containsEntry("cadence", "Cadence must be one of: daily, weekly")
         // The listed values are the right ones, option by option.
-        assertThat(PluginFormValidator.validate(schema(), values("""{"email":"you@example.com","count":1,"verified":true,"cadence":"weekly","password":"x"}""")))
+        assertThat(PluginFormValidator.validate(schema(), values("""{"email":"you@example.com","count":1,"verified":true,"cadence":"weekly","password":"hunter2"}""")))
             .isEmpty()
     }
 
@@ -251,5 +253,12 @@ class PluginFormValidatorTest {
              {"key":"password","type":"secret","title":"Password","required":true,
               "minLength":6}]
         """.trimIndent()
+
+        /** The same form with the secret OPTIONAL — the quiet half of the
+         * blank-secret test: an optional field left out is not a gap. */
+        val SECRET_OPTIONAL = SCHEMA.replace(
+            """"password","type":"secret","title":"Password","required":true,""",
+            """"password","type":"secret","title":"Password","""
+        )
     }
 }
