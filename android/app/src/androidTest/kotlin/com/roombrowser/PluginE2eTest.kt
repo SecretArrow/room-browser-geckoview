@@ -681,7 +681,7 @@ class PluginE2eTest {
     private val wordCountCard = "plugin_card_com_example_wordcount"
 
     /** The same, for the ZAgents counter module the staged flow installs. */
-    private val counterSwitch = "plugin_enable_zagents_hello_counter"
+    private val counterSwitch = "plugin_enable_zagents_hello-counter"
 
     /** The same, for the input-form example the form flow installs. */
     private val inputGreeterSwitch = "plugin_enable_com_example_inputgreeter"

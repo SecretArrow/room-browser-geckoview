@@ -164,6 +164,11 @@ class AgentSessionMigrationTest {
             // shape: the replay creates it again from its own migration.
             db.execSQL("DROP TABLE IF EXISTS `ai_tasks`")
             db.execSQL("DROP TABLE IF EXISTS `room_master_table`")
+            // plugins/chat_plugins arrive at v17; a database reverted to this
+            // test's older version must not carry their v18 shape forward, or
+            // the replay's 17 -> 18 ADD COLUMN finds the columns already there.
+            db.execSQL("DROP TABLE IF EXISTS `chat_plugins`")
+            db.execSQL("DROP TABLE IF EXISTS `plugins`")
             db.version = 9
         } finally {
             db.close()
