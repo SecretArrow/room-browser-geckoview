@@ -810,6 +810,22 @@ class PluginUiState(
         )
         if (activated.ok) {
             appendCards(session, activated.cards, plugin.name)
+            // A module's activation speaks through its composed output —
+            // emits and console lines — the same body the staged
+            // first-message run renders, so a re-enable's run is exactly as
+            // visible as the run it reprises. A plugin.json row was never a
+            // module-message shape: its cards-and-notice half is unchanged,
+            // and a module that only pushed cards keeps them ahead of the
+            // notice.
+            if (plugin.format == PluginFormat.ZAGENTS && activated.output.isNotBlank()) {
+                runCatching {
+                    onCard(
+                        session,
+                        PluginCard(text = activated.output.take(PLUGIN_MESSAGE_CHARS)),
+                        plugin.name
+                    )
+                }
+            }
             onNotice(successNotice, false)
         } else {
             onNotice(
