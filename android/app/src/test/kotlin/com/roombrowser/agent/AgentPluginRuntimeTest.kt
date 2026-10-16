@@ -96,9 +96,14 @@ class AgentPluginRuntimeTest {
             .isEqualTo(File(File(File(root, "plugin-data"), "7"), "com_example_wordcount").absolutePath)
         assertThat(request.entry).isEqualTo("main.js")
         assertThat(request.event).isEqualTo("probe")
-        // A profile that picked no user agent and an engine that has not
-        // answered one: the field is left out, which is the honest spelling.
-        assertThat(request.userAgent).isNull()
+        // A profile that picked no user agent falls back to the engine's
+        // own default, and the two editions answer differently under the JVM
+        // stub (WebView: nothing; GeckoView: its bundled constant) — so the
+        // edition-neutral contract is the one the wire actually promises:
+        // the field is absent or a real string, never blank. The "blank is
+        // omitted" rule itself is the protocol test's subject.
+        val ua = request.userAgent
+        assertThat(ua == null || ua.isNotBlank()).isTrue()
     }
 
     @Test
