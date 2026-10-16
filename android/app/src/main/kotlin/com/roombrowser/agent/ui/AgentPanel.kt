@@ -63,6 +63,7 @@ import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.ErrorOutline
+import androidx.compose.material.icons.filled.Extension
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardReturn
@@ -137,12 +138,14 @@ import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
+import com.roombrowser.RoomBrowserApp
 import com.roombrowser.agent.AgentAttachment
 import com.roombrowser.agent.AgentEntry
 import com.roombrowser.agent.ApprovalAnswer
 import com.roombrowser.agent.BrowserAgentController
 import com.roombrowser.browser.BrowserViewModel
 import com.roombrowser.data.db.AgentProviderEntity
+import com.roombrowser.data.plugins.PluginInstallResult
 import com.roombrowser.data.repo.AgentMode
 import com.roombrowser.domain.agent.AgentPause
 import com.roombrowser.domain.agent.AgentPauseLabels
@@ -275,6 +278,10 @@ fun AgentPanelHost(
         if (!expanded && pending != null) {
             AgentApprovalDialog(pending, agent)
         }
+
+        // The plugin surfaces the panel and the full-screen agent share:
+        // picker sheet, grant dialog, ZIP install.
+        PluginSurfaces(agent)
     }
 }
 
@@ -334,6 +341,7 @@ fun AgentScreenHost(
     }
 
     agent.approval?.let { AgentApprovalDialog(it, agent) }
+    PluginSurfaces(agent)
 }
 
 /**
@@ -341,7 +349,9 @@ fun AgentScreenHost(
  * time the activity resumes. A provider configured in the settings activities
  * (default process) has to be visible here immediately even if Room's
  * cross-process invalidation ping was lost on a slow filesystem, and returning
- * from those activities is exactly when it matters.
+ * from those activities is exactly when it matters. The installed plugins
+ * have the same cross-process writer — the plugin manager — so their state is
+ * re-read on the same resume.
  */
 @Composable
 private fun RefreshProvidersOnResume(agent: BrowserAgentController, active: Boolean) {
@@ -355,7 +365,14 @@ private fun RefreshProvidersOnResume(agent: BrowserAgentController, active: Bool
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
     LaunchedEffect(active, resumeCount) {
-        if (active) agent.refreshProviders()
+        if (active) {
+            agent.refreshProviders()
+            // The manager activity installs and uninstalls from the DEFAULT
+            // process; a lost invalidation ping would leave this panel
+            // deciding no plugin exists. One re-read on resume closes the
+            // window, the same defense the providers get.
+            agent.pluginUi.refresh()
+        }
     }
 }
 
@@ -708,6 +725,7 @@ internal fun transcriptKeys(entries: List<AgentEntry>): List<String> {
             is AgentEntry.User -> "user:${entry.at}"
             is AgentEntry.Assistant -> "assistant:${entry.at}"
             is AgentEntry.Notice -> "notice:${entry.at}"
+            is AgentEntry.Plugin -> "plugin:${entry.at}"
         }
         val repeat = (seen.merge(base, 1) { a, b -> a + b } ?: 1) - 1
         if (repeat == 0) base else "$base#$repeat"
@@ -791,6 +809,11 @@ private fun AgentConversation(
                 is AgentEntry.Assistant -> AssistantMessage(entry)
                 is AgentEntry.Tool -> ToolCard(entry)
                 is AgentEntry.Notice -> NoticeLine(entry)
+                is AgentEntry.Plugin -> PluginCardView(
+                    card = entry.card,
+                    pluginName = entry.pluginName,
+                    tag = pluginCardTag(agent.pluginUi.installed, entry.pluginName)
+                )
             }
         }
         if (plan.isNotEmpty()) item { PlanCard(plan) }
@@ -1271,6 +1294,71 @@ private fun AgentApprovalDialog(
     )
 }
 
+// ------------------------------------------------------------------- chat plugins
+
+/**
+ * The plugin surfaces of BOTH agent windows — the picker sheet, the
+ * enable-time grant dialog, and the ZIP install the sheet's footer starts —
+ * collected in one place so the floating panel and the full-screen agent
+ * behave identically without either duplicating them.
+ *
+ * The ZIP install goes through the app graph's plugin repository, the same
+ * door the manager activity uses, because the repository is the one writer
+ * that keeps the row and the code directory honest; the controller's
+ * [com.roombrowser.agent.PluginUiState] is only asked to REPORT what the
+ * install produced, in the chat the person is looking at.
+ */
+@Composable
+private fun PluginSurfaces(agent: BrowserAgentController) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+
+    // SAF: the system file picker — the one door a plugin ZIP enters through,
+    // and it opens for a file the person chose, never for a path the app
+    // guessed. Both ZIP spellings are offered because a downloaded plugin can
+    // arrive as either depending on where it came from.
+    val installLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        scope.launch {
+            val result = runCatching {
+                context.contentResolver.openInputStream(uri)?.use { stream ->
+                    (context.applicationContext as RoomBrowserApp).graph.pluginRepo.install(stream)
+                }
+            }.getOrNull() ?: PluginInstallResult.Invalid(listOf("the ZIP could not be opened"))
+            agent.pluginUi.onInstallResult(result)
+        }
+    }
+
+    if (agent.pluginUi.pickerVisible) {
+        ChatPluginsSheet(
+            plugins = agent.pluginUi.installed,
+            chatPlugins = agent.pluginUi.chatPlugins,
+            onEnable = { pluginId, enabled -> agent.pluginUi.setEnabled(pluginId, enabled) },
+            onDismiss = { agent.pluginUi.dismissPicker() },
+            onInstallRequest = {
+                installLauncher.launch(arrayOf("application/zip", "application/octet-stream"))
+            },
+            onManage = { PluginManagerActivity.launch(context) }
+        )
+    }
+    val pending = agent.pluginUi.pendingGrant
+    if (pending != null) {
+        PluginPermissionDialog(
+            pending = pending,
+            onAccept = { granted ->
+                agent.pluginUi.submitGrants(granted)
+                // The confirmation is the conversation itself — the activation
+                // card and the "is on" notice land there — so the sheet steps
+                // out of the way rather than covering them.
+                agent.pluginUi.dismissPicker()
+            },
+            onCancel = { agent.pluginUi.cancelGrant() }
+        )
+    }
+}
+
 // ------------------------------------------------------------------- composer
 
 // Green for the INCLUDED state (user request: "jika include page
@@ -1339,15 +1427,37 @@ private fun AgentComposer(agent: BrowserAgentController, modifier: Modifier = Mo
             // child below), so a short panel squeezes the chips empty
             // instead of leaving nowhere to type.
             Column(Modifier.weight(1f, fill = false)) {
-                // Row 1 — controls: the two context switches + file upload. The
-                // text field lives on its own full-width row below, so it reaches
-                // the panel edges ("lebar sampai ke pinggir layar").
+                // Row 1 — controls: chat plugins + the two context switches +
+                // file upload. The text field lives on its own full-width row
+                // below, so it reaches the panel edges ("lebar sampai ke
+                // pinggir layar").
                 //
                 // The chips SCROLL rather than squeeze: two labels plus a 48dp
                 // attach button do not fit a 320dp phone at a large font scale,
                 // and a wrapped or truncated "Default context" is unreadable in
                 // exactly the state the user needs to read it in.
                 Row(verticalAlignment = Alignment.CenterVertically) {
+                    // Chat plugins as the row's LEADING control: the badge
+                    // counts the plugins switched on for THIS chat, and the
+                    // button is absent while nothing is installed — an entry
+                    // point to a feature with nothing to choose is a button
+                    // that does nothing.
+                    if (agent.pluginUi.installed.isNotEmpty()) {
+                        val enabledPlugins = agent.pluginUi.chatPlugins.count { it.enabled }
+                        IconButton(
+                            onClick = { agent.pluginUi.openPicker() },
+                            modifier = Modifier.semantics { contentDescription = "agent_chat_plugins" }
+                        ) {
+                            BadgedBox(
+                                badge = {
+                                    if (enabledPlugins > 0) Badge { Text("$enabledPlugins") }
+                                }
+                            ) {
+                                Icon(Icons.Filled.Extension, contentDescription = null)
+                            }
+                        }
+                        Spacer(Modifier.width(4.dp))
+                    }
                     Row(
                         Modifier
                             .weight(1f)

@@ -82,6 +82,10 @@ Research   →  1b7d…uuid  →  own cookie jar / storage / history
   prompt or a finished answer back on the clipboard, ready to paste into the
   composer and re-process. API keys are encrypted with AndroidKeyStore.
   See `docs/AI_AGENTS.md`.
+- **Plugins** — Node.js modules installed from a ZIP, sandboxed (capability
+  sandbox over the embedded Node runtime), per-chat isolated with explicit
+  permissions granted at enable time, extending the agent with their own
+  tools and commands; see `docs/PLUGINS.md`.
 - **Developer Tools** — a docked inspector over the live page, opened from the
   Page Actions menu (or **F12** / **Ctrl+Shift+I** on an external keyboard).
   It states up front, per edition, exactly what its engine can and cannot
@@ -226,8 +230,9 @@ See `PROFILE_ISOLATION.md`, `SECURITY.md` and `PRIVACY.md` for full details.
 android/
 ├── app/                 Android application (Compose UI, browser engine, Room DB)
 ├── core/domain/         Pure-Kotlin domain logic (JVM-testable, no Android deps)
-├── tools/               profile-test-site + GitHub-secret helper scripts
-├── docs/                feature docs (AI agents, local AI, themes)
+├── tools/               profile-test-site, plugin packer + plugin dev harness, GitHub-secret helper scripts
+├── docs/                feature docs (AI agents, local AI, themes, plugins);
+│                        docs/plugins/ holds the example plugin sources
 └── BUILD.md RELEASE.md TESTING.md …
 ```
 

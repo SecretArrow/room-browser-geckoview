@@ -2,6 +2,7 @@ package com.roombrowser.data.db
 
 import androidx.room.ColumnInfo
 import androidx.room.Entity
+import androidx.room.ForeignKey
 import androidx.room.Index
 import androidx.room.PrimaryKey
 
@@ -597,4 +598,93 @@ data class AgentSiteMemoryEntity(
     @ColumnInfo(name = "key") val key: String,
     @ColumnInfo(name = "value") val value: String,
     @ColumnInfo(name = "updated_at_ms") val updatedAtMs: Long
+)
+
+// =========================================================================
+// CHAT PLUGINS (Node.js modules installed from ZIP) — schema v17
+// =========================================================================
+
+/**
+ * One installed plugin: the manifest it was validated from, flattened into
+ * columns so the catalogue, the grant dialog and the agent's run-time request
+ * can be built without re-reading a file the plugin could have exchanged
+ * since install. The code itself lives in `<filesDir>/plugins/[dirName]`,
+ * which [dirName] names — the row is the metadata, the directory is the code.
+ *
+ * Re-installing the same id replaces the row (and the directory): a version
+ * upgrade is the normal path, and a manifest whose permission set grew
+ * re-consents at the chats that enabled it.
+ */
+@Entity(tableName = "plugins")
+data class PluginEntity(
+    @PrimaryKey @ColumnInfo(name = "id") val id: String,
+    @ColumnInfo(name = "name") val name: String,
+    @ColumnInfo(name = "version") val version: String,
+    @ColumnInfo(name = "description") val description: String,
+    @ColumnInfo(name = "author_name") val authorName: String,
+    @ColumnInfo(name = "license") val license: String,
+    @ColumnInfo(name = "entry") val entry: String,
+    @ColumnInfo(name = "api_version") val apiVersion: Int,
+    /** JSON array of the manifest's declared permission names. */
+    @ColumnInfo(name = "permissions_json") val permissionsJson: String,
+    /** JSON array of the network allowlist; empty array when none declared. */
+    @ColumnInfo(name = "network_allow_json") val networkAllowJson: String,
+    /** JSON array of the manifest's config schema entries. */
+    @ColumnInfo(name = "config_schema_json") val configSchemaJson: String,
+    /** JSON array of the manifest's command declarations. */
+    @ColumnInfo(name = "commands_json") val commandsJson: String,
+    /** JSON array of the hooks it asked for; ["message"] or []. */
+    @ColumnInfo(name = "hooks_json") val hooksJson: String,
+    /** The plugin's code directory under `<filesDir>/plugins/`. */
+    @ColumnInfo(name = "dir_name") val dirName: String,
+    @ColumnInfo(name = "installed_at") val installedAt: Long,
+    @ColumnInfo(name = "updated_at") val updatedAt: Long
+)
+
+/**
+ * One plugin's binding to ONE chat: the per-chat row the whole isolation
+ * model hangs off. Enabled rows get their hooks, commands and tools
+ * dispatched; a disabled row keeps its data (`plugin-data/<sessionId>/…`
+ * survives) so switching back on is not a data loss.
+ *
+ * [grantedPermissionsJson] is what the person who enabled it consented to —
+ * a subset of the manifest's declared set, re-consented when an upgrade
+ * changes it. [configJson] holds this chat's overrides over the manifest's
+ * config defaults ("" = none).
+ *
+ * Both foreign keys CASCADE: deleting the chat or uninstalling the plugin
+ * removes the binding, and `PluginRepository.sweepOrphanData()` then reclaims
+ * the data directories the cascade left behind.
+ */
+@Entity(
+    tableName = "chat_plugins",
+    foreignKeys = [
+        ForeignKey(
+            entity = AgentSessionEntity::class,
+            parentColumns = ["id"],
+            childColumns = ["session_id"],
+            onDelete = ForeignKey.CASCADE
+        ),
+        ForeignKey(
+            entity = PluginEntity::class,
+            parentColumns = ["id"],
+            childColumns = ["plugin_id"],
+            onDelete = ForeignKey.CASCADE
+        )
+    ],
+    indices = [
+        Index("session_id"),
+        Index(value = ["session_id", "plugin_id"], unique = true)
+    ]
+)
+data class ChatPluginEntity(
+    @PrimaryKey(autoGenerate = true) @ColumnInfo(name = "id") val id: Long = 0,
+    @ColumnInfo(name = "session_id") val sessionId: Long,
+    @ColumnInfo(name = "plugin_id") val pluginId: String,
+    @ColumnInfo(name = "enabled") val enabled: Boolean,
+    @ColumnInfo(name = "granted_permissions_json") val grantedPermissionsJson: String,
+    /** This chat's config overrides as a JSON object; "" = the defaults. */
+    @ColumnInfo(name = "config_json") val configJson: String,
+    @ColumnInfo(name = "created_at") val createdAt: Long,
+    @ColumnInfo(name = "updated_at") val updatedAt: Long
 )

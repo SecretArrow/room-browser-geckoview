@@ -148,6 +148,19 @@ interactive element is tagged `data-agent-ref` by injected JS — the same
 family of techniques used by WebVoyager-style browser agents, adapted to
 Android WebView).
 
+### Chat plugins extend the catalogue
+
+The catalogue above is the static one; a **chat plugin** — a plain-JavaScript
+Node module installed from a ZIP, enabled per chat with its permissions
+granted there — adds tools of its own to this list, named
+`plugin_<plugin>_<tool>` with the plugin's name at the front of the
+description. They are gated like every other action: Plan mode refuses them,
+the profile's "Plugin tools" permission can withhold them, they spend the
+turn's action budget, and scheduled and headless runs refuse them outright;
+their output is fenced as untrusted data before the model reads it. The
+plugin SDK, manifest, sandbox model and packaging tools are documented in
+[PLUGINS.md](PLUGINS.md).
+
 ### Social automation ("auto selesaikan task")
 
 The four `auto_*` tools are heuristics that work across social sites by

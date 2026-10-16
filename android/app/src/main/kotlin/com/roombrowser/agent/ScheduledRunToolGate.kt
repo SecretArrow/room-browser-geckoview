@@ -5,7 +5,9 @@ import com.roombrowser.domain.agent.AgentJson
 import com.roombrowser.domain.agent.AgentTools
 import com.roombrowser.domain.agent.ToolExecutor
 import com.roombrowser.domain.agent.ToolResult
+import com.roombrowser.domain.plugins.PluginToolNaming
 import com.roombrowser.domain.task.AiTaskPermissions
+import com.roombrowser.domain.task.pluginUnattendedRefusal
 import com.roombrowser.domain.task.profileUnattendedRefusal
 import com.roombrowser.domain.task.unattendedRefusal
 import kotlinx.serialization.json.JsonObject
@@ -36,6 +38,14 @@ class ScheduledRunToolGate(
 ) : ToolExecutor {
 
     override suspend fun execute(name: String, argsJson: String): ToolResult {
+        // A chat plugin's tool FIRST, for the same reason the headless
+        // executor refuses it first: the permission map would answer it with
+        // the NODE group's Node-script wording, and the truth is code a
+        // person consented to for ONE chat — which a scheduled run is twice
+        // the wrong place for.
+        if (PluginToolNaming.isPluginTool(name)) {
+            return ToolResult(false, pluginUnattendedRefusal(name))
+        }
         val action = actionOf(argsJson)
         if (name in AgentAppActions.PROFILE_TOOLS) {
             // Answered here rather than by the permission map, because a

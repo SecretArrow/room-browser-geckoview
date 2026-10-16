@@ -3,6 +3,9 @@ package com.roombrowser.agent
 import com.google.common.truth.Truth.assertThat
 import com.roombrowser.domain.agent.AgentAppActions
 import com.roombrowser.domain.agent.AgentTools
+import com.roombrowser.domain.plugins.PluginToolNaming
+import com.roombrowser.domain.task.AiTaskPermissions
+import com.roombrowser.domain.task.ToolGroup
 import org.junit.Test
 
 /**
@@ -104,5 +107,22 @@ class HeadlessToolCatalogTest {
             .containsNoneIn(HeadlessToolExecutor.DOWNLOAD_TOOLS + HeadlessToolExecutor.PDF_TOOLS)
         assertThat(HeadlessToolExecutor.TAB_TOOLS)
             .containsNoneIn(HeadlessToolExecutor.DOWNLOAD_TOOLS + HeadlessToolExecutor.PDF_TOOLS)
+    }
+
+    @Test
+    fun `a plugin tool is classified refused, never unknown`() {
+        // Plugin tools join the catalogue per chat, never through
+        // [AgentTools.toolDefs], so the static sets above say nothing about
+        // them — and a scheduled run that is offered one anyway (a model can
+        // ask for a tool it was never given) must meet a REFUSAL that says
+        // what it is, because "unknown tool" sends it hunting for a route
+        // that does not exist and it retries until the step budget is gone.
+        val name = PluginToolNaming.pluginToolName("com.example.hello", "count_words")!!
+        assertThat(AgentTools.toolDefs().map { it.function.name }).containsNoneIn(listOf(name))
+        assertThat(AiTaskPermissions.DEFAULT.groupOf(name)).isEqualTo(ToolGroup.NODE)
+        val refusal = AiTaskPermissions.DEFAULT.refusal(name)
+        assertThat(refusal).isNotNull()
+        assertThat(refusal).contains("chat plugin")
+        assertThat(refusal).doesNotContain("unknown tool")
     }
 }

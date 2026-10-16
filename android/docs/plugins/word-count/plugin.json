@@ -1,0 +1,24 @@
+{
+  "id": "com.example.wordcount",
+  "name": "Word Count",
+  "version": "1.0.0",
+  "description": "Adds a word-counting tool to the chat's AI agent.",
+  "author": {
+    "name": "Room Browser"
+  },
+  "license": "MIT",
+  "api": 1,
+  "entry": "main.js",
+  "permissions": ["agent.tools", "chat.context", "storage"],
+  "config": {
+    "schema": [
+      {
+        "key": "ignore_case",
+        "type": "boolean",
+        "default": true,
+        "title": "Ignore case",
+        "description": "Count words case-insensitively"
+      }
+    ]
+  }
+}

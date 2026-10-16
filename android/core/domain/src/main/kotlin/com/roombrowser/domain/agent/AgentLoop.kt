@@ -129,6 +129,14 @@ class AgentLoop(
     private val tools: ToolExecutor,
     private val config: AgentConfig,
     /**
+     * Tool definitions offered to the provider ON TOP of the static
+     * catalogue — the chat's plugin tools, when it has any. Read per request
+     * rather than passed as a list so a caller that resolves them late can
+     * hand over a lambda over state that has settled by then; the default
+     * adds nothing, which is every caller that has no dynamic tools.
+     */
+    private val extraTools: () -> List<ToolDef> = { emptyList() },
+    /**
      * Runs before every step and MAY SUSPEND. This is where an attended turn
      * waits: a Pause is honoured here, between steps, and never inside a tool
      * that has already started. Default: no wait.
@@ -183,7 +191,11 @@ class AgentLoop(
                     model = config.model,
                     messages = history.toList(),
                     stream = true,
-                    tools = if (useTools) AgentTools.toolDefs() else null,
+                    // Plugin tools ride the same catalogue the gates already
+                    // know how to police (their names carry the plugin's own
+                    // spelling — see AgentTools.PLUGIN_TOOL_PREFIX), so they
+                    // are appended here rather than merged into the static set.
+                    tools = if (useTools) AgentTools.toolDefs() + extraTools() else null,
                     temperature = config.temperature
                 )
 

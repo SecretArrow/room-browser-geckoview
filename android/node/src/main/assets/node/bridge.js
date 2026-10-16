@@ -374,6 +374,35 @@ function handle(connection, line) {
         );
         break;
       }
+      case 'plugin': {
+        // The plugin host owns everything past the wire: this branch relays
+        // the call's own fields and answers with the envelope it produced, so
+        // the sandbox, its quotas and its permissions live in one place beside
+        // the plugins it runs rather than in the dispatcher.
+        const call = {
+          pluginRoot: command.pluginRoot,
+          dataRoot: command.dataRoot,
+          entry: command.entry,
+          manifest: command.manifest,
+          event: command.event,
+          payload: command.payload,
+          config: command.config,
+          timeoutMs: command.timeoutMs,
+          // The chat's transcript, as a chat.context grant sends it: relayed
+          // only when the request carried one (absent field = the plugin was
+          // not granted, and an absent grant must read as "asked and denied",
+          // never as "this chat has no turns").
+          history: command.history,
+        };
+        require('./plugin_host.js')
+          .runPluginCall(call)
+          .then(
+            (result) => reply(connection, command.id, true, result),
+            (err) =>
+              reply(connection, command.id, false, err && err.message ? err.message : String(err))
+          );
+        break;
+      }
       default:
         reply(connection, command.id, false, 'unknown command: ' + String(command.cmd));
     }

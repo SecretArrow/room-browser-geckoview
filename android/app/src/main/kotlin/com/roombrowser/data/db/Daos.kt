@@ -862,3 +862,55 @@ interface AgentSiteMemoryDao {
     @Query("DELETE FROM agent_site_memory WHERE profile_id = :profileId")
     suspend fun deleteAllForProfile(profileId: String)
 }
+
+// =========================================================================
+// CHAT PLUGINS (Node.js modules installed from ZIP)
+// =========================================================================
+
+/** Installed plugins: the manifest metadata rows. */
+@Dao
+interface PluginDao {
+    /** Newest first — the order the manager list and the chat sheet show. */
+    @Query("SELECT * FROM plugins ORDER BY updated_at DESC")
+    fun observeAll(): Flow<List<PluginEntity>>
+
+    /** One-shot read, for callers that build a request rather than observe. */
+    @Query("SELECT * FROM plugins")
+    suspend fun all(): List<PluginEntity>
+
+    @Query("SELECT * FROM plugins WHERE id = :id")
+    suspend fun byId(id: String): PluginEntity?
+
+    /** Insert-or-replace by id — the reinstall/upgrade path. */
+    @Upsert
+    suspend fun upsert(entity: PluginEntity)
+
+    @Query("DELETE FROM plugins WHERE id = :id")
+    suspend fun delete(id: String)
+}
+
+/** Per-chat plugin bindings. */
+@Dao
+interface ChatPluginDao {
+    @Query("SELECT * FROM chat_plugins WHERE session_id = :sessionId ORDER BY created_at ASC")
+    fun observeForSession(sessionId: Long): Flow<List<ChatPluginEntity>>
+
+    @Query("SELECT * FROM chat_plugins WHERE session_id = :sessionId ORDER BY created_at ASC")
+    suspend fun forSession(sessionId: Long): List<ChatPluginEntity>
+
+    /** Insert-or-replace by row id — the caller reads the row to preserve its grants and config. */
+    @Upsert
+    suspend fun upsert(entity: ChatPluginEntity)
+
+    /** Chat-deletion cascade helper when the row is removed without the session. */
+    @Query("DELETE FROM chat_plugins WHERE session_id = :sessionId")
+    suspend fun deleteForSession(sessionId: Long)
+
+    /** Uninstall path: every chat's binding for one plugin, at once. */
+    @Query("DELETE FROM chat_plugins WHERE plugin_id = :pluginId")
+    suspend fun deleteForPlugin(pluginId: String)
+
+    /** Whether a session has ANY binding row — the orphan-data sweep's one question. */
+    @Query("SELECT EXISTS(SELECT 1 FROM chat_plugins WHERE session_id = :sessionId)")
+    suspend fun hasAny(sessionId: Long): Boolean
+}

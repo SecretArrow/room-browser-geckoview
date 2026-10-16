@@ -7,8 +7,8 @@ import java.io.InterruptedIOException
 import java.util.concurrent.locks.ReentrantLock
 
 /**
- * The app side of the bridge: runs one script in the embedded runtime, one call
- * at a time.
+ * The app side of the bridge: runs one script — or one plugin event — in the
+ * embedded runtime, one call at a time.
  *
  * WHY THE LOCK. Every call asks for the runtime under a name of its own, and a
  * command naming a socket the running runtime is not serving is answered by
@@ -55,6 +55,32 @@ class NodeRunner(context: Context) {
         }
     }
 
+    /**
+     * Runs one plugin event under the SAME process-wide lock and the same
+     * start/connect/close lifecycle as [run] — one call at a time, a runtime
+     * started for the call and torn down after it.
+     *
+     * Never throws, for the same reasons [run] never throws: the runtime
+     * being absent, failing to start, or dying mid-plugin is a FAILED RESULT
+     * carrying the words, because a plugin that could not run is an answer
+     * the chat has to read (and the turn has to carry on past), not an
+     * exception the caller has to word itself.
+     */
+    fun plugin(call: PluginCallRequest): PluginCallResult {
+        if (!NodeRuntime.available) {
+            return PluginCallResult(
+                ok = false,
+                output = "this build carries no Node runtime for this device's CPU"
+            )
+        }
+        lock.lock()
+        try {
+            return pluginOnce(call)
+        } finally {
+            lock.unlock()
+        }
+    }
+
     private fun runOnce(script: String, userAgent: String?, timeoutMillis: Long): NodeRunResult {
         val startedAt = SystemClock.elapsedRealtime()
         val client = try {
@@ -86,6 +112,39 @@ class NodeRunner(context: Context) {
                     (err.message ?: "no reason given"),
                 ms = elapsed(startedAt)
             )
+        } finally {
+            client.close()
+        }
+    }
+
+    private fun pluginOnce(call: PluginCallRequest): PluginCallResult {
+        val startedAt = SystemClock.elapsedRealtime()
+        val client = try {
+            NodeClient.connect(appContext)
+        } catch (err: IOException) {
+            return PluginCallResult(
+                ok = false,
+                output = err.message ?: "the Node runtime did not start"
+            )
+        }
+        return try {
+            client.plugin(call)
+        } catch (err: InterruptedIOException) {
+            PluginCallResult(
+                ok = false,
+                output = "the Node runtime did not answer within " +
+                    "${NodeClient.readTimeoutFor(call.timeoutMs) / 1000}s, so it was shut down"
+            )
+        } catch (err: IOException) {
+            PluginCallResult(
+                ok = false,
+                output = "the Node runtime stopped before it answered: " +
+                    (err.message ?: "no reason given")
+            )
+        } catch (err: IllegalStateException) {
+            // The runtime's own refusal (an unknown command, a bad request):
+            // its words are the most useful thing this side can say.
+            PluginCallResult(ok = false, output = err.message ?: "the Node runtime refused the request")
         } finally {
             client.close()
         }

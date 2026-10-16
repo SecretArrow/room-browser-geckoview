@@ -42,6 +42,10 @@ class AgentSettingsController(
     private val appState = graph.appState
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
 
+    /** Chat plugins: the sessions this screen deletes owe their plugins a goodbye. */
+    private val pluginRepo = graph.pluginRepo
+    private val pluginRuntime = AgentPluginRuntime(application, profile = null)
+
     // Plain HTTP stack is fine here: this client only lists /models while
     // the user is editing a provider. The agent's real turns keep using the
     // DoH-configured client inside the ':browser' process.
@@ -386,11 +390,27 @@ class AgentSettingsController(
     // ------------------------------------------------------------- sessions
 
     fun deleteSession(id: Long) {
-        scope.launch { runCatching { repo.deleteSession(id) } }
+        scope.launch {
+            // The plugins this chat enabled get their deactivate before the
+            // row goes, then the sweep reclaims the data the cascade cannot.
+            // Best-effort by the same contract the browser process's own
+            // deletion path follows — a plugin that fails its goodbye is not
+            // a reason to keep the chat.
+            runCatching { deactivateChatPlugins(pluginRepo, pluginRuntime, id, "chat-deleted") }
+            runCatching { repo.deleteSession(id) }
+        }
     }
 
     /** Deletes every agent chat across ALL profiles (providers are kept). */
     fun clearAllSessions() {
-        scope.launch { runCatching { repo.deleteAllSessions() } }
+        scope.launch {
+            // The observed sessions are this profile's own; a chat another
+            // profile holds is deleted below all the same, but only this
+            // profile's plugins can be said goodbye to from here.
+            sessions.forEach { session ->
+                runCatching { deactivateChatPlugins(pluginRepo, pluginRuntime, session.id, "chat-deleted") }
+            }
+            runCatching { repo.deleteAllSessions() }
+        }
     }
 }

@@ -20,6 +20,7 @@ import com.roombrowser.domain.agent.ActionVerdict
 import com.roombrowser.domain.agent.AgentEvent
 import com.roombrowser.domain.agent.AgentGateway
 import com.roombrowser.domain.agent.AgentHttpException
+import com.roombrowser.domain.agent.AgentJson
 import com.roombrowser.domain.agent.AgentLoop
 import com.roombrowser.domain.agent.AgentPause
 import com.roombrowser.domain.agent.AgentPauseLabels
@@ -38,8 +39,11 @@ import com.roombrowser.domain.agent.formatDurationMs
 import com.roombrowser.domain.download.DownloadFormat
 import com.roombrowser.domain.model.ProfileId
 import com.roombrowser.domain.model.SearchEngines
+import com.roombrowser.domain.plugins.PluginCard
+import com.roombrowser.domain.plugins.toJson
 import com.roombrowser.domain.task.AiTaskPermissions
 import com.roombrowser.engine.EngineSession
+import com.roombrowser.node.PluginCallRequest
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
@@ -52,6 +56,8 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.withTimeoutOrNull
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonObject
 import okhttp3.OkHttpClient
 import java.time.ZoneId
 import kotlin.coroutines.resume
@@ -71,6 +77,15 @@ sealed interface AgentEntry {
     ) : AgentEntry
 
     data class Notice(val text: String, val error: Boolean, val at: Long) : AgentEntry
+
+    /**
+     * One card a plugin asked the chat to show — the plugin's only output
+     * that is for the USER rather than the model. [card] carries the clamped
+     * domain model and [pluginName] says whose card it is, so the row that
+     * renders it and the transcript row that persists it never have to guess
+     * what produced them.
+     */
+    data class Plugin(val card: PluginCard, val pluginName: String, val at: Long) : AgentEntry
 }
 
 /** A user-attached file for the agent turn. [text] is the extracted text content (null = binary/metadata-only). */
@@ -269,6 +284,7 @@ class BrowserAgentController(
     private val graph = (application as RoomBrowserApp).graph
     private val appContext: android.content.Context = application.applicationContext
     private val repo = graph.agentRepo
+    private val pluginRepo = graph.pluginRepo
     private val appState = graph.appState
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
 
@@ -419,6 +435,33 @@ class BrowserAgentController(
 
     val messages = MutableStateFlow<String?>(null)
 
+    // ------------------------------------------------------------- chat plugins
+
+    /** Runs the chat's plugin events in the embedded Node runtime. */
+    private val pluginRuntime = AgentPluginRuntime(appContext, vm.profile)
+
+    /** The per-chat catalogue of plugin tools, commands and hooks. */
+    private val pluginCatalog = AgentPluginCatalog(pluginRepo, pluginRuntime)
+
+    /**
+     * The plugin surface the panel and its sheets bind to: installed plugins,
+     * this chat's bindings, the picker sheet and the enable-time grant
+     * dialog. Controller-owned on the same Compose-state convention as every
+     * other surface above — see [PluginUiState] for why the sheet, not the
+     * controller, is the one that closes it.
+     */
+    val pluginUi = PluginUiState(
+        scope = scope,
+        repo = pluginRepo,
+        runtime = pluginRuntime,
+        catalog = pluginCatalog,
+        sessionId = { activeSessionId },
+        createSession = { title -> createSessionForPlugins(title) },
+        onCard = { session, card, name -> appendPluginCard(session, card, name) },
+        onNotice = { text, error -> note(text, error) },
+        history = { session -> AgentPluginRuntime.historyOf(repo.messages(session)) }
+    )
+
     // ------------------------------------------------------------- lifecycle
 
     fun start() {
@@ -447,6 +490,10 @@ class BrowserAgentController(
         scope.launch {
             snapshotFlow { vm.activeTabId }.collect { onActiveTabChanged(it) }
         }
+        // The plugin surface collects on the same scope: the installed list
+        // flows from the database, and the bindings re-subscribe whenever
+        // the panel moves to another chat.
+        pluginUi.start()
     }
 
     /**
@@ -720,6 +767,11 @@ class BrowserAgentController(
         if (previous != null) {
             scope.launch { repo.bindSessionToTab(previous, "") }
         }
+        // A fresh chat is exactly the moment the plugin choice matters: the
+        // sheet opens by itself when there is anything to choose, because a
+        // person who has never installed one should not have to find the
+        // puzzle button to learn that they could.
+        if (pluginUi.installed.isNotEmpty()) pluginUi.openPicker()
     }
 
     /**
@@ -794,6 +846,10 @@ class BrowserAgentController(
 
     fun deleteSession(id: Long) {
         scope.launch {
+            // The plugins this chat enabled get their goodbye before the row
+            // goes — deactivate, best-effort, then the sweep that reclaims
+            // the data directories the cascade leaves behind.
+            runCatching { deactivateChatPlugins(pluginRepo, pluginRuntime, id, "chat-deleted") }
             repo.deleteSession(id)
             if (activeSessionId == id) newSession()
         }
@@ -801,6 +857,11 @@ class BrowserAgentController(
 
     fun clearAllSessions() {
         scope.launch {
+            // Every chat that had plugins enabled gets the same goodbye a
+            // single deletion gives; each call sweeps as it finishes.
+            sessions.forEach { session ->
+                runCatching { deactivateChatPlugins(pluginRepo, pluginRuntime, session.id, "chat-deleted") }
+            }
             repo.deleteSessionsForProfile(profileId.value)
             newSession()
             messages.value = "Agent sessions cleared"
@@ -826,7 +887,22 @@ class BrowserAgentController(
             summary = UntrustedContent.payload(row.content).take(200),
             at = row.createdAt
         )
+        "plugin" -> pluginCardFromRow(row)
         else -> null
+    }
+
+    /**
+     * The `plugin`-role row back as the card it was appended from, or null
+     * when its JSON no longer parses as one — a card that cannot be read is
+     * dropped rather than rendered as a wall of JSON. The row's tool-name
+     * column carries the plugin's name, which is what it is: the name of
+     * the thing that produced the content.
+     */
+    private fun pluginCardFromRow(row: AgentMessageEntity): AgentEntry? {
+        val card = runCatching {
+            AgentJson.parseToJsonElement(row.content) as? JsonObject
+        }.getOrNull()?.let { PluginCard.parse(it) } ?: return null
+        return AgentEntry.Plugin(card, row.toolName ?: "plugin", row.createdAt)
     }
 
     // ------------------------------------------------------------- turn execution
@@ -834,26 +910,37 @@ class BrowserAgentController(
     fun send(text: String, includePage: Boolean, attachments: List<AgentAttachment> = emptyList()) {
         val message = text.trim()
         if (message.isEmpty() || running) return
-        val provider = activeProvider ?: run {
-            messages.value = "Configure an AI provider first (Agent → settings)"
-            return
-        }
-        // Null means AUTO: the model is not known until a provider answers, and
-        // asking which one does is work the turn itself has to do.
-        val model: String? = if (chatModelAuto) null else activeModel ?: provider.defaultModel
-        if (model != null && model.isBlank()) {
-            messages.value = "Pick a model for ${provider.name} first"
-            return
-        }
-        // The tab is read HERE, on the user's own tap, and not inside the
-        // coroutine: runTurn suspends several times before it would get to
-        // it, and a tab switched in that window would bind the turn — and
-        // its new chat row — to the wrong tab.
+        // The tab and the chat are read HERE, on the user's own tap, and not
+        // inside the coroutine: runTurn suspends several times before it
+        // would get to them, a tab switched in that window would bind the
+        // turn — and its new chat row — to the wrong tab, and a plugin
+        // `/`-command must run against the conversation the message was sent
+        // into, not one a resolve lands on mid-flight.
         val tabId = vm.activeTabId
-        // The turn takes the panel from here on: a tab resolve still in
-        // flight must not land on top of it and wipe the message below.
-        conversationRequest++
-        turnJob = scope.launch { runTurn(message, includePage, attachments, provider, model, tabId) }
+        val sessionAtTap = activeSessionId
+        // Plugin commands are chat surface, not agent turns: they are parsed
+        // FIRST, and only a text no command claims reaches the provider. The
+        // provider checks live below them on purpose — `/plugins` and a
+        // plugin's own commands are the plugin system's features, and they
+        // must work before any provider is configured.
+        turnJob = scope.launch {
+            if (pluginUi.interceptChatCommand(message, sessionAtTap)) return@launch
+            val provider = activeProvider ?: run {
+                messages.value = "Configure an AI provider first (Agent → settings)"
+                return@launch
+            }
+            // Null means AUTO: the model is not known until a provider answers, and
+            // asking which one does is work the turn itself has to do.
+            val model: String? = if (chatModelAuto) null else activeModel ?: provider.defaultModel
+            if (model != null && model.isBlank()) {
+                messages.value = "Pick a model for ${provider.name} first"
+                return@launch
+            }
+            // The turn takes the panel from here on: a tab resolve still in
+            // flight must not land on top of it and wipe the message below.
+            conversationRequest++
+            runTurn(message, includePage, attachments, provider, model, tabId)
+        }
     }
 
     fun stop() {
@@ -1145,19 +1232,6 @@ class BrowserAgentController(
                     appTools = { name, args -> visibleExecutor.executeAppTool(name, args) }
                 )
             } ?: visibleExecutor
-            // Plan mode wraps the WHOLE turn, the headless gate included:
-            // that gate hands the app's own tools straight through, and one of
-            // them (app_2fa action=fill) reaches the page by that route.
-            // The action budget wraps the whole turn too, the app's own tools
-            // included since those reach the page. Plan mode stays outermost:
-            // an action it refuses never ran, so it must not spend the budget.
-            val budget = ActionBudgetGate(pageExecutor)
-            // The profile's withheld agent permissions sit outside the budget
-            // for the same reason Plan mode does: a tool refused for want of a
-            // permission never ran, so it must not cost the turn a step.
-            val permitted = AgentPermissionGate(budget) { vm.profileSettings().agentWithheldPermissions }
-            val executor: ToolExecutor =
-                if (settings.chatMode == AgentMode.PLAN) PlanModeToolGate(permitted) else permitted
             // "Delete all agent chats" can run in the settings ACTIVITY while
             // a session is active here — verify it still exists, else start a
             // fresh one instead of writing to a dead row (FK safety).
@@ -1189,6 +1263,41 @@ class BrowserAgentController(
             // deleted underneath us cannot lend its list to its replacement.
             if (sessionId != previousId) plan = AgentPlan.decode(known?.planJson)
             repo.addMessage(sessionId, "user", display)
+
+            // The chat's hooked plugins see the message BEFORE the model
+            // does — sequential, budgeted, and never fatal to the turn: the
+            // message was addressed to the agent, not to the plugin, and a
+            // plugin that fails on it is said about and skipped.
+            dispatchPluginMessageHooks(sessionId, text)
+
+            // The plugin executor wraps the page tools INNERMOST, so every
+            // gate above it applies to a plugin tool exactly as it does to a
+            // click: Plan mode wraps the WHOLE turn, the headless gate
+            // included (that gate hands the app's own tools straight through,
+            // and one of them reaches the page by that route); the action
+            // budget wraps the whole turn too, the app's own tools included
+            // since those reach the page. Plan mode stays outermost: an
+            // action it refuses never ran, so it must not spend the budget.
+            val pluginExecutor = PluginToolExecutor(
+                inner = pageExecutor,
+                runtime = pluginRuntime,
+                catalog = pluginCatalog,
+                sessionId = sessionId,
+                // Read at call time: a tool call can arrive several steps
+                // into the turn, and the conversation it should see is the
+                // one that exists then.
+                history = { AgentPluginRuntime.historyOf(repo.messages(sessionId)) },
+                onCards = { cards, name ->
+                    cards.forEach { card -> appendPluginCard(sessionId, card, name) }
+                }
+            )
+            val budget = ActionBudgetGate(pluginExecutor)
+            // The profile's withheld agent permissions sit outside the budget
+            // for the same reason Plan mode does: a tool refused for want of a
+            // permission never ran, so it must not cost the turn a step.
+            val permitted = AgentPermissionGate(budget) { vm.profileSettings().agentWithheldPermissions }
+            val executor: ToolExecutor =
+                if (settings.chatMode == AgentMode.PLAN) PlanModeToolGate(permitted) else permitted
 
             val engine = SearchEngines.byId(vm.profileSettings().searchEngineId).label
             val basePrompt = settings.systemPromptOverride?.takeIf { it.isNotBlank() }
@@ -1231,10 +1340,17 @@ class BrowserAgentController(
                 plan = plan
             )
 
+            // The chat's plugin tools, resolved once here (each probe starts
+            // the Node runtime; doing it per definition would restart the
+            // runtime per step) and handed to the loop as the settled list
+            // its per-request seam reads.
+            val pluginTools = runCatching { pluginCatalog.pluginToolDefs(sessionId) }
+                .getOrDefault(emptyList())
             val loop = AgentLoop(
                 gateway = gateway,
                 tools = executor,
                 config = config,
+                extraTools = { pluginTools },
                 // A Pause is honoured here, BETWEEN steps: a tool that has
                 // already started is never cut in half.
                 beforeStep = { awaitUserResume() },
@@ -1400,6 +1516,93 @@ class BrowserAgentController(
             ?.let { session.loadUri(it) }
         session
     }.getOrNull()
+
+    // ------------------------------------------------------------- chat plugins
+
+    /**
+     * The chat's message hooks: every plugin enabled with the `message` hook
+     * sees the user's text BEFORE the turn starts — its cards join the
+     * conversation, its failure is one honest notice line, and the turn runs
+     * either way, because the message was addressed to the agent, not to the
+     * plugin. Sequential on purpose: the plugins see the chat one after the
+     * other under one budget each, never side by side under the runtime's
+     * one-call-at-a-time lock.
+     */
+    private suspend fun dispatchPluginMessageHooks(sessionId: Long, text: String) {
+        val hooked = runCatching {
+            pluginCatalog.sessionPlugins(sessionId).filter { "message" in it.hooks }
+        }.getOrDefault(emptyList())
+        if (hooked.isEmpty()) return
+        setStatus("Chat plugins are reading the message…")
+        hooked.forEach { plugin ->
+            runCatching {
+                val result = pluginRuntime.run(
+                    sessionId = sessionId,
+                    plugin = plugin.plugin,
+                    binding = plugin.binding,
+                    event = PluginCallRequest.EVENT_MESSAGE,
+                    payload = PluginPayloads.message(text),
+                    history = AgentPluginRuntime.historyOf(repo.messages(sessionId)),
+                    budgetMs = AgentPluginRuntime.MESSAGE_HOOK_BUDGET_MS
+                )
+                if (result.ok) {
+                    PluginCard.parseList(JsonArray(result.cards)).forEach { card ->
+                        appendPluginCard(sessionId, card, plugin.plugin.name)
+                    }
+                } else {
+                    note(
+                        "${plugin.plugin.name} failed on the message: " +
+                            result.output.lineSequence().firstOrNull().orEmpty(),
+                        error = true
+                    )
+                }
+            }
+        }
+        setStatus(null)
+    }
+
+    /**
+     * Appends one plugin card to the chat AND to the transcript, as a
+     * `plugin`-role row whose content is the card's own JSON — the same
+     * spelling [PluginCard.parse] reads — so reopening the chat renders it
+     * again. The card's JSON is the persistable shape by design: the row and
+     * the wire agree on one spelling, so nothing has to be re-derived later.
+     */
+    private suspend fun appendPluginCard(sessionId: Long, card: PluginCard, pluginName: String) {
+        entries = entries + AgentEntry.Plugin(card, pluginName, System.currentTimeMillis())
+        repo.addMessage(sessionId, "plugin", card.toJson().toString(), toolName = pluginName)
+    }
+
+    /**
+     * The session row a plugin is being enabled into when the chat has none
+     * yet — the picker opens on a brand-new chat and a plugin command never
+     * sends a turn, so the binding needs its row before any message exists.
+     * The row is bound to the tab the panel is on, so the next message
+     * CONTINUES this chat instead of quietly starting a second one, and the
+     * panel is taken here for the same reason a turn takes it: a tab resolve
+     * still reading must not land on top of the chat this row just became.
+     */
+    private suspend fun createSessionForPlugins(title: String): Long? {
+        val provider = activeProvider ?: run {
+            messages.value = "Configure an AI provider first (Agent → settings)"
+            return null
+        }
+        conversationRequest++
+        val tabId = vm.activeTabId
+        val session = repo.createSession(
+            profileId = profileId.value,
+            title = title.take(64),
+            providerId = provider.id,
+            model = (activeModel ?: provider.defaultModel).orEmpty(),
+            tabId = tabId.orEmpty()
+        )
+        activeSessionId = session
+        // The row the panel shows is the chat this is; adopting it is
+        // continuing it, exactly as a turn would.
+        pointApprovalsAt(session)
+        tabId?.let { conversationTabId = it }
+        return session
+    }
 
     // ------------------------------------------------------------- entry helpers
 

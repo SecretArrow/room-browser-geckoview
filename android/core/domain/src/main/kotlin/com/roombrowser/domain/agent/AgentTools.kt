@@ -66,6 +66,15 @@ object AgentTools {
     const val NODE_RUN = "node_run"
     const val NODE_PACKAGES = "node_packages"
 
+    // ---- chat plugins (dynamic, per chat — never a static def below) ----
+    //
+    // A plugin's tools join the catalogue at RUN time, spelled
+    // "plugin_<sanitized-id>_<tool>" (see PluginToolNaming), so this is a
+    // prefix and not a name: every gate that must recognise plugin tools —
+    // the permission axis, Plan mode, the unattended refusals — matches by
+    // prefix and no static set has to change when a plugin is installed.
+    const val PLUGIN_TOOL_PREFIX = "plugin_"
+
     // ---- the agent's own per-site memory (this profile only, opt-in) ----
     const val SITE_MEMORY = "site_memory"
 

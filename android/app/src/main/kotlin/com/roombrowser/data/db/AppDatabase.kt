@@ -44,9 +44,11 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         AiTaskEntity::class,
         NoteEntity::class,
         TotpEntity::class,
-        AgentSiteMemoryEntity::class
+        AgentSiteMemoryEntity::class,
+        PluginEntity::class,
+        ChatPluginEntity::class
     ],
-    version = 16,
+    version = 17,
     exportSchema = true
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -71,6 +73,8 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun noteDao(): NoteDao
     abstract fun totpDao(): TotpDao
     abstract fun agentSiteMemoryDao(): AgentSiteMemoryDao
+    abstract fun pluginDao(): PluginDao
+    abstract fun chatPluginDao(): ChatPluginDao
 
     companion object {
         const val NAME = "room-browser.db"
@@ -577,6 +581,70 @@ abstract class AppDatabase : RoomDatabase() {
         }
 
         /**
+         * v16 → v17: adds the chat-plugin tables — installed plugins and the
+         * per-chat bindings that decide which plugin runs where. Purely additive
+         * CREATE TABLE + INDEX statements, so the migration is lossless; the
+         * column sets mirror PluginEntity and ChatPluginEntity exactly
+         * (snake_case names, NOT NULL on non-null Kotlin types, SQLite affinity
+         * for the Kotlin types: String → TEXT, Long/Int/Boolean → INTEGER), and
+         * both foreign keys carry the CASCADE the entities declare — that is
+         * what makes deleting a chat (or a plugin) clean up its bindings
+         * without a hand-written delete path in front of them.
+         *
+         * `internal` for the same reason as [MIGRATION_10_11]: only
+         * PluginMigrationTest (the e2e one) executes it, since a fresh install
+         * creates v17 directly.
+         */
+        internal val MIGRATION_16_17 = object : Migration(16, 17) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `plugins` (" +
+                        "`id` TEXT NOT NULL, " +
+                        "`name` TEXT NOT NULL, " +
+                        "`version` TEXT NOT NULL, " +
+                        "`description` TEXT NOT NULL, " +
+                        "`author_name` TEXT NOT NULL, " +
+                        "`license` TEXT NOT NULL, " +
+                        "`entry` TEXT NOT NULL, " +
+                        "`api_version` INTEGER NOT NULL, " +
+                        "`permissions_json` TEXT NOT NULL, " +
+                        "`network_allow_json` TEXT NOT NULL, " +
+                        "`config_schema_json` TEXT NOT NULL, " +
+                        "`commands_json` TEXT NOT NULL, " +
+                        "`hooks_json` TEXT NOT NULL, " +
+                        "`dir_name` TEXT NOT NULL, " +
+                        "`installed_at` INTEGER NOT NULL, " +
+                        "`updated_at` INTEGER NOT NULL, " +
+                        "PRIMARY KEY(`id`))"
+                )
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `chat_plugins` (" +
+                        "`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, " +
+                        "`session_id` INTEGER NOT NULL, " +
+                        "`plugin_id` TEXT NOT NULL, " +
+                        "`enabled` INTEGER NOT NULL, " +
+                        "`granted_permissions_json` TEXT NOT NULL, " +
+                        "`config_json` TEXT NOT NULL, " +
+                        "`created_at` INTEGER NOT NULL, " +
+                        "`updated_at` INTEGER NOT NULL, " +
+                        "FOREIGN KEY(`session_id`) REFERENCES `agent_sessions`(`id`) " +
+                        "ON UPDATE NO ACTION ON DELETE CASCADE, " +
+                        "FOREIGN KEY(`plugin_id`) REFERENCES `plugins`(`id`) " +
+                        "ON UPDATE NO ACTION ON DELETE CASCADE)"
+                )
+                db.execSQL(
+                    "CREATE INDEX IF NOT EXISTS `index_chat_plugins_session_id` " +
+                        "ON `chat_plugins` (`session_id`)"
+                )
+                db.execSQL(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS " +
+                        "`index_chat_plugins_session_id_plugin_id` " +
+                        "ON `chat_plugins` (`session_id`, `plugin_id`)"
+                )
+            }
+        }
+
+        /**
          * Every migration, oldest first — the ONE list. [build] applies it and
          * the migration tests apply it too, so a version bump cannot leave a
          * test registering a subset that stops short of the current version.
@@ -585,7 +653,8 @@ abstract class AppDatabase : RoomDatabase() {
             MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4,
             MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8,
             MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11, MIGRATION_11_12,
-            MIGRATION_12_13, MIGRATION_13_14, MIGRATION_14_15, MIGRATION_15_16
+            MIGRATION_12_13, MIGRATION_13_14, MIGRATION_14_15, MIGRATION_15_16,
+            MIGRATION_16_17
         )
 
         @Volatile

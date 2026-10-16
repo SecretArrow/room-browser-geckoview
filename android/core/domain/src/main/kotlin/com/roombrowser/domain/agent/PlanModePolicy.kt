@@ -73,9 +73,15 @@ object PlanModePolicy {
      * The refusal the model reads back, or null when the tool may run. It has
      * to name the way out: a refusal that reads like a dead end sends the model
      * looking for another route to the same action.
+     *
+     * A chat plugin's tools are refused here by PREFIX rather than by list:
+     * they are named per chat (see [AgentTools.PLUGIN_TOOL_PREFIX]) and join
+     * the catalogue at run time, so [REFUSED] stays the static catalogue's
+     * own set — this is the one family where membership is by shape.
      */
     fun refusal(toolName: String, action: String?): String? {
         val refused = toolName in REFUSED ||
+            toolName.startsWith(AgentTools.PLUGIN_TOOL_PREFIX) ||
             (action != null && action in REFUSED_ACTIONS[toolName].orEmpty())
         if (!refused) return null
         return "tool '$toolName' is switched off while this chat is in Plan mode: the turn " +

@@ -26,10 +26,20 @@ object AgentPermissions {
     const val AGENT_COMPUTE = "agent.compute"
     const val AGENT_NODE = "agent.node"
 
+    /**
+     * Calling a chat plugin's agent tools. It is its own permission rather
+     * than riding [AGENT_NODE] because the consent is about the CHAT's
+     * plugins — chosen per conversation, granted per permission by the
+     * person who enabled them — while node_run is about the runtime the
+     * profile lets the agent drive directly.
+     */
+    const val AGENT_PLUGINS = "agent.plugins"
+
     /** Every permission this build knows, for the settings screen and the tests. */
     val ALL = setOf(
         DEVTOOLS_READ, DEVTOOLS_NETWORK, DEVTOOLS_STORAGE, DEVTOOLS_COOKIES,
-        DEVTOOLS_SECURITY, EXPORT_DIAGNOSTICS, AGENT_COMPUTE, AGENT_NODE
+        DEVTOOLS_SECURITY, EXPORT_DIAGNOSTICS, AGENT_COMPUTE, AGENT_NODE,
+        AGENT_PLUGINS
     )
 
     /**
@@ -40,7 +50,15 @@ object AgentPermissions {
      * so the settings screen and the stored set agree with the plan, and it is
      * the one permission that, today, cannot be exercised by a tool.
      */
-    fun required(tool: String): Set<String> = when (tool) {
+    fun required(tool: String): Set<String> = when {
+        // A plugin's tools are named per chat (see [AgentTools.PLUGIN_TOOL_PREFIX]),
+        // so membership is by prefix: the map above stays a map of the static
+        // catalogue, and this one dynamic family gets one permission.
+        tool.startsWith(AgentTools.PLUGIN_TOOL_PREFIX) -> setOf(AGENT_PLUGINS)
+        else -> requiredStatic(tool)
+    }
+
+    private fun requiredStatic(tool: String): Set<String> = when (tool) {
         AgentTools.DEVTOOLS_CONSOLE,
         AgentTools.DEVTOOLS_INSPECT,
         AgentTools.DEVTOOLS_ELEMENTS,
@@ -92,6 +110,7 @@ object AgentPermissions {
         EXPORT_DIAGNOSTICS -> "Export diagnostic reports"
         AGENT_COMPUTE -> "Compute in a scratchpad"
         AGENT_NODE -> "Run JavaScript in the embedded Node runtime"
+        AGENT_PLUGINS -> "Plugin tools"
         else -> permission
     }
 
@@ -113,6 +132,8 @@ object AgentPermissions {
             "Lets the agent evaluate JavaScript in a detached scratchpad page to calculate and transform data it already has. The scratchpad has no network, no filesystem and no packages, and it cannot see or change the page you are on."
         AGENT_NODE ->
             "Lets the agent run a JavaScript program in the Node.js runtime embedded in this app, with Node's own APIs behind it: it can reach the network, write files in this profile's own storage and use packages you installed. It runs in a process of its own, but that process shares this app's identity and data directory, so a program that means harm is not contained by it. Every request it makes carries this profile's user agent."
+        AGENT_PLUGINS ->
+            "Lets the agent call the tools a chat plugin registered in this chat. The plugin's code runs in the embedded Node runtime under the app's own identity — it is not a security boundary — and its output is fenced as untrusted data before the model reads it. Which plugins exist is a per-chat choice, made in the agent panel with their permissions spelled out."
         else -> permission
     }
 }

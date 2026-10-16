@@ -32,6 +32,7 @@ import com.roombrowser.domain.agent.UntrustedContent
 import com.roombrowser.domain.agent.formatDurationMs
 import com.roombrowser.domain.engine.UrlIntelligence
 import com.roombrowser.domain.oct.OctUri
+import com.roombrowser.domain.plugins.PluginToolNaming
 import com.roombrowser.engine.EngineSession
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
@@ -219,6 +220,22 @@ class AgentToolExecutor(
         withContext(Dispatchers.Main) {
             val args: Map<String, Any?> = parseArgs(argsJson)
             try {
+                // A plugin's tool never reaches this executor in a chat turn —
+                // the plugin executor wraps it inside the chain — so a name
+                // that arrives here means a chain built without one (a
+                // scheduled run's executor is exactly that). It is asked
+                // about under the confirm gate, the one axis that would have
+                // asked, and then refused honestly: "unknown tool" would send
+                // the model hunting for a route that does not exist.
+                if (PluginToolNaming.isPluginTool(name)) {
+                    refuse(name, "plugin tool $name")?.let { return@withContext it }
+                    return@withContext ToolResult(
+                        false,
+                        "plugin tool '$name' is not available here: it runs only in a chat whose " +
+                            "plugin executor is part of the tool chain. Run this as a chat with " +
+                            "the plugin enabled."
+                    )
+                }
                 // Asked once, here, rather than inside each tool: "needs the
                 // tab on screen" is a property of the tool, and one place that
                 // answers it cannot drift out of step with the list.

@@ -1,0 +1,33 @@
+{
+  "id": "com.example.hello",
+  "name": "Hello World",
+  "version": "1.0.0",
+  "description": "A tiny example plugin.",
+  "author": {
+    "name": "Jane Doe",
+    "email": "jane@example.com",
+    "url": "https://example.com"
+  },
+  "license": "MIT",
+  "api": 1,
+  "entry": "main.js",
+  "permissions": ["storage"],
+  "config": {
+    "schema": [
+      {
+        "key": "greeting",
+        "type": "string",
+        "default": "Hello",
+        "title": "Greeting word",
+        "description": "Word to greet with"
+      }
+    ]
+  },
+  "commands": [
+    {
+      "name": "greet",
+      "title": "Greet",
+      "description": "Say hello"
+    }
+  ]
+}

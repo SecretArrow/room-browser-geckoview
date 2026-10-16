@@ -21,7 +21,9 @@ import com.roombrowser.domain.agent.UntrustedContent
 import com.roombrowser.domain.agent.formatDurationMs
 import com.roombrowser.domain.engine.UrlIntelligence
 import com.roombrowser.domain.oct.OctUri
+import com.roombrowser.domain.plugins.PluginToolNaming
 import com.roombrowser.domain.task.AiTaskPermissions
+import com.roombrowser.domain.task.pluginUnattendedRefusal
 import com.roombrowser.domain.task.profileUnattendedRefusal
 import com.roombrowser.domain.task.unattendedRefusal
 import com.roombrowser.domain.task.walletUnattendedRefusal
@@ -243,6 +245,14 @@ class HeadlessToolExecutor(
      * forgot to ask.
      */
     private suspend fun refusal(name: String, argsJson: String): ToolResult? {
+        // A chat plugin's tool FIRST, before the permission map it also rides:
+        // plugin tools are not in the static catalogue, so the map's NODE
+        // refusal would read as a Node-script refusal, and the truth — code a
+        // person consented to for one chat — is what the model needs to stop
+        // rather than retry.
+        if (PluginToolNaming.isPluginTool(name)) {
+            return ToolResult(false, pluginUnattendedRefusal(name))
+        }
         if (name in AgentTools.WALLET_TOOLS) return ToolResult(false, walletUnattendedRefusal(name))
         if (name in AgentAppActions.PROFILE_TOOLS) {
             // One setting can hand these over, so the permission map's refusal

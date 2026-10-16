@@ -65,6 +65,20 @@ class NodeClient private constructor(
         readTimeoutMillis = readTimeoutFor(timeoutMillis)
     )
 
+    /**
+     * Runs one plugin event and returns what it produced. Same line protocol,
+     * same id matching and same error envelope as every other command: a
+     * refusal from the runtime is an [IllegalStateException] carrying its
+     * words, while a plugin that failed is an answer inside a successful
+     * envelope — see [PluginCallResult].
+     */
+    @Synchronized
+    fun plugin(call: PluginCallRequest): PluginCallResult = exchange(
+        request = { id -> NodeProtocol.pluginRequest(id, token, call) },
+        read = NodeProtocol::pluginOf,
+        readTimeoutMillis = readTimeoutFor(call.timeoutMs)
+    )
+
     @Synchronized
     private fun <T> call(
         cmd: String,
@@ -73,9 +87,21 @@ class NodeClient private constructor(
         script: String? = null,
         timeoutMs: Long? = null,
         readTimeoutMillis: Long = READ_TIMEOUT_MS
+    ): T = exchange(
+        request = { id -> NodeProtocol.request(id, cmd, token, userAgent, script, timeoutMs) },
+        read = read,
+        readTimeoutMillis = readTimeoutMillis
+    )
+
+    /** Writes one request line and reads one reply, the whole of the protocol. */
+    @Synchronized
+    private fun <T> exchange(
+        request: (Int) -> String,
+        read: (JsonObject) -> T,
+        readTimeoutMillis: Long
     ): T {
         val id = ++nextId
-        out.write(NodeProtocol.request(id, cmd, token, userAgent, script, timeoutMs))
+        out.write(request(id))
         out.write("\n")
         out.flush()
         // A runtime that is wedged in a script would otherwise hold this

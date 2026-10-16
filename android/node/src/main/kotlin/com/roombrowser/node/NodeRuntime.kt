@@ -1,25 +1,32 @@
 package com.roombrowser.node
 
 import android.content.Context
+import android.content.res.AssetManager
 import java.io.File
 import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * The runtime side of the bridge — what runs in the `:node` process.
  *
- * The entry script is copied out of the APK before it runs: an archive is not a
- * file system, and the runtime resolves its entry point by path. The copy is
- * rewritten whenever the packaged one differs, so a new APK never runs the
- * previous version's script.
+ * The entry script and everything it keeps beside it are copied out of the
+ * APK before they run: an archive is not a file system, and the runtime
+ * resolves its entry point by path. The copy is a RECURSIVE SYNC of the whole
+ * `assets/node/` tree, rewritten file by file whenever the packaged one
+ * differs, so a new APK never runs the previous version's script — and never
+ * keeps a plugin host or an example ZIP the new APK stopped carrying.
  */
 object NodeRuntime {
 
     const val SOCKET_EXTRA = "com.roombrowser.node.socket"
     const val TOKEN_EXTRA = "com.roombrowser.node.token"
 
+    private const val ASSET_ROOT = "node"
     private const val SCRIPT_NAME = "bridge.js"
     private const val STATUS_NAME = "status.json"
     private const val SOCKET_SUFFIX = ".sock"
+
+    /** Installed packages; `require()` resolves from here. Never the sync's to touch. */
+    private const val MODULES_NAME = "node_modules"
 
     /** False on an ABI this APK carries no libnode for. */
     val available: Boolean get() = NodeBridge.available
@@ -69,13 +76,96 @@ object NodeRuntime {
     }
 
     internal fun scriptFile(context: Context): File {
-        val target = File(directory(context), SCRIPT_NAME)
-        target.parentFile?.mkdirs()
-        val packaged = context.assets.open("node/$SCRIPT_NAME").use { it.readBytes() }
-        if (!target.exists() || !target.readBytes().contentEquals(packaged)) {
-            target.writeBytes(packaged)
+        val nodeDir = directory(context)
+        nodeDir.mkdirs()
+        syncPackaged(nodeDir, packagedTree(context.assets))
+        return File(nodeDir, SCRIPT_NAME)
+    }
+
+    /**
+     * Every file under `assets/node/`, keyed by its path relative to the node
+     * directory (`bridge.js`, `plugin_host.js`, `plugins/hello-world.zip`, …).
+     *
+     * A name that lists non-empty is a directory and is walked; an empty file
+     * and a file the packer left without an extension both list empty and are
+     * read, which is the only honest distinction Android's asset listing
+     * offers. A walk failure is skipped rather than thrown: this runs at
+     * process start, where the choice is "sync what is there" or "never
+     * start".
+     */
+    private fun packagedTree(assets: AssetManager): Map<String, ByteArray> {
+        val files = linkedMapOf<String, ByteArray>()
+        fun walk(path: String) {
+            val children = runCatching { assets.list(path) }.getOrNull() ?: return
+            children.forEach { name ->
+                val child = "$path/$name"
+                val grandChildren = runCatching { assets.list(child) }.getOrNull()
+                if (!grandChildren.isNullOrEmpty()) {
+                    walk(child)
+                } else {
+                    runCatching {
+                        assets.open(child).use { it.readBytes() }
+                    }.getOrNull()?.let { files[child.removePrefix("$ASSET_ROOT/")] = it }
+                }
+            }
         }
-        return target
+        walk(ASSET_ROOT)
+        return files
+    }
+
+    /**
+     * Makes [nodeDir] hold exactly [packaged], and nothing else that belongs
+     * to the sync.
+     *
+     * Per-file byte comparison, rewrite on diff — the semantics the single
+     * bridge.js copy always had, now applied to the whole tree so a plugin
+     * host and the bundled example ZIPs arrive the same way. What the sync
+     * deliberately never touches: `status.json` (the runtime's own last
+     * report), `*.sock` (a live socket, or one a dead run left behind), and
+     * `node_modules` (packages the USER installed through `node_packages`,
+     * which no APK carries). Anything else on disk that the APK no longer
+     * carries is deleted — a stale `plugin_host.js` or example ZIP from an
+     * older build is exactly the file this exists to retire.
+     */
+    internal fun syncPackaged(nodeDir: File, packaged: Map<String, ByteArray>) {
+        packaged.forEach { (relative, bytes) ->
+            val target = File(nodeDir, relative)
+            // Only rewritten when it differs: a same-length rewrite would still
+            // touch the file, and this directory is read while the runtime runs.
+            val unchanged = target.exists() && target.length() == bytes.size.toLong() &&
+                runCatching { target.readBytes().contentEquals(bytes) }.getOrDefault(false)
+            if (!unchanged) {
+                target.parentFile?.mkdirs()
+                target.writeBytes(bytes)
+            }
+        }
+        val keptDirs = packaged.keys
+            .map { it.substringBeforeLast('/') }
+            .filter { it.isNotEmpty() }
+            .toSet()
+        deleteExtraneous(nodeDir, "", keptDirs, packaged.keys)
+    }
+
+    /** Removes what the APK stopped carrying, leaving the runtime's own files alone. */
+    private fun deleteExtraneous(dir: File, relative: String, keptDirs: Set<String>, keptFiles: Set<String>) {
+        val entries = dir.listFiles() ?: return
+        entries.forEach { file ->
+            val path = if (relative.isEmpty()) file.name else "$relative/${file.name}"
+            when {
+                // The runtime's own state and the user's packages: not ours.
+                relative.isEmpty() &&
+                    (file.name == STATUS_NAME || file.name.endsWith(SOCKET_SUFFIX) || file.name == MODULES_NAME) ->
+                    Unit
+                file.isDirectory ->
+                    if (path !in keptDirs) {
+                        runCatching { file.deleteRecursively() }
+                    } else {
+                        deleteExtraneous(file, path, keptDirs, keptFiles)
+                    }
+                path !in keptFiles -> runCatching { file.delete() }
+                else -> Unit
+            }
+        }
     }
 
     /**

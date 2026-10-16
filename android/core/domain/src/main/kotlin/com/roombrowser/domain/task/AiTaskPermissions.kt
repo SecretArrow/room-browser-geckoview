@@ -43,50 +43,58 @@ data class AiTaskPermissions(
     val allowInteract: Boolean = true,
     val allowPost: Boolean = false
 ) {
-    fun groupOf(toolName: String): ToolGroup? = when (toolName) {
-        AgentTools.READ_PAGE, AgentTools.SEE_PAGE, AgentTools.SCROLL, AgentTools.WAIT,
-        AgentTools.WAIT_FOR, AgentTools.COMPUTE_JS, AgentTools.DATA_TRANSFORM,
-        // compare_screenshots captures the page and reads its pixels; it starts
-        // no navigation and sends the model nothing, so it is a read.
-        AgentTools.COMPARE_SCREENSHOTS,
-        // site_memory touches no page and starts no navigation: like the two
-        // local tools above, it is bookkeeping the agent does on the device, so
-        // it rides with the read group. Its own per-profile opt-in is the real
-        // gate; this group is only the coarse unattended one.
-        AgentTools.SITE_MEMORY,
-        // plan is the model's own step list — no page, no profile, nothing
-        // stored — so it rides here for the same reason and is never worth
-        // refusing: it is how a run reports where it has got to.
-        AgentTools.PLAN -> ToolGroup.READ_PAGE
-        AgentTools.NAVIGATE, AgentTools.SEARCH_WEB, AgentTools.GO_BACK,
-        AgentTools.OPEN_NEW_TAB, AgentTools.LIST_TABS,
-        AgentTools.SWITCH_TAB, AgentTools.CLOSE_TAB,
-        AgentTools.RELOAD, AgentTools.FORWARD -> ToolGroup.NAVIGATE
-        AgentTools.CLICK, AgentTools.FILL_INPUT, AgentTools.PRESS_ENTER,
-        AgentTools.SELECT_OPTION, AgentTools.PRESS_KEYS, AgentTools.RUN_JS,
-        // A download is the same kind of act as a click — it follows a link —
-        // and it is allowed at the same tier. A run has no download engine of
-        // its own and refuses it in the executor; this is only the coarse
-        // grant, and the run's own gate is the sharper one.
-        AgentTools.DOWNLOAD_FILE,
-        // Saving a page as a PDF writes a file to the user's Downloads, so it
-        // rides here for the same reason and is refused by a run's own gate.
-        AgentTools.SAVE_PDF -> ToolGroup.INTERACT
-        AgentTools.AUTO_LIKE, AgentTools.AUTO_REPOST,
-        AgentTools.AUTO_REPLY, AgentTools.AUTO_POST -> ToolGroup.POST
-        in AgentTools.WALLET_TOOLS -> ToolGroup.WALLET
-        in AgentTools.DEVTOOLS_TOOLS -> ToolGroup.DEVTOOLS
-        // A program with Node's own APIs behind it, and the tool that installs
-        // packages for it. A scheduled run is offered the same catalogue, so the
-        // refusal has to be a real one rather than a tool that runs because
-        // nobody classified it.
-        AgentTools.NODE_RUN, AgentTools.NODE_PACKAGES -> ToolGroup.NODE
-        AgentTools.APP_OPEN, AgentTools.APP_TABS, AgentTools.APP_DATA,
-        AgentTools.APP_SETTINGS, AgentTools.APP_SHIELDS,
-        AgentTools.APP_SITE_PERMISSION, AgentTools.APP_PAGE -> ToolGroup.APP
-        AgentTools.APP_2FA -> ToolGroup.TOTP
-        AgentTools.APP_NOTES -> ToolGroup.NOTES
-        else -> null
+    fun groupOf(toolName: String): ToolGroup? {
+        // A chat plugin's tools are named per chat (see
+        // [AgentTools.PLUGIN_TOOL_PREFIX]) and never appear in the static
+        // branches below — membership is by prefix, and they ride the NODE
+        // group: a plugin's code runs with the runtime's own reach, and an
+        // unattended run must not run it any more than it runs node_run.
+        if (toolName.startsWith(AgentTools.PLUGIN_TOOL_PREFIX)) return ToolGroup.NODE
+        return when (toolName) {
+            AgentTools.READ_PAGE, AgentTools.SEE_PAGE, AgentTools.SCROLL, AgentTools.WAIT,
+            AgentTools.WAIT_FOR, AgentTools.COMPUTE_JS, AgentTools.DATA_TRANSFORM,
+            // compare_screenshots captures the page and reads its pixels; it starts
+            // no navigation and sends the model nothing, so it is a read.
+            AgentTools.COMPARE_SCREENSHOTS,
+            // site_memory touches no page and starts no navigation: like the two
+            // local tools above, it is bookkeeping the agent does on the device, so
+            // it rides with the read group. Its own per-profile opt-in is the real
+            // gate; this group is only the coarse unattended one.
+            AgentTools.SITE_MEMORY,
+            // plan is the model's own step list — no page, no profile, nothing
+            // stored — so it rides here for the same reason and is never worth
+            // refusing: it is how a run reports where it has got to.
+            AgentTools.PLAN -> ToolGroup.READ_PAGE
+            AgentTools.NAVIGATE, AgentTools.SEARCH_WEB, AgentTools.GO_BACK,
+            AgentTools.OPEN_NEW_TAB, AgentTools.LIST_TABS,
+            AgentTools.SWITCH_TAB, AgentTools.CLOSE_TAB,
+            AgentTools.RELOAD, AgentTools.FORWARD -> ToolGroup.NAVIGATE
+            AgentTools.CLICK, AgentTools.FILL_INPUT, AgentTools.PRESS_ENTER,
+            AgentTools.SELECT_OPTION, AgentTools.PRESS_KEYS, AgentTools.RUN_JS,
+            // A download is the same kind of act as a click — it follows a link —
+            // and it is allowed at the same tier. A run has no download engine of
+            // its own and refuses it in the executor; this is only the coarse
+            // grant, and the run's own gate is the sharper one.
+            AgentTools.DOWNLOAD_FILE,
+            // Saving a page as a PDF writes a file to the user's Downloads, so it
+            // rides here for the same reason and is refused by a run's own gate.
+            AgentTools.SAVE_PDF -> ToolGroup.INTERACT
+            AgentTools.AUTO_LIKE, AgentTools.AUTO_REPOST,
+            AgentTools.AUTO_REPLY, AgentTools.AUTO_POST -> ToolGroup.POST
+            in AgentTools.WALLET_TOOLS -> ToolGroup.WALLET
+            in AgentTools.DEVTOOLS_TOOLS -> ToolGroup.DEVTOOLS
+            // A program with Node's own APIs behind it, and the tool that installs
+            // packages for it. A scheduled run is offered the same catalogue, so the
+            // refusal has to be a real one rather than a tool that runs because
+            // nobody classified it.
+            AgentTools.NODE_RUN, AgentTools.NODE_PACKAGES -> ToolGroup.NODE
+            AgentTools.APP_OPEN, AgentTools.APP_TABS, AgentTools.APP_DATA,
+            AgentTools.APP_SETTINGS, AgentTools.APP_SHIELDS,
+            AgentTools.APP_SITE_PERMISSION, AgentTools.APP_PAGE -> ToolGroup.APP
+            AgentTools.APP_2FA -> ToolGroup.TOTP
+            AgentTools.APP_NOTES -> ToolGroup.NOTES
+            else -> null
+        }
     }
 
     fun allows(toolName: String): Boolean = when (groupOf(toolName)) {
@@ -155,7 +163,14 @@ internal fun refusalMessage(toolName: String, group: ToolGroup?): String = when 
     ToolGroup.WALLET -> walletUnattendedRefusal(toolName)
     ToolGroup.APP -> appUnattendedRefusal(toolName)
     ToolGroup.DEVTOOLS -> devtoolsUnattendedRefusal(toolName)
-    ToolGroup.NODE -> nodeUnattendedRefusal(toolName)
+    // A plugin's tool rides the NODE group but is not a Node script the model
+    // wrote, so it is refused in its own words.
+    ToolGroup.NODE ->
+        if (toolName.startsWith(AgentTools.PLUGIN_TOOL_PREFIX)) {
+            pluginUnattendedRefusal(toolName)
+        } else {
+            nodeUnattendedRefusal(toolName)
+        }
     ToolGroup.TOTP, ToolGroup.NOTES -> profileUnattendedRefusal(toolName)
     else -> "tool '$toolName' is switched off for this task: ${group.label} is not permitted"
 }
@@ -223,3 +238,15 @@ fun nodeUnattendedRefusal(toolName: String): String =
     "tool '$toolName' works only in a chat: it runs a program with Node's own APIs, or installs " +
         "a package for one, and both can reach the network and write to this profile's files. A " +
         "scheduled run has nobody to ask, so run it as a chat."
+
+/**
+ * The refusal for a chat plugin's tool in an unattended run. The permission
+ * map already files these names under the NODE group — the plugin's code runs
+ * with that runtime's reach — and this is the sentence that says what the
+ * name actually is: code a person consented to for ONE chat, which an
+ * unattended run is twice the wrong place for.
+ */
+fun pluginUnattendedRefusal(toolName: String): String =
+    "tool '$toolName' works only in a chat: it runs a chat plugin's code, enabled for that chat " +
+        "by you and running with the embedded Node runtime's reach. A scheduled run has nobody " +
+        "to ask, so run it as a chat."
