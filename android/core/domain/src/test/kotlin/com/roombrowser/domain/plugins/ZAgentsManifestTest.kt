@@ -2,7 +2,6 @@ package com.roombrowser.domain.plugins
 
 import com.google.common.truth.Truth.assertThat
 import com.roombrowser.domain.agent.AgentJson
-import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonObject
 import org.junit.Test
 
