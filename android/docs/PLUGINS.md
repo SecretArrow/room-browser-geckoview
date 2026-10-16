@@ -149,7 +149,7 @@ packer where a source tree can prove them):
 | Entry names | UTF-8, 1..200 chars, relative, forward slashes, no `..`, no control characters |
 | Forbidden suffixes | `.node` `.so` `.dll` `.exe` `.bat` `.sh` `.jar` `.apk` |
 | Symlinks / special files | refused (the central directory's unix mode is where one announces itself) |
-| Manifest placement | `plugin.json` at the archive root — OR at the root of the **one** folder a zip may wrap everything in (rebasing on it); anything deeper is refused |
+| Manifest placement | `plugin.json` at the archive root — OR at the root of the **one** folder a zip may wrap everything in (rebasing on it); anything deeper is refused. A `module.json` root makes the package a ZAgents module instead (see "ZAgents module compatibility") |
 
 Extraction is atomic: a temp directory is filled, every rule is re-checked
 against the bytes actually copied, and only then is it renamed into place. A
@@ -202,6 +202,7 @@ is fixed in one pass, not three.
 | `config.schema` | no | 0..12 items; `key` `^[a-z][a-z0-9_]{0,31}$`, unique; `type` one of `string` `number` `boolean`; `default` (when present) must match the type — absent means the type's zero value (`""` / `0` / `false`); `title` 0..64; `description` 0..200. |
 | `commands` | no | 0..12 items; `name` `^[a-z][a-z0-9_-]{0,23}$`, unique, **must not be `plugins`** (reserved by the app); `title` 0..64; `description` 0..200. |
 | `hooks` | no | a subset of `["message"]`, unique, at most one entry. |
+| `inputs` | no | 0..12 items; the interactive input form — the field schema and its validation rules are their own section below ("Interactive input forms"). |
 | unknown fields | — | **rejected.** The API is versioned by `api`; a manifest carrying a field this build never heard of fails loudly at install rather than silently misbehaving. |
 
 **Network host patterns** (each is checked independently):
@@ -232,10 +233,16 @@ list before it is followed.
 | `agent.tools` | `exports.tools` are registered as agent tools **in this chat** | "Add tools the AI agent can call" | denied |
 | `chat.context` | `room.chat.history()` / `summary()` for the **current** chat only | "Read this chat's conversation" | denied |
 | `agent.generate` | `room.agent.generate(options)` — asks **this chat's own AI** (the session's provider + model) to write one piece of text | "Have this chat's AI write text for it" | denied |
+| `files` | a path-based files sandbox under this chat's data root — **module.json rows only** (it maps from the ZAgents `files` permission); see "ZAgents module compatibility" | "Manage files in this chat's module sandbox" | denied |
 
 **Implicit — no declaration, no dialog:** `room.meta`, `room.config`,
 `room.ui` (cards), `room.log`, `room.util`, `console`, timers. None of those
 can leave the call, so there is nothing to consent to.
+
+`files` is the one permission that exists only in the module.json vocabulary:
+a plugin.json declaring it is refused at install with
+`files is a module.json-only permission` — the name exists, just not in THAT
+format.
 
 The semantics you code against:
 
@@ -1357,6 +1364,162 @@ event; the module cache is per-call. Top-level work is paid per message,
 per command, per tool call. Initialize lazily inside handlers or accept the
 cost knowingly.
 
+## ZAgents module compatibility (`module.json` packages)
+
+The installer speaks a SECOND manifest format: a ZIP whose root carries
+`module.json` is a **ZAgents module** — the module system of the ZAgents chat
+app — and it installs into the SAME store, the same `plugins` row and the same
+per-chat runtime as a plugin.json package. The format is a column
+(`format`, `'plugin'` or `'zagents'`), not a second system: one door, one
+table, one sandbox, two spellings for the manifest.
+
+A package carrying **both** `plugin.json` and `module.json` — at the root, or
+at the root of the one wrapping folder — is refused outright:
+
+> `plugin.json and module.json cannot both be present — pick one format`
+
+One format per package, chosen by its author, not guessed by the store. The
+wrapping-folder tolerance, the entry-name rules, the size caps (≤ 512
+entries, ≤ 20 MB total, ≤ 2 MB per entry, ≤ 25 MB body) and the
+forbidden-suffix list are the SAME for both formats — this app's guards stay
+stricter than ZAgents' own, and they stay authoritative.
+
+### `module.json` — the lenient manifest
+
+Where plugin.json is strict (unknown fields are errors), module.json is
+lenient exactly as ZAgents reads it: a wrong shape falls back to its default,
+unknown permission names are **dropped** (a typo can never widen the sandbox),
+and unknown top-level fields are ignored. The refusals that do exist are this
+app's own, listed below the table.
+
+| Field | Required | Rules / default |
+|---|---|---|
+| `name` | see fallback | the module's identity. Sanitized exactly as the ZAgents registry does it: trimmed, lowercased, runs of `[^a-z0-9._-]+` → `-`, leading/trailing `.`/`-` stripped, `--` collapsed, capped at **40** chars; everything that lands empty (or `.` / `..`) falls back to `module`. The sanitized name must fit the plugin id grammar once prefixed (see the mapping below) — four or fewer dot-separated segments after `zagents.`. |
+| `version` | no | a FREE string, default `"0.0.0"` — not semver. Kept verbatim in the row's `zagents_version` column (that is what the UI shows); the semver `version` column gets the leading `x.y.z` prefix when there is one, else `"0.0.0"`. |
+| `title` | no | display name; the UI falls back to `name` when empty. ≤ 64 chars kept. |
+| `description` | no | what the manager, the sheet and the system prompt show. ≤ 500 chars kept. |
+| `entry` | no | relative path inside the module, no `..`, no absolute path, no backslash, ≤ 200 chars. The chain that resolves it: **`module.json.entry` → `package.json.main` → `"main.js"`**. The resolved entry must exist in the ZIP, else install fails with `Entry point "<entry>" not found in the ZIP`. |
+| `permissions` | no | array; each one of `storage` `network` `files` `chat` `agent`; unknown names silently dropped, order preserved (the consent dialog shows them in manifest order). |
+| `allowedHosts` | no | host list, trimmed + lowercased, empty patterns skipped. ZAgents reads null/empty as "any host" — **this app refuses that**: see below. |
+| `timeoutSeconds` | no | the per-run budget. Default **30**, clamped into **1..120**; only a plain JSON int counts (`2.5` and `"30"` read as absent). |
+| `inputs` | no | the interactive input form, the same schema plugin.json declares — see "Interactive input forms" below. Validated identically in both formats. |
+
+**The one deliberate tightening:** a module that declares the `network`
+permission must NAME its hosts. ZAgents allows "any host"; Room Browser does
+not, because an unbounded egress scope is not something a consent dialog in
+this app can honestly agree to. A module with `network` and a null/empty
+`allowedHosts` is refused at install:
+
+> `module.json declares the network permission but no allowedHosts allowlist — Room Browser requires an explicit host allowlist; add "allowedHosts": [...] to module.json`
+
+### The mapping onto the plugin row
+
+A module is mapped onto the columns every plugin row carries — the mapping is
+the compatibility layer:
+
+| module.json | the plugins row |
+|---|---|
+| `name` (sanitized) | `id` = `zagents.<name>` (fits the id grammar: the prefix plus up to four segments); `dir_name` = the id with `.` → `_`, e.g. `zagents_daily` — one spelling for the code directory, the data root and (were a module to declare tools) the tool names |
+| `title`, else `name` | `name` (display) |
+| `version` (coerced) | `version` (semver column); the verbatim string lives in `zagents_version` |
+| `entry` (resolved) | `entry` — the file that actually runs |
+| `storage` | `storage` |
+| `network` | `network`, with `network.allow` = the `allowedHosts` list (`*.domain` semantics are this app's own: the domain AND its subdomains) |
+| `files` | `storage` **plus** the module-only `files` name — the row vocabulary's one format difference |
+| `chat` | `chat.context` |
+| `agent` | `agent.generate` |
+| `timeoutSeconds` | `timeout_seconds` |
+
+`files` exists ONLY in this mapped vocabulary: a plugin.json declaring it is
+refused with `files is a module.json-only permission` (the label its consent
+row shows: "Manage files in this chat's module sandbox"). A module never
+declares `agent.tools`, commands, hooks or config — those columns land at
+their empties, which is exactly the ZAgents shape: a module is not a tool and
+has no config schema.
+
+A reinstall of the same module id replaces the row and the directory on the
+same path as a plugin reinstall; the bindings and grants keep their
+semantics.
+
+### The database (schema v18)
+
+`plugins` gains: `format TEXT NOT NULL DEFAULT 'plugin'` (every pre-v18 row
+already is one), `zagents_name`, `zagents_version`, `zagents_entry`,
+`timeout_seconds`, `inputs_json` (all NULL on a plugin.json row), and
+`prompt_staged INTEGER NOT NULL DEFAULT 0` — 1 while a fresh chat has enabled
+a module and is waiting for its FIRST user message to run the entry (staged
+activation, the ZAgents message order: user → module message → assistant
+reply). `chat_plugins` gains `inputs_values_json` — this chat's answers to
+the module's form. The v17 → v18 migration is purely additive ALTER TABLEs;
+the old rows read as plugin.json rows with no form and nothing staged.
+
+## Interactive input forms — the `inputs` schema
+
+Both manifest formats may declare an optional `inputs` array: the form a
+plugin (or module) asks its chatter to fill BEFORE it is allowed to run —
+credentials, choices, parameters. The dialog, the agent tool's
+missing-inputs gate and the runtime form request all validate through the
+SAME Kotlin validator, so "is this form complete?" has exactly one answer in
+the whole app, and an EMPTY error map is the only thing that unlocks the
+**Allow and Run** button. Anything else — a required field left blank, a
+pattern that does not match, a number out of range — keeps execution
+stopped, which is the point of the form.
+
+```json
+"inputs": [
+  { "key": "email", "type": "string", "title": "Email",
+    "description": "Where the digest goes", "required": true,
+    "placeholder": "you@example.com",
+    "pattern": "^[^@]+@[^@]+$", "patternError": "Enter a valid email",
+    "minLength": 3, "maxLength": 200 }
+]
+```
+
+At most **12** fields; unknown members inside a field are REFUSED in both
+formats (the strictness a plugin.json author already expects, applied to the
+one schema whose whole job is to describe a dialog this build renders).
+
+| Member | Rules |
+|---|---|
+| `key` | `^[a-z][a-z0-9_]{0,31}$`, unique across the array — the value's storage key. |
+| `type` | one of `string` `number` `boolean` `choice` `secret`. `secret` renders as a masked field; its value is stored but never rendered back in full. |
+| `title` | 1..64 chars. The name every validation message uses. |
+| `description` | 0..200 chars, optional. |
+| `required` | boolean, default `false`. |
+| `default` | optional, must match the type (a choice's default must be one of its options). An unanswered optional field stores as its default. |
+| `placeholder` | 0..100 chars; `string`/`number`/`secret` fields only. |
+| `pattern` | 0..200 chars; `string`/`secret` fields only. Must compile, and must not nest a quantifier inside a quantified group — the catastrophic-backtracking shape is refused conservatively rather than run against a person's typing. |
+| `patternError` | 0..200 chars; shown instead of the generic message when the pattern fails. |
+| `minLength` / `maxLength` | plain integers ≥ 0, `min ≤ max`; `string`/`secret` fields only. |
+| `min` / `max` | numbers, `min ≤ max`; `number` fields only. |
+| `options` | `choice` fields only (refused elsewhere): 1..12 items, each `{value, label}` — `value` 1..64 chars and unique (the stored spelling), `label` 0..64 chars (the option with no label renders as its value). |
+
+**Validation rules** (`PluginFormValidator` — one error per field, the first
+thing wrong, in schema order):
+
+* required and blank (empty, whitespace, or absent) → `<title> is required`
+* `string`/`secret`: length bounds (`<title> must be at least N characters` /
+  `at most N characters`), then the pattern — a fail shows `patternError`,
+  or `<title> has an invalid format` when none was declared
+* `number`: must parse and be finite (NaN and infinities refused) →
+  `<title> must be a number`; bounds → `must be at least N` / `at most N`
+* `boolean`: must be true or false → `<title> must be true or false`
+* `choice`: the value must be one of the listed options →
+  `<title> must be one of: a, b`
+* **secret, keep-old:** a BLANK secret with a value already stored validates
+  as "keep the saved one" — the form shows dots and "leave blank to keep the
+  saved value", so blank never means empty. With nothing stored, a required
+  secret reports required like any other field.
+
+The values a completed form stores are the NORMALIZED object (entered values,
+keep-old secrets resolved, defaults filled, unknown keys dropped) — written to
+the binding's `inputs_values_json` only after the whole form validated, and
+re-read as the single source for every later call. Editing them later is the
+edit-inputs affordance on the plugin's row in the chat sheet; a reinstall is
+the other way. A binding with required inputs unanswered is exactly what the
+agent tool's missing-inputs gate checks — the tool raises the form instead of
+running, because input the plugin was promised is input it must have.
+
 ## Where the code lives
 
 For the curious, and for filing issues where they belong:
@@ -1367,10 +1530,12 @@ For the curious, and for filing issues where they belong:
 | Bridge delegation (the `plugin` command; reverse requests minted here, answered app-side in `NodeClient.kt`) | `android/node/src/main/assets/node/bridge.js` |
 | Wire DTOs (request/result/history, the generate DTO + reverse replies) | `android/node/src/main/kotlin/com/roombrowser/node/NodeProtocol.kt` |
 | One-call runner (lock, start, teardown) | `android/node/src/main/kotlin/com/roombrowser/node/NodeRunner.kt`; assets sync in `NodeRuntime.kt` |
-| Manifest model + validator | `android/core/domain/src/main/kotlin/com/roombrowser/domain/plugins/` (`PluginManifest.kt`, `PluginManifestValidator.kt`) |
+| Manifest model + validator (plugin.json) | `android/core/domain/src/main/kotlin/com/roombrowser/domain/plugins/` (`PluginManifest.kt`, `PluginManifestValidator.kt`) |
+| ZAgents module.json (parse/sanitize/validate/map-to-row) + the row's two formats | same directory (`ZAgentsManifest.kt`, `PluginFormat.kt`) |
+| Input-form schema + the single form validator + the system-prompt blocks | same directory (`PluginInputsSchema.kt`, `PluginFormValidator.kt`, `PluginSystemPrompt.kt`) |
 | Permissions + labels, command grammar, tool naming, card model, the generation prompt renderer, `API_VERSION` | same directory (`PluginPermissions.kt`, `PluginCommandParser.kt`, `PluginToolNaming.kt`, `PluginCard.kt`, `PluginGeneratePrompt.kt`, `PluginApi.kt`) |
 | ZIP installer (guards, atomic extract) | `android/app/src/main/kotlin/com/roombrowser/data/plugins/PluginZipInstaller.kt` |
-| Rows, bindings, sweep, config | `android/app/src/main/kotlin/com/roombrowser/data/repo/PluginRepository.kt`; tables in `data/db/` (Room v17) |
+| Rows, bindings, sweep, config, input values, staged flag | `android/app/src/main/kotlin/com/roombrowser/data/repo/PluginRepository.kt`; tables in `data/db/` (Room v18) |
 | App-side engine (request build, grants, fencing, budgets, history shaping) | `android/app/src/main/kotlin/com/roombrowser/agent/AgentPluginRuntime.kt` |
 | Per-chat catalogue (probe cache, tool defs, command owners) | `android/app/src/main/kotlin/com/roombrowser/agent/AgentPluginCatalog.kt` |
 | Tool interception (innermost executor) | `android/app/src/main/kotlin/com/roombrowser/agent/PluginToolExecutor.kt` |

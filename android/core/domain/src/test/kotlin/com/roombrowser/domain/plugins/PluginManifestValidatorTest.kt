@@ -126,6 +126,63 @@ class PluginManifestValidatorTest {
     }
 
     @Test
+    fun `files is refused by name as a module.json-only permission`() {
+        // A plugin.json author copying a module's manifest learns the real
+        // fix — the name exists, just not in THIS format — rather than a
+        // generic unknown-permission message.
+        val errors = PluginManifestValidator.validate(
+            valid("permissions" to jsonArray("storage", "files"))
+        )
+        assertThat(errors).containsExactly("files is a module.json-only permission")
+        // The vocabulary a plugin.json may declare still does not carry it.
+        assertThat(PluginPermissions.PERMISSIONS).doesNotContain("files")
+        assertThat(PluginPermissions.MODULE_PERMISSIONS).contains("files")
+    }
+
+    @Test
+    fun `an inputs schema is part of the manifest's own rulebook`() {
+        // A schema this build cannot render is refused at install, and the
+        // message is the schema validator's own — one rulebook, relayed.
+        val errors = PluginManifestValidator.validate(
+            valid(
+                "inputs" to jsonArray(
+                    JsonObject(
+                        mapOf(
+                            "key" to JsonPrimitive("E"),
+                            "type" to JsonPrimitive("string"),
+                            "title" to JsonPrimitive("E")
+                        )
+                    )
+                )
+            )
+        )
+        assertThat(errors).hasSize(1)
+        assertThat(errors.single()).contains("inputs")
+
+        // And the design's own example field is a valid declaration.
+        assertThat(
+            PluginManifestValidator.validate(
+                valid(
+                    "inputs" to jsonArray(
+                        JsonObject(
+                            mapOf(
+                                "key" to JsonPrimitive("email"),
+                                "type" to JsonPrimitive("string"),
+                                "title" to JsonPrimitive("Email"),
+                                "required" to JsonPrimitive(true),
+                                "pattern" to JsonPrimitive("^[^@]+@[^@]+$"),
+                                "patternError" to JsonPrimitive("Enter a valid email"),
+                                "minLength" to JsonPrimitive(3),
+                                "maxLength" to JsonPrimitive(200)
+                            )
+                        )
+                    )
+                )
+            )
+        ).isEmpty()
+    }
+
+    @Test
     fun `the network allowlist is required with the permission and pointless without it`() {
         // Declaring the permission with no hosts is refused…
         assertThat(

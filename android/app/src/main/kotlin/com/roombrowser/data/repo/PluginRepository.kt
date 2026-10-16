@@ -5,8 +5,10 @@ import com.roombrowser.data.db.ChatPluginEntity
 import com.roombrowser.data.db.PluginEntity
 import com.roombrowser.data.plugins.PluginInstallResult
 import com.roombrowser.data.plugins.PluginZipInstaller
+import com.roombrowser.data.plugins.ZAgentsInstall
 import com.roombrowser.domain.agent.AgentJson
 import com.roombrowser.domain.plugins.PluginAuthor
+import com.roombrowser.domain.plugins.PluginFormat
 import com.roombrowser.domain.plugins.PluginManifest
 import com.roombrowser.domain.plugins.toJson
 import kotlinx.coroutines.Dispatchers
@@ -56,6 +58,12 @@ class PluginRepository(
      * (the foreign key survives the row's replacement because the id does not
      * change), and grants that no longer cover the new manifest's permissions
      * are re-consented at the chat, not silently widened here.
+     *
+     * A module.json package lands in the SAME row shape: the mapped manifest
+     * fills the columns every plugin row carries, and [ZAgentsInstall] fills
+     * the module-only ones (format, the module's own spellings, its timeout,
+     * its `inputs` form). The staged-activation flag starts clear — a fresh
+     * install has run nothing.
      */
     suspend fun install(stream: InputStream): PluginInstallResult = withContext(Dispatchers.IO) {
         when (val result = installer.install(stream)) {
@@ -66,7 +74,8 @@ class PluginRepository(
                     result.manifest.toEntity(
                         dirName = result.dirName,
                         installedAt = existing?.installedAt ?: now,
-                        updatedAt = now
+                        updatedAt = now,
+                        zagents = result.zagents
                     )
                 )
                 result
@@ -99,7 +108,8 @@ class PluginRepository(
      * the chat consented to — the caller's to have asked; it is stored as
      * given, and a disable that wants to KEEP the grants passes the row's own
      * set back (which [PluginUiState] does, so switching off and back on is
-     * not a re-consent).
+     * not a re-consent). The binding's config overrides and input values ride
+     * the same keep-rule: a toggle is not an un-answering of the form.
      */
     suspend fun setEnabled(
         sessionId: Long,
@@ -117,6 +127,7 @@ class PluginRepository(
                 enabled = enabled,
                 grantedPermissionsJson = encodePermissions(grantedPermissions),
                 configJson = existing?.configJson ?: "",
+                inputsValuesJson = existing?.inputsValuesJson,
                 createdAt = existing?.createdAt ?: now,
                 updatedAt = now
             )
@@ -133,6 +144,49 @@ class PluginRepository(
                 existing.copy(configJson = configJson, updatedAt = now)
             )
         }
+
+    // ------------------------------------------------------ inputs and staging
+
+    /**
+     * The values this chat last accepted for the plugin's `inputs` form, or
+     * null when the binding has none stored — the missing-inputs gate's one
+     * question. The string is the normalized object the form validator
+     * produced, not the raw editor state.
+     */
+    suspend fun inputsValues(sessionId: Long, pluginId: String): String? = withContext(Dispatchers.IO) {
+        chatDao.forSession(sessionId).firstOrNull { it.pluginId == pluginId }?.inputsValuesJson
+    }
+
+    /**
+     * Replaces this chat's stored input values — the caller's to have run
+     * the form to a valid, complete answer first. A chat with no binding
+     * has nothing to store, same rule as [setConfig].
+     */
+    suspend fun setInputsValues(sessionId: Long, pluginId: String, valuesJson: String): Unit =
+        withContext(Dispatchers.IO) {
+            val now = System.currentTimeMillis()
+            val existing = chatDao.forSession(sessionId).firstOrNull { it.pluginId == pluginId }
+                ?: return@withContext
+            chatDao.upsert(
+                existing.copy(inputsValuesJson = valuesJson, updatedAt = now)
+            )
+        }
+
+    /**
+     * Sets or clears a module's staged-activation flag: 1 means a fresh chat
+     * enabled it and its entry runs with the chat's FIRST message, not at
+     * enable time. The flag lives on the plugin row, so it is a hint about
+     * the most recent fresh-chat enable — the chat controller is the one
+     * that knows which chat staged it, and the one that clears it once the
+     * entry has run.
+     */
+    suspend fun setPromptStaged(pluginId: String, staged: Boolean): Unit = withContext(Dispatchers.IO) {
+        pluginDao.setPromptStaged(pluginId, staged)
+    }
+
+    /** The installed ZAgents modules — the rows a module.json produced. */
+    suspend fun zagentsModulesOnce(): List<PluginEntity> =
+        pluginDao.byFormat(PluginFormat.ZAGENTS)
 
     /**
      * Reclaims `plugin-data/<sessionId>` directories whose session has no
@@ -174,7 +228,12 @@ fun PluginEntity.toManifest(): PluginManifest = PluginManifest(
 )
 
 /** The row a manifest becomes when it is installed into [dirName]. */
-internal fun PluginManifest.toEntity(dirName: String, installedAt: Long, updatedAt: Long): PluginEntity =
+internal fun PluginManifest.toEntity(
+    dirName: String,
+    installedAt: Long,
+    updatedAt: Long,
+    zagents: ZAgentsInstall? = null
+): PluginEntity =
     PluginEntity(
         id = id,
         name = name,
@@ -191,7 +250,14 @@ internal fun PluginManifest.toEntity(dirName: String, installedAt: Long, updated
         hooksJson = JsonArray(hooks.map { JsonPrimitive(it) }).toString(),
         dirName = dirName,
         installedAt = installedAt,
-        updatedAt = updatedAt
+        updatedAt = updatedAt,
+        format = if (zagents != null) PluginFormat.ZAGENTS else PluginFormat.PLUGIN,
+        zagentsName = zagents?.name,
+        zagentsVersion = zagents?.version,
+        zagentsEntry = zagents?.entry,
+        timeoutSeconds = zagents?.timeoutSeconds,
+        inputsJson = zagents?.inputsJson,
+        promptStaged = false
     )
 
 /** A permission list as its stored JSON array; the one spelling both sides use. */

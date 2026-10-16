@@ -10,7 +10,9 @@ package com.roombrowser.domain.plugins
  * are the wire spelling (what plugin.json declares and what the host gates
  * on), so they are strings rather than an enum: a stored grant naming
  * something this build no longer knows is an inert row, which is the safe
- * direction.
+ * direction. A module.json row adds one more name to the vocabulary —
+ * [FILES], which plugin.json may never declare — and that is the whole of
+ * the format difference here.
  *
  * What needs NO declaration — `room.meta`, `room.config`, `room.ui`, `room.log`,
  * `room.util`, console, timers — is deliberately absent here: none of those can
@@ -33,8 +35,27 @@ object PluginPermissions {
      */
     const val AGENT_GENERATE = "agent.generate"
 
+    /**
+     * A path-based files sandbox (`<dataRoot>/state/`) — a capability only
+     * a module.json row can declare, because it maps from the ZAgents
+     * `files` permission and has no plugin.json spelling. It is deliberately
+     * NOT part of [PERMISSIONS]: that set is what plugin.json may declare,
+     * and the validator refuses `files` there by name rather than with the
+     * generic unknown-permission message, so an author copying a module's
+     * manifest into plugin.json learns the real fix.
+     */
+    const val FILES = "files"
+
     /** Every permission this build knows, for the grant dialog and the tests. */
     val PERMISSIONS = setOf(STORAGE, NETWORK, AGENT_TOOLS, CHAT_CONTEXT, AGENT_GENERATE)
+
+    /**
+     * The row vocabulary a module.json install may declare: the five a
+     * plugin.json may, plus [FILES]. This is the set the host re-validates
+     * a `format='zagents'` row against — never the plugin.json validator,
+     * which must keep refusing `files`.
+     */
+    val MODULE_PERMISSIONS = setOf(STORAGE, NETWORK, AGENT_TOOLS, CHAT_CONTEXT, AGENT_GENERATE, FILES)
 
     /**
      * Where the host list is cut off in a label. Long enough that an honest
@@ -79,6 +100,7 @@ object PluginPermissions {
             AGENT_TOOLS -> "Add tools the AI agent can call"
             CHAT_CONTEXT -> "Read this chat's conversation"
             AGENT_GENERATE -> "Have this chat's AI write text for it"
+            FILES -> "Manage files in this chat's module sandbox"
             else -> permission
         }
 }

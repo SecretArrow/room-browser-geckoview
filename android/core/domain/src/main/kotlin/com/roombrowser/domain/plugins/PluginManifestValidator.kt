@@ -142,8 +142,12 @@ object PluginManifestValidator {
         if (permissions.toSet().size != permissions.size) {
             errors.add("permissions repeats an entry")
         }
-        permissions.filterNot { it in PluginPermissions.PERMISSIONS }.forEach { permission ->
-            errors.add("permission \"$permission\" is not one of ${PluginPermissions.PERMISSIONS.sorted()}")
+        permissions.forEach { permission ->
+            if (permission == PluginPermissions.FILES) {
+                errors.add("files is a module.json-only permission")
+            } else if (permission !in PluginPermissions.PERMISSIONS) {
+                errors.add("permission \"$permission\" is not one of ${PluginPermissions.PERMISSIONS.sorted()}")
+            }
         }
         val declaresNetwork = PluginPermissions.NETWORK in permissions
 
@@ -236,10 +240,13 @@ object PluginManifestValidator {
             errors.add("hook \"$hook\" is not one of $HOOKS")
         }
 
+        // ---- inputs (the interactive form; both formats may declare one) ----
+        errors.addAll(PluginInputsSchema.validate(root["inputs"]))
+
         // ---- strictness ----
         val known = setOf(
             "id", "name", "version", "description", "author", "license", "api",
-            "entry", "permissions", "network", "config", "commands", "hooks"
+            "entry", "permissions", "network", "config", "commands", "hooks", "inputs"
         )
         root.keys.forEach { key ->
             if (key !in known) {

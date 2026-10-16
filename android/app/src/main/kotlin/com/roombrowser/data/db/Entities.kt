@@ -601,7 +601,7 @@ data class AgentSiteMemoryEntity(
 )
 
 // =========================================================================
-// CHAT PLUGINS (Node.js modules installed from ZIP) — schema v17
+// CHAT PLUGINS (Node.js modules installed from ZIP) — schema v17, module columns at v18
 // =========================================================================
 
 /**
@@ -610,6 +610,13 @@ data class AgentSiteMemoryEntity(
  * can be built without re-reading a file the plugin could have exchanged
  * since install. The code itself lives in `<filesDir>/plugins/[dirName]`,
  * which [dirName] names — the row is the metadata, the directory is the code.
+ *
+ * A row installed from a module.json (a ZAgents module) carries the same
+ * flattened manifest after mapping, plus the module-only columns: the
+ * format marker, the module's own name/version/entry spellings, its
+ * timeout, its `inputs` form, and the staged-activation flag. Every one of
+ * them is null (or the default) on a plugin.json row, so format-blind
+ * readers keep working unchanged.
  *
  * Re-installing the same id replaces the row (and the directory): a version
  * upgrade is the normal path, and a manifest whose permission set grew
@@ -638,7 +645,25 @@ data class PluginEntity(
     /** The plugin's code directory under `<filesDir>/plugins/`. */
     @ColumnInfo(name = "dir_name") val dirName: String,
     @ColumnInfo(name = "installed_at") val installedAt: Long,
-    @ColumnInfo(name = "updated_at") val updatedAt: Long
+    @ColumnInfo(name = "updated_at") val updatedAt: Long,
+    /** Which manifest format the row was installed from; see `PluginFormat`. */
+    @ColumnInfo(name = "format", defaultValue = "plugin") val format: String = "plugin",
+    /** The module's sanitized machine name; null on a plugin.json row. */
+    @ColumnInfo(name = "zagents_name") val zagentsName: String? = null,
+    /** The module's version exactly as module.json declared it; null on a plugin.json row. */
+    @ColumnInfo(name = "zagents_version") val zagentsVersion: String? = null,
+    /** The module's resolved entry file; null on a plugin.json row. */
+    @ColumnInfo(name = "zagents_entry") val zagentsEntry: String? = null,
+    /** The per-run timeout the module asked for (1..120 seconds); null = the default 30. */
+    @ColumnInfo(name = "timeout_seconds") val timeoutSeconds: Int? = null,
+    /** The validated `inputs` schema as a JSON array; null = no form declared. */
+    @ColumnInfo(name = "inputs_json") val inputsJson: String? = null,
+    /**
+     * 1 while a fresh-chat enable is waiting for the chat's first message to
+     * run the module's entry (staged activation); the chat controller owns
+     * setting it and clearing it once the entry has run.
+     */
+    @ColumnInfo(name = "prompt_staged", defaultValue = "0") val promptStaged: Boolean = false
 )
 
 /**
@@ -650,7 +675,10 @@ data class PluginEntity(
  * [grantedPermissionsJson] is what the person who enabled it consented to —
  * a subset of the manifest's declared set, re-consented when an upgrade
  * changes it. [configJson] holds this chat's overrides over the manifest's
- * config defaults ("" = none).
+ * config defaults ("" = none). [inputsValuesJson] holds this chat's answers
+ * to the manifest's `inputs` form — the normalized object the form
+ * validator produced, stored only after the whole form validated (null =
+ * never answered, which is what the missing-inputs gate checks).
  *
  * Both foreign keys CASCADE: deleting the chat or uninstalling the plugin
  * removes the binding, and `PluginRepository.sweepOrphanData()` then reclaims
@@ -686,5 +714,7 @@ data class ChatPluginEntity(
     /** This chat's config overrides as a JSON object; "" = the defaults. */
     @ColumnInfo(name = "config_json") val configJson: String,
     @ColumnInfo(name = "created_at") val createdAt: Long,
-    @ColumnInfo(name = "updated_at") val updatedAt: Long
+    @ColumnInfo(name = "updated_at") val updatedAt: Long,
+    /** This chat's answers to the manifest's `inputs` form; null = never answered. */
+    @ColumnInfo(name = "inputs_values_json") val inputsValuesJson: String? = null
 )

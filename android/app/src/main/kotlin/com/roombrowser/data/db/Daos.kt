@@ -885,6 +885,14 @@ interface PluginDao {
     @Upsert
     suspend fun upsert(entity: PluginEntity)
 
+    /** The rows installed from one manifest format — "zagents" lists the modules. */
+    @Query("SELECT * FROM plugins WHERE format = :format ORDER BY updated_at DESC")
+    suspend fun byFormat(format: String): List<PluginEntity>
+
+    /** The staged-activation flag the fresh-chat enable sets and the entry's run clears. */
+    @Query("UPDATE plugins SET prompt_staged = :staged WHERE id = :id")
+    suspend fun setPromptStaged(id: String, staged: Boolean)
+
     @Query("DELETE FROM plugins WHERE id = :id")
     suspend fun delete(id: String)
 }

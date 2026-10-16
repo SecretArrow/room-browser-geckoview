@@ -48,7 +48,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         PluginEntity::class,
         ChatPluginEntity::class
     ],
-    version = 17,
+    version = 18,
     exportSchema = true
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -645,6 +645,42 @@ abstract class AppDatabase : RoomDatabase() {
         }
 
         /**
+         * v17 → v18: the ZAgents module columns. A row installed from a
+         * module.json is still a plugins row — one table, one installer, one
+         * runtime — so the format is a column, not a second table: `format`
+         * (defaulting to `plugin`, which is what every existing row already
+         * is), the module's own name/version/entry spellings, its timeout,
+         * its `inputs` form, and the staged-activation flag; the per-chat
+         * binding gains the chat's answers to that form.
+         *
+         * Purely additive ALTER TABLE statements — no existing row is
+         * touched, and every new column reads as "none/never" for one, so
+         * the migration is lossless. The NOT NULL columns carry the
+         * defaults the entities declare, which is what Room's schema
+         * validation compares after a migration.
+         *
+         * `internal` for the same reason as [MIGRATION_10_11]: only
+         * PluginMigrationTest (the e2e one) executes it, since a fresh
+         * install creates v18 directly.
+         */
+        internal val MIGRATION_17_18 = object : Migration(17, 18) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    "ALTER TABLE `plugins` ADD COLUMN `format` TEXT NOT NULL DEFAULT 'plugin'"
+                )
+                db.execSQL("ALTER TABLE `plugins` ADD COLUMN `zagents_name` TEXT")
+                db.execSQL("ALTER TABLE `plugins` ADD COLUMN `zagents_version` TEXT")
+                db.execSQL("ALTER TABLE `plugins` ADD COLUMN `zagents_entry` TEXT")
+                db.execSQL("ALTER TABLE `plugins` ADD COLUMN `timeout_seconds` INTEGER")
+                db.execSQL("ALTER TABLE `plugins` ADD COLUMN `inputs_json` TEXT")
+                db.execSQL(
+                    "ALTER TABLE `plugins` ADD COLUMN `prompt_staged` INTEGER NOT NULL DEFAULT 0"
+                )
+                db.execSQL("ALTER TABLE `chat_plugins` ADD COLUMN `inputs_values_json` TEXT")
+            }
+        }
+
+        /**
          * Every migration, oldest first — the ONE list. [build] applies it and
          * the migration tests apply it too, so a version bump cannot leave a
          * test registering a subset that stops short of the current version.
@@ -654,7 +690,7 @@ abstract class AppDatabase : RoomDatabase() {
             MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8,
             MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11, MIGRATION_11_12,
             MIGRATION_12_13, MIGRATION_13_14, MIGRATION_14_15, MIGRATION_15_16,
-            MIGRATION_16_17
+            MIGRATION_16_17, MIGRATION_17_18
         )
 
         @Volatile
