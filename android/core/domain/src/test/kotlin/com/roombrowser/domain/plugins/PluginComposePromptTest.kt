@@ -49,8 +49,7 @@ class PluginComposePromptTest {
               hosts or "*.<domain>" (which covers the domain and its subdomains), no IP
               literals, no single-label hosts, at most 20.
             - commands: optional, at most 12, each {"name", "title", "description"} with
-              a lowercase name of at most 24 characters - never "plugins" and never
-              "make_plugins" (both are reserved by the app).
+              a lowercase name of at most 24 characters - never "plugins" and never "make_plugins" (both are reserved by the app).
             - config.schema: optional, at most 12 items, each
               {"key", "type", "default", "title", "description"} with type "string",
               "number" or "boolean".
