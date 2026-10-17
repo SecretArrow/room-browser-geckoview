@@ -408,15 +408,20 @@ class PluginE2eTest {
             Until.findObject(By.textContains("Activations in THIS chat: 1")), 120_000
         )
         if (moduleMessage == null) {
-            // Which of the three states the first message left behind — the
-            // run's message, a failed start-up, or a staging that never
-            // unstaged — names the path the next round has to fix.
-            val spoke = hasTextContains("Hello Counter is on, but its start-up failed", 2_000) ||
-                hasTextContains("Hello Counter was not run", 2_000) ||
-                hasTextContains("Agent error", 2_000)
+            // Which of the states the first message left behind — a failed
+            // start-up names the exact first line it printed (the node run's
+            // own words), and the staging/turn notices are checked one by one
+            // so the next round fixes the actual path, not a disjunction.
+            val startup = device.findObjects(By.textContains("start-up failed"))
+                .map { it.text }.firstOrNull()
+            val notRun = device.findObjects(By.textContains("was not run"))
+                .map { it.text }.firstOrNull()
+            val agentError = device.findObjects(By.textContains("Agent error"))
+                .map { it.text }.firstOrNull()
             throw AssertionError(
                 "The module message must land with the chat's first message (count 1). " +
-                    "follow-up-notices=" + spoke + " UI:\n" + uiTree()
+                    "startup=" + startup + " | notRun=" + notRun +
+                    " | agentError=" + agentError
             )
         }
         // The entry's layout position, captured while it is the newest row:
