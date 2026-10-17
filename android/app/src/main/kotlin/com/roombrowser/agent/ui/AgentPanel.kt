@@ -753,6 +753,22 @@ private fun AgentConversation(
             if (plan.isNotEmpty()) lastItem++
             if (agent.approval != null) lastItem++
             listState.scrollToItem(lastItem)
+            // scrollToItem pins that row to the TOP of the viewport whenever
+            // the transcript outgrows it: the newest row floats over a blank
+            // lower half while every older row is scrolled out of the
+            // composed window — off screen, out of the semantics tree, gone
+            // from anything a11y (and an e2e poll) can see. A transcript
+            // belongs bottom-aligned, its end at the viewport's end: one
+            // layout-info pass measures the blank the pin left below the
+            // last row and lifts the list by exactly that much. A list
+            // shorter than the viewport cannot scroll at all, and a last row
+            // taller than it has no blank to lift — both leave this a no-op.
+            val info = listState.layoutInfo
+            val last = info.visibleItemsInfo.lastOrNull()
+            if (last != null && last.index == lastItem) {
+                val leftover = info.viewportEndOffset - (last.offset + last.size)
+                if (leftover > 0) listState.scrollToItem(lastItem, -leftover)
+            }
         }
     }
 

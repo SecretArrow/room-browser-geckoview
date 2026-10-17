@@ -405,14 +405,13 @@ class PluginE2eTest {
 
         // ---- 5. The first message runs the module BEFORE the model --------
         assertTrue("The hello message must reach the composer and send", sendComposer("hello"))
-        val moduleMessage = device.wait(
-            Until.findObject(By.textContains("Activations in THIS chat: 1")), 120_000
-        )
-        if (moduleMessage == null) {
+        if (!moduleMessageAppears("Activations in THIS chat: 1", 120_000)) {
             // Which of the states the first message left behind — a failed
             // start-up names the exact first line it printed (the node run's
             // own words), and the staging/turn notices are checked one by one
             // so the next round fixes the actual path, not a disjunction.
+            // The kv.json beside them is the module's own ground truth: it
+            // separates "ran and the transcript missed it" from "never ran".
             val startup = device.findObjects(By.textContains("start-up failed"))
                 .map { it.text }.firstOrNull()
             val notRun = device.findObjects(By.textContains("was not run"))
@@ -422,12 +421,17 @@ class PluginE2eTest {
             throw AssertionError(
                 "The module message must land with the chat's first message (count 1). " +
                     "startup=" + startup + " | notRun=" + notRun +
-                    " | agentError=" + agentError
+                    " | agentError=" + agentError + " | " + counterStateDiagnostics()
             )
         }
         // The entry's layout position, captured while it is the newest row:
         // appended entries never move it, so it is the ordering witness.
-        val moduleTop = moduleMessage!!.visibleBounds.top
+        val moduleMessage = device.findObject(By.textContains("Activations in THIS chat: 1"))
+            ?: throw AssertionError(
+                "The module message vanished between its wait and its bounds check. " +
+                    counterStateDiagnostics()
+            )
+        val moduleTop = moduleMessage.visibleBounds.top
         assertTrue(
             "The assistant reply must fail against the dead endpoint",
             hasTextContains("Agent error", 90_000)
@@ -467,7 +471,7 @@ class PluginE2eTest {
         )
         assertTrue(
             "The re-activation must count 2 in the same chat. " + counterStateDiagnostics(),
-            hasTextContains("Activations in THIS chat: 2", 120_000)
+            moduleMessageAppears("Activations in THIS chat: 2", 120_000)
         )
 
         // ---- 7. A new chat starts from 1 again ----------------------------
@@ -495,7 +499,7 @@ class PluginE2eTest {
         assertTrue("The hello again message must reach the composer and send", sendComposer("hello again"))
         assertTrue(
             "A new chat's module message must start from 1 (per-chat storage)",
-            hasTextContains("Activations in THIS chat: 1", 60_000)
+            moduleMessageAppears("Activations in THIS chat: 1", 60_000)
         )
     }
 
@@ -898,6 +902,30 @@ class PluginE2eTest {
             Thread.sleep(300)
         } catch (_: InterruptedException) {
             }
+    }
+
+    /**
+     * Waits for a module message row the way a person finds one: the row IS
+     * in the transcript, but the transcript's auto-scroll keeps the NEWEST
+     * row on screen, and a row that landed just before a newer one can sit
+     * above the composed viewport — a LazyColumn composes only what it shows,
+     * so a row out of the window is out of the semantics tree and no text
+     * poll will ever see it. The poll therefore drags the transcript toward
+     * its beginning between looks — a slow, flingless quarter of the screen
+     * inside the panel (the composer sits at the bottom, well below the
+     * drag's reach) — and looks again, until the deadline or the text.
+     */
+    private fun moduleMessageAppears(needle: String, timeoutMs: Long): Boolean {
+        val deadline = System.currentTimeMillis() + timeoutMs
+        while (true) {
+            if (device.findObjects(By.textContains(needle)).isNotEmpty()) return true
+            if (System.currentTimeMillis() >= deadline) return false
+            device.swipe(
+                device.displayWidth / 2, device.displayHeight * 7 / 16,
+                device.displayWidth / 2, device.displayHeight * 11 / 16, 80
+            )
+            device.waitForIdle(600)
+        }
     }
 
     /** The address pill always carries this desc, so it detects the engine. */
