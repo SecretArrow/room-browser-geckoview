@@ -17,6 +17,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
+import java.io.File
 
 /**
  * E2E for the chat-plugin system, against the real app and the real embedded
@@ -465,7 +466,7 @@ class PluginE2eTest {
                 hasTextContains("Hello Counter is on for this chat. It runs with this chat's first message", 30_000)
         )
         assertTrue(
-            "The re-activation must count 2 in the same chat. UI:\n" + uiTree(),
+            "The re-activation must count 2 in the same chat. " + counterStateDiagnostics(),
             hasTextContains("Activations in THIS chat: 2", 120_000)
         )
 
@@ -1069,5 +1070,32 @@ class PluginE2eTest {
         sb.toString()
     } catch (_: Exception) {
         "(ui tree unreadable)"
+    }
+
+    /**
+     * The counter's GROUND TRUTH, read off the disk the module itself wrote:
+     * every session data root the app carries for this module, and the count
+     * its kv.json reached, whatever the UI did with it. Paired with the
+     * on-screen Hello Counter texts, this separates "the module ran and the
+     * UI missed it" from "the module never ran".
+     */
+    private fun counterStateDiagnostics(): String = try {
+        val dataRoot = File(targetContext.filesDir, "plugin-data")
+        val sb = StringBuilder()
+        val sessionDirs = dataRoot.listFiles()?.filter { it.isDirectory }.orEmpty()
+        sessionDirs.forEach { sessionDir ->
+            val kv = File(sessionDir, "zagents_hello-counter/kv.json")
+            if (kv.isFile) {
+                sb.append("session ").append(sessionDir.name)
+                    .append(" count=").append(kv.readText().trim()).append("; ")
+            }
+        }
+        if (sb.isEmpty()) sb.append("(no counter kv found)")
+        sb.append("texts=").append(
+            device.findObjects(By.textContains("Hello Counter")).mapNotNull { it.text }.take(6)
+        )
+        sb.toString()
+    } catch (err: Exception) {
+        "(diagnostics failed: ${err.message})"
     }
 }
