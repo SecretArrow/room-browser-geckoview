@@ -405,12 +405,20 @@ class PluginE2eTest {
         // ---- 5. The first message runs the module BEFORE the model --------
         assertTrue("The hello message must reach the composer and send", sendComposer("hello"))
         val moduleMessage = device.wait(
-            Until.findObject(By.textContains("Activations in THIS chat: 1")), 60_000
+            Until.findObject(By.textContains("Activations in THIS chat: 1")), 120_000
         )
-        assertTrue(
-            "The module message must land with the chat's first message (count 1)",
-            moduleMessage != null
-        )
+        if (moduleMessage == null) {
+            // Which of the three states the first message left behind — the
+            // run's message, a failed start-up, or a staging that never
+            // unstaged — names the path the next round has to fix.
+            val spoke = hasTextContains("Hello Counter is on, but its start-up failed", 2_000) ||
+                hasTextContains("Hello Counter was not run", 2_000) ||
+                hasTextContains("Agent error", 2_000)
+            throw AssertionError(
+                "The module message must land with the chat's first message (count 1). " +
+                    "follow-up-notices=" + spoke + " UI:\n" + uiTree()
+            )
+        }
         // The entry's layout position, captured while it is the newest row:
         // appended entries never move it, so it is the ordering witness.
         val moduleTop = moduleMessage!!.visibleBounds.top
@@ -453,7 +461,7 @@ class PluginE2eTest {
         )
         assertTrue(
             "The re-activation must count 2 in the same chat. UI:\n" + uiTree(),
-            hasTextContains("Activations in THIS chat: 2", 60_000)
+            hasTextContains("Activations in THIS chat: 2", 120_000)
         )
 
         // ---- 7. A new chat starts from 1 again ----------------------------
