@@ -208,6 +208,17 @@ fun devtoolsUnattendedRefusal(toolName: String): String =
         "Run this as a chat."
 
 /**
+ * The AI Agent settings row's title, verbatim. [unattendedRefusal] names the
+ * row the reader must flip, so the two must spell it the same way — the
+ * settings screen renders this constant as its title and the refusal quotes
+ * it, which is the compile-time link that keeps a future rewording of one
+ * from silently orphaning the other (the wallet refusal below gets the same
+ * protection from a test that pins its literal; this one is fixed by
+ * construction instead).
+ */
+const val CONFIRM_ACTIONS_SETTING_TITLE = "Confirm actions"
+
+/**
  * The refusal for an action the task DOES allow but an unattended run must not
  * take: the confirmation the user asked for can only come from a person, and a
  * scheduled run has nobody to ask. It names the setting that would allow it,
@@ -215,7 +226,7 @@ fun devtoolsUnattendedRefusal(toolName: String): String =
  */
 fun unattendedRefusal(toolName: String): String =
     "tool '$toolName' would ask you to confirm it first, and a scheduled run has nobody to ask. " +
-        "Turn off \"Confirm actions before running\" in AI Agent settings, or run this in a chat."
+        "Turn off \"$CONFIRM_ACTIONS_SETTING_TITLE\" in AI Agent settings, or run this in a chat."
 
 /**
  * The refusal for the wallet tools, which no setting can turn on: the promise

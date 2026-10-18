@@ -78,6 +78,7 @@ import com.roombrowser.domain.agent.RetryCodes
 import com.roombrowser.domain.agent.RetryPolicy
 import com.roombrowser.domain.agent.RetryStatusCode
 import com.roombrowser.domain.paging.Paging
+import com.roombrowser.domain.task.CONFIRM_ACTIONS_SETTING_TITLE
 import com.roombrowser.ui.common.EmptyState
 import com.roombrowser.ui.common.LocalRoomExtras
 import com.roombrowser.ui.common.PagingFooter
@@ -394,8 +395,12 @@ private fun AgentSettingsRoot(
                     controller.updateSettings { s -> s.copy(chatInOwnScreen = checked) }
                 }
             )
+            // The title rides the same constant the unattended refusal
+            // quotes, so the refusal's "turn off <this row>" can never name a
+            // row that is not on this screen — the guard is the compile-time
+            // link, not a test's literal.
             SettingSwitchRow(
-                title = "Confirm actions",
+                title = CONFIRM_ACTIONS_SETTING_TITLE,
                 subtitle = "Ask for Allow/Deny before the agent clicks, types or submits",
                 checked = controller.settings.confirmActions,
                 onCheckedChange = { checked -> controller.updateSettings { s -> s.copy(confirmActions = checked) } }
