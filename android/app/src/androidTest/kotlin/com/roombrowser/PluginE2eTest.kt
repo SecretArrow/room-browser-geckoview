@@ -6,6 +6,7 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import androidx.test.uiautomator.By
 import androidx.test.uiautomator.BySelector
+import androidx.test.uiautomator.StaleObjectException
 import androidx.test.uiautomator.UiDevice
 import androidx.test.uiautomator.UiObject2
 import androidx.test.uiautomator.Until
@@ -1029,6 +1030,12 @@ class PluginE2eTest {
                 return row.visibleBounds.top
             } catch (_: IllegalStateException) {
                 // The row decomposed between the find and the read — rock again.
+            } catch (_: StaleObjectException) {
+                // uiautomator's own staleness signal is NOT an
+                // IllegalStateException in this version, and the gecko
+                // emulator's recomposition race throws exactly it (CI
+                // 4d8a1bc9/4b114ede: the counter test died here twice) —
+                // same answer, same rock.
             }
         }
         return null
@@ -1062,6 +1069,8 @@ class PluginE2eTest {
                         return needle to row.visibleBounds.top
                     } catch (_: IllegalStateException) {
                         // Decomposed between the find and the read — poll again.
+                    } catch (_: StaleObjectException) {
+                        // The same race in uiautomator's own words — poll again.
                     }
                 }
             }
