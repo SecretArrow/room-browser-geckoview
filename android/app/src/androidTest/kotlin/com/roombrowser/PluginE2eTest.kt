@@ -908,20 +908,19 @@ class PluginE2eTest {
 
     /**
      * Waits for a module message row the way a person finds one: the row IS
-     * in the transcript, but the transcript's auto-scroll keeps the NEWEST
-     * row on screen, and a row that landed just before a newer one can sit
-     * above the composed viewport — a LazyColumn composes only what it shows,
-     * so a row out of the window is out of the semantics tree and no text
-     * poll will ever see it.
+     * in the transcript, but the panel's transcript window is narrow — the
+     * newest row pins at the bottom and the row before it can sit with its
+     * body clipped above the window, and Compose culls clipped text out of
+     * the semantics tree entirely, so no text poll will ever see it.
      *
      * The newest rows are where a module message LANDS, so the first stretch
      * is poll-only — the auto-scroll already bottom-aligns the list, and a
-     * premature drag would scroll the answer away. Only after ten seconds
-     * does the poll start dragging toward the transcript's beginning between
-     * looks, and it takes its drags back afterwards: a slow, flingless
-     * quarter of the screen inside the panel (the composer sits at the
-     * bottom, well below the drag's reach), returning to the bottom so the
-     * NEXT message's wait starts where its row will land.
+     * premature drag would scroll the answer away. After that the poll
+     * scrolls the transcript toward its beginning between looks, anchored on
+     * a plugin card's OWN bounds — the one node guaranteed to sit inside the
+     * list, wherever the panel's chrome placed it (a fixed-coordinate drag
+     * can land on the plan card or the header and scroll nothing). No drag
+     * back: the next entry a later wait lands re-aligns the list on its own.
      */
     private fun moduleMessageAppears(needle: String, timeoutMs: Long): Boolean {
         val deadline = System.currentTimeMillis() + timeoutMs
@@ -933,17 +932,18 @@ class PluginE2eTest {
                 device.waitForIdle(400)
                 continue
             }
-            device.swipe(
-                device.displayWidth / 2, device.displayHeight * 7 / 16,
-                device.displayWidth / 2, device.displayHeight * 11 / 16, 80
-            )
-            device.waitForIdle(600)
-            if (device.findObjects(By.textContains(needle)).isNotEmpty()) return true
-            // Back to the bottom: the next wait's row lands there.
-            device.swipe(
-                device.displayWidth / 2, device.displayHeight * 11 / 16,
-                device.displayWidth / 2, device.displayHeight * 7 / 16, 80
-            )
+            val card = device.findObject(By.descContains("plugin_card"))
+            if (card != null) {
+                val bounds = card.visibleBounds
+                val fromY = bounds.centerY().coerceIn(8, device.displayHeight - 8)
+                val toY = (fromY + 220).coerceAtMost(device.displayHeight - 8)
+                device.swipe(bounds.centerX(), fromY, bounds.centerX(), toY, 60)
+            } else {
+                device.swipe(
+                    device.displayWidth / 2, device.displayHeight * 7 / 16,
+                    device.displayWidth / 2, device.displayHeight * 11 / 16, 60
+                )
+            }
             device.waitForIdle(600)
         }
     }
