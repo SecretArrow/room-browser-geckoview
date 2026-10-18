@@ -439,11 +439,18 @@ class PluginE2eTest {
                     counterStateDiagnostics() + " | cards=" + cardSubtreeTexts() +
                     " | tree=" + uiTree()
             )
-        // The reply itself is found and measured the same atomic way — the
-        // rows that land after it can cull it just as fast as they culled the
-        // card's body. Both numbers ride the assertion message so a failure
-        // names the geometry it actually saw.
-        val assistantTop = rockingTop("Agent error", 90_000)
+        // The reply itself is polled END-ANCHORED, not card-anchored: the
+        // rows a turn appends last are pinned at the transcript's end by the
+        // panel's own auto-scroll the moment they land, so a plain poll sees
+        // them — but the module capture's rock can leave the list scrolled
+        // away from that end, and with nothing new landing after the turn
+        // dies the auto-scroll never re-fires. The card-anchored rock hunts a
+        // clipped body AROUND the card and never reaches a row further below
+        // (the WebView round's one failure: the wait oscillated ±120px while
+        // the error row sat culled past it), so this wait's only scroll is
+        // toward the END — one swipe walks the list back until the newest
+        // rows compose again, and the list clamps there, idempotent.
+        val assistantTop = endAnchoredTop("Agent error", 90_000)
             ?: throw AssertionError(
                 "The assistant reply must fail against the dead endpoint. " +
                     counterStateDiagnostics() + " | tree=" + uiTree()
@@ -1002,6 +1009,35 @@ class PluginE2eTest {
             }
         }
         return null
+    }
+
+    /**
+     * A NEWEST-row's top edge: polled plain, measured atomically, and when a
+     * scroll is needed at all it only ever goes toward the END. The panel's
+     * auto-scroll pins whatever row lands last at the transcript's end, so a
+     * plain poll is the whole story — the end-ward swipe is only the recovery
+     * for a list an earlier wait's rock left scrolled away from that end
+     * (with nothing new landing, the auto-scroll keyed on entries.size never
+     * re-fires). The list clamps at its end, so the swipe is idempotent and
+     * can never overshoot. Returns null only on timeout.
+     */
+    private fun endAnchoredTop(needle: String, timeoutMs: Long): Int? {
+        val deadline = System.currentTimeMillis() + timeoutMs
+        while (true) {
+            device.findObjects(By.textContains(needle)).firstOrNull()?.let { row ->
+                try {
+                    return row.visibleBounds.top
+                } catch (_: IllegalStateException) {
+                    // Decomposed between the find and the read — poll again.
+                }
+            }
+            if (System.currentTimeMillis() >= deadline) return null
+            device.swipe(
+                device.displayWidth / 2, device.displayHeight * 11 / 16,
+                device.displayWidth / 2, device.displayHeight * 7 / 16, 60
+            )
+            device.waitForIdle(600)
+        }
     }
 
     /** The address pill always carries this desc, so it detects the engine. */
