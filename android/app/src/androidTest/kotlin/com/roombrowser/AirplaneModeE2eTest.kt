@@ -245,8 +245,27 @@ class AirplaneModeE2eTest {
         return device.currentPackageName == targetContext.packageName
     }
 
-    /** Cold-restarts the browser activity over its own task. */
+    /**
+     * Cold-restarts the ENGINE on the persisted active profile — the suite's
+     * own relaunch convention (SettingsPersistenceE2eTest.relaunchEngine, the
+     * DevTools search e2e's launchEngine): BrowserActivity directly, with
+     * NEW_TASK|CLEAR_TASK and no profile picker in the way, because a
+     * relaunch mid-test needs the browser surface the next assertion reads,
+     * not the first-run flow again. CI 0d6730a forensics: relaunching through
+     * the package's LAUNCH intent lands on the profile picker, which shows
+     * neither node engineUiStable accepts, so the wait timed out and the
+     * suite reported "The engine must come back up".
+     */
     private fun relaunchBrowser() {
+        targetContext.startActivity(
+            Intent()
+                .setClassName(targetContext.packageName, "com.roombrowser.browser.BrowserActivity")
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK)
+        )
+    }
+
+    /** Cold-starts the app on its launcher entry — the profile-picker / first-run surface only [bootstrapEngine] walks. */
+    private fun launchFromHome() {
         val intent = targetContext.packageManager.getLaunchIntentForPackage(targetContext.packageName)
             ?: Intent(Intent.ACTION_MAIN).apply {
                 setClassName(targetContext.packageName, "com.roombrowser.main.MainActivity")
@@ -442,7 +461,7 @@ class AirplaneModeE2eTest {
      */
     private fun bootstrapEngine() {
         device.pressHome()
-        relaunchBrowser()
+        launchFromHome()
         device.waitForIdle(2_000)
         assertTrue(
             "Profile list or first-run state must appear",
