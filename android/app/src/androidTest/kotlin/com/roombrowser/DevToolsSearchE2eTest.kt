@@ -677,7 +677,7 @@ class DevToolsSearchE2eTest {
         // the call it is reporting on is taken before the walk has moved.
         val opened = openDeveloperToolsPanel(chip, body)
         assertTrue(
-            "Developer Tools must open from the Page Actions sheet — ${openTrace}\n${uiTree()}",
+            "Developer Tools must open from the Page Actions sheet — $openTrace\n${uiTree()}",
             opened
         )
     }

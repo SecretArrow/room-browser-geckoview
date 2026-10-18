@@ -64,7 +64,7 @@ class AirplaneModeController(
         val primary = "cmd connectivity airplane-mode ${if (on) "enable" else "disable"}"
         val fallback =
             "settings put global airplane_mode_on ${if (on) 1 else 0} && " +
-                "am broadcast -a android.intent.action.AIRPLANE_MODE --ez state ${on}"
+                "am broadcast -a android.intent.action.AIRPLANE_MODE --ez state $on"
         val ok = runSu(primary) || runSu(fallback)
         // Trust-but-verify: a command that exits 0 but left the state alone
         // (a root manager that denied the shell silently, a vendor that
