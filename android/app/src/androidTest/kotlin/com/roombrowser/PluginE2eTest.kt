@@ -1088,7 +1088,7 @@ class PluginE2eTest {
             .sortedBy { it.name }
             .forEach { sessionDir ->
                 val id = sessionDir.name.toLongOrNull() ?: return@forEach
-                val msgs = graph.database.agentDao().messages(id)
+                val msgs = runBlocking { graph.database.agentDao().messages(id) }
                 if (msgs.isNotEmpty()) {
                     sb.append("session ").append(id).append(" last messages=[")
                     msgs.takeLast(8).forEach { m ->
