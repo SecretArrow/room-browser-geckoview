@@ -471,7 +471,8 @@ class PluginE2eTest {
                 hasTextContains("Hello Counter is on for this chat. It runs with this chat's first message", 30_000)
         )
         assertTrue(
-            "The re-activation must count 2 in the same chat. " + counterStateDiagnostics(),
+            "The re-activation must count 2 in the same chat. " + counterStateDiagnostics() +
+                " | cards=" + cardSubtreeTexts() + " | tree=" + uiTree(),
             moduleMessageAppears("Activations in THIS chat: 2", 120_000)
         )
 
@@ -911,19 +912,37 @@ class PluginE2eTest {
      * row on screen, and a row that landed just before a newer one can sit
      * above the composed viewport — a LazyColumn composes only what it shows,
      * so a row out of the window is out of the semantics tree and no text
-     * poll will ever see it. The poll therefore drags the transcript toward
-     * its beginning between looks — a slow, flingless quarter of the screen
-     * inside the panel (the composer sits at the bottom, well below the
-     * drag's reach) — and looks again, until the deadline or the text.
+     * poll will ever see it.
+     *
+     * The newest rows are where a module message LANDS, so the first stretch
+     * is poll-only — the auto-scroll already bottom-aligns the list, and a
+     * premature drag would scroll the answer away. Only after ten seconds
+     * does the poll start dragging toward the transcript's beginning between
+     * looks, and it takes its drags back afterwards: a slow, flingless
+     * quarter of the screen inside the panel (the composer sits at the
+     * bottom, well below the drag's reach), returning to the bottom so the
+     * NEXT message's wait starts where its row will land.
      */
     private fun moduleMessageAppears(needle: String, timeoutMs: Long): Boolean {
         val deadline = System.currentTimeMillis() + timeoutMs
+        val settledAt = System.currentTimeMillis() + 10_000
         while (true) {
             if (device.findObjects(By.textContains(needle)).isNotEmpty()) return true
             if (System.currentTimeMillis() >= deadline) return false
+            if (System.currentTimeMillis() < settledAt) {
+                device.waitForIdle(400)
+                continue
+            }
             device.swipe(
                 device.displayWidth / 2, device.displayHeight * 7 / 16,
                 device.displayWidth / 2, device.displayHeight * 11 / 16, 80
+            )
+            device.waitForIdle(600)
+            if (device.findObjects(By.textContains(needle)).isNotEmpty()) return true
+            // Back to the bottom: the next wait's row lands there.
+            device.swipe(
+                device.displayWidth / 2, device.displayHeight * 11 / 16,
+                device.displayWidth / 2, device.displayHeight * 7 / 16, 80
             )
             device.waitForIdle(600)
         }
