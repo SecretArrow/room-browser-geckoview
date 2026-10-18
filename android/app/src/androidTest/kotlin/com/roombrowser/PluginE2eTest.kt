@@ -421,7 +421,8 @@ class PluginE2eTest {
             throw AssertionError(
                 "The module message must land with the chat's first message (count 1). " +
                     "startup=" + startup + " | notRun=" + notRun +
-                    " | agentError=" + agentError + " | " + counterStateDiagnostics()
+                    " | agentError=" + agentError + " | " + counterStateDiagnostics() +
+                    " | cards=" + cardSubtreeTexts() + " | tree=" + uiTree()
             )
         }
         // The entry's layout position, captured while it is the newest row:
@@ -1098,6 +1099,25 @@ class PluginE2eTest {
         sb.toString()
     } catch (_: Exception) {
         "(ui tree unreadable)"
+    }
+
+    /**
+     * Every text node in every plugin card's subtree, walked from the card
+     * row's own desc — the body the card actually rendered, whatever the
+     * composition path meant it to be. The via-footer alone proves the card
+     * is on screen; only the walk can say what its body says.
+     */
+    private fun cardSubtreeTexts(): String = try {
+        device.findObjects(By.descContains("plugin_card")).joinToString(" || ") { card ->
+            fun walk(node: UiObject2, depth: Int): List<String> {
+                val own = node.text?.let { listOf("\"" + it + "\"") } ?: emptyList()
+                val below = if (depth < 5) node.children.flatMap { walk(it, depth + 1) } else emptyList()
+                return own + below
+            }
+            "[" + (card.contentDescription ?: "?") + ": " + walk(card, 0).joinToString(" ~ ") + "]"
+        }.ifEmpty { "(no plugin card node on screen)" }
+    } catch (_: Exception) {
+        "(card walk failed)"
     }
 
     /**
