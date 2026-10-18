@@ -425,22 +425,34 @@ class PluginE2eTest {
                     " | cards=" + cardSubtreeTexts() + " | tree=" + uiTree()
             )
         }
-        // The entry's layout position, captured while it is the newest row:
-        // appended entries never move it, so it is the ordering witness.
-        val moduleMessage = device.findObject(By.textContains("Activations in THIS chat: 1"))
+        // The entry's layout position, captured ATOMICALLY with the find —
+        // while it is the newest row, because appended entries never move it
+        // and the captured top is the ordering witness. The dead endpoint's
+        // reply can land a recomposition after the wait and re-pin the
+        // transcript onto the newer rows, culling the card's clipped body out
+        // of the semantics tree before a separate re-find gets its turn (the
+        // gecko emulator's race); the number survives the cull, so the
+        // ordering witness still has it.
+        val moduleTop = rockingTop("Activations in THIS chat: 1", 30_000)
             ?: throw AssertionError(
-                "The module message vanished between its wait and its bounds check. " +
-                    counterStateDiagnostics()
+                "The module message must hold still for its bounds capture (count 1). " +
+                    counterStateDiagnostics() + " | cards=" + cardSubtreeTexts() +
+                    " | tree=" + uiTree()
             )
-        val moduleTop = moduleMessage.visibleBounds.top
+        // The reply itself is found and measured the same atomic way — the
+        // rows that land after it can cull it just as fast as they culled the
+        // card's body. Both numbers ride the assertion message so a failure
+        // names the geometry it actually saw.
+        val assistantTop = rockingTop("Agent error", 90_000)
+            ?: throw AssertionError(
+                "The assistant reply must fail against the dead endpoint. " +
+                    counterStateDiagnostics() + " | tree=" + uiTree()
+            )
         assertTrue(
-            "The assistant reply must fail against the dead endpoint",
-            hasTextContains("Agent error", 90_000)
-        )
-        val assistantReply = device.findObject(By.textContains("Agent error"))
-        assertTrue(
-            "The module message must sit above the assistant reply (user → module → assistant)",
-            assistantReply != null && assistantReply.visibleBounds.top > moduleTop
+            "The module message must sit above the assistant reply (user → module → assistant). " +
+                "moduleTop=" + moduleTop + " assistantTop=" + assistantTop +
+                " | " + counterStateDiagnostics(),
+            assistantTop > moduleTop
         )
 
         // ---- 6. Re-activation counts again in the same chat ---------------
@@ -922,13 +934,26 @@ class PluginE2eTest {
      * and lose the anchor with it), and the rock returns so the next entry a
      * later wait lands re-aligns onto a view it recognizes.
      */
-    private fun moduleMessageAppears(needle: String, timeoutMs: Long): Boolean {
+    private fun moduleMessageAppears(needle: String, timeoutMs: Long): Boolean =
+        rockingFind(needle, timeoutMs) != null
+
+    /**
+     * [moduleMessageAppears]'s wait, returning the row it found instead of a
+     * Boolean. The caller reads the row's bounds off the returned object in
+     * the same breath as the find, because a separate re-find races the
+     * panel's auto-scroll: whatever row lands next re-pins the transcript,
+     * and a clipped body is culled out of the semantics tree a recomposition
+     * later. The gecko emulator lost exactly that race — the wait found the
+     * row, the re-find a moment later did not. The returned object's bounds
+     * snapshot survives the cull; the number is all the callers need.
+     */
+    private fun rockingFind(needle: String, timeoutMs: Long): UiObject2? {
         val deadline = System.currentTimeMillis() + timeoutMs
         val settledAt = System.currentTimeMillis() + 10_000
         var towardBeginning = true
         while (true) {
-            if (device.findObjects(By.textContains(needle)).isNotEmpty()) return true
-            if (System.currentTimeMillis() >= deadline) return false
+            device.findObjects(By.textContains(needle)).firstOrNull()?.let { return it }
+            if (System.currentTimeMillis() >= deadline) return null
             if (System.currentTimeMillis() < settledAt) {
                 device.waitForIdle(400)
                 continue
@@ -957,6 +982,26 @@ class PluginE2eTest {
             }
             device.waitForIdle(600)
         }
+    }
+
+    /**
+     * A row's top edge, found and measured atomically: [rockingFind] hands
+     * back the row and the top is read off it immediately, retrying the whole
+     * find if the row decomposed between the two. A vanish between a wait and
+     * a later capture costs one rock here, not the test.
+     */
+    private fun rockingTop(needle: String, timeoutMs: Long): Int? {
+        val deadline = System.currentTimeMillis() + timeoutMs
+        while (System.currentTimeMillis() < deadline) {
+            val row = rockingFind(needle, deadline - System.currentTimeMillis())
+            if (row == null) return null
+            try {
+                return row.visibleBounds.top
+            } catch (_: IllegalStateException) {
+                // The row decomposed between the find and the read — rock again.
+            }
+        }
+        return null
     }
 
     /** The address pill always carries this desc, so it detects the engine. */
