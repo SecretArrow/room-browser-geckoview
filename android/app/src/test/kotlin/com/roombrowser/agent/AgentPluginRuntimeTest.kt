@@ -224,8 +224,8 @@ class AgentPluginRuntimeTest {
             "com_example_wordcount"
         )
         assertThat(request.dataRoot).isEqualTo(moved.absolutePath)
-        assertThat(File(moved, "kv.json")).isFile()
-        assertThat(File(moved, "notes.txt")).isFile()
+        assertThat(File(moved, "kv.json").exists()).isTrue()
+        assertThat(File(moved, "notes.txt").exists()).isTrue()
         assertThat(legacy.exists()).isFalse()
     }
 

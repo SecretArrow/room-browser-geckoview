@@ -15,7 +15,6 @@ import com.roombrowser.node.PluginCallResult
 import io.mockk.coEvery
 import io.mockk.every
 import io.mockk.mockk
-import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -891,9 +890,12 @@ exports.commands = { greet: { run: () => 'hello' } };
     fun `the send gate asks an unanswered binding and stores the submitted values`() = runBlocking<Unit> {
         stored = moduleBinding(inputs = null)
         val state = ui()
-        val allowed = CompletableDeferred<Boolean>()
+        // The gate's answer lands from the Unconfined launch; a captured var
+        // is the honest hand-off (CompletableDeferred has no non-suspending
+        // read, and the poll below is the wait).
+        var allowed: Boolean? = null
         CoroutineScope(Dispatchers.Unconfined).launch {
-            allowed.complete(state.awaitChatInputs(7L))
+            allowed = state.awaitChatInputs(7L)
         }
         awaitState { state.pendingForm != null }
         assertThat(state.pendingForm!!.context).isEqualTo(PluginFormContext.SEND)
@@ -901,8 +903,8 @@ exports.commands = { greet: { run: () => 'hello' } };
         assertThat(state.pendingForm!!.fields.single().key).isEqualTo("email")
         assertThat(state.pendingForm!!.existingValues).isEmpty()
         state.submitForm(buildJsonObject { put("email", "a@b.c") })
-        awaitState { allowed.isCompleted }
-        assertThat(allowed.get()).isTrue()
+        awaitState { allowed != null }
+        assertThat(allowed).isTrue()
         assertThat(stored?.inputsValuesJson).contains("a@b.c")
         assertThat(notices).isEmpty()
     }
@@ -911,14 +913,17 @@ exports.commands = { greet: { run: () => 'hello' } };
     fun `the send gate holds the chat when the form is cancelled`() = runBlocking<Unit> {
         stored = moduleBinding(inputs = null)
         val state = ui()
-        val allowed = CompletableDeferred<Boolean>()
+        // The gate's answer lands from the Unconfined launch; a captured var
+        // is the honest hand-off (CompletableDeferred has no non-suspending
+        // read, and the poll below is the wait).
+        var allowed: Boolean? = null
         CoroutineScope(Dispatchers.Unconfined).launch {
-            allowed.complete(state.awaitChatInputs(7L))
+            allowed = state.awaitChatInputs(7L)
         }
         awaitState { state.pendingForm != null }
         state.cancelForm()
-        awaitState { allowed.isCompleted }
-        assertThat(allowed.get()).isFalse()
+        awaitState { allowed != null }
+        assertThat(allowed).isFalse()
         assertThat(notices).containsExactly(
             "Greeter Module needs its input before this chat can run — the message was not sent."
         )
