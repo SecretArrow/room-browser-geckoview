@@ -64,16 +64,18 @@ class AppGraph(context: Context) {
 
     /**
      * Chat plugins: installed Node.js modules and their per-chat bindings.
-     * Takes the two directories the plugin system owns beside the database —
-     * code under `<filesDir>/plugins/`, per-chat data under
-     * `<filesDir>/plugin-data/` — because the row and the directory it names
-     * are written together (see PluginRepository).
+     * Takes the directories the plugin system owns beside the database —
+     * code under `<filesDir>/plugins/`, and per-chat data under the
+     * app-specific external `chats/` tree a file manager can walk (see
+     * [com.roombrowser.agent.AgentPluginRuntime.chatsRoot]) — because the row
+     * and the directory it names are written together (see PluginRepository).
      */
     val pluginRepo: com.roombrowser.data.repo.PluginRepository by lazy {
         com.roombrowser.data.repo.PluginRepository(
             database,
             File(appContext.filesDir, "plugins"),
-            File(appContext.filesDir, "plugin-data")
+            File(appContext.filesDir, "plugin-data"),
+            com.roombrowser.agent.AgentPluginRuntime.chatsRoot(appContext)
         )
     }
 

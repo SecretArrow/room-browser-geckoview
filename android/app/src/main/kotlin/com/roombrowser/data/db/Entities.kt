@@ -669,8 +669,8 @@ data class PluginEntity(
 /**
  * One plugin's binding to ONE chat: the per-chat row the whole isolation
  * model hangs off. Enabled rows get their hooks, commands and tools
- * dispatched; a disabled row keeps its data (`plugin-data/<sessionId>/…`
- * survives) so switching back on is not a data loss.
+ * dispatched; a disabled row keeps its data (`chats/<sessionId>/…` survives)
+ * so switching back on is not a data loss.
  *
  * [grantedPermissionsJson] is what the person who enabled it consented to —
  * a subset of the manifest's declared set, re-consented when an upgrade

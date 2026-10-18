@@ -50,7 +50,12 @@ import java.nio.file.Files
 class PluginToolExecutorTest {
 
     private val root: File = Files.createTempDirectory("plugin-tool-executor").toFile()
-    private val context: Context = mockk<Context>().apply { every { filesDir } returns root }
+    private val context: Context = mockk<Context>().apply {
+        every { filesDir } returns root
+        // A real device's own spelling: the per-chat data tree lands on the
+        // app-specific external volume a file manager can walk.
+        every { getExternalFilesDir(null) } returns File(root, "ext-files")
+    }
 
     private val calls = mutableListOf<PluginCallRequest>()
 
@@ -157,7 +162,12 @@ class PluginToolExecutorTest {
             every { pluginDao() } returns pluginDao
             every { chatPluginDao() } returns chatDao
         }
-        return PluginRepository(db, File(root, "plugins"), File(root, "plugin-data"))
+        return PluginRepository(
+            db,
+            File(root, "plugins"),
+            File(root, "plugin-data"),
+            AgentPluginRuntime.chatsRoot(context)
+        )
     }
 
     private fun executorWith(

@@ -9,6 +9,7 @@ import androidx.test.uiautomator.BySelector
 import androidx.test.uiautomator.UiDevice
 import androidx.test.uiautomator.UiObject2
 import androidx.test.uiautomator.Until
+import com.roombrowser.agent.AgentPluginRuntime
 import com.roombrowser.agent.ui.PluginManagerActivity
 import com.roombrowser.data.db.AgentProviderEntity
 import kotlinx.coroutines.runBlocking
@@ -1082,25 +1083,49 @@ class PluginE2eTest {
      */
     private fun messagesDiagnostics(): String = try {
         val graph = (targetContext.applicationContext as RoomBrowserApp).graph
-        val dataRoot = File(targetContext.filesDir, "plugin-data")
+        // Both spellings a chat's data folder can sit under: the external
+        // chats tree the chat-folders release writes (and migrates into),
+        // and the legacy internal plugin-data tree a not-yet-migrated chat
+        // still holds. A session the migration split across both answers
+        // from the chats tree — the one the next call would finish into.
+        val sessionDirs = sessionDataDirs()
         val sb = StringBuilder()
-        dataRoot.listFiles()?.filter { it.isDirectory }.orEmpty()
-            .sortedBy { it.name }
-            .forEach { sessionDir ->
-                val id = sessionDir.name.toLongOrNull() ?: return@forEach
-                val msgs = runBlocking { graph.database.agentDao().messages(id) }
-                if (msgs.isNotEmpty()) {
-                    sb.append("session ").append(id).append(" last messages=[")
-                    msgs.takeLast(8).forEach { m ->
-                        sb.append(m.role).append(':')
-                            .append(m.content.take(60).replace('\n', ' ')).append("; ")
-                    }
-                    sb.append("]; ")
+        sessionDirs.forEach { (id, sessionDir) ->
+            val msgs = runBlocking { graph.database.agentDao().messages(id) }
+            if (msgs.isNotEmpty()) {
+                sb.append("session ").append(id).append(" last messages=[")
+                msgs.takeLast(8).forEach { m ->
+                    sb.append(m.role).append(':')
+                        .append(m.content.take(60).replace('\n', ' ')).append("; ")
                 }
+                sb.append("]; ")
             }
+        }
         if (sb.isEmpty()) "(no session messages found)" else sb.toString()
     } catch (err: Exception) {
         "(messages diagnostics failed: ${err.message})"
+    }
+
+    /**
+     * Every session data directory the device carries, both trees, keyed by
+     * session id with the chats tree winning a split: the external
+     * `chats/<sessionId>` folders this release writes
+     * ([AgentPluginRuntime]'s own root spelling) and the legacy internal
+     * `plugin-data/<sessionId>` folders a chat the migration has not touched
+     * yet still holds.
+     */
+    private fun sessionDataDirs(): Map<Long, File> {
+        val dirs = linkedMapOf<Long, File>()
+        listOf(
+            File(targetContext.filesDir, "plugin-data"),
+            AgentPluginRuntime.chatsRoot(targetContext)
+        ).forEach { root ->
+            root.listFiles()?.filter { it.isDirectory }?.forEach { dir ->
+                val id = dir.name.toLongOrNull() ?: return@forEach
+                dirs[id] = dir
+            }
+        }
+        return dirs.toSortedMap()
     }
 
     /** The address pill always carries this desc, so it detects the engine. */
@@ -1302,10 +1327,8 @@ class PluginE2eTest {
      * UI missed it" from "the module never ran".
      */
     private fun counterStateDiagnostics(): String = try {
-        val dataRoot = File(targetContext.filesDir, "plugin-data")
         val sb = StringBuilder()
-        val sessionDirs = dataRoot.listFiles()?.filter { it.isDirectory }.orEmpty()
-        sessionDirs.forEach { sessionDir ->
+        sessionDataDirs().forEach { (_, sessionDir) ->
             val kv = File(sessionDir, "zagents_hello-counter/kv.json")
             if (kv.isFile) {
                 sb.append("session ").append(sessionDir.name)

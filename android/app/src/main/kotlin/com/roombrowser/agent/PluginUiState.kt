@@ -23,6 +23,7 @@ import com.roombrowser.domain.plugins.PluginManifestValidator
 import com.roombrowser.domain.plugins.PluginPermissions
 import com.roombrowser.node.PluginCallRequest
 import com.roombrowser.node.PluginChatEntry
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
@@ -877,10 +878,40 @@ class PluginUiState(
             onNotice("\"/$name\" is no longer available in this chat.", true)
             return
         }
+        // The person's own command is the send gate's promise again: a module
+        // whose required inputs this chat never answered asks HERE — the
+        // command is the chat being worked, and it is not worked without the
+        // input. A cancelled form means the command does not run at all.
+        var binding = owner.binding
+        val schema = PluginForms.schemaOf(owner.plugin)
+        val stored = PluginForms.storedValues(owner.binding.inputsValuesJson)
+        if (PluginForms.incomplete(schema, stored)) {
+            val outcome = askForm(
+                PluginFormRequest(
+                    pluginId = owner.plugin.id,
+                    pluginName = owner.plugin.name,
+                    context = PluginFormContext.SEND,
+                    fields = schema.fields,
+                    existingValues = stored,
+                    networkHosts = decodePermissions(owner.plugin.networkAllowJson)
+                )
+            )
+            val values = (outcome as? PluginFormOutcome.Submitted)?.values
+            if (values == null) {
+                onNotice("${owner.plugin.name} needs its input before \"/$name\" can run.", true)
+                return
+            }
+            repo.setInputsValues(chat, owner.plugin.id, values.toString())
+            // The binding the run reads must be the one the answers were just
+            // stored on — the catalog's snapshot is older than this form.
+            runCatching { repo.chatPluginsOnce(chat) }.getOrDefault(emptyList())
+                .firstOrNull { it.pluginId == owner.plugin.id }
+                ?.let { binding = it }
+        }
         val result = runtime.run(
             sessionId = chat,
             plugin = owner.plugin,
-            binding = owner.binding,
+            binding = binding,
             event = PluginCallRequest.EVENT_COMMAND,
             payload = PluginPayloads.command(name, args),
             history = history(chat),
@@ -960,7 +991,79 @@ class PluginUiState(
             // outcome its own context words for a timeout.
             if (pendingForm === form) pendingForm = null
             PluginFormOutcome.TimedOut
+        } catch (err: CancellationException) {
+            // The raiser's own job was cancelled — a stopped turn, a dismissed
+            // controller. Retire the form so no dialog outlives the coroutine
+            // that raised it, then let the cancellation travel: this gate did
+            // not answer, it ended.
+            if (pendingForm === form) pendingForm = null
+            throw err
         }
+    }
+
+    // ------------------------------------------------ the send-time input gate
+
+    /**
+     * The chat's own gate: every ENABLED binding this chat holds whose
+     * plugin declared required inputs the chat never answered gets its form
+     * raised HERE — before the turn writes the user's row or calls the model
+     * — and the message is held until every one of them comes back complete.
+     *
+     * The person's requirement this gate serves is one sentence: a chat that
+     * carries a module needing input is NOT worked until that input is
+     * given. The staged-activation and tool-call gates stay as they are —
+     * the staged path finds its values already answered when its own moment
+     * comes (this gate stored them), and the tool gate is the depth of the
+     * stack's defense — but neither of them lets the model start first on a
+     * plain message again: a chat with an unanswered binding stops HERE.
+     *
+     * Answered values are stored on the binding the next run reads, so the
+     * gate asks once per plugin per chat and never again while the answers
+     * still validate — a reinstall that grew the schema re-arms it, which is
+     * exactly when a chat SHOULD be asked again. [PluginForms.incomplete] is
+     * the one question, the same one every other gate asks.
+     *
+     * Returns true when the chat may run (nothing to ask, or every form
+     * submitted), false when a form was cancelled or timed out — the caller's
+     * message is not the chat's to work, and the notice the gate fires says
+     * so in the plugin's own name.
+     */
+    suspend fun awaitChatInputs(sessionId: Long): Boolean {
+        val bindings = runCatching { repo.chatPluginsOnce(sessionId) }.getOrDefault(emptyList())
+            .filter { it.enabled }
+        if (bindings.isEmpty()) return true
+        val rows = runCatching { repo.installedOnce() }.getOrDefault(emptyList())
+            .associateBy { it.id }
+        bindings.mapNotNull { binding -> rows[binding.pluginId]?.let { binding to it } }
+            .filter { (_, plugin) -> PluginForms.schemaOf(plugin).fields.isNotEmpty() }
+            // Name order, so the asking order a person experiences with two
+            // plugins needing input is stable across restarts.
+            .sortedBy { (_, plugin) -> plugin.name.lowercase() }
+            .forEach { (binding, plugin) ->
+                val schema = PluginForms.schemaOf(plugin)
+                val stored = PluginForms.storedValues(binding.inputsValuesJson)
+                if (!PluginForms.incomplete(schema, stored)) return@forEach
+                val outcome = askForm(
+                    PluginFormRequest(
+                        pluginId = plugin.id,
+                        pluginName = plugin.name,
+                        context = PluginFormContext.SEND,
+                        fields = schema.fields,
+                        existingValues = stored,
+                        networkHosts = decodePermissions(plugin.networkAllowJson)
+                    )
+                )
+                val values = (outcome as? PluginFormOutcome.Submitted)?.values
+                if (values == null) {
+                    onNotice(
+                        "${plugin.name} needs its input before this chat can run — the message was not sent.",
+                        true
+                    )
+                    return false
+                }
+                repo.setInputsValues(sessionId, plugin.id, values.toString())
+            }
+        return true
     }
 
     // -------------------------------------------------- the staged activation

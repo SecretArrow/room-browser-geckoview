@@ -2,6 +2,7 @@ package com.roombrowser.data.repo
 
 import com.google.common.truth.Truth.assertThat
 import com.roombrowser.data.db.AppDatabase
+import com.roombrowser.data.db.ChatPluginDao
 import com.roombrowser.data.db.PluginDao
 import com.roombrowser.data.db.PluginEntity
 import com.roombrowser.data.plugins.PluginDirZipper
@@ -16,23 +17,39 @@ import java.io.File
 import java.nio.file.Files
 
 /**
- * The plugin repository's dir accessor, against a mockk-backed plugin DAO
- * and a real temp-dir store — the shape the plugin-tool and UI-state tests
- * already use, because what is under test here is the REPOSITORY's own
- * behaviour: a row answers its code directory, no row answers null, and a
- * row whose dir is gone still answers (the files-missing check is the
+ * The repository's dir accessor and the two trees it keeps on disk, against
+ * a mockk-backed DAO seam and real temp-dir stores — the shape the
+ * plugin-tool and UI-state tests already use, because what is under test
+ * here is the REPOSITORY's own behaviour.
+ *
+ * The dir accessor: a row answers its code directory, no row answers null,
+ * and a row whose dir is gone still answers (the files-missing check is the
  * CALLER's read — design §2.4 — so this accessor never invents a directory
  * the disk does not hold, and never hides a row the manager must report).
  *
+ * The two trees: the per-chat `chats/` folders a file manager can walk, and
+ * the legacy internal `plugin-data/` tree the pre-chat-folders releases
+ * used. The sweep and the uninstall are the two operations that must know
+ * BOTH spellings — an orphan is an orphan wherever it was left, and a
+ * plugin every chat forgot must not leave data behind in either tree for a
+ * reinstall to inherit.
+ *
  * Every test ends on a VOID-returning Truth call: a Kotlin function whose
- * last expression has a value compiles to a non-void method, and JUnit4
- * then refuses the whole class. `runBlocking<Unit>` is the other half of
- * that rule.
+ * last expression has a value compiles to a non-void method, and JUnit4 then
+ * refuses the whole class. `runBlocking<Unit>` is the other half of that rule.
  */
 class PluginRepositoryTest {
 
     private val root: File = Files.createTempDirectory("plugin-repo").toFile().also { it.deleteOnExit() }
-    private val pluginsDir = File(root, "plugins")
+    private val pluginsDir: File = File(root, "plugins")
+    private val legacyDir: File = File(root, "plugin-data")
+    private val chatsDir: File = File(root, "chats")
+
+    private val chatDao: ChatPluginDao = mockk {
+        // Bound by default: the sweep's question answers "still alive" for
+        // any session a test does not explicitly orphan.
+        coEvery { hasAny(any()) } returns true
+    }
 
     @Test
     fun `pluginDir resolves a row to its code directory`() = runBlocking<Unit> {
@@ -72,8 +89,11 @@ class PluginRepositoryTest {
                 coEvery { byId(any()) } returns null
                 coEvery { upsert(any()) } answers { upserts += firstArg<PluginEntity>() }
             }
-            val db = mockk<AppDatabase> { every { pluginDao() } returns pluginDao }
-            val repo = PluginRepository(db, pluginsDir, File(root, "plugin-data"))
+            val db = mockk<AppDatabase> {
+                every { pluginDao() } returns pluginDao
+                every { chatPluginDao() } returns chatDao
+            }
+            val repo = PluginRepository(db, pluginsDir, legacyDir, chatsDir)
 
             val bytes = PluginDirZipper.compose(
                 listOf(
@@ -87,6 +107,52 @@ class PluginRepositoryTest {
             assertThat(upserts.single().inputsJson).contains("\"key\":\"email\"")
             assertThat(upserts.single().inputsJson).contains("\"type\":\"secret\"")
             assertThat(upserts.single().inputsJson).contains("\"key\":\"choice\"")
+        }
+
+    @Test
+    fun `the orphan sweep reclaims chat folders from both trees`() = runBlocking<Unit> {
+        val legacyOrphan = File(legacyDir, "9").apply { mkdirs() }
+        val chatsOrphan = File(chatsDir, "9").apply { mkdirs() }
+        File(chatsOrphan, "com_example_hello").mkdirs()
+        val chatsKept = File(chatsDir, "8").apply { mkdirs() }
+        val unexplained = File(chatsDir, "not-a-session").apply { mkdirs() }
+        coEvery { chatDao.hasAny(9L) } returns false
+
+        repoWith(row("com.example.hello", "com_example_hello")).sweepOrphanData()
+
+        assertThat(legacyOrphan.exists()).isFalse()
+        assertThat(chatsOrphan.exists()).isFalse()
+        assertThat(chatsKept.exists()).isTrue()
+        assertThat(unexplained.exists()).isTrue()
+    }
+
+    @Test
+    fun `uninstall removes the plugin's folder from both trees and its code`() =
+        runBlocking<Unit> {
+            val legacyData = File(File(legacyDir, "7"), "com_example_hello").apply { mkdirs() }
+            val chatsData = File(File(chatsDir, "7"), "com_example_hello").apply { mkdirs() }
+            val otherPlugin = File(File(chatsDir, "7"), "com_example_other").apply { mkdirs() }
+            val code = File(pluginsDir, "com_example_hello").apply { mkdirs() }
+            coEvery { chatDao.deleteForPlugin(any()) } returns Unit
+
+            repoWith(row("com.example.hello", "com_example_hello"))
+                .uninstall("com.example.hello")
+
+            assertThat(legacyData.exists()).isFalse()
+            assertThat(chatsData.exists()).isFalse()
+            assertThat(otherPlugin.exists()).isTrue()
+            assertThat(code.exists()).isFalse()
+        }
+
+    @Test
+    fun `a chat with no directory tree sweeps nothing and complains to nobody`() =
+        runBlocking<Unit> {
+            // Both roots absent (the state a brand-new install is in): the
+            // sweep's listFiles() answers null and the sweep is a no-op
+            // rather than a failure.
+            repoWith(null).sweepOrphanData()
+            assertThat(legacyDir.exists()).isFalse()
+            assertThat(chatsDir.exists()).isFalse()
         }
 
     // ------------------------------------------------------------ fixtures
@@ -103,9 +169,15 @@ class PluginRepositoryTest {
 
     /** The repository over one plugin DAO answer: [row], or no row at all. */
     private fun repoWith(row: PluginEntity?): PluginRepository {
-        val pluginDao = mockk<PluginDao> { coEvery { byId(any()) } returns row }
-        val db = mockk<AppDatabase> { every { pluginDao() } returns pluginDao }
-        return PluginRepository(db, pluginsDir, File(root, "plugin-data"))
+        val pluginDao = mockk<PluginDao> {
+            coEvery { byId(any()) } returns row
+            coEvery { delete(any()) } returns Unit
+        }
+        val db = mockk<AppDatabase> {
+            every { pluginDao() } returns pluginDao
+            every { chatPluginDao() } returns chatDao
+        }
+        return PluginRepository(db, pluginsDir, legacyDir, chatsDir)
     }
 
     private fun row(id: String, dirName: String): PluginEntity = PluginEntity(

@@ -53,7 +53,12 @@ import java.nio.file.Files
 class AgentPluginRuntimeTest {
 
     private val root: File = Files.createTempDirectory("agent-plugin-runtime").toFile()
-    private val context: Context = mockk<Context>().apply { every { filesDir } returns root }
+    private val context: Context = mockk<Context>().apply {
+        every { filesDir } returns root
+        // The device's own spelling: a real app-specific external volume,
+        // so the per-chat folder tree lands where a file manager walks it.
+        every { getExternalFilesDir(null) } returns File(root, "ext")
+    }
 
     private val calls = mutableListOf<PluginCallRequest>()
 
@@ -187,7 +192,9 @@ class AgentPluginRuntimeTest {
         assertThat(request.pluginRoot)
             .isEqualTo(File(File(root, "plugins"), "com_example_wordcount").absolutePath)
         assertThat(request.dataRoot)
-            .isEqualTo(File(File(File(root, "plugin-data"), "7"), "com_example_wordcount").absolutePath)
+            .isEqualTo(
+                File(File(File(File(root, "ext"), "chats"), "7"), "com_example_wordcount").absolutePath
+            )
         assertThat(request.entry).isEqualTo("main.js")
         assertThat(request.event).isEqualTo("probe")
         // A profile that picked no user agent falls back to the engine's
@@ -198,6 +205,44 @@ class AgentPluginRuntimeTest {
         // omitted" rule itself is the protocol test's subject.
         val ua = request.userAgent
         assertThat(ua == null || ua.isNotBlank()).isTrue()
+    }
+
+    @Test
+    fun `a legacy internal data folder moves to the chat folder before the call`() = runBlocking<Unit> {
+        // The pre-chat-folders releases kept per-chat data under the internal
+        // `plugin-data/<sessionId>/<dirName>` tree; the first call for that
+        // chat and plugin carries the folder over — moved, not forked.
+        val legacy = File(File(File(root, "plugin-data"), "7"), "com_example_wordcount")
+        legacy.mkdirs()
+        File(legacy, "kv.json").writeText("""{"count":2}""")
+        File(legacy, "state").mkdirs()
+        File(legacy, "notes.txt").writeText("kept")
+        runtime().run(7L, plugin(), binding(), PluginCallRequest.EVENT_PROBE)
+        val request = calls.single()
+        val moved = File(
+            File(File(File(root, "ext"), "chats"), "7"),
+            "com_example_wordcount"
+        )
+        assertThat(request.dataRoot).isEqualTo(moved.absolutePath)
+        assertThat(File(moved, "kv.json")).isFile()
+        assertThat(File(moved, "notes.txt")).isFile()
+        assertThat(legacy.exists()).isFalse()
+    }
+
+    @Test
+    fun `no external volume keeps the chats tree internal`() = runBlocking<Unit> {
+        val internal = mockk<Context>().apply {
+            every { filesDir } returns root
+            every { getExternalFilesDir(null) } returns null
+        }
+        AgentPluginRuntime(internal, profile = null, call = call)
+            .run(7L, plugin(), binding(), PluginCallRequest.EVENT_PROBE)
+        assertThat(calls.single().dataRoot).isEqualTo(
+            File(
+                File(File(File(root, "plugin-data"), "chats"), "7"),
+                "com_example_wordcount"
+            ).absolutePath
+        )
     }
 
     @Test
@@ -342,7 +387,10 @@ class AgentPluginRuntimeTest {
         assertThat(request.timeoutSeconds).isEqualTo(45)
         assertThat(request.timeoutMs).isEqualTo(45_000L)
         assertThat(request.stateRoot).isEqualTo(
-            File(File(File(File(root, "plugin-data"), "7"), "zagents_greeter"), "state").absolutePath
+            File(
+                File(File(File(File(root, "ext"), "chats"), "7"), "zagents_greeter"),
+                "state"
+            ).absolutePath
         )
         assertThat(request.title).isEqualTo("Greeter Module")
         assertThat(request.zagentsVersion).isEqualTo("1.2-beta")

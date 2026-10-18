@@ -54,7 +54,16 @@ enum class PluginFormContext {
     TOOL_CALL,
 
     /** The plugin's own code asked, mid-run, over the reverse `user_input` channel. */
-    RUNTIME_REQUEST
+    RUNTIME_REQUEST,
+
+    /**
+     * The person's own message (or plugin command) is HELD until the inputs
+     * are answered: this chat's enabled bindings declared required inputs the
+     * chat never stored, so the turn does not write the user's row and does
+     * not call the model until the form comes back complete — the chat is not
+     * worked without the input its module was promised.
+     */
+    SEND
 }
 
 /**
@@ -414,10 +423,7 @@ class AgentPluginRuntime(
             decodePermissions(binding.grantedPermissionsJson)
         )
         val module = plugin.format == PluginFormat.ZAGENTS
-        val dataRoot = File(
-            File(File(context.filesDir, DATA_DIR), sessionId.toString()),
-            plugin.dirName
-        ).absolutePath
+        val dataRoot = chatModuleDir(sessionId, plugin.dirName).absolutePath
         val timeoutSeconds = plugin.timeoutSeconds ?: ZAgentsManifest.DEFAULT_TIMEOUT_SECONDS
         val request = PluginCallRequest(
             pluginRoot = File(File(context.filesDir, PLUGINS_DIR), plugin.dirName).absolutePath,
@@ -462,6 +468,38 @@ class AgentPluginRuntime(
                 output = err.message ?: "the plugin call failed: ${err.javaClass.simpleName}"
             )
         }
+    }
+
+    /**
+     * The per-chat, per-module data folder this call's `dataRoot` points at:
+     * `<chatsRoot>/<sessionId>/<dirName>`, on the app-specific external
+     * storage a file manager can walk — every chat its OWN folder, so one
+     * chat's `kv.json` and `state/` tree can never read, write, or name
+     * another chat's. [chatsRoot] is the one spelling of the tree's root; a
+     * device with no external volume falls back to the internal [DATA_DIR]
+     * tree there, isolation intact, visibility lost honestly rather than
+     * data forked between two roots.
+     *
+     * The pre-chat-folders releases kept these folders in the internal
+     * `plugin-data/<sessionId>/<dirName>` tree; a legacy folder still there
+     * is carried over by the call that would otherwise re-create its sibling
+     * — copied, then the legacy tree removed only when the copy whole — so a
+     * chat's data cannot fork between the roots (`renameTo` cannot cross the
+     * internal/external volumes, and a copy interrupted mid-tree is resumed,
+     * not half-deleted, by the next call).
+     */
+    private fun chatModuleDir(sessionId: Long, dirName: String): File {
+        val current = File(File(chatsRoot(context), sessionId.toString()), dirName)
+        if (current.isDirectory) return current
+        val legacy = File(File(File(context.filesDir, DATA_DIR), sessionId.toString()), dirName)
+        if (!legacy.isDirectory) return current
+        runCatching {
+            current.parentFile?.mkdirs()
+            if (legacy.copyRecursively(current, overwrite = false)) {
+                legacy.deleteRecursively()
+            }
+        }
+        return current
     }
 
     /**
@@ -603,6 +641,30 @@ class AgentPluginRuntime(
 
         const val PLUGINS_DIR = "plugins"
         const val DATA_DIR = "plugin-data"
+
+        /**
+         * The per-chat folder tree the module data roots live in —
+         * `<app-specific external files>/chats/<sessionId>/<dirName>`, the
+         * location a file manager can walk: the app-specific external root
+         * sits on shared storage, visible over USB and to file managers that
+         * browse an app's own folders, and closed to other apps on Android
+         * 11+ — a chat's folder the person can FIND without the data inside
+         * becoming every app's to read. [DATA_DIR] stays as the internal tree
+         * the pre-chat-folders releases used: the migration's source, and the
+         * fallback for a device that hands back no external volume at all.
+         */
+        const val CHATS_DIR = "chats"
+
+        /**
+         * The one root every [CHATS_DIR] tree is built from — the
+         * app-specific external files dir when the device has one, the
+         * legacy internal [DATA_DIR] tree when it does not. One spelling,
+         * because the runtime's data roots and the repository's orphan sweep
+         * must agree on where a chat's folder lives or the sweep would guard
+         * a tree nothing writes to.
+         */
+        fun chatsRoot(context: Context): File =
+            File(context.getExternalFilesDir(null) ?: File(context.filesDir, DATA_DIR), CHATS_DIR)
 
         /**
          * The per-chat directory a module's `zagents.fs` sandbox is rooted at

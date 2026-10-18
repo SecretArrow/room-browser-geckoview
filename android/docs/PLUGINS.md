@@ -798,12 +798,29 @@ instead of hunting for a route that does not exist.
 ## Storage and config — the on-disk layout
 
 ```
-<filesDir>/plugins/<sanitized>/                  plugin CODE (extracted ZIP; read-only
-                                                 at runtime — no API writes there)
-<filesDir>/plugin-data/<sessionId>/<sanitized>/  this chat's data for the plugin
-    kv.json
-    files/
+<filesDir>/plugins/<sanitized>/              plugin CODE (extracted ZIP; read-only
+                                             at runtime — no API writes there)
+<app-specific external files>/chats/<sessionId>/<sanitized>/
+                                             this chat's data for the plugin —
+    kv.json                                  one folder per chat
+    files/                                   the `room.storage.files` sandbox
+    state/                                   the `zagents.fs` sandbox (module rows)
 ```
+
+The per-chat data tree sits on the app-specific external storage
+(`Android/data/<package>/files/chats/…`) so a file manager can walk it:
+every chat is its OWN folder — a chat's `kv.json` and its file trees never
+mix with another chat's — and the folder is reachable over USB or with a
+file manager that browses an app's own folders. It stays app-specific:
+other apps cannot read it on Android 11+, and removing the app removes it
+with everything else. A device that hands back no external volume at all
+keeps the same tree under the internal `plugin-data/` root — the isolation
+is the layout, not the volume.
+
+Releases before the chat folders kept this data at
+`<filesDir>/plugin-data/<sessionId>/<sanitized>/`; the first call for a
+chat and plugin after the update moves that folder to the tree above —
+moved, not copied, so a chat's data never forks between the two roots.
 
 `<sanitized>` is the manifest id with `.` → `_` (`com.example.hello` →
 `com_example_hello`) — one spelling for the code directory, the data root,
@@ -813,9 +830,10 @@ address a different chat's root. The layout is the isolation.
 
 Lifecycle of that data: **disable** keeps it (hooks and tools stop, the
 store stays). **Chat deleted** cascades the binding row and an orphan sweep
-removes the data directory. **Uninstall** removes the code directory and the
-plugin's data in *every* chat — the confirm dialog says so, because the code
-comes back with a reinstall and the chats' kv does not.
+removes the chat's folder — from both trees, wherever a migration left it.
+**Uninstall** removes the code directory and the plugin's folder in *every*
+chat — the confirm dialog says so, because the code comes back with a
+reinstall and the chats' kv does not.
 
 **Config** is per chat: the manifest's schema defaults, overridden by
 anything this chat stored (only declared keys survive the merge — a value
@@ -1789,6 +1807,18 @@ edit-inputs affordance on the plugin's row in the chat sheet; a reinstall is
 the other way. A binding with required inputs unanswered is exactly what the
 agent tool's missing-inputs gate checks — the tool raises the form instead of
 running, because input the plugin was promised is input it must have.
+
+The FIRST gate is the chat's own, and it stands before everything else: a
+message sent into a chat whose enabled plugin has required inputs
+unanswered raises the form BEFORE the message is worked — the message is
+not written to the transcript, the model is not called, and a form the
+person does not complete means the message was not sent ("<name> needs its
+input before this chat can run — the message was not sent"). The same hold
+guards a plugin's own `/`-command. Once the answers validate they are
+stored on the binding, and every later path — commands, hooks, tool calls,
+the staged first-message activation — runs without asking again; a
+reinstall that grew the schema re-arms the gate, which is exactly when a
+chat should be asked again.
 
 ### The runtime form — `room.ui.form` / `zagents.ui.form`
 

@@ -14,6 +14,16 @@ removes them. The two Android editions are separate apps with separate data
 directories (`com.roombrowser` and `com.roombrowser.gecko`), so neither can read
 the other's data.
 
+One deliberate exception sits beside that directory, not inside it: each agent
+chat's own plugin folder (the chat's `kv.json` store and its module file trees)
+lives under the app-specific external storage
+(`Android/data/<package>/files/chats/<chat id>/`). Every chat gets its own
+folder so no chat's data ever mixes with another's, and the folder is one a
+file manager can reach — over USB, or with a file manager that browses an
+app's own folders. It remains app-specific storage: other apps cannot read it
+on Android 11+, nothing is uploaded from it, and removing the app removes it
+with everything else.
+
 The bundled filter lists ship inside the APK
 (`android/app/src/main/assets/filters/`). They are never fetched at runtime, and
 the app never reports which rules it matched. Every statistic shown in the app

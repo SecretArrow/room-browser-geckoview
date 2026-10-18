@@ -23,7 +23,10 @@ import java.io.InputStream
 /**
  * Plugin persistence: the installed-plugin rows, the per-chat bindings, and
  * the two directories they describe — `<filesDir>/plugins/` for code and
- * `<filesDir>/plugin-data/<sessionId>/` for per-chat data.
+ * `<chatsRoot>/<sessionId>/` for per-chat data (the app-specific external
+ * `chats/` tree a file manager can walk, with the internal
+ * `plugin-data/` tree beside it as the pre-chat-folders releases' spelling
+ * and the no-external-volume fallback — see [AgentPluginRuntime.chatsRoot]).
  *
  * The row and the code directory are written TOGETHER by [install] and removed
  * together by [uninstall], because either alone is a lie: a row with no code
@@ -38,7 +41,8 @@ import java.io.InputStream
 class PluginRepository(
     private val db: AppDatabase,
     private val pluginsDir: File,
-    private val dataDir: File
+    private val dataDir: File,
+    private val chatsDir: File
 ) {
 
     private val pluginDao get() = db.pluginDao()
@@ -87,8 +91,13 @@ class PluginRepository(
     /** Removes the row, the code directory, and every chat's data for it. */
     suspend fun uninstall(id: String): Unit = withContext(Dispatchers.IO) {
         val entity = pluginDao.byId(id) ?: return@withContext
-        dataDir.listFiles()?.forEach { sessionDir ->
-            runCatching { File(sessionDir, entity.dirName).deleteRecursively() }
+        // Both trees, because a chat's data may still live in the legacy
+        // internal spelling a migration has not carried over yet, and an
+        // uninstall must not leave either one for a reinstall to inherit.
+        listOf(dataDir, chatsDir).forEach { root ->
+            root.listFiles()?.forEach { sessionDir ->
+                runCatching { File(sessionDir, entity.dirName).deleteRecursively() }
+            }
         }
         chatDao.deleteForPlugin(id)
         pluginDao.delete(id)
@@ -202,19 +211,24 @@ class PluginRepository(
         pluginDao.byFormat(PluginFormat.ZAGENTS)
 
     /**
-     * Reclaims `plugin-data/<sessionId>` directories whose session has no
-     * binding row left. The session's own deletion cascades the ROWS away in
-     * the database; the directories are files, and this sweep — run at start
-     * and after chat deletions — is the only thing that knows they are gone.
+     * Reclaims `plugin-data/<sessionId>` and `chats/<sessionId>` directories
+     * whose session has no binding row left. The session's own deletion
+     * cascades the ROWS away in the database; the directories are files, and
+     * this sweep — run at start and after chat deletions — is the only thing
+     * that knows they are gone. Both trees are swept because a chat's folder
+     * may still sit in the legacy internal spelling a migration has not
+     * carried over, and an orphan is an orphan wherever it was left.
      *
      * A directory whose name is not a session id is left alone: deleting a
      * directory this code cannot explain is a worse failure than leaving it.
      */
     suspend fun sweepOrphanData(): Unit = withContext(Dispatchers.IO) {
-        dataDir.listFiles()?.forEach { dir ->
-            val sessionId = dir.name.toLongOrNull() ?: return@forEach
-            val bound = runCatching { chatDao.hasAny(sessionId) }.getOrDefault(true)
-            if (!bound) runCatching { dir.deleteRecursively() }
+        listOf(dataDir, chatsDir).forEach { root ->
+            root.listFiles()?.forEach { dir ->
+                val sessionId = dir.name.toLongOrNull() ?: return@forEach
+                val bound = runCatching { chatDao.hasAny(sessionId) }.getOrDefault(true)
+                if (!bound) runCatching { dir.deleteRecursively() }
+            }
         }
     }
 }

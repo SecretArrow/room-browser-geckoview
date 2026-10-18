@@ -15,6 +15,7 @@ import com.roombrowser.node.PluginCallResult
 import io.mockk.coEvery
 import io.mockk.every
 import io.mockk.mockk
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -54,7 +55,12 @@ import java.nio.file.Files
 class PluginUiStateTest {
 
     private val root: File = Files.createTempDirectory("plugin-ui-state").toFile()
-    private val context: Context = mockk<Context>().apply { every { filesDir } returns root }
+    private val context: Context = mockk<Context>().apply {
+        every { filesDir } returns root
+        // A real device's own spelling: the per-chat data tree lands on the
+        // app-specific external volume a file manager can walk.
+        every { getExternalFilesDir(null) } returns File(root, "ext-files")
+    }
 
     private val calls = mutableListOf<PluginCallRequest>()
 
@@ -137,7 +143,8 @@ exports.commands = { greet: { run: () => 'hello' } };
 
     private fun module(
         permissions: String = """["storage"]""",
-        inputs: String? = """[{"key":"email","type":"string","title":"Email","description":"","required":true}]"""
+        inputs: String? = """[{"key":"email","type":"string","title":"Email","description":"","required":true}]""",
+        commands: String = "[]"
     ) = PluginEntity(
         id = "zagents.greeter",
         name = "Greeter Module",
@@ -150,7 +157,7 @@ exports.commands = { greet: { run: () => 'hello' } };
         permissionsJson = permissions,
         networkAllowJson = "[]",
         configSchemaJson = "[]",
-        commandsJson = "[]",
+        commandsJson = commands,
         hooksJson = "[]",
         dirName = "zagents_greeter",
         installedAt = 1L,
@@ -197,7 +204,12 @@ exports.commands = { greet: { run: () => 'hello' } };
             every { pluginDao() } returns pluginDao
             every { chatPluginDao() } returns chatDao
         }
-        return PluginRepository(db, File(root, "plugins"), File(root, "plugin-data"))
+        return PluginRepository(
+            db,
+            File(root, "plugins"),
+            File(root, "plugin-data"),
+            AgentPluginRuntime.chatsRoot(context)
+        )
     }
 
     private fun ui(
@@ -873,6 +885,91 @@ exports.commands = { greet: { run: () => 'hello' } };
         awaitState { notices.any { it.contains("inputs were not changed") } }
         assertThat(stored?.inputsValuesJson).contains("a@b.c")
         assertThat(calls.none { it.event == PluginCallRequest.EVENT_ACTIVATE }).isTrue()
+    }
+
+    @Test
+    fun `the send gate asks an unanswered binding and stores the submitted values`() = runBlocking<Unit> {
+        stored = moduleBinding(inputs = null)
+        val state = ui()
+        val allowed = CompletableDeferred<Boolean>()
+        CoroutineScope(Dispatchers.Unconfined).launch {
+            allowed.complete(state.awaitChatInputs(7L))
+        }
+        awaitState { state.pendingForm != null }
+        assertThat(state.pendingForm!!.context).isEqualTo(PluginFormContext.SEND)
+        assertThat(state.pendingForm!!.pluginName).isEqualTo("Greeter Module")
+        assertThat(state.pendingForm!!.fields.single().key).isEqualTo("email")
+        assertThat(state.pendingForm!!.existingValues).isEmpty()
+        state.submitForm(buildJsonObject { put("email", "a@b.c") })
+        awaitState { allowed.isCompleted }
+        assertThat(allowed.get()).isTrue()
+        assertThat(stored?.inputsValuesJson).contains("a@b.c")
+        assertThat(notices).isEmpty()
+    }
+
+    @Test
+    fun `the send gate holds the chat when the form is cancelled`() = runBlocking<Unit> {
+        stored = moduleBinding(inputs = null)
+        val state = ui()
+        val allowed = CompletableDeferred<Boolean>()
+        CoroutineScope(Dispatchers.Unconfined).launch {
+            allowed.complete(state.awaitChatInputs(7L))
+        }
+        awaitState { state.pendingForm != null }
+        state.cancelForm()
+        awaitState { allowed.isCompleted }
+        assertThat(allowed.get()).isFalse()
+        assertThat(notices).containsExactly(
+            "Greeter Module needs its input before this chat can run — the message was not sent."
+        )
+        assertThat(stored?.inputsValuesJson).isNull()
+    }
+
+    @Test
+    fun `the send gate asks nothing when the chat's answers are complete`() = runBlocking<Unit> {
+        stored = moduleBinding()
+        val state = ui()
+        assertThat(state.awaitChatInputs(7L)).isTrue()
+        assertThat(state.pendingForm).isNull()
+        assertThat(notices).isEmpty()
+    }
+
+    @Test
+    fun `the send gate skips disabled bindings`() = runBlocking<Unit> {
+        stored = moduleBinding(inputs = null).copy(enabled = false)
+        val state = ui()
+        assertThat(state.awaitChatInputs(7L)).isTrue()
+        assertThat(state.pendingForm).isNull()
+        assertThat(notices).isEmpty()
+    }
+
+    @Test
+    fun `a command on a module with unanswered inputs asks before it runs`() = runBlocking<Unit> {
+        moduleRow = module(commands = """[{"name":"daily","title":"Daily","description":""}]""")
+        stored = moduleBinding(inputs = null)
+        val state = ui()
+        state.runCommand("daily", "today")
+        awaitState { state.pendingForm != null }
+        assertThat(state.pendingForm!!.context).isEqualTo(PluginFormContext.SEND)
+        state.submitForm(buildJsonObject { put("email", "a@b.c") })
+        awaitEvent("command")
+        val command = calls.single { it.event == PluginCallRequest.EVENT_COMMAND }
+        assertThat(command.inputsValues?.get("email")?.jsonPrimitive?.content).isEqualTo("a@b.c")
+        assertThat(stored?.inputsValuesJson).contains("a@b.c")
+    }
+
+    @Test
+    fun `a cancelled command form does not run the module`() = runBlocking<Unit> {
+        moduleRow = module(commands = """[{"name":"daily","title":"Daily","description":""}]""")
+        stored = moduleBinding(inputs = null)
+        val state = ui()
+        state.runCommand("daily", "today")
+        awaitState { state.pendingForm != null }
+        state.cancelForm()
+        awaitState { notices.isNotEmpty() }
+        assertThat(notices).contains("Greeter Module needs its input before \"/daily\" can run.")
+        assertThat(calls.none { it.event == PluginCallRequest.EVENT_COMMAND }).isTrue()
+        assertThat(stored?.inputsValuesJson).isNull()
     }
 
     /** One activation-gate request against the module row the test configured. */

@@ -1288,6 +1288,16 @@ class BrowserAgentController(
             // list in memory. Landing anywhere else takes the row's, so a chat
             // deleted underneath us cannot lend its list to its replacement.
             if (sessionId != previousId) plan = AgentPlan.decode(known?.planJson)
+            // The chat's own input gate: an enabled binding whose required
+            // inputs this chat never answered asks for them HERE — before the
+            // row is written and before the model is called — and a form the
+            // person does not complete means the message is NOT worked (the
+            // notice the gate fires says so in the plugin's name). Every
+            // session path runs through this one spot, tab adoption included,
+            // so no chat with an unanswered module ever reaches the model. The
+            // turn's own finally lifts what a turn holds, exactly the way the
+            // headless-page refusal above does.
+            if (!pluginUi.awaitChatInputs(sessionId)) return
             // Staged activation's one moment: the flag only ever means "this
             // chat's FIRST message runs the module", so the question is asked
             // BEFORE the row is written — a chat that already spoke has had its
