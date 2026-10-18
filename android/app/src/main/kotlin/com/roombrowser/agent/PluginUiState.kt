@@ -720,16 +720,25 @@ class PluginUiState(
             }
             else -> Unit
         }
-        if (bridge.rooted) {
-            if (bridge.setViaRoot(on)) {
-                onNotice("Airplane mode is now ${if (on) "on" else "off"}.", false)
-            } else {
-                onNotice(
-                    "Airplane mode was not switched — the root command did not take effect.",
-                    true
-                )
-            }
+        if (bridge.rooted && bridge.setViaRoot(on)) {
+            onNotice("Airplane mode is now ${if (on) "on" else "off"}.", false)
             return
+        }
+        if (bridge.rooted) {
+            // A root command that did not take (a root manager that has not
+            // granted this app, a vendor su that answers no) leaves the phone
+            // effectively not rooted FOR THIS COMMAND, so the guided hand-off
+            // is offered rather than a dead end — with the failure said out
+            // loud first, because the person must know the automatic way was
+            // tried and refused before they are asked to flip the switch
+            // themselves. The AGENT TOOL does not take this fallback: its
+            // caller is the model, for whom an honest refusal is worth more
+            // than a sixty-second blind wait behind a dialog it cannot see.
+            onNotice(
+                "Airplane mode was not switched — the root command did not take effect, " +
+                    "so it is offered manually instead.",
+                true
+            )
         }
         val opened = bridge.openSettings()
         pendingAirplane = PendingAirplaneRequest(targetOn = on, settingsOpened = opened)

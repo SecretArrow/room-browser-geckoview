@@ -1059,7 +1059,7 @@ exports.commands = { greet: { run: () => 'hello' } };
     }
 
     @Test
-    fun `a rooted phone whose command did not take reports the failure`() = runBlocking<Unit> {
+    fun `a rooted phone whose command did not take falls back to the guided hand-off`() = runBlocking<Unit> {
         val bridge = FakeAirplaneModeBridge(state = false).apply {
             rooted = true
             setViaRootTakes = false
@@ -1067,10 +1067,18 @@ exports.commands = { greet: { run: () => 'hello' } };
         val state = ui(airplane = bridge)
         assertThat(state.interceptChatCommand("/airplane on", sessionAtTap = 7L)).isTrue()
         awaitState { notices.isNotEmpty() }
+        assertThat(bridge.setViaRootCount).isEqualTo(1)
+        assertThat(bridge.openSettingsCount).isEqualTo(1)
         assertThat(notices.single()).isEqualTo(
-            "Airplane mode was not switched — the root command did not take effect."
+            "Airplane mode was not switched — the root command did not take effect, so it is offered manually instead."
         )
         assertThat(errorNotices).containsExactly(notices.single())
+        // The failure is not a dead end: the guided request is up, and the
+        // same stop path retires it as on a phone that never had root.
+        assertThat(state.pendingAirplane).isNotNull()
+        state.stopAirplane()
+        awaitState { notices.size == 2 }
+        assertThat(notices.last()).isEqualTo("Airplane Mode was not changed — stopped.")
         assertThat(state.pendingAirplane).isNull()
     }
 

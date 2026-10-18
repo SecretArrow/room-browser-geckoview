@@ -33,11 +33,19 @@ import org.junit.runner.RunWith
  *   the notice says "still off" as an error rather than pretending the
  *   switch happened.
  *
- * The rooted path (su, verified switch) and the airplane_mode agent-tool
- * path are NOT drivable here, matching this suite's standing convention:
- * the runner is an unrooted emulator — `su` does not exist on it, so the
- * rooted branch can never run — and the suite's provider is a dead port, so
- * no model ever emits a tool call to drive. Both halves are held by the JVM
+ * The rooted ATTEMPT is real on this image: the CI emulator is the AOSP
+ * `default` target, which SHIPS /system/bin/su — a binary that refuses the
+ * app's uid. The command's root branch therefore RUNS, is denied, says so
+ * ("did not take effect, so it is offered manually instead"), and falls
+ * back to the guided hand-off — which is exactly the dialog this test then
+ * drives. A genuinely su-less device reaches the same dialog without the
+ * notice, and this test asserts the notice only when it finds the su
+ * binary (shellHasSu below), so it stays honest on either image.
+ *
+ * The SUCCESSFUL root switch and the airplane_mode agent-tool path are NOT
+ * drivable here, matching this suite's standing convention: no root grant
+ * exists for the app's uid, and the suite's provider is a dead port, so no
+ * model ever emits a tool call to drive. Both halves are held by the JVM
  * tests instead (PluginUiStateTest's fake bridge, AgentAppActionsTest's
  * write/destructive classification).
  *
@@ -55,6 +63,14 @@ class AirplaneModeE2eTest {
 
     private val appGraph: com.roombrowser.di.AppGraph
         get() = (targetContext.applicationContext as com.roombrowser.RoomBrowserApp).graph
+
+    /** The su paths the app's own root check consults — mirrored for [shellHasSu]. */
+    private val suPaths = setOf(
+        "/system/bin/su",
+        "/system/xbin/su",
+        "/sbin/su",
+        "/vendor/bin/su"
+    )
 
     @Before
     fun setUp() {
@@ -142,6 +158,18 @@ class AirplaneModeE2eTest {
             "The command must reach the composer and send",
             sendComposer("/airplane on")
         )
+        // On this image the su binary exists and denies the app's uid, so the
+        // root branch runs and fails BEFORE the guided hand-off — the failure
+        // is said out loud, and only a su-less device skips it.
+        if (shellHasSu()) {
+            assertTrue(
+                "A denied root attempt must say so before the guided hand-off",
+                hasTextContains(
+                    "the root command did not take effect, so it is offered manually instead",
+                    15_000
+                )
+            )
+        }
         // Come back to the app's own task BEFORE asserting the dialog: the
         // guided hand-off opens the REAL system settings screen over it, and
         // a node the foreign screen covers is not queryable — under it, the
@@ -273,6 +301,30 @@ class AirplaneModeE2eTest {
             }
         intent.addFlags(Intent.FLAG_ACTIVITY_CLEAR_TASK or Intent.FLAG_ACTIVITY_NEW_TASK)
         targetContext.startActivity(intent)
+    }
+
+    /**
+     * Whether this device carries a su binary the app's own root check would
+     * find — read through the shell the instrumentation holds, because the
+     * app-side check answers the same question but is not reachable from here.
+     * Decides whether the root-attempt failure notice is asserted: the CI
+     * image (AOSP `default`) ships su and denies the app's uid, so the branch
+     * runs; a su-less image goes straight to the guided hand-off.
+     */
+    private fun shellHasSu(): Boolean = try {
+        instrumentation.uiAutomation
+            .executeShellCommand("ls /system/bin/su /system/xbin/su /sbin/su /vendor/bin/su 2>/dev/null")
+            .use { pfd ->
+                java.io.FileInputStream(pfd.fileDescriptor).use { input ->
+                    input.readBytes().decodeToString()
+                }
+            }
+            .lineSequence()
+            .any { it.trim() in suPaths }
+    } catch (_: Exception) {
+        // An unreadable answer is not "no su" — it is no answer, and the
+        // notice assertion is skipped rather than guessed at.
+        false
     }
 
     // ----------------------------------------------------------- ui plumbing
