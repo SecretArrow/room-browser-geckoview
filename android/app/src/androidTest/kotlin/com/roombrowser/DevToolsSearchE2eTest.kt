@@ -736,9 +736,33 @@ class DevToolsSearchE2eTest {
      * drawing a chip for it.
      */
     private fun selectPanel(chip: String, body: String): Boolean {
-        val node = stripChip(chip) ?: return false
+        // Three attempts, because the panel being LEFT can be in two states a
+        // fresh open never is: a deep buffer walk escalates the surface to
+        // FULLSCREEN (scrollPanelToText's own escalation), where the strip
+        // sits at the very top of the window — below the tappable band
+        // [isTappable] promises for the docked geometry it was written
+        // against — and a plain deep scroll leaves the strip above the fold.
+        // Docking back, then walking the surface to its top, restores the
+        // geometry every chip tap was written for.
+        val node = stripChip(chip)
+            ?: dockedStripChip(chip)
+            ?: toppedStripChip(chip)
+            ?: return false
         if (!clickSmart(node)) return false
         return hasDesc(body, 10_000)
+    }
+
+    /** The chip once the surface is back to DOCKED, or null when it already was (or the dock failed). */
+    private fun dockedStripChip(chip: String): UiObject2? {
+        val dock = findDescNow("Dock") ?: return null
+        if (!clickSmart(dock)) return null
+        return stripChip(chip)
+    }
+
+    /** The chip once the surface has been walked back to its top. */
+    private fun toppedStripChip(chip: String): UiObject2? {
+        repeat(6) { dragDownHalf() }
+        return stripChip(chip)
     }
 
     /**
