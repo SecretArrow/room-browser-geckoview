@@ -436,31 +436,53 @@ class PluginE2eTest {
         val moduleTop = rockingTop("Activations in THIS chat: 1", 30_000)
             ?: throw AssertionError(
                 "The module message must hold still for its bounds capture (count 1). " +
-                    counterStateDiagnostics() + " | cards=" + cardSubtreeTexts() +
+                    counterStateDiagnostics() + " | " + messagesDiagnostics() +
+                    " | cards=" + cardSubtreeTexts() +
                     " | tree=" + uiTree()
             )
-        // The reply itself is polled END-ANCHORED, not card-anchored: the
-        // rows a turn appends last are pinned at the transcript's end by the
-        // panel's own auto-scroll the moment they land, so a plain poll sees
-        // them — but the module capture's rock can leave the list scrolled
-        // away from that end, and with nothing new landing after the turn
-        // dies the auto-scroll never re-fires. The card-anchored rock hunts a
-        // clipped body AROUND the card and never reaches a row further below
-        // (the WebView round's one failure: the wait oscillated ±120px while
-        // the error row sat culled past it), so this wait's only scroll is
-        // toward the END — one swipe walks the list back until the newest
-        // rows compose again, and the list clamps there, idempotent.
-        val assistantTop = endAnchoredTop("Agent error", 90_000)
-            ?: throw AssertionError(
-                "The assistant reply must fail against the dead endpoint. " +
-                    counterStateDiagnostics() + " | tree=" + uiTree()
-            )
-        assertTrue(
-            "The module message must sit above the assistant reply (user → module → assistant). " +
-                "moduleTop=" + moduleTop + " assistantTop=" + assistantTop +
-                " | " + counterStateDiagnostics(),
-            assistantTop > moduleTop
+        // The reply is waited for END-ANCHORED, not card-anchored: the rows a
+        // turn appends last are pinned at the transcript's end by the panel's
+        // own auto-scroll the moment they land, so a plain poll sees them —
+        // but the module capture's rock can leave the list scrolled away from
+        // that end, and with nothing new landing after the turn dies the
+        // auto-scroll never re-fires. The card-anchored rock hunts a clipped
+        // body AROUND the card and never reaches a row further below (the
+        // WebView round's one failure: the wait oscillated ±120px while the
+        // error row sat culled past it), so this wait's only scroll is toward
+        // the END — one swipe walks the list back until the newest rows
+        // compose again, and the list clamps there, idempotent.
+        //
+        // The dead endpoint ends a turn one of two ways, and the wait accepts
+        // EITHER: the model call's failure surfaces as the "Agent error"
+        // notice (a transcript row, found by the end-anchored scroll), or the
+        // turn ends with the retry row and NO notice at all — the
+        // cancellation path (two consecutive WebView rounds watched it happen;
+        // the retry row is panel chrome, composed whatever the scroll). Both
+        // are the assistant's answer never arriving, which is the fact under
+        // test; only the first carries an assistant row for the module
+        // message to precede, so the ordering witness runs on it alone.
+        val turnEnd = endAnchoredFirstOf(
+            listOf("Agent error", "That turn did not finish."),
+            90_000
+        ) ?: throw AssertionError(
+            "The assistant reply must fail against the dead endpoint. " +
+                counterStateDiagnostics() + " | " + messagesDiagnostics() +
+                " | tree=" + uiTree()
         )
+        // The retry row answers at any scroll, so it can win the wait while an
+        // error notice sits composed below the fold — a bounded end-anchored
+        // hunt for the notice settles which rendering this turn actually took
+        // before the ordering witness decides whether it applies.
+        val assistantTop = if (turnEnd.first == "Agent error") turnEnd.second
+        else endAnchoredTop("Agent error", 10_000)
+        if (assistantTop != null) {
+            assertTrue(
+                "The module message must sit above the assistant reply (user → module → assistant). " +
+                    "moduleTop=" + moduleTop + " assistantTop=" + assistantTop +
+                    " | " + counterStateDiagnostics() + " | " + messagesDiagnostics(),
+                assistantTop > moduleTop
+            )
+        }
 
         // ---- 6. Re-activation counts again in the same chat ---------------
         assertTrue("The /plugins command must reach the composer and send", sendComposer("/plugins"))
@@ -1021,14 +1043,25 @@ class PluginE2eTest {
      * re-fires). The list clamps at its end, so the swipe is idempotent and
      * can never overshoot. Returns null only on timeout.
      */
-    private fun endAnchoredTop(needle: String, timeoutMs: Long): Int? {
+    private fun endAnchoredTop(needle: String, timeoutMs: Long): Int? =
+        endAnchoredFirstOf(listOf(needle), timeoutMs)?.second
+
+    /**
+     * [endAnchoredTop]'s wait over several needles at once: the first one to
+     * compose wins, and the pair says which — a chrome-level needle (the
+     * retry row) is visible at any scroll, while a transcript row needs the
+     * end-anchored walk. Same end-only scrolling, same atomic measure.
+     */
+    private fun endAnchoredFirstOf(needles: List<String>, timeoutMs: Long): Pair<String, Int>? {
         val deadline = System.currentTimeMillis() + timeoutMs
         while (true) {
-            device.findObjects(By.textContains(needle)).firstOrNull()?.let { row ->
-                try {
-                    return row.visibleBounds.top
-                } catch (_: IllegalStateException) {
-                    // Decomposed between the find and the read — poll again.
+            for (needle in needles) {
+                device.findObjects(By.textContains(needle)).firstOrNull()?.let { row ->
+                    try {
+                        return needle to row.visibleBounds.top
+                    } catch (_: IllegalStateException) {
+                        // Decomposed between the find and the read — poll again.
+                    }
                 }
             }
             if (System.currentTimeMillis() >= deadline) return null
@@ -1038,6 +1071,36 @@ class PluginE2eTest {
             )
             device.waitForIdle(600)
         }
+    }
+
+    /**
+     * The turn's own ground truth: the rows it persisted for the chats this
+     * test drove, in insert order. The DB carries the "Agent error" notice
+     * the panel renders OR the silence a cancelled turn leaves — either way
+     * the next round knows which of the two it was hunting, and the insert
+     * order is the one ordering witness no scroll can take away.
+     */
+    private fun messagesDiagnostics(): String = try {
+        val graph = (targetContext.applicationContext as RoomBrowserApp).graph
+        val dataRoot = File(targetContext.filesDir, "plugin-data")
+        val sb = StringBuilder()
+        dataRoot.listFiles()?.filter { it.isDirectory }.orEmpty()
+            .sortedBy { it.name }
+            .forEach { sessionDir ->
+                val id = sessionDir.name.toLongOrNull() ?: return@forEach
+                val msgs = graph.database.agentDao().messages(id)
+                if (msgs.isNotEmpty()) {
+                    sb.append("session ").append(id).append(" last messages=[")
+                    msgs.takeLast(8).forEach { m ->
+                        sb.append(m.role).append(':')
+                            .append(m.content.take(60).replace('\n', ' ')).append("; ")
+                    }
+                    sb.append("]; ")
+                }
+            }
+        if (sb.isEmpty()) "(no session messages found)" else sb.toString()
+    } catch (err: Exception) {
+        "(messages diagnostics failed: ${err.message})"
     }
 
     /** The address pill always carries this desc, so it detects the engine. */
