@@ -914,17 +914,18 @@ class PluginE2eTest {
      * the semantics tree entirely, so no text poll will ever see it.
      *
      * The newest rows are where a module message LANDS, so the first stretch
-     * is poll-only — the auto-scroll already bottom-aligns the list, and a
-     * premature drag would scroll the answer away. After that the poll
-     * scrolls the transcript toward its beginning between looks, anchored on
-     * a plugin card's OWN bounds — the one node guaranteed to sit inside the
-     * list, wherever the panel's chrome placed it (a fixed-coordinate drag
-     * can land on the plan card or the header and scroll nothing). No drag
-     * back: the next entry a later wait lands re-aligns the list on its own.
+     * is poll-only. After that the poll ROCKS the transcript a card-height
+     * at a time, anchored on a plugin card's OWN bounds — the one node
+     * guaranteed to sit inside the list, wherever the panel's chrome placed
+     * it — and back again: one drag is enough to clear the window's whole
+     * blind band (a taller drag would carry the card past the bottom edge
+     * and lose the anchor with it), and the rock returns so the next entry a
+     * later wait lands re-aligns onto a view it recognizes.
      */
     private fun moduleMessageAppears(needle: String, timeoutMs: Long): Boolean {
         val deadline = System.currentTimeMillis() + timeoutMs
         val settledAt = System.currentTimeMillis() + 10_000
+        var towardBeginning = true
         while (true) {
             if (device.findObjects(By.textContains(needle)).isNotEmpty()) return true
             if (System.currentTimeMillis() >= deadline) return false
@@ -935,13 +936,23 @@ class PluginE2eTest {
             val card = device.findObject(By.descContains("plugin_card"))
             if (card != null) {
                 val bounds = card.visibleBounds
-                val fromY = bounds.centerY().coerceIn(8, device.displayHeight - 8)
-                val toY = (fromY + 220).coerceAtMost(device.displayHeight - 8)
-                device.swipe(bounds.centerX(), fromY, bounds.centerX(), toY, 60)
+                val x = bounds.centerX()
+                val fromY = bounds.centerY().coerceIn(16, device.displayHeight - 16)
+                val toY = if (towardBeginning) {
+                    (fromY + 120).coerceAtMost(device.displayHeight - 8)
+                } else {
+                    (fromY - 120).coerceAtLeast(8)
+                }
+                if (toY != fromY) device.swipe(x, fromY, x, toY, 60)
+                towardBeginning = !towardBeginning
             } else {
+                // No card composed: the list is scrolled somewhere a card is
+                // not. The end is where a module message lives, so the
+                // recovery rocks toward the END — the finger up, the content
+                // with it — until the anchor card comes back into the window.
                 device.swipe(
-                    device.displayWidth / 2, device.displayHeight * 7 / 16,
-                    device.displayWidth / 2, device.displayHeight * 11 / 16, 60
+                    device.displayWidth / 2, device.displayHeight * 11 / 16,
+                    device.displayWidth / 2, device.displayHeight * 7 / 16, 60
                 )
             }
             device.waitForIdle(600)
