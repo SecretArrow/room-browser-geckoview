@@ -2,6 +2,7 @@ package com.roombrowser.engine
 
 import com.google.common.truth.Truth.assertThat
 import com.roombrowser.engine.devtools.DevToolsCapability
+import com.roombrowser.engine.devtools.DevToolsPanelId
 import com.roombrowser.engine.gecko.GeckoDevTools
 import org.junit.Test
 
@@ -116,6 +117,15 @@ class GeckoDevToolsCapabilitiesTest {
                 "store to the app, and the browser.cookies extension API that would describe " +
                 "one belongs to a background script, which this build's bridge is not."
         )
+    }
+
+    @Test
+    fun search_is_served_because_page_scripting_is() {
+        // The Search panel rides the same page-scripting substrate as the
+        // other probe panels, and this edition declares that capability, so
+        // the strip shows Search here exactly as it does on the sibling
+        // edition — pinned so a capability change cannot hide it silently.
+        assertThat(capabilities.serves(DevToolsPanelId.SEARCH)).isTrue()
     }
 
     @Test

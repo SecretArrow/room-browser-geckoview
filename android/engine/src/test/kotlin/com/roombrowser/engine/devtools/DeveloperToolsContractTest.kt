@@ -116,6 +116,9 @@ class DeveloperToolsContractTest {
         // is the one that disappears with them.
         assertThat(DeveloperToolsCapabilities.NONE.serves(DevToolsPanelId.OVERVIEW)).isTrue()
         assertThat(DeveloperToolsCapabilities.NONE.servedPanels()).containsExactly(DevToolsPanelId.OVERVIEW)
+        // Search rides the same scripting substrate as the other probe panels,
+        // so an engine with nothing at all does not serve it either.
+        assertThat(DeveloperToolsCapabilities.NONE.serves(DevToolsPanelId.SEARCH)).isFalse()
     }
 
     @Test
@@ -132,6 +135,7 @@ class DeveloperToolsContractTest {
         val scriptOnly = DeveloperToolsCapabilities(setOf(DevToolsCapability.PAGE_SCRIPTING))
         // Page scripting alone is enough for the panels built on probe scripts.
         assertThat(scriptOnly.serves(DevToolsPanelId.APPLICATION)).isTrue()
+        assertThat(scriptOnly.serves(DevToolsPanelId.SEARCH)).isTrue()
         // It is not enough for the two that need a signal the page cannot give.
         assertThat(scriptOnly.serves(DevToolsPanelId.NETWORK)).isFalse()
         assertThat(scriptOnly.serves(DevToolsPanelId.SECURITY)).isFalse()
@@ -149,7 +153,8 @@ class DeveloperToolsContractTest {
             DevToolsPanelId.ELEMENTS,
             DevToolsPanelId.AUDIT,
             DevToolsPanelId.RECORDER,
-            DevToolsPanelId.PERFORMANCE
+            DevToolsPanelId.PERFORMANCE,
+            DevToolsPanelId.SEARCH
         )
     }
 

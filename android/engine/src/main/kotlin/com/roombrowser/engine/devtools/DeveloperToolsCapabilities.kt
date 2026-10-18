@@ -88,7 +88,15 @@ enum class DevToolsPanelId(val title: String) {
     APPLICATION("Application"),
     SECURITY("Security"),
     AUDIT("Audit"),
-    RECORDER("Recorder")
+    RECORDER("Recorder"),
+
+    /**
+     * The find-anything panel: the page's own globals, storage keys, cookie
+     * names and element text, searched from one query field. It is served by
+     * the same scripting substrate as the other probe panels, so it needs no
+     * capability of its own and both editions have it.
+     */
+    SEARCH("Search")
 }
 
 /**
@@ -140,6 +148,7 @@ data class DeveloperToolsCapabilities(
             has(DevToolsCapability.ENGINE_CONSOLE)
         DevToolsPanelId.NETWORK -> has(DevToolsCapability.NETWORK_REQUEST_LINE)
         DevToolsPanelId.APPLICATION -> has(DevToolsCapability.PAGE_SCRIPTING)
+        DevToolsPanelId.SEARCH -> has(DevToolsCapability.PAGE_SCRIPTING)
         // Present but not yet built. Each is served by capabilities this layer
         // already tracks, so the day its panel lands it appears by itself.
         DevToolsPanelId.ELEMENTS -> has(DevToolsCapability.PAGE_SCRIPTING)

@@ -106,6 +106,11 @@ internal class DevToolsPanelEntry(
  */
 internal fun devToolsPanelEntries(): List<DevToolsPanelEntry> = listOf(
     DevToolsPanelEntry(DevToolsPanelId.OVERVIEW, { it.serves(DevToolsPanelId.OVERVIEW) }, { OverviewPanel(it) }),
+    DevToolsPanelEntry(
+        DevToolsPanelId.SEARCH,
+        { it.serves(DevToolsPanelId.SEARCH) },
+        { scope -> scope.session?.let { SearchPanel(it) } ?: NeedsEngine("Search needs a live page to read.") }
+    ),
     DevToolsPanelEntry(DevToolsPanelId.APPLICATION, { it.serves(DevToolsPanelId.APPLICATION) }, { ApplicationPanel(it) }),
     DevToolsPanelEntry(
         DevToolsPanelId.CONSOLE,

@@ -81,6 +81,14 @@ internal fun sharedLimits(): List<LimitsSection> = listOf(
                     "build: its remote debugger is a separate desktop connection and it does not " +
                     "speak CDP. Until that changes, those capabilities stay absent and those " +
                     "panels stay hidden."
+            ),
+            LimitsRow(
+                "Search, and what it does not find",
+                "Search reads the page's own globals, storage keys and values (matched, never " +
+                    "listed), cookie names, element text and attributes, plus the console and " +
+                    "network buffers this surface already holds. It cannot see HttpOnly cookie " +
+                    "values, cross-origin frames, closed pages, or anything the page no longer " +
+                    "holds in memory."
             )
         )
     ),

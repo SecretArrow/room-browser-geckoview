@@ -243,6 +243,21 @@ class InspectorSession(
     }
 
     /**
+     * One search over the page's own globals, storage, cookies and DOM. Null
+     * when the page did not answer.
+     *
+     * Synchronous like the audit probe, and for the same reason: the search
+     * reads facts the page already holds and installs nothing, so there is no
+     * promise to await and no poll. The query arrives in the script only
+     * through the shared `jsString` escaping, which is what keeps a query with
+     * quotes or newlines inside the string literal it was placed in.
+     */
+    suspend fun searchProbe(query: String): SearchProbe? {
+        val raw = rawEval(DeveloperToolsSearchScripts.searchJs(query)) ?: return null
+        return decode(raw, SearchProbe.serializer())
+    }
+
+    /**
      * The document root, and a fresh node registry to address it by.
      *
      * A new read here invalidates every node id the panel held, which is why the

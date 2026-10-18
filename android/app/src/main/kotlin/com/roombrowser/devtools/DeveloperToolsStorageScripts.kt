@@ -405,8 +405,15 @@ internal object DeveloperToolsStorageScripts {
         })()
     """.trimIndent()
 
-    /** A JS string literal, quoted and escaped, so a key from the page cannot break out of the script. */
-    private fun jsString(value: String): String = buildString {
+    /**
+     * A JS string literal, quoted and escaped, so a key from the page cannot
+     * break out of the script.
+     *
+     * INTERNAL rather than private because the Search panel's probe injects a
+     * user-typed query through the same escaping -- one helper, one proof that
+     * quotes, backslashes and newlines stay inside the literal.
+     */
+    internal fun jsString(value: String): String = buildString {
         append('"')
         value.forEach { c ->
             when (c) {
