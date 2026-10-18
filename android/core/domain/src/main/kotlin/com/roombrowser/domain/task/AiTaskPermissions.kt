@@ -91,6 +91,12 @@ data class AiTaskPermissions(
             AgentTools.APP_OPEN, AgentTools.APP_TABS, AgentTools.APP_DATA,
             AgentTools.APP_SETTINGS, AgentTools.APP_SHIELDS,
             AgentTools.APP_SITE_PERMISSION, AgentTools.APP_PAGE -> ToolGroup.APP
+            // The phone's radios, classified with the app tools a scheduled
+            // run is refused: a switch nobody is watching could silence the
+            // run's own network, and the guided non-root flow needs a person
+            // at the screen anyway. The headless executor's separate refusal
+            // (no bridge wired) agrees.
+            AgentTools.AIRPLANE_MODE -> ToolGroup.APP
             AgentTools.APP_2FA -> ToolGroup.TOTP
             AgentTools.APP_NOTES -> ToolGroup.NOTES
             else -> null

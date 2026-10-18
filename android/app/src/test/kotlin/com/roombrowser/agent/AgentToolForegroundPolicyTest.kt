@@ -88,6 +88,10 @@ class AgentToolForegroundPolicyTest {
         AgentTools.APP_TABS,
         AgentTools.APP_DATA,
         AgentTools.APP_SETTINGS,
+        // The phone's radios are not a page in any sense: the tool reads a
+        // global setting and (on root) runs one shell command, so it starts
+        // no navigation and never describes the tab the user is looking at.
+        AgentTools.AIRPLANE_MODE,
         // The profile's own notes and authenticator codes are read from the
         // Keystore and the database, never from a page, so they keep working
         // while the user is on another tab. `app_2fa action=fill` is the one
