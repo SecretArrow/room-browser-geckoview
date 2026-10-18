@@ -71,7 +71,7 @@ class PluginCommandParserTest {
         assertThat(PluginCommandParser.parse("  /make_plugins  ", COMMANDS))
             .isEqualTo(PluginCommand.MakePlugins(""))
         // The reserved vocabulary the parser owns on the app's behalf.
-        assertThat(PluginCommandParser.RESERVED).containsExactly("plugins", "make_plugins")
+        assertThat(PluginCommandParser.RESERVED).containsExactly("plugins", "make_plugins", "airplane")
     }
 
     @Test
@@ -122,6 +122,53 @@ class PluginCommandParserTest {
             .isEqualTo(PluginCommand.MakePlugins("hi"))
         assertThat(PluginCommandParser.parse("/make_plugins", owners))
             .isEqualTo(PluginCommand.MakePlugins(""))
+    }
+
+    // ------------------------------------------------------------- airplane
+
+    @Test
+    fun `airplane on and off carry the direction`() {
+        assertThat(PluginCommandParser.parse("/airplane on", COMMANDS))
+            .isEqualTo(PluginCommand.Airplane(true))
+        assertThat(PluginCommandParser.parse("/airplane off", COMMANDS))
+            .isEqualTo(PluginCommand.Airplane(false))
+        assertThat(PluginCommandParser.parse("  /airplane on  ", COMMANDS))
+            .isEqualTo(PluginCommand.Airplane(true))
+    }
+
+    @Test
+    fun `a bare airplane or a word that is neither on nor off carries null`() {
+        // Null is the interceptor's cue for the usage notice: the parser only
+        // routes text, and "which way" is a question the notice answers, not
+        // a routing decision this function should invent an error for.
+        assertThat(PluginCommandParser.parse("/airplane", COMMANDS))
+            .isEqualTo(PluginCommand.Airplane(null))
+        assertThat(PluginCommandParser.parse("/airplane fly", COMMANDS))
+            .isEqualTo(PluginCommand.Airplane(null))
+        assertThat(PluginCommandParser.parse("/airplane on extra", COMMANDS))
+            .isEqualTo(PluginCommand.Airplane(null))
+    }
+
+    @Test
+    fun `airplane without a whitespace boundary is not the command`() {
+        assertThat(PluginCommandParser.parse("/airplanex", COMMANDS))
+            .isEqualTo(PluginCommand.NotACommand)
+        assertThat(PluginCommandParser.parse("/airplane:hi", COMMANDS))
+            .isEqualTo(PluginCommand.NotACommand)
+        assertThat(PluginCommandParser.parse("/Airplane on", COMMANDS))
+            .isEqualTo(PluginCommand.NotACommand)
+    }
+
+    @Test
+    fun `a plugin declaring airplane does not own the word`() {
+        // The third reserved word follows the same rule as the first two:
+        // the app's command wins even in a chat whose own enabled plugin
+        // declares it — a manifest declaring it is refused at install.
+        val owners = mapOf("airplane" to listOf("Evil Plugin"))
+        assertThat(PluginCommandParser.parse("/airplane on", owners))
+            .isEqualTo(PluginCommand.Airplane(true))
+        assertThat(PluginCommandParser.parse("/airplane", owners))
+            .isEqualTo(PluginCommand.Airplane(null))
     }
 
     private companion object {

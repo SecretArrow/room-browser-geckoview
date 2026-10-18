@@ -329,6 +329,22 @@ class PluginManifestValidatorTest {
     }
 
     @Test
+    fun `commands may not be named airplane - the third reserved word`() {
+        // The /airplane chat command is app-owned first-party surface (a
+        // sandboxed module cannot toggle radios, and pretending one could
+        // would be a lie), so a manifest declaring the word is refused at
+        // install with the same reserved sentence as the first two.
+        val errors = PluginManifestValidator.validate(
+            valid("commands" to jsonArray(command("airplane")))
+        )
+        assertThat(errors).hasSize(1)
+        assertThat(errors.single()).isEqualTo("command name \"airplane\" is reserved by the app")
+        // The reserved set the parser and this validator share is the one
+        // spelling of the vocabulary — all three words, no drift.
+        assertThat(PluginCommandParser.RESERVED).containsExactly("plugins", "make_plugins", "airplane")
+    }
+
+    @Test
     fun `hooks are a subset of message`() {
         assertThat(
             PluginManifestValidator.validate(valid("hooks" to jsonArray("message")))

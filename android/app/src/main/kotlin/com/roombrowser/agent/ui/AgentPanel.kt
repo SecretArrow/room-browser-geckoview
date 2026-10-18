@@ -1427,6 +1427,19 @@ private fun PluginSurfaces(agent: BrowserAgentController) {
             onCancel = { agent.pluginUi.cancelCreation() }
         )
     }
+    // The guided Airplane Mode switch: the non-root /airplane hand-off,
+    // waiting on the person (or on the phone itself — the auto-continue poll
+    // resolves it without either button). Same convention as the slots
+    // above: the state raises it, the dialog renders it, and only the
+    // accept/stop pair retires it.
+    val airplaneRequest = agent.pluginUi.pendingAirplane
+    if (airplaneRequest != null) {
+        AirplaneModeDialog(
+            request = airplaneRequest,
+            onAccept = { agent.pluginUi.resolveAirplane() },
+            onStop = { agent.pluginUi.stopAirplane() }
+        )
+    }
 }
 
 // ------------------------------------------------------------------- composer

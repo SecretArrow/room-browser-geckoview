@@ -20,11 +20,11 @@ object PluginCommandParser {
      * The command words the app owns, decided BEFORE any plugin-command
      * lookup — a chat whose own enabled plugin declares one of these names
      * still routes to the app's command, never the plugin's. A manifest may
-     * not declare any of them: [PluginManifestValidator] refuses both words
+     * not declare any of them: [PluginManifestValidator] refuses every word
      * with the same sentence, so this set is the single spelling of the
      * reserved vocabulary.
      */
-    val RESERVED = setOf("plugins", "make_plugins")
+    val RESERVED = setOf("plugins", "make_plugins", "airplane")
 
     /**
      * Parses [text] against [commands], the command names this chat's enabled
@@ -48,6 +48,18 @@ object PluginCommandParser {
             // (design §5.1/§5.2), because they are notices, and this function
             // only routes text.
             return PluginCommand.MakePlugins(args)
+        }
+        if (name == "airplane") {
+            // Reserved before the plugin-command lookup, exactly like the two
+            // words above: a plugin that declares `airplane` never owns it, and
+            // the interceptor is the one that can answer a missing direction
+            // with the usage notice — this function only routes text.
+            val on = when (args) {
+                "on" -> true
+                "off" -> false
+                else -> null
+            }
+            return PluginCommand.Airplane(on)
         }
         val owners = commands[name].orEmpty()
         return when {
@@ -79,6 +91,16 @@ sealed interface PluginCommand {
      * so `/make_pluginsx` is NOT the command and falls through to the agent.
      */
     data class MakePlugins(val description: String) : PluginCommand
+
+    /**
+     * `/airplane on|off` — [on] is null when the argument was missing or
+     * neither word. The guided switch itself (rooted: run and verify; not
+     * rooted: open the system settings and raise the confirmation dialog)
+     * is the interceptor's, because it is a notice-and-dialog flow over a
+     * live bridge, not a routing decision. Same word-boundary grammar as
+     * the other reserved words, so `/airplanex` is NOT the command.
+     */
+    data class Airplane(val on: Boolean?) : PluginCommand
 
     /** `/<name> <args>` that exactly one enabled plugin declares. */
     data class Plugin(val name: String, val args: String) : PluginCommand

@@ -325,7 +325,9 @@ fun BrowserSettingsScreen(viewModel: BrowserViewModel, onClose: () -> Unit) {
             )
             SettingSwitchRow(
                 title = "Offer Airplane Mode shortcut",
-                subtitle = "Android forbids apps toggling Airplane Mode directly — the shortcut opens system settings",
+                subtitle = "\"/airplane on|off\" in chat and the airplane_mode agent tool: automatic on a " +
+                    "rooted phone, guided with a confirmation otherwise. Also offers the settings " +
+                    "shortcut when the network fails.",
                 checked = global.offerAirplaneModeShortcut,
                 onCheckedChange = {
                     global = global.copy(offerAirplaneModeShortcut = it)

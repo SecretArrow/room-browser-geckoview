@@ -66,6 +66,9 @@ class PluginUiStateTest {
     /** The notices the flows fired, so the cancel paths are asserted on their own words. */
     private val notices = mutableListOf<String>()
 
+    /** The notices that were fired as ERRORS — the honest-failure paths assert on the flag, not just the words. */
+    private val errorNotices = mutableListOf<String>()
+
     /** The cards the flows appended: (plugin name, card) in arrival order. */
     private val appendedCards = mutableListOf<Pair<String, PluginCard>>()
 
@@ -215,7 +218,8 @@ exports.commands = { greet: { run: () => 'hello' } };
         session: Long? = 7L,
         generate: suspend (sessionId: Long) -> PluginGenerateCall? = { null },
         compose: suspend (sessionId: Long) -> PluginComposeCall? = { null },
-        freshChat: Boolean = false
+        freshChat: Boolean = false,
+        airplane: AirplaneModeBridge? = null
     ): PluginUiState {
         val repo = repo()
         val runtime = AgentPluginRuntime(context, profile = null, call = call)
@@ -228,11 +232,15 @@ exports.commands = { greet: { run: () => 'hello' } };
             sessionId = { session },
             createSession = { null },
             onCard = { _, card, name -> appendedCards.add(name to card) },
-            onNotice = { text, _ -> notices.add(text) },
+            onNotice = { text, error ->
+                notices.add(text)
+                if (error) errorNotices.add(text)
+            },
             history = { emptyList() },
             freshChat = { freshChat },
             generate = generate,
-            compose = compose
+            compose = compose,
+            airplane = airplane
         )
     }
 
@@ -975,6 +983,216 @@ exports.commands = { greet: { run: () => 'hello' } };
         assertThat(notices).contains("Greeter Module needs its input before \"/daily\" can run.")
         assertThat(calls.none { it.event == PluginCallRequest.EVENT_COMMAND }).isTrue()
         assertThat(stored?.inputsValuesJson).isNull()
+    }
+
+    // ------------------------------------------------------ the airplane command
+
+    @Test
+    fun `an airplane command with no direction answers with the usage notice`() = runBlocking<Unit> {
+        val bridge = FakeAirplaneModeBridge()
+        val state = ui(airplane = bridge)
+        val consumed = state.interceptChatCommand("/airplane fly", sessionAtTap = 7L)
+        assertThat(consumed).isTrue()
+        awaitState { notices.isNotEmpty() }
+        assertThat(notices.single()).isEqualTo(
+            "Say \"/airplane on\" or \"/airplane off\" — the word after the command says which way to switch."
+        )
+        assertThat(state.pendingAirplane).isNull()
+        assertThat(bridge.openSettingsCount).isEqualTo(0)
+        assertThat(bridge.setViaRootCount).isEqualTo(0)
+    }
+
+    @Test
+    fun `an airplane command with the master switch off names the setting`() = runBlocking<Unit> {
+        val bridge = FakeAirplaneModeBridge().apply { allowedAnswer = false }
+        val state = ui(airplane = bridge)
+        assertThat(state.interceptChatCommand("/airplane on", sessionAtTap = 7L)).isTrue()
+        awaitState { notices.isNotEmpty() }
+        assertThat(notices.single()).isEqualTo(
+            "\"/airplane\" is switched off — enable \"Offer Airplane Mode shortcut\" in the " +
+                "browser settings first."
+        )
+        assertThat(errorNotices).containsExactly(notices.single())
+        assertThat(state.pendingAirplane).isNull()
+    }
+
+    @Test
+    fun `an airplane command with no bridge answers not available`() = runBlocking<Unit> {
+        val state = ui(airplane = null)
+        assertThat(state.interceptChatCommand("/airplane on", sessionAtTap = 7L)).isTrue()
+        awaitState { notices.isNotEmpty() }
+        assertThat(notices.single()).isEqualTo("Airplane Mode is not available in this chat.")
+        assertThat(errorNotices).containsExactly(notices.single())
+    }
+
+    @Test
+    fun `a state that cannot be read is said, not guessed`() = runBlocking<Unit> {
+        val bridge = FakeAirplaneModeBridge(state = null)
+        val state = ui(airplane = bridge)
+        assertThat(state.interceptChatCommand("/airplane on", sessionAtTap = 7L)).isTrue()
+        awaitState { notices.isNotEmpty() }
+        assertThat(notices.single()).isEqualTo("The Airplane Mode state could not be read on this device.")
+        assertThat(errorNotices).containsExactly(notices.single())
+    }
+
+    @Test
+    fun `an airplane command on a phone already in the target state says so`() = runBlocking<Unit> {
+        val bridge = FakeAirplaneModeBridge(state = true)
+        val state = ui(airplane = bridge)
+        assertThat(state.interceptChatCommand("/airplane on", sessionAtTap = 7L)).isTrue()
+        awaitState { notices.isNotEmpty() }
+        assertThat(notices.single()).isEqualTo("Airplane mode is already on.")
+        assertThat(bridge.setViaRootCount).isEqualTo(0)
+        assertThat(bridge.openSettingsCount).isEqualTo(0)
+    }
+
+    @Test
+    fun `a rooted phone switches and the notice reports the verified state`() = runBlocking<Unit> {
+        val bridge = FakeAirplaneModeBridge(state = false).apply { rooted = true }
+        val state = ui(airplane = bridge)
+        assertThat(state.interceptChatCommand("/airplane on", sessionAtTap = 7L)).isTrue()
+        awaitState { notices.isNotEmpty() }
+        assertThat(bridge.setViaRootCount).isEqualTo(1)
+        assertThat(bridge.state).isTrue()
+        assertThat(notices.single()).isEqualTo("Airplane mode is now on.")
+        assertThat(state.pendingAirplane).isNull()
+    }
+
+    @Test
+    fun `a rooted phone whose command did not take reports the failure`() = runBlocking<Unit> {
+        val bridge = FakeAirplaneModeBridge(state = false).apply {
+            rooted = true
+            setViaRootTakes = false
+        }
+        val state = ui(airplane = bridge)
+        assertThat(state.interceptChatCommand("/airplane on", sessionAtTap = 7L)).isTrue()
+        awaitState { notices.isNotEmpty() }
+        assertThat(notices.single()).isEqualTo(
+            "Airplane mode was not switched — the root command did not take effect."
+        )
+        assertThat(errorNotices).containsExactly(notices.single())
+        assertThat(state.pendingAirplane).isNull()
+    }
+
+    @Test
+    fun `a phone that is not rooted gets the guided hand-off`() = runBlocking<Unit> {
+        val bridge = FakeAirplaneModeBridge(state = false)
+        val state = ui(airplane = bridge)
+        assertThat(state.interceptChatCommand("/airplane on", sessionAtTap = 7L)).isTrue()
+        awaitState { state.pendingAirplane != null }
+        assertThat(bridge.openSettingsCount).isEqualTo(1)
+        val request = state.pendingAirplane!!
+        assertThat(request.targetOn).isTrue()
+        assertThat(request.settingsOpened).isTrue()
+        assertThat(bridge.setViaRootCount).isEqualTo(0)
+        // Nothing is answered yet: the dialog is the question, and the notice
+        // is what the answer (or the poll) earns.
+        assertThat(notices).isEmpty()
+    }
+
+    @Test
+    fun `the auto-continue poll resolves the dialog when the phone matches`() = runBlocking<Unit> {
+        val bridge = FakeAirplaneModeBridge(state = false)
+        val state = ui(airplane = bridge)
+        assertThat(state.interceptChatCommand("/airplane on", sessionAtTap = 7L)).isTrue()
+        awaitState { state.pendingAirplane != null }
+        // The person flips the quick-settings tile without ever touching the
+        // dialog: one 500 ms poll tick later the dialog resolves itself and
+        // the chat continues — runBlocking tolerates the tick.
+        bridge.state = true
+        awaitState { notices.isNotEmpty() }
+        assertThat(notices.single()).isEqualTo("Airplane mode is on — continuing.")
+        assertThat(state.pendingAirplane).isNull()
+    }
+
+    @Test
+    fun `a Yes with the phone still the old way is the honest error`() = runBlocking<Unit> {
+        val bridge = FakeAirplaneModeBridge(state = false)
+        val state = ui(airplane = bridge)
+        assertThat(state.interceptChatCommand("/airplane on", sessionAtTap = 7L)).isTrue()
+        awaitState { state.pendingAirplane != null }
+        state.resolveAirplane()
+        assertThat(state.pendingAirplane).isNull()
+        assertThat(notices.single()).isEqualTo("Airplane mode is still off — the chat continues.")
+        // "still off" is an ERROR notice: the switch the person said yes to
+        // did not happen, and the transcript must not read as if it had.
+        assertThat(errorNotices).containsExactly(notices.single())
+    }
+
+    @Test
+    fun `the dialog's No stops with nothing changed`() = runBlocking<Unit> {
+        val bridge = FakeAirplaneModeBridge(state = false)
+        val state = ui(airplane = bridge)
+        assertThat(state.interceptChatCommand("/airplane on", sessionAtTap = 7L)).isTrue()
+        awaitState { state.pendingAirplane != null }
+        state.stopAirplane()
+        assertThat(state.pendingAirplane).isNull()
+        assertThat(notices.single()).isEqualTo("Airplane Mode was not changed — stopped.")
+        // Stopping is the person's own decision, not a failure.
+        assertThat(errorNotices).isEmpty()
+    }
+
+    @Test
+    fun `the poll is cancelled with the request - a late flip notices nothing`() = runBlocking<Unit> {
+        val bridge = FakeAirplaneModeBridge(state = false)
+        val state = ui(airplane = bridge)
+        assertThat(state.interceptChatCommand("/airplane on", sessionAtTap = 7L)).isTrue()
+        awaitState { state.pendingAirplane != null }
+        state.stopAirplane()
+        val said = notices.toList()
+        // The phone flips AFTER the stop: a poll that outlived its request
+        // would answer it here one tick later — nothing may arrive, because
+        // the retire cancelled the poll with the dialog it served.
+        bridge.state = true
+        Thread.sleep(1_200)
+        assertThat(notices).isEqualTo(said)
+        assertThat(state.pendingAirplane).isNull()
+    }
+
+    /**
+     * The airplane surface the tests drive: a state that flips only when the
+     * test flips it (or when the fake root command "takes"), the rooted and
+     * allowed answers the flow branches on, and the counters that prove which
+     * hand-off actually ran. [setViaRootTakes] false models the command that
+     * exited without changing anything — the case the controller reports as
+     * "did not take effect".
+     */
+    private class FakeAirplaneModeBridge(
+        var state: Boolean? = false
+    ) : AirplaneModeBridge {
+        override var rooted: Boolean = false
+        var allowedAnswer: Boolean = true
+        var setViaRootTakes: Boolean = true
+        var openSettingsCount: Int = 0
+        var setViaRootCount: Int = 0
+
+        override fun currentState(): Boolean? = state
+
+        override suspend fun allowed(): Boolean = allowedAnswer
+
+        override suspend fun setViaRoot(on: Boolean): Boolean {
+            setViaRootCount++
+            if (!setViaRootTakes) return false
+            state = on
+            return true
+        }
+
+        override fun openSettings(): Boolean {
+            openSettingsCount++
+            return true
+        }
+
+        override suspend fun waitUntil(on: Boolean, timeoutMs: Long): Boolean {
+            val deadline = System.currentTimeMillis() + timeoutMs
+            while (System.currentTimeMillis() < deadline) {
+                if (state == on) return true
+                try {
+                    Thread.sleep(20)
+                } catch (_: InterruptedException) {
+                }
+            }
+            return state == on
+        }
     }
 
     /** One activation-gate request against the module row the test configured. */

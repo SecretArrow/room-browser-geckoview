@@ -200,7 +200,7 @@ is fixed in one pass, not three.
 | `permissions` | no | array, unique, each one of `storage` `network` `agent.tools` `chat.context` `agent.generate`, at most 5. |
 | `network` | see rule | object with `allow`: 1..20 host patterns. **Required (non-empty) iff `permissions` contains `network`** — and refused as a surprise when it does not. |
 | `config.schema` | no | 0..12 items; `key` `^[a-z][a-z0-9_]{0,31}$`, unique; `type` one of `string` `number` `boolean`; `default` (when present) must match the type — absent means the type's zero value (`""` / `0` / `false`); `title` 0..64; `description` 0..200. |
-| `commands` | no | 0..12 items; `name` `^[a-z][a-z0-9_-]{0,23}$`, unique, **must be neither `plugins` nor `make_plugins`** (both are reserved by the app, and the refusal names the word); `title` 0..64; `description` 0..200. |
+| `commands` | no | 0..12 items; `name` `^[a-z][a-z0-9_-]{0,23}$`, unique, **must be none of `plugins`, `make_plugins`, `airplane`** (all three are reserved by the app, and the refusal names the word); `title` 0..64; `description` 0..200. |
 | `hooks` | no | a subset of `["message"]`, unique, at most one entry. |
 | `inputs` | no | 0..12 items; the interactive input form — the field schema and its validation rules are their own section below ("Interactive input forms"). |
 | unknown fields | — | **rejected.** The API is versioned by `api`; a manifest carrying a field this build never heard of fails loudly at install rather than silently misbehaving. |
@@ -856,13 +856,15 @@ surface, not the model's):
 | `/plugins <id-or-name>` | toggles that plugin for the chat — exact id or exact name; enabling raises the grant dialog when consents are missing; a notice answers either way |
 | `/plugins <no match>` | a notice listing what *is* installed (or the "install one from a ZIP" line when nothing is) |
 | `/make_plugins <description…>` | asks **this chat's own AI** to draft a whole plugin from the description — manifest plus entry code — and raises the review form; on **Allow and Create** it installs as a normal plugin (see "Making a plugin with `/make_plugins`"). Bare `/make_plugins` answers with instructions; a description over 1000 characters is refused with `/make_plugins needs a description of at most 1000 characters.` |
+| `/airplane on` / `/airplane off` | the app's own guided switch for the phone's radios, usable from a chat's start or mid-chat. A **rooted** phone: the switch is made with `su` and **verified** by reading the state back — a command that did not take is reported as a failure, never as success. Any other phone: the system Airplane Mode settings screen opens, a Yes/No confirmation dialog rises, and the chat continues **by itself** the moment the phone matches (Yes only says what the state really is — "still off" honestly; No stops with nothing changed). Gated by the browser-wide "Offer Airplane Mode shortcut" setting; a bare `/airplane` or any other word answers with the usage notice. No module may declare the word (see below) |
 | `/<name> <args…>` | dispatched when **exactly one** enabled plugin's *manifest* declares `<name>` — the command event runs, cards land, no turn starts |
 | `/<name>` declared by 2+ enabled plugins | an ambiguity notice naming both — enable one, or switch the other off |
 | anything else | falls through to the agent as ordinary chat (a leading slash is not an error) |
 
-`plugins` and `make_plugins` are both reserved words, and a manifest may
-not declare either — the validator refuses
-`command name "make_plugins" is reserved by the app` at install. A
+`plugins`, `make_plugins` and `airplane` are all reserved words, and a
+manifest may not declare any of them — the validator refuses
+`command name "airplane" is reserved by the app` at install, exactly as it
+does for the first two. A
 brand-new chat with no session row yet still works: the first enable or
 plugin command creates the chat's row bound to the panel's tab — which
 needs an AI provider to be configured ("Configure an AI provider first

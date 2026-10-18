@@ -448,6 +448,17 @@ class BrowserAgentController(
     private val pluginCatalog = AgentPluginCatalog(pluginRepo, pluginRuntime)
 
     /**
+     * The airplane surface the /airplane command and the airplane_mode tool
+     * share — one bridge so the two are one promise. The "Offer Airplane
+     * Mode shortcut" setting is read LIVE inside the lambda (the controller's
+     * own convention for every setting a gate consults), because the user can
+     * flip it in the browser settings while a chat or a turn is open.
+     */
+    private val airplaneBridge: AirplaneModeBridge = AirplaneModeController(appContext) {
+        vm.globalSettings.offerAirplaneModeShortcut
+    }
+
+    /**
      * The plugin surface the panel and its sheets bind to: installed plugins,
      * this chat's bindings, the picker sheet and the enable-time grant
      * dialog. Controller-owned on the same Compose-state convention as every
@@ -475,7 +486,10 @@ class BrowserAgentController(
         // /make_plugins composes with the SAME session resolution rule — the
         // chat's own AI, read per command — so the maker's promise and
         // agent.generate's are one promise.
-        compose = { session -> pluginComposerFor(session) }
+        compose = { session -> pluginComposerFor(session) },
+        // The /airplane command rides the SAME bridge the airplane_mode tool
+        // gets below, so the command and the tool cannot drift apart.
+        airplane = airplaneBridge
     )
 
     // ------------------------------------------------------------- lifecycle
@@ -1209,7 +1223,10 @@ class BrowserAgentController(
                 awaitChallengeResume = { awaitChallengeDone() },
                 visionUnsupportedReason = {
                     activeProvider?.protocol?.let { AgentVisionSupport.unsupportedReason(it) }
-                }
+                },
+                // The turn's tool chain gets the same airplane bridge the
+                // /airplane command rides — one promise, two callers.
+                airplane = airplaneBridge
             )
             // HEADLESS: the turn drives a hidden page of this profile's own
             // instead of the tab on screen. The reference is kept so the

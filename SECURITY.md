@@ -307,7 +307,8 @@ the user guide alone. Both are per-profile and both are **off on every profile,
 new and old**, carried by a defaulted Boolean (`agentVisionEnabled`,
 `agentSiteMemoryEnabled`) rather than by a withheld permission — that set is a
 deny-list, so a permission added later is granted by default and cannot express
-"off".
+"off". Airplane Mode is the newest — the one place this app runs a root shell,
+pinned to two fragments and verified by reading the state back.
 
 ### Vision (a screenshot to the provider)
 
@@ -368,6 +369,33 @@ knows (the same header and query names listed under Developer Tools below), so a
 secret that reaches a note under some other shape is not caught. Site memory is
 stored in the profile's own database, in the same file as the rest of the
 profile's state, and is **off unless the profile opts in**.
+
+### The root shell, and its one job
+
+`airplane_mode action=set` — and the `/airplane on|off` chat command, which
+rides the same bridge — is the only place this app runs `su`. The shell is not
+a capability the agent holds; it is one command with two pinned spellings:
+
+- **Exactly two fragments ever run.** The primary is
+  `cmd connectivity airplane-mode enable|disable`; the fallback, as one
+  invocation, is `settings put global airplane_mode_on 0|1 && am broadcast -a
+  android.intent.action.AIRPLANE_MODE --ez state true|false`. NOTHING else is
+  ever interpolated into the command — no user text, no model output, no
+  state read off the device — so there is nothing to inject and no route to
+  widen it into anything else.
+- **Every run is verified by reading the state back.** Android lets any app
+  READ `Settings.Global.AIRPLANE_MODE_ON` without a permission, so success is
+  the state matching, not the command's exit code: a command that exits 0
+  without changing anything is reported as a failure ("did not take
+  effect"), never as a switch that happened.
+- **A phone that is not rooted executes nothing at all.** No su binary, no
+  shell, no attempt — the guided hand-off (the system Airplane Mode settings
+  screen opened, a Yes/No confirmation, and a poll that continues the chat by
+  itself the moment the phone matches) is the whole flow there, and for the
+  tool the Confirm-actions prompt is the person's yes/no.
+- **The whole feature is behind one master switch.** The browser-wide
+  "Offer Airplane Mode shortcut" setting gates the command and the tool
+  alike; with it off, both refuse and nothing is executed on any phone.
 
 ## Developer Tools (Android)
 

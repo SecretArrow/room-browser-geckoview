@@ -28,6 +28,7 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.TimeoutCancellationException
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.json.JsonArray
@@ -108,6 +109,16 @@ class PendingPluginForm(
 }
 
 /**
+ * One guided airplane switch: which way the person was asked to flip it, and
+ * whether the system settings screen opened for them. [settingsOpened] false
+ * means the phone has no settings screen to open (or it refused to launch),
+ * so the dialog's own words point at the quick-settings tile instead — the
+ * state itself is polled either way, and the dialog resolves by itself the
+ * moment the phone matches [targetOn].
+ */
+class PendingAirplaneRequest(val targetOn: Boolean, val settingsOpened: Boolean)
+
+/**
  * The plugin surface of the chat panel, controller-owned: the installed
  * plugins, this chat's bindings, the picker sheet's visibility, and the
  * enable-time grant dialog.
@@ -169,7 +180,17 @@ class PluginUiState(
      * ever creates the session it names, and the composer must resolve
      * against what the chat became, not what it was.
      */
-    private val compose: suspend (sessionId: Long) -> PluginComposeCall? = { null }
+    private val compose: suspend (sessionId: Long) -> PluginComposeCall? = { null },
+    /**
+     * The airplane surface the `/airplane` command rides, or null when this
+     * surface was built without one — in which case the command answers
+     * "not available" rather than pretending a switch could happen. The
+     * controller hands the SAME bridge the `airplane_mode` agent tool gets,
+     * so the command and the tool are one promise, and the bridge is read
+     * live (never snapshotted) because rooted-ness and the master switch are
+     * facts of the moment the command lands.
+     */
+    private val airplane: AirplaneModeBridge? = null
 ) {
 
     var installed by mutableStateOf<List<PluginEntity>>(emptyList())
@@ -201,6 +222,18 @@ class PluginUiState(
         private set
 
     /**
+     * The guided Airplane Mode switch waiting on the person, or null — the
+     * `pendingGrant`/`pendingForm`/`pendingCreation` convention once more:
+     * the dialog layer reads it, recomposition is the notification, and only
+     * [resolveAirplane] and [stopAirplane] retire it (the auto-continue poll
+     * retires it through [resolveAirplane] too). While it is up the state is
+     * polled, so a person who flips the quick-settings tile never needs to
+     * answer the dialog at all.
+     */
+    var pendingAirplane by mutableStateOf<PendingAirplaneRequest?>(null)
+        private set
+
+    /**
      * This surface as a [PluginFormCall] — the host every event IT runs
      * (activations, commands, the staged module runs) wires, and the host the
      * controller hands the turn's executor and hooks. One instance so every
@@ -209,6 +242,9 @@ class PluginUiState(
     val formHost: PluginFormCall = PluginFormCall { request -> askForm(request) }
 
     private var chatPluginsJob: Job? = null
+
+    /** The auto-continue poll behind a raised [pendingAirplane], or null. */
+    private var airplanePollJob: Job? = null
 
     /**
      * Starts the collectors. Called once from the controller's own start, on
@@ -287,6 +323,10 @@ class PluginUiState(
             }
             is PluginCommand.MakePlugins -> {
                 makePlugins(command.description, sessionAtTap)
+                true
+            }
+            is PluginCommand.Airplane -> {
+                handleAirplane(command.on)
                 true
             }
             is PluginCommand.Ambiguous -> {
@@ -626,6 +666,126 @@ class PluginUiState(
         if (pendingCreation == null) return
         pendingCreation = null
         onNotice("The plugin draft was discarded — nothing was installed.", false)
+    }
+
+    // --------------------------------------------------------- the airplane command
+
+    /**
+     * The `/airplane on|off` flow: one decision ladder, answered in notices,
+     * with every answer verified against the live state rather than assumed.
+     *
+     * A missing direction is usage, not an error. Then the bridge itself: a
+     * chat built without one is "not available"; a bridge the master switch
+     * ("Offer Airplane Mode shortcut", the feature's ONE gate — nothing new
+     * to configure) has switched off says so; a state that cannot be read
+     * says that; a state that is ALREADY the target is the cheapest honest
+     * answer of all. What remains is the switch itself: a rooted phone runs
+     * the su command and reports whether it actually took (exit 0 is not
+     * success — the state re-read is), and a phone that is not rooted gets
+     * the guided hand-off: the system settings screen opened, the
+     * confirmation dialog raised ([pendingAirplane]), and the auto-continue
+     * poll started — the chat continues by itself the moment the phone
+     * matches, or when the person answers the dialog.
+     */
+    private suspend fun handleAirplane(on: Boolean?) {
+        if (on == null) {
+            onNotice(
+                "Say \"/airplane on\" or \"/airplane off\" — the word after the command says " +
+                    "which way to switch.",
+                false
+            )
+            return
+        }
+        val bridge = airplane
+        if (bridge == null) {
+            onNotice("Airplane Mode is not available in this chat.", true)
+            return
+        }
+        if (!bridge.allowed()) {
+            onNotice(
+                "\"/airplane\" is switched off — enable \"Offer Airplane Mode shortcut\" in " +
+                    "the browser settings first.",
+                true
+            )
+            return
+        }
+        when (val state = bridge.currentState()) {
+            null -> {
+                onNotice("The Airplane Mode state could not be read on this device.", true)
+                return
+            }
+            on -> {
+                onNotice("Airplane mode is already ${if (on) "on" else "off"}.", false)
+                return
+            }
+            else -> Unit
+        }
+        if (bridge.rooted) {
+            if (bridge.setViaRoot(on)) {
+                onNotice("Airplane mode is now ${if (on) "on" else "off"}.", false)
+            } else {
+                onNotice(
+                    "Airplane mode was not switched — the root command did not take effect.",
+                    true
+                )
+            }
+            return
+        }
+        val opened = bridge.openSettings()
+        pendingAirplane = PendingAirplaneRequest(targetOn = on, settingsOpened = opened)
+        // Auto-continue without a dialog round-trip: while the dialog is up
+        // the state is polled, and the moment the phone matches the target
+        // the dialog resolves itself — "yes" is optional for a person who
+        // just flips the quick-settings tile. The loop is cancelled by the
+        // retire, so it can never outlive the request it serves.
+        airplanePollJob = scope.launch {
+            while (true) {
+                delay(AIRPLANE_POLL_MS)
+                if (bridge.currentState() == on) {
+                    resolveAirplane()
+                    break
+                }
+            }
+        }
+    }
+
+    /**
+     * The auto-continue path AND the dialog's Yes: retire the request
+     * (cancel the poll, clear the state), then RE-READ the state and say
+     * plainly what it is — a Yes that arrives with the phone still the old
+     * way is answered with the honest "still off" error rather than a
+     * pretend switch. The target is read from the request BEFORE the retire
+     * clears it, never re-read from [pendingAirplane] after.
+     */
+    fun resolveAirplane() {
+        val request = pendingAirplane ?: return
+        retireAirplane()
+        if (airplane?.currentState() == request.targetOn) {
+            onNotice(
+                "Airplane mode is ${if (request.targetOn) "on" else "off"} — continuing.",
+                false
+            )
+        } else {
+            onNotice(
+                "Airplane mode is still ${if (!request.targetOn) "on" else "off"} — " +
+                    "the chat continues.",
+                true
+            )
+        }
+    }
+
+    /** The dialog's No (and its dismissal): nothing was switched, the chat stops here. */
+    fun stopAirplane() {
+        if (pendingAirplane == null) return
+        retireAirplane()
+        onNotice("Airplane Mode was not changed — stopped.", false)
+    }
+
+    /** Cancels the poll and clears the request — the one retire every path shares. */
+    private fun retireAirplane() {
+        airplanePollJob?.cancel()
+        airplanePollJob = null
+        pendingAirplane = null
     }
 
     // ------------------------------------------------------------- internals
@@ -1164,5 +1324,8 @@ class PluginUiState(
     private companion object {
         /** The card text cap — the same number [PluginCard.parse] clamps to. */
         const val PLUGIN_MESSAGE_CHARS = 4000
+
+        /** The auto-continue poll cadence behind a raised airplane request. */
+        const val AIRPLANE_POLL_MS = 500L
     }
 }

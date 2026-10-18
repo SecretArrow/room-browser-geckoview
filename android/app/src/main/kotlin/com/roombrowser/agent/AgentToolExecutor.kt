@@ -158,7 +158,14 @@ class AgentToolExecutor(
      * Checked before capture so a text-only provider is refused rather than
      * silently handed a request with the picture dropped.
      */
-    private val visionUnsupportedReason: () -> String? = { null }
+    private val visionUnsupportedReason: () -> String? = { null },
+    /**
+     * The airplane surface the `airplane_mode` tool rides, or null when this
+     * executor was built without one (a scheduled run's executor is exactly
+     * that) — the tool then refuses with "not available" rather than
+     * pretending a switch could happen.
+     */
+    private val airplane: AirplaneModeBridge? = null
 ) : ToolExecutor {
 
     /** Why the last failed readiness wait gave up; null when it did not fail. */
@@ -182,7 +189,8 @@ class AgentToolExecutor(
             destructiveGate = destructiveGate,
             profileData = profileData,
             otpDigitsAllowed = otpDigitsAllowed,
-            fillField = { ref, text -> rawFillField(ref, text) }
+            fillField = { ref, text -> rawFillField(ref, text) },
+            airplane = airplane
         )
     }
 

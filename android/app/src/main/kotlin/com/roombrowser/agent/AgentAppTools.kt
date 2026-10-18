@@ -66,7 +66,14 @@ class AgentAppTools(
     /** Whether the digits of a generated code may be returned to the model. */
     private val otpDigitsAllowed: suspend () -> Boolean = { false },
     /** Types text into a page field, for `app_2fa action=fill`. */
-    private val fillField: (suspend (ref: Int, text: String) -> ToolResult)? = null
+    private val fillField: (suspend (ref: Int, text: String) -> ToolResult)? = null,
+    /**
+     * The airplane surface `airplane_mode` rides, or null when this executor
+     * was built without one — the tool then refuses with "not available"
+     * rather than pretending a switch could happen. The SAME bridge the
+     * `/airplane` chat command rides, so the two are one promise.
+     */
+    private val airplane: AirplaneModeBridge? = null
 ) {
 
     private val profileTools: AgentProfileTools? = profileData?.let {
@@ -119,6 +126,7 @@ class AgentAppTools(
         AgentTools.APP_2FA, AgentTools.APP_NOTES -> profileTools
             ?.execute(name, argsJson)
             ?: ToolResult(false, profileToolsUnavailable(name))
+        AgentTools.AIRPLANE_MODE -> appAirplane(strArg(args, "action") ?: "read", strArg(args, "state"))
         else -> appPage(strArg(args, "action"), args)
     }
 
@@ -544,6 +552,90 @@ class AgentAppTools(
         vm.shieldsState.host.ifBlank { UrlIntelligence.hostOf(vm.pageState.url).orEmpty() }
             .takeIf { it.isNotBlank() }
 
+    // --------------------------------------------------------- airplane mode
+
+    /**
+     * The `airplane_mode` tool: read the phone's radios, or switch them.
+     *
+     * Every answer is verified against the live state ([AirplaneModeBridge]'s
+     * trust-but-verify contract): `set` on a rooted phone reports only what
+     * the state re-read says, and `set` on a phone that is not rooted opens
+     * the system settings screen and WAITS — up to 60 seconds — for the
+     * person to flip it, so the model's next step lands on the truth rather
+     * than on a switch that only pretend happened. The Confirm-actions prompt
+     * for `set` (the [AgentAppActions.isWrite] classification) already ran
+     * BEFORE this body: on the non-root flow that prompt IS the person's
+     * yes/no, and a denied or unanswered prompt denies here as it does
+     * everywhere.
+     */
+    private suspend fun appAirplane(action: String, state: String?): ToolResult {
+        if (action != "read" && action != "set") {
+            return ToolResult(false, "action must be read or set, not '$action'")
+        }
+        val bridge = airplane
+        if (action == "read") {
+            val current = bridge?.currentState()
+            return when {
+                bridge == null -> ToolResult(false, "Airplane Mode is not available in this chat.")
+                current == null -> ToolResult(false, "The Airplane Mode state could not be read.")
+                else -> ToolResult(true, "Airplane mode is ${if (current) "on" else "off"}.")
+            }
+        }
+        if (state == null) {
+            return ToolResult(false, "Say which way: state=on or state=off.")
+        }
+        if (bridge == null) {
+            return ToolResult(false, "Airplane Mode is not available in this chat.")
+        }
+        if (!bridge.allowed()) {
+            return ToolResult(
+                false,
+                "The \"Offer Airplane Mode shortcut\" setting is off — enable it in the browser " +
+                    "settings first."
+            )
+        }
+        val current = bridge.currentState()
+        if (current == null) {
+            // toggle resolves against the live state, and every set below
+            // reports against it too — an unreadable state means no honest
+            // answer exists, so the read error is the answer.
+            return ToolResult(false, "The Airplane Mode state could not be read.")
+        }
+        val target = when (state) {
+            "on" -> true
+            "off" -> false
+            "toggle" -> !current
+            else -> null
+        }
+        if (target == null) {
+            return ToolResult(false, "state must be on, off or toggle, not '$state'")
+        }
+        if (target == current) {
+            return ToolResult(true, "Airplane mode is already ${if (target) "on" else "off"}.")
+        }
+        if (bridge.rooted) {
+            return if (bridge.setViaRoot(target)) {
+                ToolResult(true, "Airplane mode is now ${if (target) "on" else "off"}.")
+            } else {
+                ToolResult(false, "Airplane mode was not switched — the root command did not take effect.")
+            }
+        }
+        // Not rooted: the guided hand-off. The settings screen opens, the wait
+        // gives the person their turn, and the answer says what actually
+        // happened — a match is the person's own doing, and a timeout keeps
+        // the screen open and tells the model to ask rather than retry blind.
+        bridge.openSettings()
+        return if (bridge.waitUntil(target, AIRPLANE_WAIT_MS)) {
+            ToolResult(true, "Airplane mode is ${if (target) "on" else "off"} — the person switched it.")
+        } else {
+            ToolResult(
+                false,
+                "Airplane Mode was not switched within 60 s — the settings screen is open; ask " +
+                    "the person to flip it and try again."
+            )
+        }
+    }
+
     // ---------------------------------------------------------- the page
 
     private suspend fun appPage(action: String?, args: JsonObject): ToolResult {
@@ -648,6 +740,9 @@ class AgentAppTools(
         const val HISTORY_LIMIT = 50
         const val READER_TIMEOUT_MS = 4_000L
         const val POLL_MS = 100L
+
+        /** How long the guided non-root `airplane_mode set` waits for the person. */
+        const val AIRPLANE_WAIT_MS = 60_000L
         const val noSite =
             "no site is open in this chat's tab — navigate to one first, or this needs the " +
                 "tab on screen (this chat's own tab)."

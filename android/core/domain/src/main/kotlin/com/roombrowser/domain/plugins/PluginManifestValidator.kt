@@ -215,9 +215,10 @@ object PluginManifestValidator {
                 errors.add("command name \"$commandName\" is not a lowercase identifier (a..z, 0..9, _, -, at most 24 chars)")
             }
             if (commandName in PluginCommandParser.RESERVED) {
-                // Both app-owned words — `plugins` and `make_plugins` — refuse
-                // with the same sentence; the parser's RESERVED set is the one
-                // spelling of the vocabulary, so neither side can drift.
+                // The app-owned words — `plugins`, `make_plugins` and
+                // `airplane` — refuse with the same sentence; the parser's
+                // RESERVED set is the one spelling of the vocabulary, so
+                // neither side can drift.
                 errors.add("command name \"$commandName\" is reserved by the app")
             }
             if (command.string("title").orEmpty().length > COMMAND_TITLE_CHARS) {

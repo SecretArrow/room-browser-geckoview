@@ -91,6 +91,9 @@ object AgentTools {
     const val APP_2FA = "app_2fa"
     const val APP_NOTES = "app_notes"
 
+    // ---- the phone's own radios (rooted: su, verified; otherwise guided) ----
+    const val AIRPLANE_MODE = "airplane_mode"
+
     // ---- page history controls the catalogue was missing ----
     const val RELOAD = "reload"
     const val FORWARD = "forward"
@@ -161,6 +164,7 @@ object AgentTools {
     private val SCHEMA_APP_PAGE = """{"type":"object","properties":{"action":{"type":"string","enum":${enumOf(AgentAppActions.PAGE_ACTIONS)},"description":"find/find_next/find_previous/clear_find work on text; reader_on/reader_off, desktop_on/desktop_off and bookmark_add/bookmark_remove act on the open page"},"query":{"type":"string","description":"For the find actions: the text to find. find_next and find_previous need it repeated — the browser keeps no last query of its own"}},"required":["action"]}"""
     private val SCHEMA_APP_2FA = """{"type":"object","properties":{"action":{"type":"string","enum":${enumOf(AgentAppActions.TOTP_ACTIONS)},"description":"list names the profile's authenticator accounts; code gives the current code for one; copy puts it on the clipboard; fill types it into a field on the page"},"id":{"type":"string","description":"Account id from action=list"},"ref":{"type":"integer","description":"For action=fill: the input to type the code into, from read_page. Required for fill; there is no fallback to the focused element"}},"required":["action"]}"""
     private val SCHEMA_APP_NOTES = """{"type":"object","properties":{"action":{"type":"string","enum":${enumOf(AgentAppActions.NOTE_ACTIONS)}},"id":{"type":"string","description":"Note id from action=list, for get/update/delete"},"title":{"type":"string","description":"Note title, for add/update"},"body":{"type":"string","description":"Note text, for add/update"}},"required":["action"]}"""
+    private val SCHEMA_AIRPLANE_MODE = """{"type":"object","properties":{"action":{"type":"string","enum":["read","set"]},"state":{"type":"string","enum":["on","off","toggle"],"description":"Target state for action=set"}},"required":["action"]}"""
 
     /**
      * Tool names whose execution may require user confirmation.
@@ -375,6 +379,11 @@ object AgentTools {
             "The notes saved in this profile. action=list shows them with their ids, action=get reads one in full, and add/update/delete change them. Notes belong to the profile, not to the page.",
             SCHEMA_APP_NOTES
         ),
+        def(
+            AIRPLANE_MODE,
+            "Read or change this phone's Airplane Mode. Needs the \"Offer Airplane Mode shortcut\" setting. On a rooted phone the switch is made and verified; on a phone that is not rooted the tool opens the system Airplane Mode settings screen and waits up to 60 seconds for the person to flip it.",
+            SCHEMA_AIRPLANE_MODE
+        ),
         def(RELOAD, "Reload the page in this chat's tab. The Developer Tools console and network buffers keep working across the reload.", SCHEMA_NO_PARAMS),
         def(FORWARD, "Go forward one step in this chat's tab's history, undoing a back.", SCHEMA_NO_PARAMS),
         def(
@@ -519,6 +528,7 @@ object AgentTools {
             APP_PAGE -> "Page: ${str("action") ?: "?"}"
             APP_2FA -> "2FA: ${str("action") ?: "list"}"
             APP_NOTES -> "Notes: ${str("action") ?: "list"}"
+            AIRPLANE_MODE -> "Airplane Mode: ${str("action") ?: "read"}${str("state")?.let { " $it" } ?: ""}"
             RELOAD -> "Reload page"
             FORWARD -> "Go forward"
             DEVTOOLS_RELOAD -> "Reload and watch the console"

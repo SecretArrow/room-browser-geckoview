@@ -106,6 +106,21 @@ class AgentAppActionsTest {
     }
 
     @Test
+    fun an_airplane_set_is_a_write_and_never_destructive() {
+        // The Confirm-actions prompt is the person's yes/no for the guided
+        // non-root flow, so a set must be classified as a write to reach it.
+        assertThat(AgentAppActions.isWrite(AgentTools.AIRPLANE_MODE, "set")).isTrue()
+        assertThat(AgentAppActions.isWrite(AgentTools.AIRPLANE_MODE, "read")).isFalse()
+        // The same tool undoes it — action=set state=off is the way back — so
+        // it is reversible by construction and never asks through the
+        // destructive gate, whatever the action or the unreadable cases.
+        assertThat(AgentAppActions.isDestructive(AgentTools.AIRPLANE_MODE, "set")).isFalse()
+        assertThat(AgentAppActions.isDestructive(AgentTools.AIRPLANE_MODE, "read")).isFalse()
+        assertThat(AgentAppActions.isDestructive(AgentTools.AIRPLANE_MODE, null)).isFalse()
+        assertThat(AgentAppActions.isDestructive(AgentTools.AIRPLANE_MODE, "banana")).isFalse()
+    }
+
+    @Test
     fun permission_decisions_are_the_three_the_storage_knows() {
         assertThat(AgentAppActions.PERMISSION_DECISIONS).containsExactly("ask", "allow", "block")
         assertThat(AgentAppActions.PERMISSIONS).containsAtLeast(
@@ -126,14 +141,15 @@ class AgentAppActionsTest {
     }
 
     @Test
-    fun the_app_tools_are_the_nine_the_schema_declares() {
+    fun the_app_tools_are_the_ten_the_schema_declares() {
         assertThat(AgentAppActions.TOOLS).containsExactly(
             AgentTools.APP_OPEN, AgentTools.APP_TABS, AgentTools.APP_DATA,
             AgentTools.APP_SETTINGS, AgentTools.APP_SHIELDS,
             AgentTools.APP_SITE_PERMISSION, AgentTools.APP_PAGE,
-            AgentTools.APP_2FA, AgentTools.APP_NOTES
+            AgentTools.APP_2FA, AgentTools.APP_NOTES,
+            AgentTools.AIRPLANE_MODE
         )
-        assertThat(AgentAppActions.TOOLS).hasSize(9)
+        assertThat(AgentAppActions.TOOLS).hasSize(10)
         // The profile pair is a SUBSET of the app tools, not a fourth family:
         // everything that classifies an app tool has to see them too.
         assertThat(AgentAppActions.TOOLS).containsAtLeastElementsIn(AgentAppActions.PROFILE_TOOLS)

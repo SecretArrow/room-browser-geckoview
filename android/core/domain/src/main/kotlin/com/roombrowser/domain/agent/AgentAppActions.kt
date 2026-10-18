@@ -20,7 +20,8 @@ object AgentAppActions {
         AgentTools.APP_OPEN, AgentTools.APP_TABS, AgentTools.APP_DATA,
         AgentTools.APP_SETTINGS, AgentTools.APP_SHIELDS,
         AgentTools.APP_SITE_PERMISSION, AgentTools.APP_PAGE,
-        AgentTools.APP_2FA, AgentTools.APP_NOTES
+        AgentTools.APP_2FA, AgentTools.APP_NOTES,
+        AgentTools.AIRPLANE_MODE
     )
 
     /**
@@ -296,6 +297,10 @@ object AgentAppActions {
         // this tool must not raise the Confirm actions prompt — the setting that
         // decides whether the DIGITS reach the model is a different one.
         AgentTools.APP_2FA -> false
+        // A set goes through the Confirm-actions prompt, which on a phone that
+        // is not rooted IS the person's yes/no for the guided flow — the tool
+        // opens the settings screen only after that prompt was answered.
+        AgentTools.AIRPLANE_MODE -> action == "set"
         else -> false
     }
 }
