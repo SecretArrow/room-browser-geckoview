@@ -32,7 +32,16 @@ import java.util.concurrent.TimeUnit
  */
 class AirplaneModeController(
     private val context: Context,
-    private val allowed: suspend () -> Boolean
+    /**
+     * The "Offer Airplane Mode shortcut" gate, read live — named for what it
+     * IS rather than what the interface calls it, because a function-typed
+     * property named `allowed` next to the `allowed()` override is a
+     * recursion trap: the call inside the override resolves to the METHOD,
+     * and the ':browser' process dies on a StackOverflowError the moment the
+     * gate is consulted (the airplane e2e's phase-2 crash, pinned here so
+     * the rename is not "cosmetic" to a future reader).
+     */
+    private val allowedBySetting: suspend () -> Boolean
 ) : AirplaneModeBridge {
 
     @Volatile
@@ -54,7 +63,7 @@ class AirplaneModeController(
         else -> null
     }
 
-    override suspend fun allowed(): Boolean = allowed()
+    override suspend fun allowed(): Boolean = allowedBySetting()
 
     override suspend fun setViaRoot(on: Boolean): Boolean {
         // The two pinned fragments are the ONLY thing that ever reaches the
