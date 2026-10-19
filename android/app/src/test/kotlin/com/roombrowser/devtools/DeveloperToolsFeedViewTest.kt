@@ -76,7 +76,10 @@ class DeveloperToolsFeedViewTest {
 
     @Test
     fun `an empty feed derives an empty window`() {
-        val view = feedView(emptyList(), dropped = 0, renderMax = 200, matches = null)
+        // The element type is named because nothing on this line carries one
+        // for the compiler to infer: emptyList() and a null filter leave both
+        // the function's E and the list's own T unbound.
+        val view = feedView(emptyList<ConsoleEntry>(), dropped = 0, renderMax = 200, matches = null)
         assertThat(view.matching).isEmpty()
         assertThat(view.rows).isEmpty()
         assertThat(view.keys).isEmpty()

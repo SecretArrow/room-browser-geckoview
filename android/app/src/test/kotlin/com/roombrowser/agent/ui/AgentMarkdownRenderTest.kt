@@ -24,18 +24,18 @@ class AgentMarkdownRenderTest {
         // A blank line in the middle and a trailing newline: both exercise the
         // newline-joining branch against lastIndex.
         val text = "one\n\ntwo\nthree\n"
-        assertThat(renderMarkdown(text).toPlainText()).isEqualTo(text)
+        assertThat(renderMarkdown(text).text).isEqualTo(text)
     }
 
     @Test
     fun `empty text renders empty`() {
-        assertThat(renderMarkdown("").toPlainText()).isEqualTo("")
+        assertThat(renderMarkdown("").text).isEqualTo("")
     }
 
     @Test
     fun `headings drop their markers and go bold`() {
         val out = renderMarkdown("### Title\n## Sub\n# Top")
-        assertThat(out.toPlainText()).isEqualTo("Title\nSub\nTop")
+        assertThat(out.text).isEqualTo("Title\nSub\nTop")
         assertThat(out.spanStyles).hasSize(3)
         out.spanStyles.forEach { range ->
             assertThat(range.item).isEqualTo(SpanStyle(fontWeight = FontWeight.Bold))
@@ -45,13 +45,13 @@ class AgentMarkdownRenderTest {
     @Test
     fun `bullets render with the bullet glyph in both spellings`() {
         val out = renderMarkdown("- plain\n* starred\n- **bold** item")
-        assertThat(out.toPlainText()).isEqualTo("• plain\n• starred\n• bold item")
+        assertThat(out.text).isEqualTo("• plain\n• starred\n• bold item")
     }
 
     @Test
     fun `a bold span carries its exact range`() {
         val out = renderMarkdown("Hello **bold** world")
-        assertThat(out.toPlainText()).isEqualTo("Hello bold world")
+        assertThat(out.text).isEqualTo("Hello bold world")
         assertThat(out.spanStyles).hasSize(1)
         val span = out.spanStyles[0]
         assertThat(span.item).isEqualTo(SpanStyle(fontWeight = FontWeight.Bold))
@@ -63,7 +63,7 @@ class AgentMarkdownRenderTest {
     fun `an inline code span carries the monospace style with the given background`() {
         val background = Color(0x11223344)
         val out = renderMarkdown("a `code` b", background)
-        assertThat(out.toPlainText()).isEqualTo("a code b")
+        assertThat(out.text).isEqualTo("a code b")
         assertThat(out.spanStyles).hasSize(1)
         val span = out.spanStyles[0]
         assertThat(span.item)
@@ -75,7 +75,7 @@ class AgentMarkdownRenderTest {
     @Test
     fun `a code span before a bold span keeps the document order`() {
         val out = renderMarkdown("`x` then **y**")
-        assertThat(out.toPlainText()).isEqualTo("x then y")
+        assertThat(out.text).isEqualTo("x then y")
         assertThat(out.spanStyles).hasSize(2)
         assertThat(out.spanStyles[0].start).isEqualTo(0)
         assertThat(out.spanStyles[1].item).isEqualTo(SpanStyle(fontWeight = FontWeight.Bold))
@@ -98,7 +98,7 @@ class AgentMarkdownRenderTest {
                 "### Tail\n" +
                 "done"
         val out = renderMarkdown(text)
-        assertThat(out.toPlainText()).isEqualTo(
+        assertThat(out.text).isEqualTo(
             "Summary\n" +
                 "The page lists three points and one snippet:\n" +
                 "\n" +
