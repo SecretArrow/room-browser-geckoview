@@ -281,8 +281,8 @@ class AgentKeepAliveService : Service() {
         )
     }
 
-    private fun buildNotification(status: String): Notification {
-        return NotificationCompat.Builder(this, CHANNEL_ID)
+    private fun buildNotification(status: String): Notification =
+        NotificationCompat.Builder(this, CHANNEL_ID)
             .setSmallIcon(android.R.drawable.ic_menu_view)
             .setContentTitle("Room Agent")
             .setContentText(status)
@@ -294,7 +294,6 @@ class AgentKeepAliveService : Service() {
             .addAction(0, if (pacer.isPaused()) "Resume" else "Pause", pauseIntent)
             .addAction(0, "Stop", stopIntent)
             .build()
-    }
 
     private fun createChannel() {
         val nm = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
