@@ -1044,7 +1044,7 @@ private fun LoadOlderMessages(agent: BrowserAgentController, listState: LazyList
     Box(Modifier.fillMaxWidth().padding(top = 4.dp), contentAlignment = Alignment.Center) {
         TextButton(onClick = {
             val firstIndex = listState.firstVisibleItemIndex
-            val firstOffset = listState.firstVisibleItemOffset
+            val firstOffset = listState.firstVisibleItemScrollOffset
             scope.launch {
                 val added = agent.loadOlderEntries()
                 val target = olderPageScrollTarget(firstIndex, added, agent.hasOlderEntries)
