@@ -7,6 +7,7 @@ import com.roombrowser.data.db.AppDatabase
 import io.mockk.coEvery
 import io.mockk.every
 import io.mockk.mockk
+import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.runBlocking
 import org.junit.Test
 
@@ -134,6 +135,10 @@ class AgentMessagePagingTest {
      */
     private fun repoWith(all: List<AgentMessageEntity>): AgentRepository {
         val dao = mockk<AgentDao> {
+            // The repository's own providers property is initialized EAGERLY at
+            // construction (its Flow is handed to collectors), so the mock must
+            // answer that one call too or every test dies in the constructor.
+            every { observeProviders() } returns emptyFlow()
             coEvery { messagesBefore(any(), any(), any()) } answers {
                 val before = secondArg<Long>()
                 val limit = thirdArg<Int>()
