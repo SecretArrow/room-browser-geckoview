@@ -21,6 +21,8 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicLong
 
 /**
  * One enabled plugin of one chat, as a probe saw it.
@@ -86,18 +88,53 @@ class AgentPluginCatalog(
 ) {
 
     private val mutex = Mutex()
-    private val cache = mutableMapOf<Long, List<SessionPlugin>>()
+    private val cache = ConcurrentHashMap<Long, List<SessionPlugin>>()
+
+    /**
+     * Raised by every [invalidate] and [invalidateAll]. A probe holds the
+     * [mutex] for the whole of its run — a Node start-up plus the module's
+     * load, seconds on a phone — and an invalidation cannot wait it out (its
+     * own callers, flow collectors among them, are not suspending through
+     * here), so the number a probe read when it STARTED is what tells it, when
+     * the probe comes back, whether the answer it is about to store was
+     * already overtaken by an invalidation that landed mid-probe: an install,
+     * an uninstall, an editor's save. Storing anyway would hand every LATER
+     * reader a catalogue the invalidation had already declared false, and the
+     * next reader would keep being served it until the next invalidation
+     * happened to clear it. The guard makes the invalidation win by leaving
+     * the cache empty for the next reader to fill from the truth; the
+     * overtaken probe's own caller still gets its answer (it asked before the
+     * change and has its own runCatching and failure words for that), but
+     * nobody after it inherits the stale set.
+     *
+     * One counter for every session rather than one per session on purpose:
+     * an invalidation of chat A dropping an in-flight probe of chat B's store
+     * only costs that chat a re-probe, which is the conservative direction —
+     * the reverse shape (a stale store surviving an invalidation) is the one
+     * that serves tools a chat never consented to.
+     */
+    private val generation = AtomicLong(0)
 
     /**
      * The session's enabled plugins, probing every one of them when the cache
      * holds no answer for [sessionId]. Ordered by the bindings' creation, so
      * the sheet, the command routing and the tool catalogue all list plugins
      * in the order the chat added them.
+     *
+     * CONCURRENCY: the probe runs INSIDE the mutex, so a second caller that
+     * arrives while one is in flight waits for it and then finds the answer
+     * already stored — one probe serves any number of overlapping readers.
+     * That single-flight is what lets the turn start a probe it does not
+     * itself need yet (the start-of-turn warm in
+     * [BrowserAgentController.runTurn]): the readers that DO need it later
+     * either find it stored or join it in flight, never start a second one,
+     * and never see an answer older than the invalidations that have landed.
      */
     suspend fun sessionPlugins(sessionId: Long): List<SessionPlugin> = mutex.withLock {
         cache[sessionId]?.let { return it }
+        val atGeneration = generation.get()
         val discovered = probeAll(sessionId)
-        cache[sessionId] = discovered
+        if (generation.get() == atGeneration) cache[sessionId] = discovered
         discovered
     }
 
@@ -153,14 +190,27 @@ class AgentPluginCatalog(
             }
             ?.let { (sessionPlugin, tool) -> SessionPluginTool(sessionPlugin, tool.name) }
 
-    /** Drops the cached answer for [sessionId]: the next read re-probes. */
+    /**
+     * Drops the cached answer for [sessionId]: the next read re-probes. Also
+     * raises [generation], which retires any probe still in flight for ANY
+     * session — see that field for why an invalidation must beat a probe that
+     * is about to store, not just the one that already did.
+     */
     fun invalidate(sessionId: Long) {
         cache.remove(sessionId)
+        generation.incrementAndGet()
     }
 
-    /** Drops every cached answer — an install or uninstall can change them all. */
+    /**
+     * Drops every cached answer — an install or uninstall can change them
+     * all. Raises [generation] for the same reason [invalidate] does. The map
+     * is a [ConcurrentHashMap] because these run on their caller's thread
+     * (a flow collector, an enable path) while a probe's store runs on its
+     * own under the mutex, and the two may touch the map in the same breath.
+     */
     fun invalidateAll() {
         cache.clear()
+        generation.incrementAndGet()
     }
 
     /** Probes each enabled binding of the session, once, in binding order. */

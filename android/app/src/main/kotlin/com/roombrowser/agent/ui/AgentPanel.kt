@@ -38,6 +38,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
@@ -103,12 +104,14 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.State
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -712,8 +715,24 @@ private fun ChatModePicker(agent: BrowserAgentController) {
  * id of their own, and a timestamp is not unique on its own — two rows written
  * in the same millisecond would collide, and a duplicate key is a crash, not a
  * cosmetic problem. A repeat is therefore disambiguated by how many identical
- * ones preceded it. That number cannot move under a survivor: the list is only
- * ever appended to or updated in place, never spliced.
+ * ones preceded it. That number cannot move under a survivor when the list
+ * only grows at the end or is updated in place; the one splice the controller
+ * makes is "load older" prepending rows in front, and a prepended row shares
+ * no survivor's stem unless it carries the same class AND the same millisecond
+ * — possible only for rows written at opposite ends of a long chat within one
+ * clock tick, where the honest cost is a survivor losing remembered item state
+ * (an expanded "Thought process" closing), never a duplicate key: the pass
+ * recomputes from scratch, so uniqueness holds regardless.
+ *
+ * F-16, why this stays a POSITIONAL pass rather than a per-entry key lambda:
+ * the disambiguating suffix counts the identical PREDECESSORS, which a lone
+ * entry cannot know about itself — `itemsIndexed` with `keys[index]` is the
+ * only cheap scheme that can express it. The contract it leans on is the
+ * controller's whole-list rule (append a row, copy()-replace one in place,
+ * prepend a page of older rows, or swap the entire list at a chat switch —
+ * never rearrange the middle), and [TranscriptKeyCache] leans on the same
+ * contract through [sameKeyStem], which must keep reading exactly the fields
+ * this function reads — the branch plus `at`/`callId`, nothing else.
  *
  * `internal` so the JVM test can pin it; not `private`, because a key that
  * collides takes the whole panel down.
@@ -733,6 +752,129 @@ internal fun transcriptKeys(entries: List<AgentEntry>): List<String> {
     }
 }
 
+/**
+ * [transcriptKeys] with a memory, so a streamed token does not re-run it.
+ *
+ * F-03: every delta copy()-replaces the whole entries LIST, so
+ * `remember(entries) { transcriptKeys(entries) }` re-ran an O(n) HashMap pass
+ * per token. The cache answers from memory whenever the new list provably
+ * yields the same keys: the same object, or the same SIZE with the same key
+ * stem at every index — a stem being exactly what [transcriptKeys] reads
+ * (the branch plus `at`/`callId`; token appends and the tool/assistant
+ * in-place copies never touch those). Keys are a pure function of the stems,
+ * so equal stems mean equal keys: the hit is correct by construction, not by
+ * hope, and any controller change that does move a stem falls through to a
+ * full recompute. The stem scan itself is allocation-free pointer and Long
+ * compares; only a genuinely new shape — a row landed, older rows were
+ * prepended, a chat switched, the list shrank — pays the HashMap again.
+ *
+ * `internal` for the same reason as [transcriptKeys]: the JVM test pins the
+ * hit/miss behavior that keeps item state attached to its row.
+ */
+internal class TranscriptKeyCache {
+    private var source: List<AgentEntry>? = null
+    private var keys: List<String> = emptyList()
+
+    fun keysFor(entries: List<AgentEntry>): List<String> {
+        val cached = source ?: return recompute(entries)
+        if (entries === cached) return keys
+        if (entries.size == cached.size && sameKeyStems(cached, entries)) {
+            source = entries
+            return keys
+        }
+        return recompute(entries)
+    }
+
+    private fun recompute(entries: List<AgentEntry>): List<String> {
+        source = entries
+        keys = transcriptKeys(entries)
+        return keys
+    }
+}
+
+/** [TranscriptKeyCache]'s hit test: same stem, index for index, no allocation. */
+private fun sameKeyStems(a: List<AgentEntry>, b: List<AgentEntry>): Boolean {
+    for (i in a.indices) {
+        if (!sameKeyStem(a[i], b[i])) return false
+    }
+    return true
+}
+
+/**
+ * Whether two entries answer to the same [transcriptKeys] base string. The
+ * runtime class picks the branch; `callId`/`at` feed it. NOTHING else may be
+ * read here: a field this misses is a field a streaming update could change
+ * without the cache noticing.
+ */
+private fun sameKeyStem(a: AgentEntry, b: AgentEntry): Boolean {
+    if (a::class != b::class) return false
+    return when (a) {
+        is AgentEntry.Tool -> a.callId == (b as AgentEntry.Tool).callId
+        is AgentEntry.User -> a.at == (b as AgentEntry.User).at
+        is AgentEntry.Assistant -> a.at == (b as AgentEntry.Assistant).at
+        is AgentEntry.Notice -> a.at == (b as AgentEntry.Notice).at
+        is AgentEntry.Plugin -> a.at == (b as AgentEntry.Plugin).at
+    }
+}
+
+// How often a still-streaming surface re-renders and re-pins itself while it
+// is actually growing. 250ms sits well past the per-token storm the old code
+// paid (a full re-parse and a scrollToItem per delta) and well inside what a
+// person reads as live typing.
+private const val STREAM_REFRESH_MS = 250L
+
+// A stream whose content has not grown for this many rounds parks its
+// heartbeat. The tick never bumps without growth, so a parked stream costs
+// nothing while it sleeps; the park exists because a CANCELLED turn can leave
+// a row `streaming = true` for as long as the chat stays open (the
+// cancellation path appends its notice without finalizing the bubble), and an
+// unparked ticker would wake the CPU four times a second for that, forever —
+// including with the app backgrounded. A stream that stalls longer than the
+// park is not lost: the coarse length bucket (STREAM_REPARSE_CHARS) keeps
+// re-rendering on growth, and completion always renders exactly.
+private const val STREAM_TICK_IDLE_ROUNDS = 240
+
+// Coarse growth bucket backing the heartbeat: while a ticker is parked (or
+// simply between beats) this much new text still forces a re-render and a
+// re-pin. 256 characters is about half a phone screen of text — invisible in
+// the flow of a stream, and the guarantee that the text can never freeze
+// mid-answer.
+private const val STREAM_REPARSE_CHARS = 256
+
+/**
+ * The heartbeat itself: a tick counter that advances ONLY when [observed] has
+ * grown since the last beat, while [active] holds. Reading the returned
+ * [State] in composition is what carries a beat into that scope's keys.
+ *
+ * [observed] is a lambda because the coroutine outlives many recompositions —
+ * `rememberUpdatedState` keeps the latest one, so every beat measures the
+ * current content rather than the content at launch. When [active] flips the
+ * effect relaunches (its key), which both cancels the old loop in flight and
+ * resets the idle patience for the next activation.
+ */
+@Composable
+private fun rememberStreamTick(active: Boolean, observed: () -> Int): State<Int> {
+    val latest = rememberUpdatedState(observed)
+    val tick = remember { mutableStateOf(0) }
+    LaunchedEffect(active) {
+        if (!active) return@LaunchedEffect
+        var idle = 0
+        var seen = latest.value.invoke()
+        while (idle < STREAM_TICK_IDLE_ROUNDS) {
+            delay(STREAM_REFRESH_MS)
+            val now = latest.value.invoke()
+            if (now == seen) {
+                idle++
+            } else {
+                idle = 0
+                seen = now
+                tick.value++
+            }
+        }
+    }
+    return tick
+}
+
 @Composable
 private fun AgentConversation(
     agent: BrowserAgentController,
@@ -743,13 +885,59 @@ private fun AgentConversation(
     val entries = agent.entries
     val plan = agent.plan
 
+    // Keys are per ENTRY, not per slot. Position was the key before, so item
+    // state remembered inside an item — an expanded "Thought process" — stayed
+    // behind at that offset and was handed to whatever the next chat put there.
+    // The cache rather than a bare remember is what takes this off the
+    // per-token path: a streaming delta hands it a same-size, same-stem list
+    // and gets the very same key list back, with no HashMap pass and no
+    // allocation.
+    val keyCache = remember { TranscriptKeyCache() }
+    val keys = keyCache.keysFor(entries)
+    // The last entry's key — the one thing whose VALUE only moves when the
+    // tail itself moves. It is the auto-scroll's landing signal below.
+    val tailKey = keys.lastOrNull()
+    // The "load older" affordance occupies the list's slot 0 whenever older
+    // rows exist beyond the loaded window, so every index arithmetic below
+    // (and the auto-scroll's) counts it. A chat under one window renders
+    // with no leading item at all — the item list the pre-paging panel drew.
+    val leading = if (agent.hasOlderEntries) 1 else 0
+
     // Live auto-scroll: instant while streaming, animated for new entries.
     // The plan card and the ApprovalCard are composed as items AFTER the last
     // entry, so when either is showing it is the true last item and the list
     // has to scroll past the last entry to keep it above the fold.
-    LaunchedEffect(entries.size, entries.lastOrNull(), agent.approval, plan.size) {
+    //
+    // F-03: the old keys included entries.lastOrNull(), whose identity — and
+    // equality, since the streaming Assistant is copy()-replaced on every
+    // token — changed per delta, restarting this effect (and its
+    // scrollToItem) per token. The keys now move only when a row LANDS at
+    // the END (tailKey — a same-millisecond repeat still bumps its
+    // disambiguation suffix, so nothing that lands can go unnoticed), when
+    // the plan/approval tail appears, or when the streaming heartbeat/bucket
+    // below moves: the newest row is re-pinned at most STREAM_REFRESH_MS
+    // behind its own growth while it streams, and the -1s make the
+    // completion flip re-fire (the fence leaving shrinks the row).
+    //
+    // tailKey rather than entries.size is what keeps paging history in from
+    // jumping to the bottom: older rows land in FRONT, the tail's key —
+    // class, timestamp and predecessor count — is untouched by them, and the
+    // effect that pins the newest row simply does not fire.
+    val lastRow = entries.lastOrNull()
+    val streamingRow = if (lastRow is AgentEntry.Assistant && lastRow.streaming) lastRow else null
+    val streamTick = rememberStreamTick(streamingRow != null) {
+        (entries.lastOrNull() as? AgentEntry.Assistant)?.let { it.text.length + it.thinking.length } ?: 0
+    }
+    LaunchedEffect(
+        tailKey,
+        agent.approval,
+        plan.size,
+        if (streamingRow == null) -1 else streamTick.value,
+        if (streamingRow == null) -1
+        else (streamingRow.text.length + streamingRow.thinking.length) / STREAM_REPARSE_CHARS
+    ) {
         if (entries.isNotEmpty()) {
-            var lastItem = entries.size - 1
+            var lastItem = leading + entries.size - 1
             if (plan.isNotEmpty()) lastItem++
             if (agent.approval != null) lastItem++
             listState.scrollToItem(lastItem)
@@ -808,10 +996,6 @@ private fun AgentConversation(
         return
     }
 
-    // Keys are per ENTRY, not per slot. Position was the key before, so item
-    // state remembered inside an item — an expanded "Thought process" — stayed
-    // behind at that offset and was handed to whatever the next chat put there.
-    val keys = remember(entries) { transcriptKeys(entries) }
     LazyColumn(
         state = listState,
         modifier = modifier,
@@ -820,6 +1004,9 @@ private fun AgentConversation(
         ),
         verticalArrangement = Arrangement.spacedBy(8.dp)
     ) {
+        if (agent.hasOlderEntries) {
+            item(key = LOAD_OLDER_ITEM_KEY) { LoadOlderMessages(agent, listState) }
+        }
         itemsIndexed(entries, key = { index, _ -> keys[index] }) { _, entry ->
             when (entry) {
                 is AgentEntry.User -> UserBubble(entry)
@@ -836,6 +1023,54 @@ private fun AgentConversation(
         if (plan.isNotEmpty()) item { PlanCard(plan) }
         agent.approval?.let { approval -> item { ApprovalCard(approval, agent) } }
     }
+}
+
+/** The LazyColumn slot the "load older" affordance always occupies. */
+private const val LOAD_OLDER_ITEM_KEY = "load-older"
+
+/**
+ * The transcript's one promise about the past: rows older than the loaded
+ * window exist, and this brings the next window in.
+ *
+ * The viewport's anchor — its first visible item and that item's offset — is
+ * read on the tap, while the OLD layout is still the truth, and repaid the
+ * moment the rows land ([olderPageScrollTarget] says where to). One plain
+ * button, worded as the plain thing it does, because that is the panel's
+ * voice everywhere else.
+ */
+@Composable
+private fun LoadOlderMessages(agent: BrowserAgentController, listState: LazyListState) {
+    val scope = rememberCoroutineScope()
+    Box(Modifier.fillMaxWidth().padding(top = 4.dp), contentAlignment = Alignment.Center) {
+        TextButton(onClick = {
+            val firstIndex = listState.firstVisibleItemIndex
+            val firstOffset = listState.firstVisibleItemOffset
+            scope.launch {
+                val added = agent.loadOlderEntries()
+                val target = olderPageScrollTarget(firstIndex, added, agent.hasOlderEntries)
+                // scrollToItem lands before the next frame lays the grown
+                // list out, so the one frame the user sees is the one that
+                // already has both the new rows and the old position.
+                if (target != null) listState.scrollToItem(target, firstOffset)
+            }
+        }) { Text("Load older messages") }
+    }
+}
+
+/**
+ * Where the viewport's top goes after [added] older entries landed in front
+ * of it: null when nothing should move — nothing landed, or the reader was
+ * at the list's very top, where staying put is showing them exactly the
+ * older rows they asked for. Otherwise the entry that was at [firstIndex] is
+ * [added] slots further down, one less when the affordance left with the
+ * last page (it was the slot at 0).
+ *
+ * `internal` for the same reason as [transcriptKeys]: the panel's no-jump
+ * promise is only as good as this arithmetic, and a JVM test pins it.
+ */
+internal fun olderPageScrollTarget(firstIndex: Int, added: Int, stillMore: Boolean): Int? {
+    if (added <= 0 || firstIndex <= 0) return null
+    return firstIndex + added + (if (stillMore) 0 else -1)
 }
 
 /**
@@ -1002,7 +1237,8 @@ private fun AssistantMessage(entry: AgentEntry.Assistant) {
             MarkdownText(
                 text = text,
                 style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurface
+                color = MaterialTheme.colorScheme.onSurface,
+                streaming = entry.streaming
             )
             // Copy affordance for FINISHED answers only — copying a
             // half-streamed reply would grab a truncated text.
@@ -2184,13 +2420,38 @@ private fun ProviderPickRow(
  * full markdown dependency.
  */
 @Composable
-fun MarkdownText(text: String, style: androidx.compose.ui.text.TextStyle, color: androidx.compose.ui.graphics.Color) {
+fun MarkdownText(
+    text: String,
+    style: androidx.compose.ui.text.TextStyle,
+    color: androidx.compose.ui.graphics.Color,
+    // While the row this text belongs to is still streaming, the re-parse is
+    // throttled (see the keys below); the moment the row completes, the key
+    // becomes the text itself again and the render is exact — the finished
+    // answer is byte-identical to a render of the whole string.
+    streaming: Boolean = false
+) {
     // Theme-aware inline-code background (was a hardcoded translucent gray
     // that clashed with per-profile themes). LocalRoomExtras carries a dark
     // fallback default, so this never crashes outside the browser theme.
     val extras = LocalRoomExtras.current
     val codeBackground = extras.surfaceAlt.copy(alpha = 0.35f)
-    val annotated = remember(text, codeBackground) { renderMarkdown(text, codeBackground) }
+    // F-02: re-parsing per TOKEN re-parsed the whole accumulated answer for
+    // every delta (and the parse itself was quadratic — see renderMarkdown).
+    // Two keys now bound the cadence while streaming, and ONLY while
+    // streaming: the heartbeat (≤ STREAM_REFRESH_MS after real growth — the
+    // tick parks after STREAM_TICK_IDLE_ROUNDS ticks with none, so a row a
+    // cancelled turn left "streaming" forever cannot wake the CPU forever)
+    // and a coarse length bucket that backstops it (a stream whose ticker
+    // parked mid-stall still re-parses every STREAM_REPARSE_CHARS of growth,
+    // so the text can never freeze for the rest of the answer). A completed
+    // row keys on the text itself, exactly as before: same AnnotatedString,
+    // byte for byte.
+    val refresh = rememberStreamTick(streaming) { text.length }
+    val annotated = remember(
+        codeBackground,
+        if (streaming) text.length / STREAM_REPARSE_CHARS else text,
+        if (streaming) refresh.value else -1
+    ) { renderMarkdown(text, codeBackground) }
     androidx.compose.material3.Text(
         text = annotated,
         style = style,
@@ -2204,7 +2465,14 @@ internal fun renderMarkdown(text: String, codeBackground: Color = Color(0x148080
         fontFamily = FontFamily.Monospace,
         background = codeBackground
     )
-    text.lines().forEachIndexed { index, rawLine ->
+    // text.lines() splits the WHOLE document; the loop below used to call it
+    // once for the iteration and AGAIN inside every iteration for lastIndex —
+    // a fresh List<String> of the entire answer allocated per line, making one
+    // render O(lines²). Hoisted once, the loop and the lastIndex read share a
+    // single list, and the output is byte-for-byte what the double call
+    // produced (the two lists were always equal).
+    val lines = text.lines()
+    lines.forEachIndexed { index, rawLine ->
         val line = rawLine.trimStart()
         when {
             line.startsWith("### ") -> {
@@ -2223,7 +2491,7 @@ internal fun renderMarkdown(text: String, codeBackground: Color = Color(0x148080
             }
             else -> appendInlineStyles(line, codeStyle)
         }
-        if (index < text.lines().lastIndex) append('\n')
+        if (index < lines.lastIndex) append('\n')
     }
 }
 

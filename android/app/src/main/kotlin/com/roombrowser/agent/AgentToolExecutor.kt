@@ -69,6 +69,9 @@ import kotlin.coroutines.resume
  *
  * All engine access happens on the main dispatcher; navigation results are
  * awaited by polling the ViewModel's page events (race-free by design).
+ * The pure-CPU stretches in between — argument and result decoding, snapshot
+ * formatting, the screenshot stitch — hop to Dispatchers.Default, so the main
+ * thread is held only for the calls a view actually has to answer.
  */
 class AgentToolExecutor(
     private val vm: BrowserViewModel,
@@ -224,9 +227,14 @@ class AgentToolExecutor(
         )
     }
 
-    override suspend fun execute(name: String, argsJson: String): ToolResult =
-        withContext(Dispatchers.Main) {
-            val args: Map<String, Any?> = parseArgs(argsJson)
+    override suspend fun execute(name: String, argsJson: String): ToolResult {
+        // The model's own arguments are decoded BEFORE the turn takes the main
+        // thread: a run_js script or a data_transform payload can be kilobytes
+        // of JSON, and decoding it is pure CPU no view is waiting on. Every
+        // stretch after this point that is also pure CPU says so where it
+        // moves; the engine and view calls between them stay on Main.
+        val args: Map<String, Any?> = withContext(Dispatchers.Default) { parseArgs(argsJson) }
+        return withContext(Dispatchers.Main) {
             try {
                 // A plugin's tool never reaches this executor in a chat turn —
                 // the plugin executor wraps it inside the chain — so a name
@@ -306,6 +314,7 @@ class AgentToolExecutor(
                 ToolResult(false, "${t.message ?: t.javaClass.simpleName}")
             }
         }
+    }
 
     /**
      * The app's own tools alone, or null when [name] is not one of them.
@@ -760,19 +769,30 @@ class AgentToolExecutor(
         if (limit !in 1..MAX_JS_RESULT_CHARS) {
             return ToolResult(false, "limit must be between 1 and $MAX_JS_RESULT_CHARS")
         }
-        val result = when (op) {
-            "json_path" -> DataTransform.jsonPath(input, str(args, "path") ?: "", limit)
-            "csv_rows" -> DataTransform.csvRows(input, limit)
-            "aggregate" -> DataTransform.aggregate(input, intOrNull(args, "column"), str(args, "agg").orEmpty())
-            "diff" -> {
-                val compare = str(args, "compare")
-                    ?: return ToolResult(false, "missing 'compare' argument for op=diff")
-                DataTransform.diff(input, compare, limit)
-            }
+        // Argument checks first, in the order the old `when` answered them, so
+        // a bad call still gets the same refusal it always did.
+        val compare = when (op) {
+            "json_path", "csv_rows", "aggregate" -> null
+            "diff" -> str(args, "compare")
+                ?: return ToolResult(false, "missing 'compare' argument for op=diff")
             else -> return ToolResult(
                 false,
                 "unsupported op '$op': use json_path, csv_rows, aggregate or diff"
             )
+        }
+        // The transforms themselves walk the model's own data — which the model
+        // can size in megabytes — with no engine and no view anywhere in them.
+        // That is pure CPU, and it is the one tool whose whole body is the
+        // expensive part, so the transforms run off the main thread and only
+        // their (already capped) answer comes back to it.
+        val result = withContext(Dispatchers.Default) {
+            when (op) {
+                "json_path" -> DataTransform.jsonPath(input, str(args, "path") ?: "", limit)
+                "csv_rows" -> DataTransform.csvRows(input, limit)
+                "aggregate" -> DataTransform.aggregate(input, intOrNull(args, "column"), str(args, "agg").orEmpty())
+                // The only remaining op is "diff", where compare is non-null.
+                else -> DataTransform.diff(input, compare.orEmpty(), limit)
+            }
         }
         return when (result) {
             is DataTransform.Result.Success -> {
@@ -1043,17 +1063,26 @@ class AgentToolExecutor(
     private suspend fun rawSnapshotText(session: EngineSession): String? {
         val raw = evaluateJs(session, PageInjector.snapshotJs()) ?: return null
         if (raw.isBlank() || raw == "null" || raw == "undefined") return null
-        return runCatching { AgentJson.decodeFromString(PageSnapshotDto.serializer(), raw) }
-            .getOrNull()?.text
+        // Pure decode, off the main thread for the same reason as
+        // [formatSnapshot]: the challenge re-check runs on every hand-over
+        // round, over a payload the size of the page.
+        return withContext(Dispatchers.Default) {
+            runCatching { AgentJson.decodeFromString(PageSnapshotDto.serializer(), raw) }
+                .getOrNull()?.text
+        }
     }
 
     /** The page's canonical digest, or null when it cannot be measured at all. */
     private suspend fun measurePage(): String? {
         val session = boundSession() ?: return null
         val raw = evaluateJs(session, PageInjector.digestJs()) ?: return null
-        val dto = runCatching { AgentJson.decodeFromString(PageDigestDto.serializer(), raw) }
-            .getOrNull() ?: return null
-        return AgentStepVerifier.digest(dto)
+        // Measured before and after every mutating tool (see [appendEvidence]),
+        // so the decode + digest pair runs twice per click: pure CPU, off Main.
+        return withContext(Dispatchers.Default) {
+            val dto = runCatching { AgentJson.decodeFromString(PageDigestDto.serializer(), raw) }
+                .getOrNull() ?: return@withContext null
+            AgentStepVerifier.digest(dto)
+        }
     }
 
     /**
@@ -1196,10 +1225,17 @@ class AgentToolExecutor(
         }
         val raw = evaluateJs(session, PageInjector.snapshotJs()) ?: return null
         if (raw.isBlank() || raw == "null" || raw == "undefined") return null
-        val snapshot = runCatching {
-            AgentJson.decodeFromString(PageSnapshotDto.serializer(), raw)
-        }.getOrNull() ?: return null
-        return PageSnapshotFormatter.format(snapshot)
+        // The engine call above had to run on Main (view affinity). The
+        // stretch below did not: decoding a multi-kilobyte DOM snapshot and
+        // formatting it into the tens of KB of model-facing text is pure CPU,
+        // and holding the main thread for it is a frame the browser UI loses
+        // on every read_page. Same inputs, same output — different thread.
+        return withContext(Dispatchers.Default) {
+            val snapshot = runCatching {
+                AgentJson.decodeFromString(PageSnapshotDto.serializer(), raw)
+            }.getOrNull() ?: return@withContext null
+            PageSnapshotFormatter.format(snapshot)
+        }
     }
 
     /** Evaluates JS on the session, suspending until the callback fires. */
@@ -1214,24 +1250,41 @@ class AgentToolExecutor(
             }
         }
 
-    /** The engine returns string results JSON-encoded — undo that. */
-    private fun unquote(jsResult: String): String = runCatching {
-        if (jsResult.length >= 2 && jsResult.startsWith("\"") && jsResult.endsWith("\"")) {
-            AgentJson.decodeFromString(String.serializer(), jsResult)
-        } else jsResult
-    }.getOrDefault(jsResult)
+    /**
+     * The engine returns string results JSON-encoded — undo that.
+     *
+     * Off the main thread because a result is as long as the page cares to
+     * make it (the [MAX_JS_RESULT_CHARS] ceiling is applied only after this
+     * decode): unquoting is a JSON string decode over the whole payload, and
+     * every interactive tool runs it once per call. Pure CPU — the engine's
+     * answer has already arrived.
+     */
+    private suspend fun unquote(jsResult: String): String = withContext(Dispatchers.Default) {
+        runCatching {
+            if (jsResult.length >= 2 && jsResult.startsWith("\"") && jsResult.endsWith("\"")) {
+                AgentJson.decodeFromString(String.serializer(), jsResult)
+            } else jsResult
+        }.getOrDefault(jsResult)
+    }
 
     /** Encodes a value for embedding in a script — quotes and newlines included. */
     private fun jsonString(value: String): String =
         AgentJson.encodeToString(String.serializer(), value)
 
-    /** A script's own output is not a place to spend the context window. */
-    private fun clip(text: String): String =
+    /**
+     * A script's own output is not a place to spend the context window.
+     *
+     * Suspending for the same reason as [unquote]: the truncation copies up to
+     * [MAX_JS_RESULT_CHARS] out of a result that can be far longer, and the
+     * two always run back to back on run_js/compute_js output.
+     */
+    private suspend fun clip(text: String): String = withContext(Dispatchers.Default) {
         if (text.length <= MAX_JS_RESULT_CHARS) {
             text
         } else {
             text.take(MAX_JS_RESULT_CHARS) + "\n…[truncated at $MAX_JS_RESULT_CHARS characters]"
         }
+    }
 
     /**
      * Waits for a navigation that started at/after [triggerAt] to finish.

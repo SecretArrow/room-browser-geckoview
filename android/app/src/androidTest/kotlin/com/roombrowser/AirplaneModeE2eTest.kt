@@ -53,6 +53,15 @@ import org.junit.runner.RunWith
  * so every dialog step first returns to the app's own task — Back is
  * pressed only while a foreign package is in front, because a Back on our
  * own dialog is its No, not this test's business.
+ *
+ * The cycle (`/airplane cycle`, aliases `ip` and `refresh` — the feature's
+ * real purpose, the IP rotation) rides the same guided flow with TWO flips
+ * asked of the person: the dialog's own words say on-then-off, No stops with
+ * the cycle's stopped notice, and a Yes on an emulator that never left
+ * "off" is answered with the honest "the cycle did not run" — a rotation
+ * whose on-phase was never observed is not a rotation this chat may claim.
+ * The rooted cycle (and its per-step fallbacks) are the JVM suite's fake
+ * bridge, same as the root switch above.
  */
 @RunWith(AndroidJUnit4::class)
 class AirplaneModeE2eTest {
@@ -207,6 +216,76 @@ class AirplaneModeE2eTest {
         assertTrue(
             "A Yes that did not switch anything must say so honestly",
             hasTextContains("Airplane mode is still off — the chat continues.", 10_000)
+        )
+    }
+
+    @Test
+    fun airplane_cycle_command_guided_dialog_and_honest_yes() {
+        // ---- 1. "/airplane cycle": the guided TWO-flip dialog, answered No -
+        bootstrapEngine()
+        assertTrue(
+            "The agent panel must open from the page menu; UI:\n${uiTree()}",
+            openAgentPanelFromMenu()
+        )
+        assertTrue(
+            "The cycle command must reach the composer and send",
+            sendComposer("/airplane cycle")
+        )
+        // The hand-off opens the REAL system settings screen over the app,
+        // exactly as the plain direction does — come back before asserting.
+        assertTrue("The app's own task must be in front", returnToApp(10_000))
+        assertTrue(
+            "The guided cycle dialog must be up back in the app",
+            hasDesc("airplane_stop", 15_000)
+        )
+        // The cycle's own words: TWO flips, and the purpose said out loud.
+        assertTrue(
+            "The cycle dialog must ask for on-then-off and name the rotation",
+            hasTextContains("then switch it OFF again", 10_000) &&
+                hasTextContains("rotates the phone's IP", 10_000)
+        )
+        assertTrue(
+            "No must be clickable",
+            clickDesc("airplane_stop", 5_000)
+        )
+        assertTrue(
+            "The dialog must close on No",
+            waitGoneDesc("airplane_stop", 10_000)
+        )
+        assertTrue(
+            "No must answer with the cycle's own stopped notice",
+            hasTextContains("Airplane Mode was not cycled — stopped.", 10_000)
+        )
+        assertTrue(
+            "An intercepted cycle command persists no user row — no turn started",
+            noUserRowHolds("/airplane cycle")
+        )
+
+        // ---- 2. The "ip" alias, mid-chat: an honest Yes -------------------
+        // The emulator's airplane mode is off and this test cannot flip it,
+        // so the on-phase of the cycle never happens — and a Yes that arrives
+        // with the phone never having left "off" is answered with the honest
+        // "the cycle did not run", never a congratulated rotation.
+        assertTrue(
+            "The alias must reach the composer and send",
+            sendComposer("/airplane ip")
+        )
+        assertTrue("The app's own task must be in front again", returnToApp(10_000))
+        assertTrue(
+            "The alias must raise the same guided cycle dialog",
+            hasDesc("airplane_accept", 15_000)
+        )
+        assertTrue(
+            "Yes must be clickable",
+            clickDesc("airplane_accept", 5_000)
+        )
+        assertTrue(
+            "The dialog must close on Yes",
+            waitGoneDesc("airplane_accept", 10_000)
+        )
+        assertTrue(
+            "A Yes without the airplane phase must say the cycle did not run",
+            hasTextContains("the cycle did not run", 10_000)
         )
     }
 

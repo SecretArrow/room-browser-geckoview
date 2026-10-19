@@ -47,6 +47,7 @@ import com.roombrowser.domain.plugins.toJson
 import com.roombrowser.domain.task.AiTaskPermissions
 import com.roombrowser.engine.EngineSession
 import com.roombrowser.node.PluginCallRequest
+import com.roombrowser.node.PluginChatEntry
 import com.roombrowser.node.PluginGenerateRequest
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
@@ -58,6 +59,7 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.JsonArray
@@ -220,6 +222,113 @@ internal fun buildTurnHistory(
 }
 
 /**
+ * Coalesces the model's streamed deltas into a few transcript writes.
+ *
+ * WHY: a streamed turn used to pay, for EVERY delta, a full copy of the
+ * entries list plus `current.text + delta` — O(tokens × transcript) work
+ * that also invalidated the whole chat list in Compose each time, at the
+ * 30–80 deltas a second a chatty provider sends. The user cannot read that
+ * fast; the list only needs to be right at reading speed. Deltas therefore
+ * accumulate in two builders here, and ONE flush hands the accumulated pair
+ * to [onFlush] — one entry update per window instead of one per token.
+ *
+ * THE CONTRACT (the e2e suite reads the transcript, so it is stated here):
+ *  - The final text and thinking are EXACTLY the concatenation of all
+ *    deltas, in arrival order. A flush drains both builders fully and the
+ *    next starts from empty, so nothing is reordered, edited or dropped.
+ *    Interleaving text and thinking is safe — they are different fields of
+ *    the same entry — and only the per-field order is load-bearing.
+ *  - [flush] is called at every boundary that replaces or closes the open
+ *    bubble (a tool starting, the final answer, an error, the turn's end),
+ *    so the last window's deltas are never stranded in the buffers when
+ *    something reads the transcript. A Stop cancels between events and
+ *    still lands in the turn's `finally`, where the flush runs first.
+ *
+ * WHY THE CADENCE IS EVENT-DRIVEN RATHER THAN A TICKER COROUTINE: the
+ * listener that feeds this runs inside the gateway's
+ * `withContext(Dispatchers.IO)`, so deltas arrive sequentially but on IO
+ * threads. A ticker coroutine on the controller's main scope would touch
+ * the same builders, and the same captured streaming index, from another
+ * thread — racing the very deltas it exists to drain. Keeping every append
+ * and flush on the listener's own sequence needs no locks and cannot
+ * interleave; the only cost is that a stream gone quiet shows its last
+ * sub-window of text when the next delta or boundary arrives, which at
+ * these cadences nobody can see.
+ *
+ * Not thread-safe by design (see above): one instance per turn, created in
+ * [BrowserAgentController.runTurn] and never shared. Pure JVM — no Android
+ * dependency — so the contract is unit-testable on the JVM.
+ */
+internal class AgentStreamCoalescer(
+    /** Minimum spacing between time-based flushes. */
+    private val intervalMs: Long = FLUSH_INTERVAL_MS,
+    /**
+     * Monotonic-ish milliseconds, injectable so the cadence is testable.
+     * nanoTime rather than currentTimeMillis because the wall clock can
+     * step backwards under NTP, and a window that runs backwards freezes
+     * flushing until the clock catches up.
+     */
+    private val nowMs: () -> Long = { System.nanoTime() / 1_000_000 },
+    private val onFlush: (text: String, thinking: String) -> Unit
+) {
+    private val text = StringBuilder()
+    private val thinking = StringBuilder()
+
+    /** When the last flush happened, in [nowMs] units; null before the first. */
+    private var lastFlushMs: Long? = null
+
+    fun appendText(delta: String) {
+        text.append(delta)
+        flushIfDue()
+    }
+
+    fun appendThinking(delta: String) {
+        thinking.append(delta)
+        flushIfDue()
+    }
+
+    /**
+     * Drains everything pending into [onFlush] NOW, clock be damned — this
+     * is the boundary call. A no-op when nothing is pending, so every
+     * boundary can call it unconditionally without paying for the quiet
+     * ones.
+     */
+    fun flush() {
+        if (text.isEmpty() && thinking.isEmpty()) return
+        val drainedText = text.toString()
+        val drainedThinking = thinking.toString()
+        text.setLength(0)
+        thinking.setLength(0)
+        onFlush(drainedText, drainedThinking)
+    }
+
+    /**
+     * The first delta flushes at once — the bubble should appear with the
+     * first token exactly as it did before coalescing — and after that at
+     * most one flush per [intervalMs] of delta arrivals.
+     */
+    private fun flushIfDue() {
+        val now = nowMs()
+        val last = lastFlushMs
+        if (last != null && now - last < intervalMs) return
+        lastFlushMs = now
+        flush()
+    }
+
+    companion object {
+        /**
+         * ~12 transcript writes a second: fast enough that streamed text
+         * still reads as streaming, slow enough that the per-token copy of
+         * the whole entries list is gone. The e2e suite waits whole seconds
+         * for rows, so a sub-100 ms window is invisible to it — and the
+         * FINAL text is not windowed at all (see [flush]), which is the
+         * part the suite actually reads.
+         */
+        const val FLUSH_INTERVAL_MS = 80L
+    }
+}
+
+/**
  * What the user answered at the approval prompt.
  *
  * [AlwaysAllow] is the third button and the only answer that outlives the
@@ -318,6 +427,24 @@ class BrowserAgentController(
      */
     var plan by mutableStateOf<List<AgentPlan.Item>>(emptyList())
         private set
+
+    /**
+     * Whether the DB holds transcript rows older than the ones [entries]
+     * currently shows. The panel turns exactly this into its "load older"
+     * affordance, so a chat under one window renders an item list with
+     * nothing extra in it — byte-identical to the pre-paging panel.
+     */
+    var hasOlderEntries by mutableStateOf(false)
+        private set
+
+    /**
+     * The id of the oldest message row [entries] was built from — the keyset
+     * cursor "load older" pages below. Tracked from the ROWS and not from the
+     * entries because a row whose entry was dropped (an unparseable plugin
+     * card, say) must still be paged past, or the next window would re-read
+     * it, drop it again, and offer "load older" forever.
+     */
+    private var oldestLoadedRowId: Long? = null
 
     /**
      * The "allow on this site for this session" answers, kept per controller —
@@ -441,8 +568,18 @@ class BrowserAgentController(
 
     // ------------------------------------------------------------- chat plugins
 
-    /** Runs the chat's plugin events in the embedded Node runtime. */
-    private val pluginRuntime = AgentPluginRuntime(appContext, vm.profile)
+    /**
+     * Runs the chat's plugin events in the embedded Node runtime. The
+     * runtime's one-call gate is a cancellable wait now, and a call that
+     * queues behind the one in flight says so on the status line — the
+     * person holding two plugin-running chats sees "waiting…" instead of a
+     * turn that looks wedged, and Stop stays honest while it waits.
+     */
+    private val pluginRuntime = AgentPluginRuntime(
+        appContext,
+        vm.profile,
+        onContended = { setStatus(RUNTIME_CONTENDED_NOTICE) }
+    )
 
     /** The per-chat catalogue of plugin tools, commands and hooks. */
     private val pluginCatalog = AgentPluginCatalog(pluginRepo, pluginRuntime)
@@ -474,13 +611,15 @@ class BrowserAgentController(
         createSession = { title -> createSessionForPlugins(title) },
         onCard = { session, card, name -> appendPluginCard(session, card, name) },
         onNotice = { text, error -> note(text, error) },
-        history = { session -> AgentPluginRuntime.historyOf(repo.messages(session)) },
+        history = { session -> pluginHistoryOf(session) },
         // Staged activation's one question: a chat that has sent no user
         // message yet is fresh, and a module enabled into it stages rather
-        // than activates — the first message becomes its prompt.
+        // than activates — the first message becomes its prompt. The EXISTS
+        // probe keeps the answer exact at any chat length, where a capped
+        // window read would call a long chat fresh and re-run a module its
+        // own chat already ran.
         freshChat = { session ->
-            runCatching { repo.messages(session) }.getOrDefault(emptyList())
-                .none { it.role == "user" }
+            runCatching { !repo.hasUserMessage(session) }.getOrDefault(true)
         },
         generate = { session -> pluginGeneratorFor(session) },
         // /make_plugins composes with the SAME session resolution rule — the
@@ -791,6 +930,11 @@ class BrowserAgentController(
         // So does the step list: the next chat plans its own work.
         plan = emptyList()
         entries = emptyList()
+        // And its window: a chat with no rows loaded has nothing older to
+        // page in — leaving the cursor behind would offer a button that reads
+        // the previous chat's history into this one.
+        hasOlderEntries = false
+        oldestLoadedRowId = null
         // A failed turn belongs to the chat it was asked in; a fresh chat is
         // not where its Retry button should still be waiting.
         retryable = null
@@ -829,7 +973,7 @@ class BrowserAgentController(
             activeSessionId = session.id
             pointApprovalsAt(session.id)
             plan = AgentPlan.decode(session.planJson)
-            entries = repo.messages(id).mapNotNull(::entryFromRow)
+            loadTranscriptWindow(session.id)
             retryable = null
         }
     }
@@ -856,7 +1000,78 @@ class BrowserAgentController(
         // was told "for the rest of this chat".
         pointApprovalsAt(session?.id)
         plan = session?.let { AgentPlan.decode(it.planJson) }.orEmpty()
-        entries = session?.let { repo.messages(it.id).mapNotNull(::entryFromRow) } ?: emptyList()
+        if (session != null) loadTranscriptWindow(session.id) else clearTranscriptWindow()
+    }
+
+    /**
+     * Loads the chat's newest transcript window into [entries], off the main
+     * thread for the row→entry mapping: tool rows carry multi-KB payloads and
+     * plugin rows are JSON, and a tab switch used to re-parse a whole day's
+     * worth of them on Main. The Room query is bounded by
+     * [TRANSCRIPT_WINDOW_ROWS] on the same move — the read and the map were
+     * the two halves of the same stall.
+     */
+    private suspend fun loadTranscriptWindow(sessionId: Long) {
+        val page = repo.messagePage(sessionId, Long.MAX_VALUE, TRANSCRIPT_WINDOW_ROWS)
+        val mapped = withContext(Dispatchers.Default) { page.rows.mapNotNull(::entryFromRow) }
+        // Written together, and after the mapping, so a load overtaken by a
+        // faster tab switch lands all of its own state or none of it — the
+        // same staleness contract the token guard above already keeps.
+        hasOlderEntries = page.hasOlder
+        oldestLoadedRowId = page.rows.firstOrNull()?.id
+        entries = mapped
+    }
+
+    /** Empties [entries] and the window bookkeeping that paged it in. */
+    private fun clearTranscriptWindow() {
+        entries = emptyList()
+        hasOlderEntries = false
+        oldestLoadedRowId = null
+    }
+
+    /**
+     * Pages the next older window of THIS chat in front of [entries] and
+     * answers how many entries landed (0 when a turn is running, when nothing
+     * is loaded, or when the chat has nothing older).
+     *
+     * The return count is what the panel keeps its viewport put with: the
+     * rows land BEFORE the entry the user was reading, and the panel offsets
+     * its scroll by exactly the count so the frame that grows the list is
+     * also the frame that stays put. A turn running is refused rather than
+     * reconciled — the turn holds plain indices into `entries` (its streaming
+     * row), and shifting them under it would splice the live stream.
+     */
+    suspend fun loadOlderEntries(): Int {
+        if (running) return 0
+        val session = activeSessionId ?: return 0
+        val before = oldestLoadedRowId ?: return 0
+        val page = repo.messagePage(session, before, TRANSCRIPT_WINDOW_ROWS)
+        // Stale-page guard, read AFTER the query: a chat that took the panel
+        // while this page was in flight owns the window bookkeeping now, and
+        // a page answered for its predecessor must not write over it.
+        if (activeSessionId != session) return 0
+        if (page.rows.isEmpty()) {
+            // Rows were promised and are gone (the chat was cleared under
+            // us): the honest answer is the end of history, not a button
+            // that keeps promising it.
+            hasOlderEntries = false
+            return 0
+        }
+        val older = withContext(Dispatchers.Default) { page.rows.mapNotNull(::entryFromRow) }
+        // Re-read after the mapping, for the same reason plus one more: a
+        // turn that started meanwhile holds plain indices into `entries`
+        // (its streaming row), and prepending now would splice the live
+        // stream — the refusal above cannot cover a turn that began while
+        // the page was reading.
+        if (running || activeSessionId != session) return 0
+        // The cursor moves even when every entry was dropped (unparseable
+        // rows exist): paging past them is the only way the NEXT window gets
+        // a chance to hold something renderable.
+        hasOlderEntries = page.hasOlder
+        oldestLoadedRowId = page.rows.first().id
+        if (older.isEmpty()) return 0
+        entries = older + entries
+        return older.size
     }
 
     /**
@@ -1133,6 +1348,16 @@ class BrowserAgentController(
             )
         }
         var streamingIndex = -1
+        // The turn's stream coalescer (see [AgentStreamCoalescer]): every
+        // streamed delta lands here and reaches the transcript one window
+        // at a time, through this one seam. `streamingIndex` stays the plain
+        // local it always was — the flush callback below and the boundary
+        // handlers in the event loop are its only writers, and all of them
+        // run on the turn's own event sequence (see the class's threading
+        // note for why that confinement is the design, not an accident).
+        val stream = AgentStreamCoalescer { textDelta, thinkingDelta ->
+            streamingIndex = upsertStreamingAssistant(streamingIndex, textDelta, thinkingDelta)
+        }
         // An error reported as an EVENT rather than thrown still means the turn
         // did not do what was asked, so it must not clear the retry offer.
         var turnFailed = false
@@ -1305,6 +1530,39 @@ class BrowserAgentController(
             // list in memory. Landing anywhere else takes the row's, so a chat
             // deleted underneath us cannot lend its list to its replacement.
             if (sessionId != previousId) plan = AgentPlan.decode(known?.planJson)
+            // The catalogue read every later step of this turn needs — the
+            // message hooks below, the plugin prompt blocks, the tool
+            // definitions — is STARTED here, beside the turn, instead of being
+            // left to whichever step reads it first. That first read lands
+            // AFTER the input gate on a plain message, so with a cold cache its
+            // per-binding Node probes (one runtime start-up each, serialized
+            // under the process-wide runner lock) would all land between the
+            // person's "Allow and Run" and the first visible progress — the
+            // exact window the eye is on, and the source of the stall the
+            // submit used to carry. Started here, the same probes overlap the
+            // minutes the gate's form may hold the turn (or, with no form up,
+            // the turn's own start-up), and the catalogue's probe mutex makes
+            // the later readers JOIN this one rather than pay their own.
+            //
+            // A fire-and-forget job on the controller's scope, not the turn's
+            // lifetime: a stopped turn still leaves the cache warm for the
+            // next one. The invalidation discipline is unchanged — an install,
+            // uninstall or edit that lands while the warm probes still wins,
+            // because the catalogue's generation guard refuses to store a
+            // probe an invalidation has overtaken.
+            scope.launch {
+                try {
+                    pluginCatalog.sessionPlugins(sessionId)
+                } catch (ce: CancellationException) {
+                    throw ce
+                } catch (_: Throwable) {
+                    // A warm that fails is only the cache miss the readers
+                    // would have paid anyway — every real reader keeps its own
+                    // runCatching and its own failure words, and a job whose
+                    // whole point is to be early must not take the app down
+                    // when the thing it warms is unavailable.
+                }
+            }
             // The chat's own input gate: an enabled binding whose required
             // inputs this chat never answered asks for them HERE — before the
             // row is written and before the model is called — and a form the
@@ -1321,7 +1579,7 @@ class BrowserAgentController(
             // moment, and letting it spend another chat's staging would run a
             // module mid-conversation that its own chat never got (the flag
             // lives on the plugin row, shared by every chat that enabled it).
-            val chatIsFresh = runCatching { repo.messages(sessionId).none { it.role == "user" } }
+            val chatIsFresh = runCatching { !repo.hasUserMessage(sessionId) }
                 .getOrDefault(false)
             repo.addMessage(sessionId, "user", display)
 
@@ -1361,7 +1619,7 @@ class BrowserAgentController(
                 // Read at call time: a tool call can arrive several steps
                 // into the turn, and the conversation it should see is the
                 // one that exists then.
-                history = { AgentPluginRuntime.historyOf(repo.messages(sessionId)) },
+                history = { pluginHistoryOf(sessionId) },
                 onCards = { cards, name ->
                     cards.forEach { card -> appendPluginCard(sessionId, card, name) }
                 },
@@ -1413,11 +1671,21 @@ class BrowserAgentController(
             // this turn. The assembly itself lives in buildTurnHistory, where
             // the order — snapshot, then standing context, then attachments,
             // then the request — is pinned by unit tests.
+            //
+            // The prior rows are the chat's last MODEL_HISTORY_ROW_CAP rows,
+            // read through the paged query and filtered/mapped off the main
+            // thread — a chat shorter than the cap re-sends exactly what it
+            // always did, in the same order, byte for byte; a longer one
+            // re-sends its newest window and NOT the turns beyond the cap
+            // (documented in android/docs/AI_AGENTS.md).
+            val priorTurns = withContext(Dispatchers.Default) {
+                repo.messagePage(sessionId, Long.MAX_VALUE, MODEL_HISTORY_ROW_CAP).rows
+                    .filter { it.role == "user" || it.role == "assistant" }
+                    .map { ChatMessage(role = it.role, content = it.content) }
+            }
             val history = buildTurnHistory(
                 prompt = prompt,
-                priorTurns = repo.messages(sessionId)
-                    .filter { it.role == "user" || it.role == "assistant" }
-                    .map { ChatMessage(role = it.role, content = it.content) },
+                priorTurns = priorTurns,
                 pageSnapshot = when {
                     !includePage -> null
                     headless != null -> headless.snapshotContext()
@@ -1451,14 +1719,25 @@ class BrowserAgentController(
             loop.runTurn(history) { event ->
                 when (event) {
                     is AgentEvent.AssistantText -> {
-                        streamingIndex = upsertStreamingAssistant(streamingIndex, event.text, null)
+                        // The delta is buffered, not applied: one window of
+                        // deltas becomes ONE entries update when the next
+                        // flush fires (see AgentStreamCoalescer). setStatus
+                        // below is per-token on purpose — it dedupes
+                        // identical text at its own seam, so the repeated
+                        // "Writing…" costs a string compare and nothing else.
+                        stream.appendText(event.text)
                         setStatus("Writing…")
                     }
                     is AgentEvent.AssistantThinking -> {
-                        streamingIndex = upsertStreamingAssistant(streamingIndex, "", event.text)
+                        stream.appendThinking(event.text)
                         setStatus("Thinking…")
                     }
                     is AgentEvent.ToolStarted -> {
+                        // The bubble closes here, so its last window lands
+                        // first: finalizeAssistant reads the entry's text,
+                        // and the text it must read is every delta that
+                        // arrived, not just the ones a flush already carried.
+                        stream.flush()
                         streamingIndex = finalizeAssistant(streamingIndex)
                         entries = entries + AgentEntry.Tool(
                             callId = event.id,
@@ -1489,6 +1768,12 @@ class BrowserAgentController(
                         repo.setSessionPlan(sessionId, AgentPlan.encode(event.items))
                     }
                     is AgentEvent.FinalAnswer -> {
+                        // Same duty as a tool boundary, for a subtler reason:
+                        // the finished answer REPLACES the open bubble's text
+                        // but KEEPS its thinking, so the thinking buffer must
+                        // be drained here or the final entry would silently
+                        // lose whatever the last window was still holding.
+                        stream.flush()
                         // The model sometimes copies the fence's frame back out
                         // of the tool result it just read.
                         val answer = UntrustedContent.stripMarkers(event.text)
@@ -1506,6 +1791,9 @@ class BrowserAgentController(
                         setStatus(null)
                     }
                     is AgentEvent.AgentError -> {
+                        // finalize below reads the entry's text — drain first,
+                        // exactly as a tool boundary does.
+                        stream.flush()
                         streamingIndex = finalizeAssistant(streamingIndex)
                         turnFailed = true
                         entries = entries + AgentEntry.Notice(
@@ -1556,6 +1844,33 @@ class BrowserAgentController(
                 at = System.currentTimeMillis()
             )
         } finally {
+            // Drain before anything else. This is the boundary every ending
+            // shares — finish, failure, Stop — and the one the e2e suite's
+            // transcript reads depend on: the persisted row is written from
+            // events, but the on-screen bubble is written ONLY from these
+            // flushes, so a turn that ended with text still in the buffers
+            // would show (and Stop would freeze) a bubble missing its tail.
+            // Plain calls, no suspension: safe to run while the cancellation
+            // itself is unwinding, and after this the listener is gone for
+            // good, so nothing can append behind the drain.
+            //
+            // The drain is guarded by the bubble still being ours, and only
+            // on this path could it not be: a Stop drops `running` the
+            // instant it cancels, and everything that re-points the panel
+            // (openSession, newSession, the tab-change re-bind) is gated on
+            // exactly that flag — so one of them can win the dispatch race
+            // and swap `entries` for another chat's rows before this finally
+            // runs. Writing the tail THERE would put a stray streaming
+            // bubble into a conversation it never belonged to. Dropping it
+            // instead is the honest outcome: the partial bubble was never
+            // persisted, so a re-bind loses it today too. On every normal
+            // ending nothing could have re-bound (running stayed true until
+            // this finally), the guard holds, and the flush always lands.
+            if (streamingIndex >= 0 && streamingIndex < entries.size &&
+                (entries[streamingIndex] as? AgentEntry.Assistant)?.streaming == true
+            ) {
+                stream.flush()
+            }
             running = false
             setStatus(null)
             approval = null
@@ -1622,6 +1937,22 @@ class BrowserAgentController(
         )
 
     /**
+     * The transcript as a `chat.context` grant reads it: the chat's last
+     * MODEL_HISTORY_ROW_CAP rows through the paged query, shaped by the
+     * runtime's own entry/char caps, with the read and the shaping off the
+     * main thread. The same cap a turn re-sends (see the priorTurns read),
+     * because both surfaces answer "what has this chat said" — a chat under
+     * the cap hands a plugin byte-identically to what it always did; a longer
+     * one hands it the newest window and not the turns beyond the cap.
+     */
+    private suspend fun pluginHistoryOf(sessionId: Long): List<PluginChatEntry> =
+        withContext(Dispatchers.Default) {
+            AgentPluginRuntime.historyOf(
+                repo.messagePage(sessionId, Long.MAX_VALUE, MODEL_HISTORY_ROW_CAP).rows
+            )
+        }
+
+    /**
      * The chat's message hooks: every plugin enabled with the `message` hook
      * sees the user's text BEFORE the turn starts — its cards join the
      * conversation, its failure is one honest notice line, and the turn runs
@@ -1654,7 +1985,7 @@ class BrowserAgentController(
                     binding = plugin.binding,
                     event = PluginCallRequest.EVENT_MESSAGE,
                     payload = PluginPayloads.message(text),
-                    history = AgentPluginRuntime.historyOf(repo.messages(sessionId)),
+                    history = pluginHistoryOf(sessionId),
                     budgetMs = AgentPluginRuntime.MESSAGE_HOOK_BUDGET_MS,
                     generate = generate,
                     form = form
@@ -1876,8 +2207,24 @@ class BrowserAgentController(
 
     // ------------------------------------------------------------- approvals
 
-    /** Sets the in-app status line and mirrors it to the background notification. */
+    /**
+     * Sets the in-app status line and mirrors it to the background
+     * notification.
+     *
+     * Identical text is dropped on purpose. This one seam sits in front of a
+     * path that rebuilds the whole notification — three fresh
+     * PendingIntents and a NotificationManager.notify() binder round-trip —
+     * and the streamed path used to call it per TOKEN with two constants
+     * ("Writing…"/"Thinking…"), a rebuild storm at 30–80 calls a second for
+     * a notification whose visible text never changed. The memory is
+     * [statusLine] itself — the one thing the panel reads — so it cannot
+     * drift behind a write that bypassed this seam: the only other writer
+     * is stop()'s reset to null, and skipping the matching null the
+     * turn's `finally` would have sent saves exactly the rebuild that
+     * ending the turn was about to make pointless.
+     */
     private fun setStatus(text: String?) {
+        if (text == statusLine) return
         statusLine = text
         AgentForeground.status(text ?: "Working…")
     }
@@ -2183,6 +2530,28 @@ class BrowserAgentController(
 
     companion object {
         private const val APPROVAL_TIMEOUT_MS = 120_000L
+
+        /**
+         * How many transcript rows a chat opens with, and how many each
+         * "load older" pages in — the transcript's RAM window. 200 rows is a
+         * long afternoon's reading and an instant single query, where the
+         * whole history was a re-read of megabytes on every tab switch; the
+         * rest stays in the DB and comes back one tap at a time. A chat
+         * shorter than this renders exactly the item list it always did.
+         */
+        internal const val TRANSCRIPT_WINDOW_ROWS = 200
+
+        /**
+         * The row cap on what a turn re-sends as prior turns, and on what a
+         * `chat.context` grant reads — one number because both answer "what
+         * has this chat said" to something off-device. A chat shorter than
+         * this re-sends byte-identically to the uncapped reads; a longer one
+         * re-sends its newest 500 rows, and the turns beyond the cap are NOT
+         * re-sent (nor handed to plugins) — stated honestly in
+         * android/docs/AI_AGENTS.md rather than left for someone to discover
+         * from a token bill.
+         */
+        internal const val MODEL_HISTORY_ROW_CAP = 500
 
         /**
          * Name on the wallet approval prompt, distinct from a normal tool gate.

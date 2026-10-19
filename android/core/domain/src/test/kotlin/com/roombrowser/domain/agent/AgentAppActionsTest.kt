@@ -111,11 +111,16 @@ class AgentAppActionsTest {
         // non-root flow, so a set must be classified as a write to reach it.
         assertThat(AgentAppActions.isWrite(AgentTools.AIRPLANE_MODE, "set")).isTrue()
         assertThat(AgentAppActions.isWrite(AgentTools.AIRPLANE_MODE, "read")).isFalse()
+        // A cycle is a switch twice over (on, then straight back off), so it
+        // rides the SAME prompt — on a phone that is not rooted the person's
+        // answer is the only consent the rotation ever gets.
+        assertThat(AgentAppActions.isWrite(AgentTools.AIRPLANE_MODE, "cycle")).isTrue()
         // The same tool undoes it — action=set state=off is the way back — so
         // it is reversible by construction and never asks through the
         // destructive gate, whatever the action or the unreadable cases.
         assertThat(AgentAppActions.isDestructive(AgentTools.AIRPLANE_MODE, "set")).isFalse()
         assertThat(AgentAppActions.isDestructive(AgentTools.AIRPLANE_MODE, "read")).isFalse()
+        assertThat(AgentAppActions.isDestructive(AgentTools.AIRPLANE_MODE, "cycle")).isFalse()
         assertThat(AgentAppActions.isDestructive(AgentTools.AIRPLANE_MODE, null)).isFalse()
         assertThat(AgentAppActions.isDestructive(AgentTools.AIRPLANE_MODE, "banana")).isFalse()
     }

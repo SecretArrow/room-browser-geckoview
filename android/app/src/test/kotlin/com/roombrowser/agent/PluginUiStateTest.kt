@@ -995,7 +995,9 @@ exports.commands = { greet: { run: () => 'hello' } };
         assertThat(consumed).isTrue()
         awaitState { notices.isNotEmpty() }
         assertThat(notices.single()).isEqualTo(
-            "Say \"/airplane on\" or \"/airplane off\" — the word after the command says which way to switch."
+            "Say \"/airplane on\", \"/airplane off\" or \"/airplane cycle\" — the word after " +
+                "the command says which way to switch; \"cycle\" flips airplane mode on and " +
+                "straight back off to rotate the phone's IP."
         )
         assertThat(state.pendingAirplane).isNull()
         assertThat(bridge.openSettingsCount).isEqualTo(0)
@@ -1157,13 +1159,192 @@ exports.commands = { greet: { run: () => 'hello' } };
         assertThat(state.pendingAirplane).isNull()
     }
 
+    // ------------------------------------------------------ the cycle command
+
+    @Test
+    fun `a rooted phone cycles by itself and reports the rotation`() = runBlocking<Unit> {
+        val bridge = FakeAirplaneModeBridge(state = false).apply { rooted = true }
+        val state = ui(airplane = bridge)
+        assertThat(state.interceptChatCommand("/airplane cycle", sessionAtTap = 7L)).isTrue()
+        awaitState { notices.isNotEmpty() }
+        // Two switches, on then off, and no hand-off anywhere near it.
+        assertThat(bridge.setViaRootCount).isEqualTo(2)
+        assertThat(bridge.state).isFalse()
+        assertThat(bridge.openSettingsCount).isEqualTo(0)
+        assertThat(notices.single()).isEqualTo(
+            "Airplane mode was cycled on and back off — the network re-attached, " +
+                "so the phone's IP rotated."
+        )
+        assertThat(errorNotices).isEmpty()
+        assertThat(state.pendingAirplane).isNull()
+    }
+
+    @Test
+    fun `a rooted phone whose cycle command does not take falls back to the guided hand-off`() = runBlocking<Unit> {
+        val bridge = FakeAirplaneModeBridge(state = false).apply {
+            rooted = true
+            setViaRootTakes = false
+        }
+        val state = ui(airplane = bridge)
+        assertThat(state.interceptChatCommand("/airplane cycle", sessionAtTap = 7L)).isTrue()
+        awaitState { notices.isNotEmpty() }
+        assertThat(bridge.setViaRootCount).isEqualTo(1)
+        assertThat(bridge.openSettingsCount).isEqualTo(1)
+        assertThat(notices.single()).isEqualTo(
+            "Airplane mode was not switched on — the root command did not take effect. " +
+                "The cycle is offered manually instead."
+        )
+        assertThat(errorNotices).containsExactly(notices.single())
+        // The failure is not a dead end: the guided CYCLE request is up, and
+        // the same stop path retires it with the cycle's own words.
+        assertThat(state.pendingAirplane).isNotNull()
+        assertThat(state.pendingAirplane!!.cycle).isTrue()
+        state.stopAirplane()
+        awaitState { notices.size == 2 }
+        assertThat(notices.last()).isEqualTo("Airplane Mode was not cycled — stopped.")
+        assertThat(state.pendingAirplane).isNull()
+    }
+
+    @Test
+    fun `a cycle stuck on finishes through the guided hand-off`() = runBlocking<Unit> {
+        val bridge = FakeAirplaneModeBridge(state = false).apply {
+            rooted = true
+            setViaRootFailsFor = false
+        }
+        val state = ui(airplane = bridge)
+        assertThat(state.interceptChatCommand("/airplane cycle", sessionAtTap = 7L)).isTrue()
+        awaitState { state.pendingAirplane != null }
+        // The on-half took, the off-half did not: the phone is stuck in
+        // airplane mode and the failure names exactly that.
+        assertThat(bridge.state).isTrue()
+        assertThat(notices.single()).isEqualTo(
+            "Airplane mode was switched on but not back off. The cycle is offered manually instead."
+        )
+        assertThat(errorNotices).containsExactly(notices.single())
+        // The person finishes it — flips airplane mode off — and the poll,
+        // which skipped its on-half (the raise saw the phone already on),
+        // resolves on the return.
+        bridge.state = false
+        awaitState { notices.size == 2 }
+        assertThat(notices.last()).isEqualTo(
+            "Airplane mode was cycled on and back off — the network re-attached, " +
+                "so the phone's IP rotated."
+        )
+        assertThat(state.pendingAirplane).isNull()
+    }
+
+    @Test
+    fun `a phone that is not rooted gets the guided cycle - and the poll sees both halves`() = runBlocking<Unit> {
+        val bridge = FakeAirplaneModeBridge(state = false)
+        val state = ui(airplane = bridge)
+        assertThat(state.interceptChatCommand("/airplane cycle", sessionAtTap = 7L)).isTrue()
+        awaitState { state.pendingAirplane != null }
+        assertThat(bridge.openSettingsCount).isEqualTo(1)
+        assertThat(bridge.setViaRootCount).isEqualTo(0)
+        val request = state.pendingAirplane!!
+        assertThat(request.cycle).isTrue()
+        // The cycle's end state is off — the network re-attached — which is
+        // what the guided request waits for after its on-half.
+        assertThat(request.targetOn).isFalse()
+        assertThat(notices).isEmpty()
+        // The person does what the dialog asks: on, a pause, then off. The
+        // on-half must be held long enough for a poll tick to SEE it — the
+        // dialog's own instruction ("wait a couple of seconds") is what
+        // guarantees that on a real phone.
+        bridge.state = true
+        Thread.sleep(1_200)
+        bridge.state = false
+        awaitState { notices.isNotEmpty() }
+        assertThat(notices.single()).isEqualTo(
+            "Airplane mode was cycled on and back off — the network re-attached, " +
+                "so the phone's IP rotated."
+        )
+        assertThat(state.pendingAirplane).isNull()
+    }
+
+    @Test
+    fun `the cycle's Yes after both flips reports the rotation`() = runBlocking<Unit> {
+        val bridge = FakeAirplaneModeBridge(state = false)
+        val state = ui(airplane = bridge)
+        assertThat(state.interceptChatCommand("/airplane cycle", sessionAtTap = 7L)).isTrue()
+        awaitState { state.pendingAirplane != null }
+        bridge.state = true
+        Thread.sleep(1_200)
+        bridge.state = false
+        state.resolveAirplane()
+        assertThat(state.pendingAirplane).isNull()
+        assertThat(notices.single()).isEqualTo(
+            "Airplane mode was cycled on and back off — the network re-attached, " +
+                "so the phone's IP rotated."
+        )
+    }
+
+    @Test
+    fun `a cycle Yes with the phone still on is the honest error`() = runBlocking<Unit> {
+        val bridge = FakeAirplaneModeBridge(state = false)
+        val state = ui(airplane = bridge)
+        assertThat(state.interceptChatCommand("/airplane cycle", sessionAtTap = 7L)).isTrue()
+        awaitState { state.pendingAirplane != null }
+        bridge.state = true
+        state.resolveAirplane()
+        assertThat(state.pendingAirplane).isNull()
+        assertThat(notices.single()).isEqualTo(
+            "Airplane mode is still on — turn it off to finish the cycle; the chat continues."
+        )
+        assertThat(errorNotices).containsExactly(notices.single())
+    }
+
+    @Test
+    fun `a cycle Yes on a phone that never left off does not claim a rotation`() = runBlocking<Unit> {
+        val bridge = FakeAirplaneModeBridge(state = false)
+        val state = ui(airplane = bridge)
+        assertThat(state.interceptChatCommand("/airplane cycle", sessionAtTap = 7L)).isTrue()
+        awaitState { state.pendingAirplane != null }
+        // The end state matches, but the on-half was never seen: the honest
+        // answer is that the cycle did not run, not a rotation that would
+        // have congratulated a no-op.
+        state.resolveAirplane()
+        assertThat(state.pendingAirplane).isNull()
+        assertThat(notices.single()).isEqualTo(
+            "Airplane mode stayed off the whole time — the cycle did not run; " +
+                "the chat continues."
+        )
+        assertThat(errorNotices).containsExactly(notices.single())
+    }
+
+    @Test
+    fun `the cycle's No stops with the cycle's own words`() = runBlocking<Unit> {
+        val bridge = FakeAirplaneModeBridge(state = false)
+        val state = ui(airplane = bridge)
+        assertThat(state.interceptChatCommand("/airplane cycle", sessionAtTap = 7L)).isTrue()
+        awaitState { state.pendingAirplane != null }
+        state.stopAirplane()
+        assertThat(state.pendingAirplane).isNull()
+        assertThat(notices.single()).isEqualTo("Airplane Mode was not cycled — stopped.")
+        assertThat(errorNotices).isEmpty()
+    }
+
+    @Test
+    fun `the ip and refresh aliases reach the same cycle`() = runBlocking<Unit> {
+        val bridge = FakeAirplaneModeBridge(state = false)
+        val state = ui(airplane = bridge)
+        assertThat(state.interceptChatCommand("/airplane refresh", sessionAtTap = 7L)).isTrue()
+        awaitState { state.pendingAirplane != null }
+        assertThat(state.pendingAirplane!!.cycle).isTrue()
+        state.stopAirplane()
+        assertThat(state.interceptChatCommand("/airplane ip", sessionAtTap = 7L)).isTrue()
+        awaitState { state.pendingAirplane != null }
+        assertThat(state.pendingAirplane!!.cycle).isTrue()
+    }
+
     /**
      * The airplane surface the tests drive: a state that flips only when the
      * test flips it (or when the fake root command "takes"), the rooted and
      * allowed answers the flow branches on, and the counters that prove which
      * hand-off actually ran. [setViaRootTakes] false models the command that
      * exited without changing anything — the case the controller reports as
-     * "did not take effect".
+     * "did not take effect"; [setViaRootFailsFor] narrows that to ONE
+     * direction, the cycle's stuck half (took the on, refused the off).
      */
     private class FakeAirplaneModeBridge(
         var state: Boolean? = false
@@ -1171,6 +1352,7 @@ exports.commands = { greet: { run: () => 'hello' } };
         override var rooted: Boolean = false
         var allowedAnswer: Boolean = true
         var setViaRootTakes: Boolean = true
+        var setViaRootFailsFor: Boolean? = null
         var openSettingsCount: Int = 0
         var setViaRootCount: Int = 0
 
@@ -1181,6 +1363,7 @@ exports.commands = { greet: { run: () => 'hello' } };
         override suspend fun setViaRoot(on: Boolean): Boolean {
             setViaRootCount++
             if (!setViaRootTakes) return false
+            if (setViaRootFailsFor == on) return false
             state = on
             return true
         }

@@ -418,6 +418,40 @@ interface AgentDao {
     @Query("SELECT * FROM agent_messages WHERE session_id = :sessionId ORDER BY id ASC")
     suspend fun messages(sessionId: Long): List<AgentMessageEntity>
 
+    /**
+     * Keyset window over one chat's rows, NEWEST first: up to [limit] rows
+     * whose id sits below [beforeId], highest id first. The caller reverses
+     * when it wants the oldest-first order a transcript (and the model) reads,
+     * and passes [beforeId] as the oldest row id it already holds — never an
+     * OFFSET, which re-walks and re-materializes everything the pages before
+     * it already paid for.
+     *
+     * Why this exists beside [messages]: every chat surface used to pull the
+     * WHOLE transcript — per turn, per chat open, per tab switch — and a
+     * day-long chat carries megabytes of tool_result strings that were then
+     * re-mapped on the main thread each time. The surfaces that honestly need
+     * everything (export, the e2e diagnostics) keep [messages]; the ones that
+     * render or re-send a window take this instead. New query only — the
+     * schema, and therefore the DB version, are untouched.
+     */
+    @Query(
+        "SELECT * FROM agent_messages WHERE session_id = :sessionId AND id < :beforeId " +
+            "ORDER BY id DESC LIMIT :limit"
+    )
+    suspend fun messagesBefore(sessionId: Long, beforeId: Long, limit: Int): List<AgentMessageEntity>
+
+    /**
+     * Whether this chat has EVER carried a user row — staged activation's one
+     * question. An EXISTS probe rather than a capped window read because the
+     * answer must stay exact at any chat length: a window would call a
+     * 600-row chat with its only user rows beyond the cap "fresh", and a chat
+     * that already spoke must not spend another chat's staging.
+     */
+    @Query(
+        "SELECT EXISTS(SELECT 1 FROM agent_messages WHERE session_id = :sessionId AND role = 'user')"
+    )
+    suspend fun hasUserMessage(sessionId: Long): Boolean
+
     @Insert
     suspend fun insertMessage(entity: AgentMessageEntity): Long
 

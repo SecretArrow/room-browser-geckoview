@@ -77,6 +77,26 @@ too.
 Chats written before per-tab chats existed are unbound: they are in the
 history list as before, but no tab claims them.
 
+### Long chats: the transcript window and the model's cap
+
+A long chat is **not** re-read in full every time you look at it. The panel
+opens a chat's newest **200 rows** (and re-reads only that window on a tab
+switch); anything older stays in the database until you tap **Load older
+messages** at the top of the transcript, which pages the next 200 rows in
+without moving the row you were reading. Nothing is deleted — every row is
+still in the database and every row is still exported by *Export chats*.
+
+The model's own memory of the chat is capped too, and this one is a real
+limit rather than a loading trick: **each turn re-sends only the chat's
+newest 500 rows** as prior turns (user and assistant rows among them), and a
+plugin's `chat.context` grant reads the same window. A chat shorter than
+that is re-sent exactly as before; in a longer one, **turns beyond the cap
+are not re-sent** — the model starts each turn with the newest 500 rows of
+context and no memory of anything older. The step list, standing context and
+the current request are unaffected by the cap. If a task genuinely needs the
+whole history in the model's head, start a fresh chat and re-state the
+essential background.
+
 ## Providers & models (manual input, like opencode)
 
 Any **OpenAI-compatible** endpoint works. In *AI Agent settings → Add
@@ -134,7 +154,7 @@ listed below; the two that must have their tab on screen are marked.
 | `plan(items)` | The agent's own step list, shown to you as a checklist card with what it has finished and what it is on now. It sends the **whole list every call** (it replaces the previous one) and touches no page; the app keeps the last list on the chat, so the card comes back when the chat is reopened, and a **scheduled run** is required to write one too — with no card to show it on, the count of steps left open is reported on the task's row — see **The step list** below |
 | `download_file(url, name?)` | Hands a link that leads to a **file** (an invoice PDF, a CSV export, an image) to the browser's own download engine, so it lands in Downloads/RoomBrowser and the transfer outlives the turn. It queues the file and returns — the file is not ready when the call answers, so the agent checks `app_data kind=downloads`. Confirmed like a click, refused in plan mode, and refused in a scheduled run (see below) |
 | `save_pdf(name?)` | Keeps the **page itself** — a receipt, a ticket, a statement — as a PDF in Downloads/RoomBrowser. Use it when the user wants the page they are on kept, and `download_file` when a link already points at a file. Queues the same way a download does, confirmed like a click, refused in plan mode, and refused where there is no page on screen to render (see below) |
-| `airplane_mode(action, state?)` | Reads or switches the phone's **Airplane Mode** — `action=read` says which way it is; `action=set` with `state=on/off/toggle` switches it. Needs the browser-wide **"Offer Airplane Mode shortcut"** setting: with it off the tool refuses and says so. On a **rooted** phone the switch is made with `su` and **verified** by reading the state back — a command that did not take effect is a failure, never a pretend success. On a phone that is not rooted it opens the system Airplane Mode settings screen and **waits up to 60 seconds** for the person to flip it, then reports what actually happened. A `set` goes through the Confirm-actions prompt — the person's yes/no for the guided flow — and a denied or unanswered prompt refuses, as it does everywhere. The same switch rides `/airplane on` / `/airplane off` in the composer (see [PLUGINS.md](PLUGINS.md)) |
+| `airplane_mode(action, state?)` | Reads or switches the phone's **Airplane Mode** — `action=read` says which way it is; `action=set` with `state=on/off/toggle` switches it; `action=cycle` switches it **on and straight back off**, the drop-and-return that rotates the phone's IP — use it when the user asks to change, rotate or refresh their IP ("ganti IP"). Needs the browser-wide **"Offer Airplane Mode shortcut"** setting: with it off the tool refuses and says so. On a **rooted** phone the switch is made with `su` and **verified** by reading the state back — a command that did not take effect is a failure, never a pretend success, and a rooted cycle that fails at any step is an honest refusal naming the step (the model cannot see a dialog, so it gets the failure instead of the guided hand-off). On a phone that is not rooted it opens the system Airplane Mode settings screen and **waits up to 60 seconds** for the person to flip it — the cycle waits for the on-half and then the return — then reports what actually happened. A `set` or `cycle` goes through the Confirm-actions prompt — the person's yes/no for the guided flow — and a denied or unanswered prompt refuses, as it does everywhere. The cycle's result states the verified transitions and the re-attach, never an address: the tool cannot see the new IP and never claims one. The same switches ride `/airplane on` / `/airplane off` / `/airplane cycle` in the composer (see [PLUGINS.md](PLUGINS.md)) |
 
 A tool marked *needs the tab on screen* waits up to 8 seconds for its tab to
 come to the front, then refuses with an explanation. The reason is concrete:

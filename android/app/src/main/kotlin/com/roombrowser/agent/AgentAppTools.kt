@@ -555,7 +555,9 @@ class AgentAppTools(
     // --------------------------------------------------------- airplane mode
 
     /**
-     * The `airplane_mode` tool: read the phone's radios, or switch them.
+     * The `airplane_mode` tool: read the phone's radios, switch them, or
+     * CYCLE them (on and straight back off — the rotation whose purpose is
+     * the IP change).
      *
      * Every answer is verified against the live state ([AirplaneModeBridge]'s
      * trust-but-verify contract): `set` on a rooted phone reports only what
@@ -563,14 +565,23 @@ class AgentAppTools(
      * the system settings screen and WAITS — up to 60 seconds — for the
      * person to flip it, so the model's next step lands on the truth rather
      * than on a switch that only pretend happened. The Confirm-actions prompt
-     * for `set` (the [AgentAppActions.isWrite] classification) already ran
+     * for a write (the [AgentAppActions.isWrite] classification) already ran
      * BEFORE this body: on the non-root flow that prompt IS the person's
      * yes/no, and a denied or unanswered prompt denies here as it does
      * everywhere.
+     *
+     * `cycle` is the same ladder twice, with one difference the model must
+     * be able to rely on: a rooted cycle that fails at ANY step is an honest
+     * refusal, NOT the guided hand-off — the caller here is the model, for
+     * whom a sixty-second blind wait behind a screen it cannot see is worth
+     * less than a failure it can act on (the `/airplane` chat command, whose
+     * caller is a person, keeps the fallback). The non-root cycle keeps the
+     * guided wait: the Confirm prompt already put the person in the loop, and
+     * the settings screen is open in front of them.
      */
     private suspend fun appAirplane(action: String, state: String?): ToolResult {
-        if (action != "read" && action != "set") {
-            return ToolResult(false, "action must be read or set, not '$action'")
+        if (action != "read" && action != "set" && action != "cycle") {
+            return ToolResult(false, "action must be read, set or cycle, not '$action'")
         }
         val bridge = airplane
         if (action == "read") {
@@ -580,6 +591,9 @@ class AgentAppTools(
                 current == null -> ToolResult(false, "The Airplane Mode state could not be read.")
                 else -> ToolResult(true, "Airplane mode is ${if (current) "on" else "off"}.")
             }
+        }
+        if (action == "cycle") {
+            return appAirplaneCycle()
         }
         if (state == null) {
             return ToolResult(false, "Say which way: state=on or state=off.")
@@ -632,6 +646,96 @@ class AgentAppTools(
                 false,
                 "Airplane Mode was not switched within 60 s — the settings screen is open; ask " +
                     "the person to flip it and try again."
+            )
+        }
+    }
+
+    /**
+     * The `airplane_mode action=cycle` half: on, the teardown pause, off —
+     * reported as the two verified transitions and their consequence, never
+     * as an address (this tool cannot see one, and saying "new IP" would be
+     * a guess the model builds on).
+     *
+     * The rooted ladder refuses honestly at the step that failed, because a
+     * half-finished cycle is a state the model must know about: stuck ON is
+     * "the phone is offline right now", and the result says so and names the
+     * way back. The non-root half is the guided wait, in two phases with the
+     * person's own patience on each — the phone must be seen ON before the
+     * return is waited for, so a completion can only ever describe a
+     * drop-and-return that actually happened.
+     */
+    private suspend fun appAirplaneCycle(): ToolResult {
+        val bridge = airplane
+            ?: return ToolResult(false, "Airplane Mode is not available in this chat.")
+        if (!bridge.allowed()) {
+            return ToolResult(
+                false,
+                "The \"Offer Airplane Mode shortcut\" setting is off — enable it in the browser " +
+                    "settings first."
+            )
+        }
+        if (bridge.currentState() == null) {
+            return ToolResult(false, "The Airplane Mode state could not be read.")
+        }
+        if (bridge.rooted) {
+            if (!bridge.setViaRoot(true)) {
+                return ToolResult(
+                    false,
+                    "Airplane mode was not switched on — the root command did not take effect, " +
+                        "so the cycle did not run."
+                )
+            }
+            if (!bridge.waitUntil(true, AirplaneModeBridge.CYCLE_STEP_MS)) {
+                return ToolResult(
+                    false,
+                    "Airplane mode did not settle on after the switch, so the cycle did not run."
+                )
+            }
+            delay(AirplaneModeBridge.CYCLE_SETTLE_MS)
+            if (!bridge.setViaRoot(false)) {
+                return ToolResult(
+                    false,
+                    "Airplane mode was switched on but not back off — the phone is in airplane " +
+                        "mode now. Switch it off (action=set state=off) or ask the person to."
+                )
+            }
+            if (!bridge.waitUntil(false, AirplaneModeBridge.CYCLE_STEP_MS)) {
+                return ToolResult(
+                    false,
+                    "Airplane mode did not settle back off — the cycle did not complete; the " +
+                        "phone may still be in airplane mode."
+                )
+            }
+            return ToolResult(
+                true,
+                "Airplane mode was cycled on and back off — the network re-attached, so the " +
+                    "phone's IP rotated."
+            )
+        }
+        // Not rooted: the guided hand-off, twice over. The settings screen is
+        // open in front of the person (the Confirm prompt they just answered
+        // is what put them in the loop), and each half gets the same patience
+        // a plain `set` gets — a phone already in airplane mode answers the
+        // first wait at once and only the return is waited for.
+        bridge.openSettings()
+        if (!bridge.waitUntil(true, AIRPLANE_WAIT_MS)) {
+            return ToolResult(
+                false,
+                "Airplane Mode was not switched on within 60 s — the settings screen is open; " +
+                    "ask the person to switch it on and then off, and try again."
+            )
+        }
+        return if (bridge.waitUntil(false, AIRPLANE_WAIT_MS)) {
+            ToolResult(
+                true,
+                "Airplane mode was cycled on and back off — the network re-attached, so the " +
+                    "phone's IP rotated."
+            )
+        } else {
+            ToolResult(
+                false,
+                "Airplane Mode was not switched back off within 60 s — the phone is in airplane " +
+                    "mode now; ask the person to switch it off and try again."
             )
         }
     }

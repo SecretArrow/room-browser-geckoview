@@ -203,7 +203,10 @@ class AgentSettingsController(
         val chats = if (pid.isBlank()) emptyList() else repo.sessions(pid)
         val sessionModels = mutableListOf<AgentChatExport.Session>()
         for (session in chats) {
-            val messages = repo.messages(session.id).map { m ->
+            // Paged read, full fidelity: allMessages pages bounded windows
+            // and re-ascends them, so a chat too long for one query is still
+            // exported whole.
+            val messages = repo.allMessages(session.id).map { m ->
                 AgentChatExport.Message(
                     role = m.role,
                     at = m.createdAt,

@@ -104,6 +104,55 @@ class AgentRepository(private val db: AppDatabase) {
 
     suspend fun messages(sessionId: Long): List<AgentMessageEntity> = dao.messages(sessionId)
 
+    /**
+     * One page of one chat's transcript, plus whether older rows exist below
+     * it. [rows] is oldest-first — the order a transcript renders and the
+     * model reads — and [hasOlder] is exact rather than guessed from a
+     * full-page read: the page below fetches [limit] + 1 rows and drops the
+     * extra, so a chat of exactly [limit] rows answers `hasOlder = false`
+     * instead of offering a "load older" that would come back empty.
+     *
+     * [beforeId] is the oldest row id the caller already holds
+     * ([Long.MAX_VALUE] for the chat's first window). The cap is the whole
+     * point: a page costs one bounded query no matter how long the chat has
+     * grown, where [messages] re-reads and re-materializes every row of it.
+     */
+    suspend fun messagePage(sessionId: Long, beforeId: Long, limit: Int): AgentMessagePage {
+        val fetched = dao.messagesBefore(sessionId, beforeId, limit + 1)
+        val hasOlder = fetched.size > limit
+        val rows = (if (hasOlder) fetched.dropLast(1) else fetched).asReversed()
+        return AgentMessagePage(rows, hasOlder)
+    }
+
+    /**
+     * Every row of one chat, oldest-first — [messages] with the same bounded
+     * queries. The export path is the one consumer that honestly needs full
+     * fidelity at any length, and a chat long enough to matter here would be
+     * a single multi-megabyte query there; paging it trades one huge
+     * materialization for a few bounded ones without losing a row.
+     */
+    suspend fun allMessages(sessionId: Long, pageSize: Int = 500): List<AgentMessageEntity> {
+        val pages = mutableListOf<List<AgentMessageEntity>>()
+        var beforeId = Long.MAX_VALUE
+        while (true) {
+            val page = messagePage(sessionId, beforeId, pageSize)
+            if (page.rows.isEmpty()) break
+            pages += page.rows
+            if (!page.hasOlder) break
+            beforeId = page.rows.first().id
+        }
+        // Pages arrive newest-window-first, each already oldest-first; the
+        // reversal below is the only step that turns them into one ascending
+        // transcript.
+        return pages.asReversed().flatten()
+    }
+
+    /**
+     * Staged activation's fresh-chat question, at any chat length — see
+     * AgentDao.hasUserMessage for why this is not a window read.
+     */
+    suspend fun hasUserMessage(sessionId: Long): Boolean = dao.hasUserMessage(sessionId)
+
     suspend fun addMessage(
         sessionId: Long,
         role: String,
@@ -125,3 +174,11 @@ class AgentRepository(private val db: AppDatabase) {
 
     suspend fun messageCount(sessionId: Long): Int = dao.messageCount(sessionId)
 }
+
+/**
+ * What [AgentRepository.messagePage] answers: one oldest-first window of a
+ * chat's rows, and whether anything older exists below it — the exact flag a
+ * "load older" affordance needs, bought with the same query rather than a
+ * second one.
+ */
+class AgentMessagePage(val rows: List<AgentMessageEntity>, val hasOlder: Boolean)

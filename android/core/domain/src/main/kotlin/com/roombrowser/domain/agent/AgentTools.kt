@@ -164,7 +164,7 @@ object AgentTools {
     private val SCHEMA_APP_PAGE = """{"type":"object","properties":{"action":{"type":"string","enum":${enumOf(AgentAppActions.PAGE_ACTIONS)},"description":"find/find_next/find_previous/clear_find work on text; reader_on/reader_off, desktop_on/desktop_off and bookmark_add/bookmark_remove act on the open page"},"query":{"type":"string","description":"For the find actions: the text to find. find_next and find_previous need it repeated — the browser keeps no last query of its own"}},"required":["action"]}"""
     private val SCHEMA_APP_2FA = """{"type":"object","properties":{"action":{"type":"string","enum":${enumOf(AgentAppActions.TOTP_ACTIONS)},"description":"list names the profile's authenticator accounts; code gives the current code for one; copy puts it on the clipboard; fill types it into a field on the page"},"id":{"type":"string","description":"Account id from action=list"},"ref":{"type":"integer","description":"For action=fill: the input to type the code into, from read_page. Required for fill; there is no fallback to the focused element"}},"required":["action"]}"""
     private val SCHEMA_APP_NOTES = """{"type":"object","properties":{"action":{"type":"string","enum":${enumOf(AgentAppActions.NOTE_ACTIONS)}},"id":{"type":"string","description":"Note id from action=list, for get/update/delete"},"title":{"type":"string","description":"Note title, for add/update"},"body":{"type":"string","description":"Note text, for add/update"}},"required":["action"]}"""
-    private val SCHEMA_AIRPLANE_MODE = """{"type":"object","properties":{"action":{"type":"string","enum":["read","set"]},"state":{"type":"string","enum":["on","off","toggle"],"description":"Target state for action=set"}},"required":["action"]}"""
+    private val SCHEMA_AIRPLANE_MODE = """{"type":"object","properties":{"action":{"type":"string","enum":["read","set","cycle"],"description":"read says which way it is; set switches it one way; cycle switches it on and straight back off, the drop-and-return that rotates the phone's IP"},"state":{"type":"string","enum":["on","off","toggle"],"description":"Target state for action=set"}},"required":["action"]}"""
 
     /**
      * Tool names whose execution may require user confirmation.
@@ -381,7 +381,12 @@ object AgentTools {
         ),
         def(
             AIRPLANE_MODE,
-            "Read or change this phone's Airplane Mode. Needs the \"Offer Airplane Mode shortcut\" setting. On a rooted phone the switch is made and verified; on a phone that is not rooted the tool opens the system Airplane Mode settings screen and waits up to 60 seconds for the person to flip it.",
+            "Read or change this phone's Airplane Mode. Needs the \"Offer Airplane Mode shortcut\" setting. " +
+                "On a rooted phone the switch is made and verified; on a phone that is not rooted the tool opens " +
+                "the system Airplane Mode settings screen and waits up to 60 seconds for the person to flip it. " +
+                "action=cycle switches it on and straight back off — use it when the user asks to change, rotate " +
+                "or refresh their IP: the network re-attaches on the return, which is what changes the address. " +
+                "The tool verifies the state transitions and never claims to know the new address itself.",
             SCHEMA_AIRPLANE_MODE
         ),
         def(RELOAD, "Reload the page in this chat's tab. The Developer Tools console and network buffers keep working across the reload.", SCHEMA_NO_PARAMS),

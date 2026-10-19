@@ -325,8 +325,9 @@ fun BrowserSettingsScreen(viewModel: BrowserViewModel, onClose: () -> Unit) {
             )
             SettingSwitchRow(
                 title = "Offer Airplane Mode shortcut",
-                subtitle = "\"/airplane on|off\" in chat and the airplane_mode agent tool: automatic on a " +
-                    "rooted phone, guided with a confirmation otherwise. Also offers the settings " +
+                subtitle = "\"/airplane on|off|cycle\" in chat and the airplane_mode agent tool: automatic on a " +
+                    "rooted phone, guided with a confirmation otherwise. \"cycle\" flips airplane mode on and " +
+                    "back off to rotate the phone's IP. Also offers the settings " +
                     "shortcut when the network fails.",
                 checked = global.offerAirplaneModeShortcut,
                 onCheckedChange = {

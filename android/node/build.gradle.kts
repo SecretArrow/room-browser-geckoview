@@ -65,6 +65,12 @@ android {
 
 dependencies {
     implementation(libs.kotlinx.serialization.json)
+    // NodeRunner's one-call-at-a-time gate is a coroutine mutex, so the wait
+    // behind a call in flight is cancellable (the chat's Stop button) where
+    // the ReentrantLock it replaced parked the waiter's thread without
+    // reprieve. Coroutines arrive here only for that gate; the calls
+    // themselves stay blocking socket code, unchanged.
+    implementation(libs.kotlinx.coroutines.core)
 
     testImplementation(libs.junit)
     testImplementation(libs.truth)

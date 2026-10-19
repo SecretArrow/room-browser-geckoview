@@ -208,6 +208,10 @@ class AgentDtosTest {
             .isEqualTo("Packages: list")
         assertThat(AgentTools.describeTool(AgentTools.NODE_PACKAGES, """{"action":"remove","name":"@scope/pkg"}"""))
             .isEqualTo("Packages: remove @scope/pkg")
+        // The cycle's label names the verb, so the Confirm-actions prompt a
+        // cycle goes through says what is about to run.
+        assertThat(AgentTools.describeTool(AgentTools.AIRPLANE_MODE, """{"action":"cycle"}"""))
+            .isEqualTo("Airplane Mode: cycle")
     }
 
     @Test

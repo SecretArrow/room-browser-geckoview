@@ -54,12 +54,21 @@ object PluginCommandParser {
             // words above: a plugin that declares `airplane` never owns it, and
             // the interceptor is the one that can answer a missing direction
             // with the usage notice — this function only routes text.
-            val on = when (args) {
-                "on" -> true
-                "off" -> false
-                else -> null
+            //
+            // The cycle and its two aliases (`ip`, `refresh` — the words a
+            // person reaches for when what they want is the ADDRESS to change)
+            // are their OWN decision, not a third direction: a cycle has no
+            // target state to carry, so it routes to a command with no payload
+            // rather than overloading `on` with a spelling that means both
+            // "true" and "first true, then false". Extra words after any of
+            // the three ("/airplane cycle now") fall to the null direction and
+            // the usage notice, exactly as "/airplane on extra" always has.
+            return when (args) {
+                "cycle", "ip", "refresh" -> PluginCommand.AirplaneCycle
+                "on" -> PluginCommand.Airplane(true)
+                "off" -> PluginCommand.Airplane(false)
+                else -> PluginCommand.Airplane(null)
             }
-            return PluginCommand.Airplane(on)
         }
         val owners = commands[name].orEmpty()
         return when {
@@ -101,6 +110,17 @@ sealed interface PluginCommand {
      * the other reserved words, so `/airplanex` is NOT the command.
      */
     data class Airplane(val on: Boolean?) : PluginCommand
+
+    /**
+     * `/airplane cycle` (aliases `ip`, `refresh`): switch airplane mode on
+     * and straight back off — the drop-and-return whose whole purpose is that
+     * the network re-attaches and the phone's IP changes. The rotation is
+     * honest by design: the flow verifies the two STATE TRANSITIONS and
+     * reports those, never an address it cannot see. A cycle is not a
+     * direction ([Airplane] carries those), so this decision has no payload —
+     * the interceptor owns the ladder, exactly as it owns the switch.
+     */
+    object AirplaneCycle : PluginCommand
 
     /** `/<name> <args>` that exactly one enabled plugin declares. */
     data class Plugin(val name: String, val args: String) : PluginCommand

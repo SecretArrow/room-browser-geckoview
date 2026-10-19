@@ -27,6 +27,7 @@ import com.roombrowser.node.PluginChatEntry
 import com.roombrowser.node.PluginGenerateRequest
 import com.roombrowser.node.PluginWireManifest
 import com.roombrowser.node.ReverseHandlers
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
@@ -183,6 +184,18 @@ internal const val FORM_TIMED_OUT_ERROR = "Form timed out"
 internal const val FORM_WAIT_MS = 300_000L
 
 /**
+ * The status line the contended-wait hook is for: what a chat should be
+ * told when its call found the runtime's one-call gate held by another —
+ * most often a plugin form dialog in another chat, which can hold it for
+ * [FORM_WAIT_MS]. The turn is not stuck, it is QUEUED, and the person
+ * deserves to be told which. Spelled here (rather than at whichever surface
+ * wires the hook first) so every surface that adopts it says the same words;
+ * the holder can be any run or plugin call, but "a plugin call" is the case
+ * a person can act on — close the other chat's dialog.
+ */
+internal const val RUNTIME_CONTENDED_NOTICE = "another plugin call is running — waiting…"
+
+/**
  * The reverse command names the app side registers when a call wires a form
  * host. The node module owns the canonical constants but keeps them
  * module-internal, so these are the app's spellings of the same two strings
@@ -209,6 +222,12 @@ internal const val REVERSE_USER_INPUT_CMD = "user_input"
  * registry ([reverseHandlers]) that answers both commands while the plugin
  * runs; null on both carries no registry at all, exactly as a null generator
  * always has.
+ *
+ * [onContended] is the seam the honest queue notice rides: it fires once,
+ * before the wait, whenever this call found another one already holding the
+ * runtime's one-call gate — wire it to the chat's status line with
+ * [RUNTIME_CONTENDED_NOTICE] (the controller's `setStatus`). Null (every
+ * caller today) keeps the silent wait this route always had.
  */
 fun interface PluginCall {
     suspend operator fun invoke(
@@ -218,9 +237,17 @@ fun interface PluginCall {
     ): PluginCallResult
 
     companion object {
-        /** The production route: the one process-wide runner, one call at a time. */
-        fun throughRunner(context: Context): PluginCall {
-            val runner = NodeRunner(context)
+        /**
+         * The production route: the one process-wide runner, one call at a
+         * time — and a wait behind a busy runner that is cancellable, so a
+         * stopped turn stops instead of parking its thread until the holder
+         * (a form dialog can hold the gate for minutes) resolves.
+         */
+        fun throughRunner(
+            context: Context,
+            onContended: (() -> Unit)? = null
+        ): PluginCall {
+            val runner = NodeRunner(context, onContended)
             return PluginCall { request, generate, form ->
                 // The legacy shorthand when no form host is wired: byte-for-byte
                 // today's route, so every call without a dialog behaves exactly
@@ -261,8 +288,12 @@ fun interface PluginGenerateCall {
  * here would have to invent words of its own instead. runBlocking is safe
  * because the call already sits on a Dispatchers.IO thread inside
  * [AgentPluginRuntime.run]; the generation suspends on the provider's own
- * threads, and the NodeRunner lock is held by THIS thread, which the
- * generation never re-enters.
+ * threads, and the runtime's one-call gate is held by THIS thread, which
+ * the generation never re-enters — and since the gate became a coroutine
+ * mutex (8-f) that is a load-bearing rule rather than a footnote: a
+ * re-entry would deadlock where the old ReentrantLock silently re-entered.
+ * It holds because a generation only ever rides the gateway's own HTTP call
+ * — no NodeRunner, no NodeClient, no catalogue read.
  *
  * Internal rather than private: [PluginCall.throughRunner] wires it in, and
  * the runtime's test wraps a fake generator with it — the wrap is part of
@@ -328,8 +359,12 @@ internal fun reverseHandlers(
  *
  * runBlocking is safe for the same reason the generate handler's is: the call
  * already sits on a Dispatchers.IO thread inside [AgentPluginRuntime.run],
- * the dialog completes the deferred on the main thread, and the NodeRunner
- * lock is held by THIS thread, which the dialog never re-enters.
+ * the dialog completes the deferred on the main thread, and the runtime's
+ * one-call gate is held by THIS thread, which the dialog never re-enters —
+ * load-bearing since the gate became a coroutine mutex (8-f), because a
+ * re-entry would deadlock where the old ReentrantLock silently re-entered.
+ * It holds because the form host only ever rides its pending form's
+ * deferred: no NodeRunner, no NodeClient, no catalogue read.
  */
 internal fun reverseFormHandler(
     form: PluginFormCall,
@@ -374,15 +409,28 @@ data class PluginToolRun(
  * NEVER THROWS, for the same reason [NodeRunner.plugin] never throws: a plugin
  * that failed, timed out, or cannot run at all is an ANSWER the chat has to
  * read — a Notice, a failed tool result — not an exception the caller has to
- * word itself. The identity rule is [AgentNodeRuntime]'s with one deliberate
- * difference: a plugin without the network permission is not refused for
- * lacking a user agent, because it can never make a request; the bridge
- * refuses an identity-less fetch honestly if it turns out to want one.
+ * word itself. The one deliberate exception is cancellation while WAITING
+ * for the runtime's one-call gate: it travels, because swallowing it would
+ * answer a stopped turn with a "failed plugin" it would then word, instead
+ * of stopping the turn the person stopped. The identity rule is
+ * [AgentNodeRuntime]'s with one deliberate difference: a plugin without the
+ * network permission is not refused for lacking a user agent, because it
+ * can never make a request; the bridge refuses an identity-less fetch
+ * honestly if it turns out to want one.
  */
 class AgentPluginRuntime(
     private val context: Context,
     private val profile: Profile?,
-    private val call: PluginCall = PluginCall.throughRunner(context)
+    /**
+     * The honest queue notice's wire-free half: handed straight to the
+     * production route ([PluginCall.throughRunner]) so a caller that builds
+     * this runtime can surface "another plugin call is running — waiting…"
+     * ([RUNTIME_CONTENDED_NOTICE]) on its status line without having to
+     * construct its own [PluginCall]. Ignored whenever [call] is passed
+     * explicitly — a caller that owns its route owns its notices too.
+     */
+    onContended: (() -> Unit)? = null,
+    private val call: PluginCall = PluginCall.throughRunner(context, onContended)
 ) {
 
     /**
@@ -462,12 +510,20 @@ class AgentPluginRuntime(
             zagentsName = if (module) plugin.zagentsName else null,
             history = history.takeIf { it.isNotEmpty() && PluginPermissions.CHAT_CONTEXT in effective }
         )
-        runCatching { call(request, generate, form) }.getOrElse { err ->
-            PluginCallResult(
-                ok = false,
-                output = err.message ?: "the plugin call failed: ${err.javaClass.simpleName}"
-            )
-        }
+        runCatching { call(request, generate, form) }
+            .getOrElse { err ->
+                // The one failure that is not the plugin's: a caller cancelled
+                // while it WAITED for the runtime's one-call gate (another
+                // chat's form dialog can hold it for minutes). Swallowing it
+                // here would run a stopped turn's coroutine on to a "failed
+                // plugin" the person never sees — so the cancellation itself
+                // travels, and every other failure stays an answer.
+                if (err is CancellationException) throw err
+                PluginCallResult(
+                    ok = false,
+                    output = err.message ?: "the plugin call failed: ${err.javaClass.simpleName}"
+                )
+            }
     }
 
     /**

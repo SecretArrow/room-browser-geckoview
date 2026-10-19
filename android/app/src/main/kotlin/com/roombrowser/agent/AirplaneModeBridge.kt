@@ -39,4 +39,24 @@ interface AirplaneModeBridge {
 
     /** Polls until the state is [on] or [timeoutMs] passes. */
     suspend fun waitUntil(on: Boolean, timeoutMs: Long): Boolean
+
+    companion object {
+        /**
+         * The on-purpose pause at the top of every cycle, while airplane mode
+         * is ON: the radios tear down and the network drops its lease, and it
+         * is the lease's renegotiation on the way back that changes the
+         * phone's address — a cycle that re-attaches before the teardown
+         * finished asks for the same IP back and rotates nothing.
+         */
+        const val CYCLE_SETTLE_MS = 3_000L
+
+        /**
+         * How long one ROOTED cycle step may take to settle (the state
+         * reaching, and holding, the direction the step switched to) before
+         * the step is judged a failure. Short on purpose: a switch a command
+         * made does not need a person's patience — the guided half has its
+         * own, far longer, waits.
+         */
+        const val CYCLE_STEP_MS = 5_000L
+    }
 }

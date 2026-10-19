@@ -274,12 +274,22 @@ object PageScreenshot {
                 val top = (at * scale * shrink).roundToInt()
                 val bottom = minOf(top + (frame.height * shrink).roundToInt(), output.height)
                 if (bottom <= top) continue
-                canvas.drawBitmap(
-                    frame,
-                    Rect(0, 0, frame.width, frame.height),
-                    Rect(0, top, output.width, bottom),
-                    null
-                )
+                // The blit is the CPU half of a full-page capture — each strip
+                // rescales a ~1080x2400 ARGB frame into the output — and the
+                // one place it spent real main-thread time. Both bitmaps are
+                // software buffers created for this stitch (the frame from the
+                // engine's own PixelCopy, the output from createBitmap), never
+                // attached to a view, so drawing off the main thread is safe;
+                // the engine calls either side of it stay on Main, where the
+                // WebView's view affinity demands them.
+                withContext(Dispatchers.Default) {
+                    canvas.drawBitmap(
+                        frame,
+                        Rect(0, 0, frame.width, frame.height),
+                        Rect(0, top, output.width, bottom),
+                        null
+                    )
+                }
                 drawn++
             } finally {
                 frame.recycle()

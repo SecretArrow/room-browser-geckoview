@@ -308,7 +308,9 @@ new and old**, carried by a defaulted Boolean (`agentVisionEnabled`,
 `agentSiteMemoryEnabled`) rather than by a withheld permission — that set is a
 deny-list, so a permission added later is granted by default and cannot express
 "off". Airplane Mode is the newest — the one place this app runs a root shell,
-pinned to two fragments and verified by reading the state back.
+pinned to two fragments and verified by reading the state back (the cycle
+that rotates the phone's IP is those same two fragments, enable then
+disable, with a fixed pause between).
 
 ### Vision (a screenshot to the provider)
 
@@ -372,9 +374,11 @@ profile's state, and is **off unless the profile opts in**.
 
 ### The root shell, and its one job
 
-`airplane_mode action=set` — and the `/airplane on|off` chat command, which
-rides the same bridge — is the only place this app runs `su`. The shell is not
-a capability the agent holds; it is one command with two pinned spellings:
+`airplane_mode action=set`, `airplane_mode action=cycle` — and the
+`/airplane on|off|cycle` chat command, which rides the same bridge — are the
+only places this app runs `su`. The shell is not a capability the agent
+holds; it is one command with two pinned spellings, and the cycle is that
+same command twice (enable, then disable) rather than a new one:
 
 - **Exactly two fragments ever run.** The primary is
   `cmd connectivity airplane-mode enable|disable`; the fallback, as one
@@ -382,12 +386,17 @@ a capability the agent holds; it is one command with two pinned spellings:
   android.intent.action.AIRPLANE_MODE --ez state true|false`. NOTHING else is
   ever interpolated into the command — no user text, no model output, no
   state read off the device — so there is nothing to inject and no route to
-  widen it into anything else.
+  widen it into anything else. The IP-rotation cycle (`/airplane cycle`,
+  `action=cycle`) adds no spelling of its own: it is the enable fragment, a
+  fixed 3-second pause, then the disable fragment — the pinned pair, twice.
 - **Every run is verified by reading the state back.** Android lets any app
   READ `Settings.Global.AIRPLANE_MODE_ON` without a permission, so success is
   the state matching, not the command's exit code: a command that exits 0
   without changing anything is reported as a failure ("did not take
-  effect"), never as a switch that happened.
+  effect"), never as a switch that happened. A cycle is held to this at both
+  of its steps, and its completion notice reports the two verified state
+  transitions and the network re-attach — never an IP address, which the
+  feature cannot see and so never claims.
 - **A phone that is not rooted executes nothing at all.** No su binary, no
   shell, no attempt — the guided hand-off (the system Airplane Mode settings
   screen opened, a Yes/No confirmation, and a poll that continues the chat by

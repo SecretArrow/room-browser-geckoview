@@ -21,6 +21,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -54,32 +55,39 @@ internal fun NetworkPanel(session: InspectorSession) {
         onDispose { session.stopNetwork() }
     }
 
-    val matching = remember(entries, filter, options) {
-        val active = if (filter in options) filter else KIND_ALL
-        when (active) {
-            KIND_ALL -> entries
-            KIND_PAGE -> entries.filter { it.kind == RESOURCE_KIND }
-            else -> entries.filter { it.kind == active }
-        }
-    }
-    val shown = remember(matching) { matching.takeLast(RENDER_MAX) }
+    // The same keyed derivation the Console panel keeps (see
+    // [FeedViewCache] there for the WHY): one pass for the filtered feed and
+    // the window, the same instances back when an event the filter excludes
+    // arrived, and append-ordinal keys so a sliding window recomposes one row
+    // instead of RENDER_MAX.
     val activeKind = if (filter in options) filter else KIND_ALL
+    val feed = remember(session) { FeedViewCache<NetworkEntry>() }
+        .derive(entries, session.network.dropped, RENDER_MAX, kindMatches(activeKind))
+    val matching = feed.matching
+    val shown = feed.rows
+    val keys = feed.keys
     val caption = feedCaption(
         shown = shown.size,
         kept = entries.size,
         cap = session.network.capacity,
         dropped = session.network.dropped
     )
+    // Built only when the feed it reports changed — the network report carries
+    // every matching row's facts and headers, which is the most expensive
+    // string this surface builds.
+    val report = remember(matching, activeKind, session.network.capacity, session.network.dropped) {
+        networkReport(
+            matching,
+            if (activeKind == KIND_ALL) null else activeKind,
+            session.network.capacity,
+            session.network.dropped
+        )
+    }
 
     SectionHeader("Network") {
         // The whole feed, not the rows on screen: see ConsolePanel.
         RoomCopyButton(
-            networkReport(
-                matching,
-                if (activeKind == KIND_ALL) null else activeKind,
-                session.network.capacity,
-                session.network.dropped
-            ),
+            report,
             "Network",
             "Copy these network rows"
         )
@@ -144,7 +152,12 @@ internal fun NetworkPanel(session: InspectorSession) {
                 color = extras.textSecondary
             )
         }
-        shown.forEach { entry -> NetworkRow(entry) }
+        // Keyed by append ordinal for the same reason as the Console panel's
+        // rows — and no lazy list for the same reason either: the dock's outer
+        // scroll owns the scrolling (see ConsolePanel for the full WHY).
+        for (i in shown.indices) {
+            key(keys[i]) { NetworkRow(shown[i]) }
+        }
     }
 
     // The caption explaining where each row came from is a FOOTNOTE, and it is
@@ -173,6 +186,14 @@ private sealed interface PullState {
     data object Running : PullState
     data object Failed : PullState
     data class Done(val count: Int) : PullState
+}
+
+/** The network panel's filter as [FeedViewCache.derive] takes it: null keeps every kind. */
+private fun kindMatches(activeKind: String): ((NetworkEntry) -> Boolean)? = when (activeKind) {
+    KIND_ALL -> null
+    // The "page timing" chip selects RESOURCE rows, which are a kind of their own.
+    KIND_PAGE -> { entry: NetworkEntry -> entry.kind == RESOURCE_KIND }
+    else -> { entry: NetworkEntry -> entry.kind == activeKind }
 }
 
 @Composable

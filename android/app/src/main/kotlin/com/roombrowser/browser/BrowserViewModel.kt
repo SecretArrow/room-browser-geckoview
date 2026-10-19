@@ -8,6 +8,7 @@ import android.net.Uri
 import android.os.SystemClock
 import android.util.Log
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.lifecycle.AndroidViewModel
@@ -74,13 +75,18 @@ import com.roombrowser.engine.ResourceFilter
 import com.roombrowser.theme.ui.ThemeStudioActivity
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import okhttp3.OkHttpClient
 import org.json.JSONArray
 import org.json.JSONObject
@@ -209,6 +215,22 @@ class BrowserViewModel(
 
     var pageState by mutableStateOf(PageState())
         private set
+
+    /**
+     * The loading bar's percentage, split out of [pageState] on purpose.
+     *
+     * WHY A SECOND STATE OBJECT: `onProgress` fires on every engine progress
+     * tick, and `BrowserContent` reads `pageState` at its very top — so a
+     * progress field inside the data class invalidated the WHOLE content
+     * scope per tick (omnibox semantics string included) to move a 2.5dp
+     * bar. The int state below is read only where the bar composes, so a
+     * tick now invalidates that one leaf. [pageState.progress] is still
+     * maintained at its step changes (load start / finish) for any reader
+     * that wants the coarse value; only the per-tick updates bypass it.
+     */
+    var pageProgress by mutableIntStateOf(0)
+        private set
+
     var pageError by mutableStateOf<PageError?>(null)
         private set
 
@@ -345,6 +367,51 @@ class BrowserViewModel(
     /** Site-settings snapshot for the interception thread (thread-safe). */
     @Volatile
     private var siteSettingsSnapshot: Map<String, SiteSettingEntity> = emptyMap()
+
+    /**
+     * Trailing-window coalescer for the shields refresh (F-05). `onBlocked`
+     * fires once per blocked SUB-RESOURCE — a tracker-heavy page produces
+     * 30-80 calls in the first seconds of a load, and every one used to run
+     * two suspend DB queries (`statCountsForHost` + `siteSetting`) and write
+     * `shieldsState`. The counts are eventually-consistent UI, so one refresh
+     * ~500ms after the LAST call of the burst shows exactly the same numbers.
+     * Lazy so a session that never blocks anything never starts it.
+     */
+    private val shieldsRefresh by lazy {
+        TrailingDebounce(viewModelScope, SHIELDS_REFRESH_DEBOUNCE_MS) { readShieldsForCurrentPage() }
+    }
+
+    /**
+     * Coalescer for `persistTab`'s DB writes (F-10). A page load used to fire
+     * a read-modify-write per page event (start for background tabs, finish,
+     * and the finish's touch), and every write re-emitted `observeTabs`. Now
+     * the writes merge per tab id and land as ONE upsert after the burst; the
+     * merged values are exactly what the last write of the burst would have
+     * persisted on its own. The synchronous `tabManager.setPageUrl` index
+     * update stays per-event — it is the reverse index the interception
+     * thread judges sub-resources by, and it never touches the DB.
+     */
+    private val tabWrites by lazy {
+        TabWriteCoalescer(viewModelScope, TAB_WRITE_COALESCE_MS, ::performTabWrite)
+    }
+
+    /**
+     * Batcher for blocked-resource recording (F-05). Every block used to cost
+     * one coroutine launch plus one INSERT; a burst of trackers cost 30-80 of
+     * them alongside the page's own load work. Blocks now queue in a channel
+     * and land as one coroutine's sequential inserts per ~500ms window — every
+     * single block still reaches the DB (a trailing drain flushes whatever is
+     * queued when the ViewModel's scope is torn down). Runs on an IO child
+     * scope of viewModelScope, so it is structured: cancelled with the
+     * ViewModel, never leaked.
+     */
+    private val blockRecorder by lazy {
+        BlockRecorder(
+            scope = CoroutineScope(viewModelScope.coroutineContext + Dispatchers.IO),
+            windowMs = BLOCK_FLUSH_MS,
+            flush = ::persistBlockBatch
+        )
+    }
 
     /**
      * Whether the ACTIVE session is showing fullscreen media.
@@ -563,6 +630,9 @@ class BrowserViewModel(
             recordBlock(host, category)
         }
         override fun onBlocked(host: String, category: FilterEngine.FilterCategory) {
+            // One call per blocked sub-resource: coalesced by the debounce
+            // inside refreshShields (F-05) instead of costing its own pair of
+            // DB queries — the burst's LAST call decides the final read.
             refreshShields()
         }
         override fun onHttpsUpgrade(host: String) {
@@ -592,6 +662,7 @@ class BrowserViewModel(
             val started = UrlIntelligence.settledUrl(url, pageState.url)
             pageError = null
             pageState = pageState.copy(url = started, loading = true, progress = 5, isHomepage = false)
+            pageProgress = 5
             // A navigation retires the vault offer: the login field it was
             // collected for belonged to the outgoing document. The save
             // prompt deliberately SURVIVES navigation — a form submit is
@@ -661,6 +732,7 @@ class BrowserViewModel(
                 secure = settled.startsWith("https://"),
                 isHomepage = UrlIntelligence.isStartPage(settled, title)
             )
+            pageProgress = 100
             // Routed by the engine's OWNER, never by "whatever is active": the
             // two coincide here, but the id comes from the view that fired.
             persistTab(owner, settled, title, touch = true)
@@ -762,7 +834,16 @@ class BrowserViewModel(
             // Progress is pure ACTIVE-tab UI state — a background engine's
             // progress must not drive the bar the user is watching.
             if (session !== activeSession) return
-            pageState = pageState.copy(progress = progress, loading = progress < 100)
+            // The tick lands in the dedicated int state so ONLY the loading
+            // bar's leaf recomposes (see [pageProgress]). pageState itself is
+            // touched solely when `loading` actually flips — the two boundary
+            // ticks that end or extend a load — which keeps the omnibox's
+            // whole scope out of the per-tick invalidation.
+            pageProgress = progress
+            val loading = progress < 100
+            if (pageState.loading != loading) {
+                pageState = pageState.copy(loading = loading)
+            }
         }
 
         override fun onTitleChanged(session: EngineSession, title: String) {
@@ -878,6 +959,7 @@ class BrowserViewModel(
                     progress = 5,
                     isHomepage = false
                 )
+                pageProgress = 5
                 pageError = null
             }
             viewModelScope.launch { beginLoad(session, url) }
@@ -1286,7 +1368,18 @@ class BrowserViewModel(
 
     private fun observeFlows() {
         viewModelScope.launch {
-            browserRepo.observeTabs(profileId).collect { list -> tabs = list }
+            // Room's invalidation tracker re-emits this flow on ANY tabs-table
+            // write — including writes whose only change is last_viewed_at.
+            // Compose would skip a structurally equal list, but a touch-only
+            // write is NOT equal, so it recomposed the tab strip for a
+            // recency stamp nothing renders. [sameOpenTabs] compares only the
+            // fields the strip (and every other in-memory reader) consumes;
+            // last_viewed_at is read exclusively from fresh DB queries
+            // (restore, closeTab), so letting the in-memory copy lag behind
+            // it costs nothing.
+            browserRepo.observeTabs(profileId).collect { list ->
+                if (!sameOpenTabs(tabs, list)) tabs = list
+            }
         }
         viewModelScope.launch {
             // Live per-profile theming: the Theme Studio (default process)
@@ -1326,6 +1419,28 @@ class BrowserViewModel(
         viewModelScope.launch {
             dnsMonitor.state.collect { dnsState = it }
         }
+    }
+
+    /**
+     * Whether two open-tab emissions differ in anything the UI or the
+     * in-memory readers actually consume (F-10). [TabEntity.lastViewedAt] is
+     * deliberately excluded: it is a recency stamp for the DB's restore-time
+     * queries, never rendered and never read from the in-memory list —
+     * emissions that differ only by it are the tab strip recomposing for
+     * nothing. Everything a reader can see (identity, ordering, pin state,
+     * url/title/privacy) still participates, so a real change always lands.
+     */
+    private fun sameOpenTabs(a: List<TabEntity>, b: List<TabEntity>): Boolean {
+        if (a.size != b.size) return false
+        for (i in a.indices) {
+            val x = a[i]
+            val y = b[i]
+            if (x.id != y.id || x.position != y.position || x.title != y.title ||
+                x.url != y.url || x.isPrivate != y.isPrivate || x.isPinned != y.isPinned ||
+                x.groupName != y.groupName
+            ) return false
+        }
+        return true
     }
 
     // ---------- Navigation ----------
@@ -1395,6 +1510,7 @@ class BrowserViewModel(
                     progress = 5,
                     isHomepage = false
                 )
+                pageProgress = 5
                 pageError = null
                 Log.d(NAV_TAG, "vm=$navId loadUrl same-tab url=$url attached=${session.view.parent != null}")
                 beginLoad(session, url)
@@ -1472,6 +1588,7 @@ class BrowserViewModel(
      */
     private fun failCircle(uri: OctUri, message: String) {
         pageState = pageState.copy(url = uri.raw, loading = false, progress = 0, isHomepage = false)
+        pageProgress = 0
         pageError = PageError.Generic(uri.raw, message)
     }
 
@@ -1506,13 +1623,17 @@ class BrowserViewModel(
         Log.d(NAV_TAG, "vm=$navId goHome")
         destroyActiveWebView()
         pageState = PageState(isPrivate = pageState.isPrivate)
+        pageProgress = 0
         pageError = null
         val id = activeTabId
         if (id != null) {
-            viewModelScope.launch {
-                val tab = browserRepo.tab(id) ?: return@launch
-                browserRepo.updateTab(tab.copy(url = "about:home", title = "", lastViewedAt = System.currentTimeMillis()))
-            }
+            // Through the same coalescer as the page events, for ordering: a
+            // pending write from the page being left (its finish can be less
+            // than a window old) must not land AFTER this one and stamp the
+            // abandoned page's url back onto the row. The merge makes
+            // about:home the last word — exactly the row the direct write
+            // used to leave — and one write lands instead of two.
+            tabWrites.persist(id, "about:home", "", touch = true)
         }
     }
 
@@ -1776,7 +1897,10 @@ class BrowserViewModel(
                 // profile (last_viewed_at), not just the last in position.
                 val next = remaining.maxByOrNull { it.lastViewedAt }
                 activeTabId = next?.id
-                if (next != null) selectTab(next.id) else pageState = PageState()
+                if (next != null) selectTab(next.id) else {
+                    pageState = PageState()
+                    pageProgress = 0
+                }
             }
         }
     }
@@ -2098,28 +2222,47 @@ class BrowserViewModel(
         // reads the owning engine's URL from it to judge sub-resources, and a
         // background tab whose index entry still held the previous page would
         // have its cross-site decisions made against the wrong host. Called
-        // here, on the callback's own (main) thread — the launch below may
-        // suspend and resume on another.
+        // here, on the callback's own (main) thread — the coalescer's flush
+        // coroutine may suspend and resume on another.
         tabManager.setPageUrl(id, url)
-        viewModelScope.launch {
-            val tab = browserRepo.tab(id) ?: return@launch
-            browserRepo.updateTab(
-                if (touch) {
-                    tab.copy(url = url, title = title ?: tab.title, lastViewedAt = System.currentTimeMillis())
-                } else {
-                    tab.copy(url = url, title = title ?: tab.title)
-                }
-            )
-        }
+        // The DB write is coalesced per tab (F-10, see [tabWrites]): within a
+        // navigation burst only the MERGED final write lands, and it carries
+        // exactly the values the last event's own write would have.
+        tabWrites.persist(id, url, title, touch)
     }
 
-    /** Synchronous tab persistence used by the profile-switch executor. */
+    /**
+     * The single read-modify-write a coalesced burst resolves to — the same
+     * RMW persistTab used to run per event, with the same null-title and
+     * touch semantics, applied once to the row's FRESH state at flush time
+     * (reading late is also why a tab closed mid-burst cannot be resurrected
+     * by a stale entity write-back).
+     */
+    private suspend fun performTabWrite(id: String, url: String, title: String?, touch: Boolean) {
+        val tab = browserRepo.tab(id) ?: return
+        browserRepo.updateTab(
+            if (touch) {
+                tab.copy(url = url, title = title ?: tab.title, lastViewedAt = System.currentTimeMillis())
+            } else {
+                tab.copy(url = url, title = title ?: tab.title)
+            }
+        )
+    }
+
+    /**
+     * Synchronous tab persistence used by the profile-switch executor.
+     *
+     * Routed through [tabWrites] rather than written straight to the row: a
+     * pending coalesced write for this tab (or any other) must never land
+     * AFTER this awaited snapshot and stamp the pre-switch url/title back
+     * over it. Merging the snapshot in and flushing everything NOW makes the
+     * switch's save the last word — the same row the direct write produced —
+     * and lands every other tab's pending write too, which the process
+     * restart that follows would otherwise race.
+     */
     suspend fun persistActiveTabNow() {
         val id = activeTabId ?: return
-        val url = pageState.url
-        val title = pageState.title
-        val tab = browserRepo.tab(id) ?: return
-        browserRepo.updateTab(tab.copy(url = url, title = title, lastViewedAt = System.currentTimeMillis()))
+        tabWrites.persistNow(id, pageState.url, pageState.title, touch = true)
     }
 
     /** Detach (do not destroy twice) the active engine — used on switch. */
@@ -2222,19 +2365,33 @@ class BrowserViewModel(
     // ---------- Shields & site settings ----------
 
     fun refreshShields() {
-        viewModelScope.launch {
-            val host = UrlIntelligence.hostOf(pageState.url) ?: return@launch
-            val counts = browserRepo.statCountsForHost(profileId, host, System.currentTimeMillis() - DAY_MS)
-            val setting = browserRepo.siteSetting(profileId, host)
-            val map = counts.associate { it.category to it.count }
-            shieldsState = ShieldsState(
-                host = host,
-                adsBlocked = map[StatCategories.AD] ?: 0,
-                trackersBlocked = (map[StatCategories.TRACKER] ?: 0) + (map[StatCategories.CROSS_SITE_TRACKER] ?: 0),
-                httpsUpgrades = map[StatCategories.HTTPS_UPGRADE] ?: 0,
-                shieldsDisabled = setting?.shieldsDisabled == true
-            )
-        }
+        // Debounced, trailing (F-05): see [shieldsRefresh]. Callers are the
+        // engine callbacks (a burst of onBlocked, onPageFinished, the shields
+        // toggles) — the LAST call of a burst is the one whose numbers matter,
+        // and it is the one that lands once the window closes. The user-facing
+        // shields sheet reads live state, so the (already async) refresh
+        // simply arrives ~500ms later than it used to; the counts themselves
+        // are identical.
+        shieldsRefresh.call()
+    }
+
+    /**
+     * The actual shields read — the exact body refreshShields used to launch
+     * per call. Reads the page's CURRENT url at fire time, which after a
+     * burst is the page the last event belonged to.
+     */
+    private suspend fun readShieldsForCurrentPage() {
+        val host = UrlIntelligence.hostOf(pageState.url) ?: return
+        val counts = browserRepo.statCountsForHost(profileId, host, System.currentTimeMillis() - DAY_MS)
+        val setting = browserRepo.siteSetting(profileId, host)
+        val map = counts.associate { it.category to it.count }
+        shieldsState = ShieldsState(
+            host = host,
+            adsBlocked = map[StatCategories.AD] ?: 0,
+            trackersBlocked = (map[StatCategories.TRACKER] ?: 0) + (map[StatCategories.CROSS_SITE_TRACKER] ?: 0),
+            httpsUpgrades = map[StatCategories.HTTPS_UPGRADE] ?: 0,
+            shieldsDisabled = setting?.shieldsDisabled == true
+        )
     }
 
     fun toggleShieldsForSite(disabled: Boolean) {
@@ -2377,9 +2534,30 @@ class BrowserViewModel(
     }
 
     private fun recordBlock(host: String, category: String) {
-        viewModelScope.launch(Dispatchers.IO) {
+        // Batched (F-05): the insert lands with the next flush of
+        // [blockRecorder] instead of costing its own coroutine. Every block
+        // still reaches the DB — the recorder's trailing drain guarantees it.
+        blockRecorder.record(host, category)
+    }
+
+    /**
+     * One batch of queued blocks, written in arrival order by a single
+     * coroutine on the recorder's IO scope. The INSERTs stay one-by-one (the
+     * repository exposes no bulk insert), but the coroutine-per-block launch
+     * and its dispatch overhead are gone.
+     *
+     * The trailing refreshShields is what makes the shields numbers settle
+     * CORRECTLY rather than merely often: it is issued only after this
+     * batch's inserts have returned, so the debounced read can never race
+     * ahead of the rows it is supposed to count. Blocks that arrive without
+     * an `onBlocked` (HTTPS upgrades, popups) get the same refresh here —
+     * their counts used to wait for the next page event.
+     */
+    private suspend fun persistBlockBatch(events: List<Pair<String, String>>) {
+        for ((host, category) in events) {
             browserRepo.recordBlock(profileId, host, category)
         }
+        refreshShields()
     }
 
     private fun recordVisit(url: String, title: String) {
@@ -3481,6 +3659,31 @@ class BrowserViewModel(
         /** A scan the user is watching may take longer than the one a bind waits on. */
         const val FINDER_SWEEP_BUDGET_MS = 25_000L
 
+        /**
+         * Trailing debounce for the shields refresh (F-05). The window is
+         * long enough to swallow a whole burst of blocked sub-resources (they
+         * land within the first seconds of a page load) and short enough that
+         * the shields numbers settle visibly before a human could open the
+         * sheet and read them.
+         */
+        private const val SHIELDS_REFRESH_DEBOUNCE_MS = 500L
+
+        /**
+         * Flush window for batched block-event inserts (F-05). Same order as
+         * the shields window on purpose: a batch that flushes while the
+         * debounce is still running would refresh against rows that are about
+         * to change again.
+         */
+        private const val BLOCK_FLUSH_MS = 500L
+
+        /**
+         * Coalescing window for per-tab persistence writes (F-10). A page
+         * load's start/finish/touch events all land within it, so a burst
+         * resolves to one upsert; any burst that outlasts the window simply
+         * produces one upsert per window, never a lost write.
+         */
+        private const val TAB_WRITE_COALESCE_MS = 500L
+
         const val READER_SCRIPT = """
             (function(){
               var candidates = document.querySelectorAll('article, main, [role=main], .post, #content, .content');
@@ -3500,5 +3703,209 @@ class BrowserViewModel(
               });
             })()
         """
+    }
+}
+
+// =========================================================================
+// EVENT-COALESCING HELPERS (F-05 / F-10)
+//
+// Three small, engine-free classes that own the app's per-event write
+// coalescing. They live in this file — not beside the repository or the DAOs
+// — because the coalescing WINDOW is a UI-event concern (bursts of engine
+// callbacks), while the flush bodies stay ViewModel methods that talk to the
+// repository through its existing seams. Being top-level and Android-free
+// is what makes their burst semantics unit-testable (EventCoalescingTest).
+// =========================================================================
+
+/**
+ * A trailing-edge debouncer: repeated [call]s within [windowMs] collapse,
+ * and [fire] runs once, [windowMs] after the LAST of them.
+ *
+ * WHY THE OUTER LAUNCH: callers include WebView's request-interception
+ * threads, so [call] may arrive on any thread. The cancel-and-restart pair
+ * must be atomic to be a debounce at all, so it is serialized onto the
+ * scope's own (main) dispatcher — two calls racing from two engines can
+ * only interleave as whole pairs, which is exactly the trailing edge.
+ *
+ * Structured: [fire] runs in the scope, so it is cancelled with it — no
+ * leak, no fire after teardown.
+ */
+internal class TrailingDebounce(
+    private val scope: CoroutineScope,
+    private val windowMs: Long,
+    private val fire: suspend () -> Unit
+) {
+    private var job: Job? = null
+
+    fun call() {
+        scope.launch {
+            job?.cancel()
+            job = scope.launch {
+                delay(windowMs)
+                fire()
+            }
+        }
+    }
+}
+
+/**
+ * Coalesces per-tab persistence into one debounced write per tab id.
+ *
+ * MERGE RULES (they reproduce, in one write, exactly the row the LAST
+ * write of the burst would have produced):
+ *  - `url`: the latest caller's url wins — a navigation's finish overwrites
+ *    its own start.
+ *  - `title`: null means "keep whatever is stored", so it only ever moves
+ *    forward to a known title and never resurrects a stale one.
+ *  - `touch`: sticky — a burst that touched the tab at any point is a burst
+ *    the user looked at, and the merged write stamps it as such.
+ *
+ * WHY THE SUPERSEDE CHECK IN THE CATCH: restarting the window cancels the
+ * in-flight delay, and that cancellation must NOT flush (the newer window
+ * owns the merged state now) — while cancelling the WHOLE SCOPE must flush,
+ * because the ViewModel is going away and the last merged write would
+ * otherwise never land. `scope.isActive` is what tells those two apart.
+ * The flush itself runs under [NonCancellable] so the teardown case can
+ * still reach the database after every suspension point has died.
+ *
+ * MAIN-THREAD ONLY for [persist] (the merge state is a plain map) — the
+ * callers are the engine's page callbacks, which the facade delivers on
+ * main; [BrowserViewModel.persistTab] documents the same contract.
+ */
+internal class TabWriteCoalescer(
+    private val scope: CoroutineScope,
+    private val windowMs: Long,
+    private val write: suspend (id: String, url: String, title: String?, touch: Boolean) -> Unit
+) {
+    private class Pending(
+        var url: String,
+        var title: String?,
+        var touch: Boolean
+    )
+
+    private val pending = LinkedHashMap<String, Pending>()
+    private var flushJob: Job? = null
+
+    fun persist(id: String, url: String, title: String?, touch: Boolean) {
+        mergeInto(id, url, title, touch)
+        flushJob?.cancel()
+        flushJob = scope.launch {
+            try {
+                delay(windowMs)
+            } catch (cancelled: CancellationException) {
+                // Superseded by a newer persist: the merged state stays put,
+                // the new window will flush it.
+                if (scope.isActive) throw cancelled
+                // Scope teardown: fall through and land the write below.
+            }
+            withContext(NonCancellable) { flushNow() }
+        }
+    }
+
+    /**
+     * The awaited variant the profile-switch save uses: merges [id]'s values
+     * in and lands EVERY pending write right now — this one and every other
+     * tab's — so a later window can never stamp pre-switch values back over
+     * the snapshot, and no other tab's pending write is left racing the
+     * process restart that follows. MAIN-THREAD ONLY like [persist] (the
+     * switch executor runs on the activity's Main.immediate lifecycleScope,
+     * which is what serializes it against the window coroutines).
+     */
+    suspend fun persistNow(id: String, url: String, title: String?, touch: Boolean) {
+        mergeInto(id, url, title, touch)
+        flushJob?.cancel()
+        withContext(NonCancellable) { flushNow() }
+    }
+
+    /** The merge rules above, as one place for both entry points. */
+    private fun mergeInto(id: String, url: String, title: String?, touch: Boolean) {
+        val existing = pending[id]
+        if (existing == null) {
+            pending[id] = Pending(url, title, touch)
+        } else {
+            existing.url = url
+            if (title != null) existing.title = title
+            existing.touch = existing.touch || touch
+        }
+    }
+
+    private suspend fun flushNow() {
+        val writes = pending.toList()
+        pending.clear()
+        for ((id, state) in writes) {
+            write(id, state.url, state.title, state.touch)
+        }
+    }
+}
+
+/**
+ * Batches blocked-resource records: [record] queues an event (from any
+ * engine callback thread — the channel never suspends), and a single
+ * drainer coroutine writes each ~[windowMs] window as one batch.
+ *
+ * WHY A PARKED DRAINER AND NOT A TICKER: the drainer suspends on
+ * [Channel.receive] until the first block of a burst arrives, so a session
+ * that blocks nothing costs one parked continuation and zero wakeups; a
+ * periodic ticker would burn a wakeup per interval forever. The window is
+ * measured from the batch's FIRST event, so a burst's tail always flushes
+ * within [windowMs] of going quiet — the "last items in a burst" can never
+ * sit queued waiting for a next event that never comes.
+ *
+ * NOTHING IS DROPPED AT TEARDOWN: the drainer is a child of the scope it
+ * was given (an IO child of the ViewModel's scope). When that scope is
+ * cancelled the `finally` flushes BOTH the batch that was already being
+ * assembled ([inFlight]) AND whatever was still queued — through a
+ * [NonCancellable] flush, because every suspension point in a cancelled
+ * coroutine is dead by then. The in-flight batch has to be a FIELD for
+ * this to work: a cancelled `withTimeoutOrNull` unwinds straight past the
+ * local variable that held it.
+ */
+internal class BlockRecorder(
+    private val scope: CoroutineScope,
+    private val windowMs: Long,
+    private val flush: suspend (List<Pair<String, String>>) -> Unit
+) {
+    private val events = Channel<Pair<String, String>>(Channel.UNLIMITED)
+
+    /** The batch currently being assembled. Owned by the drainer alone. */
+    private var inFlight: MutableList<Pair<String, String>>? = null
+
+    init {
+        scope.launch { drain() }
+    }
+
+    fun record(host: String, category: String) {
+        // trySend on an UNLIMITED channel always succeeds without suspending,
+        // which is what makes this safe from the interception threads.
+        events.trySend(host to category)
+    }
+
+    private suspend fun drain() {
+        try {
+            while (true) {
+                val batch = mutableListOf<Pair<String, String>>()
+                inFlight = batch
+                // Park until the burst's first event, then keep absorbing
+                // until the window closes on it.
+                batch.add(events.receive())
+                withTimeoutOrNull(windowMs) {
+                    while (true) batch.add(events.receive())
+                }
+                // Handed to flush — cleared BEFORE it runs so a cancellation
+                // mid-flush cannot write the same batch twice.
+                inFlight = null
+                flush(batch)
+            }
+        } finally {
+            val batch = inFlight ?: mutableListOf()
+            inFlight = null
+            while (true) {
+                val event = events.tryReceive().getOrNull() ?: break
+                batch.add(event)
+            }
+            if (batch.isNotEmpty()) {
+                withContext(NonCancellable) { flush(batch) }
+            }
+        }
     }
 }

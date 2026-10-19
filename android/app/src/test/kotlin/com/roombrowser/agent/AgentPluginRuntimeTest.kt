@@ -14,6 +14,10 @@ import com.roombrowser.node.PluginGenerateRequest
 import com.roombrowser.node.ReverseHandlers
 import io.mockk.every
 import io.mockk.mockk
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.awaitCancellation
+import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.booleanOrNull
@@ -319,6 +323,29 @@ class AgentPluginRuntimeTest {
         val result = runtime.run(7L, plugin(), binding(), PluginCallRequest.EVENT_PROBE)
         assertThat(result.ok).isFalse()
         assertThat(result.output).contains("the runtime is absent")
+    }
+
+    @Test
+    fun `cancellation while the call waits is not answered as a failed plugin`() = runBlocking<Unit> {
+        // The lock-related half of never-throws: a caller cancelled while it
+        // WAITED for the runtime's one-call gate — a form dialog in another
+        // chat can hold it for FORM_WAIT_MS — must see the cancellation
+        // itself travel (the stopped turn stops), not a "failed plugin" the
+        // stopped turn would then word. The fake stands in for the gate's
+        // cancellable wait; the assertion is that nothing comes back at all.
+        val entered = CompletableDeferred<Unit>()
+        val waiting = PluginCall { _, _, _ ->
+            entered.complete(Unit)
+            awaitCancellation()
+        }
+        val runtime = AgentPluginRuntime(context, profile = null, call = waiting)
+        var answered: PluginCallResult? = null
+        val job = launch {
+            answered = runtime.run(7L, plugin(), binding(), PluginCallRequest.EVENT_PROBE)
+        }
+        entered.await()
+        job.cancelAndJoin()
+        assertThat(answered).isNull()
     }
 
     // ------------------------------------------------------- the generate seam

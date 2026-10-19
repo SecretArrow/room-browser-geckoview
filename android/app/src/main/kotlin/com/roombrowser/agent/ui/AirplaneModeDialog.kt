@@ -25,6 +25,11 @@ import com.roombrowser.agent.PendingAirplaneRequest
  * never a pretend switch. No (and closing the dialog — a dismissal must
  * never read as consent) stops here with nothing changed.
  *
+ * A CYCLE request ([PendingAirplaneRequest.cycle]) asks for two flips —
+ * on, then straight back off — because the drop-and-return is what rotates
+ * the phone's IP, and its auto-continue watches for both halves in that
+ * order before the chat says the rotation happened.
+ *
  * Both buttons carry their own `airplane_accept`/`airplane_stop` content
  * descriptions — the suite's a11y contract, so an e2e (and a screen reader)
  * addresses the decision, not the button's label text.
@@ -35,20 +40,38 @@ fun AirplaneModeDialog(
     onAccept: () -> Unit,
     onStop: () -> Unit
 ) {
-    val word = if (request.targetOn) "on" else "off"
     AlertDialog(
         onDismissRequest = onStop,
         title = { Text("Airplane Mode") },
         text = {
             Text(
-                if (request.settingsOpened) {
-                    "Turn Airplane Mode $word in the settings screen this chat just opened. " +
-                        "The chat continues by itself the moment it is $word — press Yes when " +
-                        "you have done it, or No to stop."
-                } else {
-                    "Turn Airplane Mode $word from this phone's quick settings. " +
-                        "The chat continues by itself the moment it is $word — press Yes when " +
-                        "you have done it, or No to stop."
+                when {
+                    request.cycle && request.settingsOpened -> {
+                        "Switch Airplane Mode ON, wait a couple of seconds, then switch it OFF " +
+                            "again in the settings screen this chat just opened — that " +
+                            "drop-and-return is what rotates the phone's IP. The chat continues " +
+                            "by itself the moment it is back off — press Yes when you have done " +
+                            "it, or No to stop."
+                    }
+                    request.cycle -> {
+                        "Switch Airplane Mode ON, wait a couple of seconds, then switch it OFF " +
+                            "again from this phone's quick settings — that drop-and-return is " +
+                            "what rotates the phone's IP. The chat continues by itself the " +
+                            "moment it is back off — press Yes when you have done it, or No to " +
+                            "stop."
+                    }
+                    request.settingsOpened -> {
+                        val word = if (request.targetOn) "on" else "off"
+                        "Turn Airplane Mode $word in the settings screen this chat just opened. " +
+                            "The chat continues by itself the moment it is $word — press Yes when " +
+                            "you have done it, or No to stop."
+                    }
+                    else -> {
+                        val word = if (request.targetOn) "on" else "off"
+                        "Turn Airplane Mode $word from this phone's quick settings. " +
+                            "The chat continues by itself the moment it is $word — press Yes when " +
+                            "you have done it, or No to stop."
+                    }
                 }
             )
         },

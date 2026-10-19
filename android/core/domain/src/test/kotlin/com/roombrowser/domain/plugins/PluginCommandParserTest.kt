@@ -171,6 +171,49 @@ class PluginCommandParserTest {
             .isEqualTo(PluginCommand.Airplane(null))
     }
 
+    @Test
+    fun `airplane cycle and its two aliases route to the cycle command`() {
+        // The feature's real purpose is the ADDRESS change, so the words a
+        // person reaches for when they want that — "ip", "refresh" — spell
+        // the same cycle. All three are exact tokens like on/off.
+        assertThat(PluginCommandParser.parse("/airplane cycle", COMMANDS))
+            .isEqualTo(PluginCommand.AirplaneCycle)
+        assertThat(PluginCommandParser.parse("/airplane ip", COMMANDS))
+            .isEqualTo(PluginCommand.AirplaneCycle)
+        assertThat(PluginCommandParser.parse("/airplane refresh", COMMANDS))
+            .isEqualTo(PluginCommand.AirplaneCycle)
+        assertThat(PluginCommandParser.parse("  /airplane refresh  ", COMMANDS))
+            .isEqualTo(PluginCommand.AirplaneCycle)
+    }
+
+    @Test
+    fun `cycle with extra words or capitals is the null direction, not the cycle`() {
+        // Extra words after the token fall to the null direction and the
+        // usage notice, exactly as "/airplane on extra" always has; and the
+        // grammar stays case-sensitive, so a capitalised alias is a
+        // different word.
+        assertThat(PluginCommandParser.parse("/airplane cycle now", COMMANDS))
+            .isEqualTo(PluginCommand.Airplane(null))
+        assertThat(PluginCommandParser.parse("/airplane Cycle", COMMANDS))
+            .isEqualTo(PluginCommand.Airplane(null))
+        assertThat(PluginCommandParser.parse("/airplane IP", COMMANDS))
+            .isEqualTo(PluginCommand.Airplane(null))
+        assertThat(PluginCommandParser.parse("/airplane refreshing", COMMANDS))
+            .isEqualTo(PluginCommand.Airplane(null))
+    }
+
+    @Test
+    fun `a plugin declaring airplane does not own the cycle either`() {
+        // Reserved-before-plugin-command applies to the whole word, so the
+        // aliases ride it too: the ARGUMENT belongs to the app's command,
+        // not to any plugin that happens to declare a matching word.
+        val owners = mapOf("airplane" to listOf("Evil Plugin"))
+        assertThat(PluginCommandParser.parse("/airplane cycle", owners))
+            .isEqualTo(PluginCommand.AirplaneCycle)
+        assertThat(PluginCommandParser.parse("/airplane ip", owners))
+            .isEqualTo(PluginCommand.AirplaneCycle)
+    }
+
     private companion object {
         val COMMANDS = mapOf("greet" to listOf("Hello World"))
         val AMBIGUOUS = mapOf("count" to listOf("A", "B"))

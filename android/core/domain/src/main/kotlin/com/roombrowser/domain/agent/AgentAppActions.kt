@@ -299,8 +299,9 @@ object AgentAppActions {
         AgentTools.APP_2FA -> false
         // A set goes through the Confirm-actions prompt, which on a phone that
         // is not rooted IS the person's yes/no for the guided flow — the tool
-        // opens the settings screen only after that prompt was answered.
-        AgentTools.AIRPLANE_MODE -> action == "set"
+        // opens the settings screen only after that prompt was answered. A
+        // cycle is a switch twice over, so it rides the same prompt.
+        AgentTools.AIRPLANE_MODE -> action == "set" || action == "cycle"
         else -> false
     }
 }

@@ -5,7 +5,6 @@ import android.os.SystemClock
 import kotlinx.serialization.json.JsonObject
 import java.io.IOException
 import java.io.InterruptedIOException
-import java.util.concurrent.locks.ReentrantLock
 
 /**
  * The app side of the bridge: runs one script — or one plugin event — in the
@@ -21,8 +20,36 @@ import java.util.concurrent.locks.ReentrantLock
  * NOTHING IS KEPT BETWEEN CALLS. The runtime is started for the call and exits
  * when the connection closes, so a chat that never runs a script never pays for
  * a runtime, and a script that wedged one cannot be inherited by the next call.
+ * (Reusing a warm runtime across calls was considered with this change and
+ * deliberately deferred — task 8-f / WP5 kept this to the WAIT, not the
+ * lifecycle, because a shared runtime changes what a wedged script means for
+ * every call after it. See [RuntimeGate].)
+ *
+ * THE WAIT IS CANCELLABLE. The one-call-at-a-time guard is a coroutine mutex
+ * ([RuntimeGate]) rather than the uninterruptible `ReentrantLock` it replaces:
+ * a caller queued behind the call in flight is SUSPENDED, not parked on a
+ * thread, so the chat's Stop button ends the wait the moment it lands — where
+ * before, a waiter behind a call whose form dialog was open (up to
+ * [NodeProtocol.REVERSE_USER_INPUT_TIMEOUT_MS]) could neither run nor stop.
+ * The price of that is one new clause in the never-throws contracts below: a
+ * caller CANCELLED WHILE WAITING is answered with the cancellation itself
+ * instead of an answer, because swallowing it would run a stopped turn's
+ * coroutine on as though the plugin had failed. The call that already HOLDS
+ * the gate is exactly as uninterruptible as it ever was: it runs blocking
+ * socket code with no suspension points, answers, and opens the gate after.
  */
-class NodeRunner(context: Context) {
+class NodeRunner(
+    context: Context,
+    /**
+     * Called once, before the wait, when this call found another one in
+     * flight — the seam a caller wires its status line to (the app side
+     * spells its words `RUNTIME_CONTENDED_NOTICE`). Null (every caller that
+     * has no status to show) waits in silence, exactly as before. Advisory:
+     * [RuntimeGate.run] runs it under runCatching, so a hook that throws
+     * cannot fail the call it was announcing.
+     */
+    private val onContended: (() -> Unit)? = null
+) {
 
     private val appContext = context.applicationContext
 
@@ -35,8 +62,13 @@ class NodeRunner(context: Context) {
      * and never throws for the runtime being absent, which is reported in the
      * same shape. [userAgent] is the identity every request the script makes
      * carries; null is a runtime that refuses to make one at all.
+     *
+     * The one exception to never-throws is cancellation while WAITING for the
+     * gate (see the class doc): a caller whose coroutine is stopped behind
+     * another call is answered with the cancellation itself, so a stopped turn
+     * actually stops.
      */
-    fun run(
+    suspend fun run(
         script: String,
         userAgent: String?,
         timeoutMillis: Long = DEFAULT_BUDGET_MS
@@ -48,12 +80,7 @@ class NodeRunner(context: Context) {
                 ms = 0
             )
         }
-        lock.lock()
-        try {
-            return runOnce(script, userAgent, timeoutMillis)
-        } finally {
-            lock.unlock()
-        }
+        return gate.run(onContended) { runOnce(script, userAgent, timeoutMillis) }
     }
 
     /**
@@ -74,8 +101,10 @@ class NodeRunner(context: Context) {
      * past), not an exception the caller has to word itself. A handler that
      * throws is not this method's problem either — the reverse answer turns
      * it into the reverse line's own error envelope before it can get here.
+     * The one exception, as on [run]: cancellation while WAITING for the
+     * gate travels to the caller instead of an answer.
      */
-    fun plugin(
+    suspend fun plugin(
         call: PluginCallRequest,
         onReverse: ((JsonObject) -> JsonObject)? = null
     ): PluginCallResult = plugin(
@@ -94,9 +123,11 @@ class NodeRunner(context: Context) {
      * the wire unchanged, so a zagents-format row runs under the module SDK
      * with its own prompt, budget, state root and stored form answers.
      *
-     * Never throws either, for the same reasons as the shorthand above.
+     * Never throws either, for the same reasons as the shorthand above —
+     * with the same one exception: cancellation while WAITING for the gate
+     * travels to the caller instead of an answer (see the class doc).
      */
-    fun plugin(
+    suspend fun plugin(
         call: PluginCallRequest,
         reverse: ReverseHandlers?
     ): PluginCallResult {
@@ -106,12 +137,7 @@ class NodeRunner(context: Context) {
                 output = "this build carries no Node runtime for this device's CPU"
             )
         }
-        lock.lock()
-        try {
-            return pluginOnce(call, reverse)
-        } finally {
-            lock.unlock()
-        }
+        return gate.run(onContended) { pluginOnce(call, reverse) }
     }
 
     private fun runOnce(script: String, userAgent: String?, timeoutMillis: Long): NodeRunResult {
@@ -196,6 +222,12 @@ class NodeRunner(context: Context) {
          */
         const val DEFAULT_BUDGET_MS = 30_000L
 
-        private val lock = ReentrantLock()
+        /**
+         * THE process-wide gate: the runtime is one process shared by every
+         * chat in the app, so "one call at a time" is an app-wide promise,
+         * not a per-runner one. The gate owns the wait's semantics (see
+         * [RuntimeGate]); this is only where its one instance lives.
+         */
+        private val gate = RuntimeGate()
     }
 }

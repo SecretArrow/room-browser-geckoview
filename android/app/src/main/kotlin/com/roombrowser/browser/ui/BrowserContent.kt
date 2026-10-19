@@ -266,7 +266,14 @@ fun BrowserContent(
         }
 
         AnimatedVisibility(visible = page.loading, enter = fadeIn(), exit = fadeOut()) {
-            LoadingBar(visible = true, progress = page.progress)
+            // The progress read is deliberately HERE, inside the AnimatedVisibility
+            // content's own scope, and NOT on the `page` object above: the bar is
+            // the only consumer of per-tick progress, and reading the dedicated
+            // int state at this leaf keeps every engine progress tick from
+            // invalidating the whole BrowserContent scope (omnibox semantics
+            // string included). `page.loading` above still flips twice per load —
+            // start and finish — which is all the visibility gate ever needed.
+            LoadingBar(visible = true, progress = viewModel.pageProgress)
         }
 
         // ---------- Page / homepage / error --------------------------------

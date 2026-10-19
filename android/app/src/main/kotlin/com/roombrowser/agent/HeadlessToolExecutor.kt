@@ -182,9 +182,15 @@ class HeadlessToolExecutor(
         )
     }
 
-    override suspend fun execute(name: String, argsJson: String): ToolResult =
-        withContext(Dispatchers.Main) {
-            val args: Map<String, Any?> = parseArgs(argsJson)
+    override suspend fun execute(name: String, argsJson: String): ToolResult {
+        // The model's own arguments are decoded BEFORE the run takes the main
+        // thread, mirroring the interactive executor: a run_js script or a
+        // data_transform payload can be kilobytes of JSON, and decoding it is
+        // pure CPU no view is waiting on. The engine and view calls after
+        // this point keep the main thread; the other pure-CPU stretches below
+        // (the snapshot decode and the data transforms) say so where they hop.
+        val args: Map<String, Any?> = withContext(Dispatchers.Default) { parseArgs(argsJson) }
+        return withContext(Dispatchers.Main) {
             refusal(name, argsJson)?.let { return@withContext it }
             try {
                 val raw = when (name) {
@@ -234,6 +240,7 @@ class HeadlessToolExecutor(
                 ToolResult(false, "${t.message ?: t.javaClass.simpleName}")
             }
         }
+    }
 
     /**
      * The refusals that come from the RUN rather than from the page: a wallet
@@ -608,19 +615,26 @@ class HeadlessToolExecutor(
         if (limit !in 1..MAX_JS_RESULT_CHARS) {
             return ToolResult(false, "limit must be between 1 and $MAX_JS_RESULT_CHARS")
         }
-        val result = when (op) {
-            "json_path" -> DataTransform.jsonPath(input, str(args, "path") ?: "", limit)
-            "csv_rows" -> DataTransform.csvRows(input, limit)
-            "aggregate" -> DataTransform.aggregate(input, intOrNull(args, "column"), str(args, "agg").orEmpty())
-            "diff" -> {
-                val compare = str(args, "compare")
-                    ?: return ToolResult(false, "missing 'compare' argument for op=diff")
-                DataTransform.diff(input, compare, limit)
+        // Argument checks first, in the order the old `when` answered them, so
+        // a bad call still gets the same refusal it always did.
+        val compare = when (op) {
+            "json_path", "csv_rows", "aggregate" -> null
+            "diff" -> str(args, "compare")
+                ?: return ToolResult(false, "missing 'compare' argument for op=diff")
+            else -> null
+        }
+        // The transforms themselves walk the model's own data — which the
+        // model can size in megabytes — with no engine and no view anywhere
+        // in them. Pure CPU, off the main thread, mirroring the interactive
+        // executor; only the (already capped) answer comes back to it.
+        val result = withContext(Dispatchers.Default) {
+            when (op) {
+                "json_path" -> DataTransform.jsonPath(input, str(args, "path") ?: "", limit)
+                "csv_rows" -> DataTransform.csvRows(input, limit)
+                "aggregate" -> DataTransform.aggregate(input, intOrNull(args, "column"), str(args, "agg").orEmpty())
+                // The only remaining op is "diff", where compare is non-null.
+                else -> DataTransform.diff(input, compare.orEmpty(), limit)
             }
-            else -> return ToolResult(
-                false,
-                "unsupported op '$op': use json_path, csv_rows, aggregate or diff"
-            )
         }
         return when (result) {
             is DataTransform.Result.Success -> {
@@ -753,10 +767,18 @@ class HeadlessToolExecutor(
         }
         val raw = evaluateJs(session, PageInjector.snapshotJs()) ?: return null
         if (raw.isBlank() || raw == "null" || raw == "undefined") return null
-        val snapshot = runCatching {
-            AgentJson.decodeFromString(PageSnapshotDto.serializer(), raw)
-        }.getOrNull() ?: return null
-        return PageSnapshotFormatter.format(snapshot)
+        // The engine call above had to answer on the caller's main thread
+        // (view affinity); the stretch below did not. Decoding a
+        // multi-kilobyte DOM snapshot and formatting it into the tens of KB
+        // of model-facing text is pure CPU — the same split the interactive
+        // executor made — so a scheduled run's read_page stops holding the
+        // main thread for the whole decode.
+        return withContext(Dispatchers.Default) {
+            val snapshot = runCatching {
+                AgentJson.decodeFromString(PageSnapshotDto.serializer(), raw)
+            }.getOrNull() ?: return@withContext null
+            PageSnapshotFormatter.format(snapshot)
+        }
     }
 
     /** Evaluates JS on the session, suspending until the callback fires. */

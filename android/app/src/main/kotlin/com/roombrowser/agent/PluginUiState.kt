@@ -115,8 +115,18 @@ class PendingPluginForm(
  * so the dialog's own words point at the quick-settings tile instead — the
  * state itself is polled either way, and the dialog resolves by itself the
  * moment the phone matches [targetOn].
+ *
+ * [cycle] true is the IP-rotation request — the one guided flow with TWO
+ * flips in it (on, then straight back off): [targetOn] stays false because
+ * a cycle's end state is airplane mode OFF, the network re-attached, and the
+ * dialog's words and the resolution notice both say the rotation rather
+ * than one direction.
  */
-class PendingAirplaneRequest(val targetOn: Boolean, val settingsOpened: Boolean)
+class PendingAirplaneRequest(
+    val targetOn: Boolean,
+    val settingsOpened: Boolean,
+    val cycle: Boolean = false
+)
 
 /**
  * The plugin surface of the chat panel, controller-owned: the installed
@@ -247,6 +257,24 @@ class PluginUiState(
     private var airplanePollJob: Job? = null
 
     /**
+     * Whether the airplane half of a raised guided CYCLE has been seen — set
+     * when the request is raised on a phone already in airplane mode (the
+     * stuck-on fallback: its airplane half is behind it) and again by the
+     * poll the moment the state reads true. Read by [resolveAirplane],
+     * because a completion notice may only claim a rotation whose on-phase
+     * was actually observed: a Yes on a phone that never left "off" is the
+     * honest "the cycle did not run", never a pretend rotation. Every raise
+     * of a cycle request re-seeds it, so it can never be stale for the
+     * request that reads it. @Volatile because the poll that writes it runs
+     * on this class's scope, which a test drives with an Unconfined
+     * dispatcher — the resume after a delay can land on a pool thread there,
+     * and the dialog's Yes (or the test's own resolve) reads the flag from
+     * another.
+     */
+    @Volatile
+    private var airplaneCycleSawOn = false
+
+    /**
      * Starts the collectors. Called once from the controller's own start, on
      * the same scope — the installed list flows from the database (the
      * manager activity's installs arrive by themselves), and the bindings
@@ -327,6 +355,10 @@ class PluginUiState(
             }
             is PluginCommand.Airplane -> {
                 handleAirplane(command.on)
+                true
+            }
+            is PluginCommand.AirplaneCycle -> {
+                handleAirplaneCycle()
                 true
             }
             is PluginCommand.Ambiguous -> {
@@ -690,8 +722,9 @@ class PluginUiState(
     private suspend fun handleAirplane(on: Boolean?) {
         if (on == null) {
             onNotice(
-                "Say \"/airplane on\" or \"/airplane off\" — the word after the command says " +
-                    "which way to switch.",
+                "Say \"/airplane on\", \"/airplane off\" or \"/airplane cycle\" — the word after " +
+                    "the command says which way to switch; \"cycle\" flips airplane mode on and " +
+                    "straight back off to rotate the phone's IP.",
                 false
             )
             return
@@ -759,16 +792,145 @@ class PluginUiState(
     }
 
     /**
+     * The `/airplane cycle` flow — the feature's whole reason to exist:
+     * airplane mode ON, a pause for the radios to tear down, and straight
+     * back OFF, so the network re-attaches and the phone's IP changes. The
+     * rotation is reported as the two verified state transitions plus their
+     * consequence, NEVER as an address: the feature reads no IP and claims
+     * none — "the network re-attached, so the phone's IP rotated" is the
+     * mechanism, and the state transitions are the only part of it this app
+     * can see.
+     *
+     * The gate ladder is the on/off command's own: no bridge, the master
+     * switch off, an unreadable state — each said plainly and nothing run.
+     * NO "already" answer exists here, from any starting state: a cycle
+     * that begins on a phone already in airplane mode just skips its first
+     * half, and one that begins off runs both — either way the phone ends
+     * OFF, re-attached, which is what the rotation needs.
+     *
+     * On a rooted phone the whole rotation is automatic and every step is
+     * verified: switch on (and see it), settle, switch off (and see it).
+     * A failure at ANY step — including a step that switched but did not
+     * hold — is said out loud with the step that failed, and the guided
+     * hand-off follows rather than a dead end, exactly as a plain `/airplane
+     * on` that did not take does: the person must know the automatic way
+     * was tried and refused before they are asked to flip the switch
+     * themselves. A phone that is not rooted starts at the hand-off.
+     */
+    private suspend fun handleAirplaneCycle() {
+        val bridge = airplane
+        if (bridge == null) {
+            onNotice("Airplane Mode is not available in this chat.", true)
+            return
+        }
+        if (!bridge.allowed()) {
+            onNotice(
+                "\"/airplane\" is switched off — enable \"Offer Airplane Mode shortcut\" in " +
+                    "the browser settings first.",
+                true
+            )
+            return
+        }
+        if (bridge.currentState() == null) {
+            onNotice("The Airplane Mode state could not be read on this device.", true)
+            return
+        }
+        if (bridge.rooted) {
+            var failure: String? = null
+            if (!bridge.setViaRoot(true)) {
+                failure = "Airplane mode was not switched on — the root command did not take effect."
+            } else if (!bridge.waitUntil(true, AirplaneModeBridge.CYCLE_STEP_MS)) {
+                failure = "Airplane mode did not settle on after the switch."
+            } else {
+                delay(AirplaneModeBridge.CYCLE_SETTLE_MS)
+                if (!bridge.setViaRoot(false)) {
+                    failure = "Airplane mode was switched on but not back off."
+                } else if (!bridge.waitUntil(false, AirplaneModeBridge.CYCLE_STEP_MS)) {
+                    failure = "Airplane mode did not settle back off after the switch."
+                }
+            }
+            if (failure == null) {
+                onNotice(
+                    "Airplane mode was cycled on and back off — the network re-attached, " +
+                        "so the phone's IP rotated.",
+                    false
+                )
+                return
+            }
+            onNotice("$failure The cycle is offered manually instead.", true)
+        }
+        val opened = bridge.openSettings()
+        // A phone already in airplane mode has its on-half behind it — the
+        // request is raised as having SEEN it, so the poll starts watching
+        // for the return and a Yes after the person finishes is answered
+        // with the rotation rather than the "never switched on" honesty
+        // below (which is for a phone that never left "off" at all).
+        airplaneCycleSawOn = bridge.currentState() == true
+        pendingAirplane = PendingAirplaneRequest(targetOn = false, settingsOpened = opened, cycle = true)
+        // Auto-continue, the on/off command's own convention, in two phases:
+        // the airplane half must ARRIVE (skipped when it was seen already),
+        // and only then is the return watched for — a resolve on "off"
+        // without the on-half ever being seen would congratulate a cycle
+        // that never happened. The loops are cancelled by the retire, so
+        // they can never outlive the request they serve.
+        airplanePollJob = scope.launch {
+            if (!airplaneCycleSawOn) {
+                while (true) {
+                    delay(AIRPLANE_POLL_MS)
+                    if (bridge.currentState() == true) {
+                        airplaneCycleSawOn = true
+                        break
+                    }
+                }
+            }
+            while (true) {
+                delay(AIRPLANE_POLL_MS)
+                if (bridge.currentState() == false) {
+                    resolveAirplane()
+                    break
+                }
+            }
+        }
+    }
+
+    /**
      * The auto-continue path AND the dialog's Yes: retire the request
      * (cancel the poll, clear the state), then RE-READ the state and say
      * plainly what it is — a Yes that arrives with the phone still the old
      * way is answered with the honest "still off" error rather than a
      * pretend switch. The target is read from the request BEFORE the retire
      * clears it, never re-read from [pendingAirplane] after.
+     *
+     * A CYCLE request is answered by the rotation's own rule, which is
+     * stricter than an end-state match: the phone must be back off AND the
+     * on-phase must have been seen (by the poll, or by the raise itself on a
+     * phone that was already in airplane mode) — the completion notice
+     * claims a drop-and-return, and both halves of that phrase have to be
+     * things the chat actually observed.
      */
     fun resolveAirplane() {
         val request = pendingAirplane ?: return
         retireAirplane()
+        if (request.cycle) {
+            when {
+                airplane?.currentState() == false && airplaneCycleSawOn -> onNotice(
+                    "Airplane mode was cycled on and back off — the network re-attached, " +
+                        "so the phone's IP rotated.",
+                    false
+                )
+                airplane?.currentState() == false -> onNotice(
+                    "Airplane mode stayed off the whole time — the cycle did not run; " +
+                        "the chat continues.",
+                    true
+                )
+                else -> onNotice(
+                    "Airplane mode is still on — turn it off to finish the cycle; " +
+                        "the chat continues.",
+                    true
+                )
+            }
+            return
+        }
         if (airplane?.currentState() == request.targetOn) {
             onNotice(
                 "Airplane mode is ${if (request.targetOn) "on" else "off"} — continuing.",
@@ -783,11 +945,23 @@ class PluginUiState(
         }
     }
 
-    /** The dialog's No (and its dismissal): nothing was switched, the chat stops here. */
+    /**
+     * The dialog's No (and its dismissal): nothing was switched, the chat
+     * stops here. A cycle's No says the cycle — the phone may be sitting in
+     * its on-half (the person flipped it and then changed their mind), which
+     * the quick-settings tile shows them better than a notice could.
+     */
     fun stopAirplane() {
-        if (pendingAirplane == null) return
+        val request = pendingAirplane ?: return
         retireAirplane()
-        onNotice("Airplane Mode was not changed — stopped.", false)
+        onNotice(
+            if (request.cycle) {
+                "Airplane Mode was not cycled — stopped."
+            } else {
+                "Airplane Mode was not changed — stopped."
+            },
+            false
+        )
     }
 
     /** Cancels the poll and clears the request — the one retire every path shares. */

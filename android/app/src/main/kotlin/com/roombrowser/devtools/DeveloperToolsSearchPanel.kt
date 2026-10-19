@@ -39,7 +39,9 @@ import androidx.compose.ui.unit.dp
 import com.roombrowser.ui.common.LocalRoomExtras
 import com.roombrowser.ui.common.RoomCopyButton
 import com.roombrowser.ui.common.SectionHeader
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 /**
  * How much of a console text or a network URL a result row draws. A row in a
@@ -92,11 +94,22 @@ internal fun SearchPanel(session: InspectorSession) {
         val asked = query
         scope.launch {
             val probe = session.searchProbe(asked)
+            // The rings are read where they live — both are main-thread only
+            // by their own contract — and the two scans then run off it: a
+            // case-insensitive pass over up to 2000 entries each is pure CPU,
+            // and the main thread is exactly where the probe's answer is about
+            // to be drawn. Button-press only, unchanged: no debounce, same
+            // HIT_CAP, same results.
+            val consoleFeed = session.console.snapshot()
+            val networkFeed = session.network.snapshot()
+            val hits = withContext(Dispatchers.Default) {
+                consoleHits(consoleFeed, asked) to networkHits(networkFeed, asked)
+            }
             outcome = SearchOutcome(
                 query = asked,
                 probe = probe,
-                console = consoleHits(session.console.snapshot(), asked),
-                network = networkHits(session.network.snapshot(), asked)
+                console = hits.first,
+                network = hits.second
             )
             running = false
         }
