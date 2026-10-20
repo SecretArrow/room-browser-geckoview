@@ -288,7 +288,7 @@ class DevToolsSearchE2eTest {
         assertDevToolsOpened(consoleChip, consoleBody)
         assertTrue(
             "The page's console marker must reach the console feed first\n$scrollTrace\n${uiTree()}",
-            scrollPanelToText(logMarker)
+            scrollPanelToText(logMarker) || recoveredFeedScroll(consoleChip, consoleBody, logMarker)
         )
         assertTrue(
             "The Network panel must compose before its feed can be read\n${uiTree()}",
@@ -296,7 +296,7 @@ class DevToolsSearchE2eTest {
         )
         assertTrue(
             "A request the page made must reach the network feed first\n$scrollTrace\n${uiTree()}",
-            scrollPanelToText(netPath)
+            scrollPanelToText(netPath) || recoveredFeedScroll(networkChip, networkBody, netPath)
         )
         assertTrue(
             "The Search panel must compose again before it can be driven\n${uiTree()}",
@@ -632,6 +632,27 @@ class DevToolsSearchE2eTest {
      * movings; taking the panel full screen and walking again is the fallback,
      * and [scrollTrace] records which mechanism the body answered to.
      */
+    /**
+     * The one failure this suite cannot otherwise survive on the gecko
+     * edition: the engine recycles its content process mid-test (the fixture
+     * page's repeating fetch is the load that triggers it), and the window's
+     * accessibility tree stays null-rooted for minutes after it - every node
+     * query and every input injection pays a full cross-process timeout, and
+     * a scroll hunt through that state is a crawl this suite once measured at
+     * an hour. A fresh activity is the one heal this suite can drive: the
+     * engine relaunches, the page reloads, its fetch loop keeps feeding the
+     * buffers, and the panels re-open on a tree that answers. This test alone
+     * earns the recovery because it alone holds its panels open across a
+     * multi-minute walk while that recycle lands.
+     */
+    private fun recoveredFeedScroll(panelChip: String, panelBody: String, text: String): Boolean {
+        launchEngine(server.url("/page-$tag").toString())
+        if (!hasText(pageHeading, 30_000)) return false
+        if (!openDeveloperToolsPanel(consoleChip, consoleBody)) return false
+        if (panelChip != consoleChip && !selectPanel(panelChip, panelBody)) return false
+        return scrollPanelToText(text)
+    }
+
     private fun scrollPanelToText(text: String, maxDrags: Int = 24): Boolean {
         // A window mid-recreation can leave its accessibility nodes null-rooted
         // for a long moment, and in that state every node query and every
