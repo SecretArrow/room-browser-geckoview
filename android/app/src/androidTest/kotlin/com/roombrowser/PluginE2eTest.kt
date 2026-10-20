@@ -1287,26 +1287,51 @@ class PluginE2eTest {
 
     /** Every visible text and the tags this suite targets, for the failure
      *  message (readable from the e2e-reports artifact). */
-    private fun uiTree(): String = try {
-        val probes: List<Pair<String, BySelector>> = listOf(
-            "pill(AI Agent desc)" to By.desc("AI Agent"),
-            "plugins_sheet desc" to By.desc("plugins_sheet"),
-            "plugin row desc" to By.descContains("plugin_"),
-            "composer desc" to By.desc("agent_composer_field")
-        )
-        val sb = StringBuilder()
-        probes.forEach { (name, selector) ->
-            val nodes = device.findObjects(selector)
-            sb.append(name).append(": ").append(nodes.size).append('\n')
-        }
-        device.findObjects(By.textContains(""))
-            .take(60)
-            .forEach { node ->
-                runCatching { sb.append("text: ").append(node.text).append('\n') }
+    private fun uiTree(): String {
+        // BOUNDED, and the reason is a measured hang: the walk re-reads every
+        // node through the accessibility connection of the window it started
+        // in, and while that window is being recreated each re-read costs the
+        // full cross-process timeout — a crawl, not a crash, that once took a
+        // DevTools search test 104 minutes to finish. A dedicated walker with a
+        // 4-second join is the ceiling: a live window is walked whole, a dying
+        // one is abandoned, and the returned message says which happened. A
+        // fresh thread per walk (never a shared pool) means a window that dies
+        // mid-walk parks one daemon instead of starving every later probe.
+        val walked = java.util.concurrent.atomic.AtomicReference<String?>(null)
+        val walker = Thread {
+            try {
+                walked.set(
+                    run {
+                        val probes: List<Pair<String, BySelector>> = listOf(
+                            "pill(AI Agent desc)" to By.desc("AI Agent"),
+                            "plugins_sheet desc" to By.desc("plugins_sheet"),
+                            "plugin row desc" to By.descContains("plugin_"),
+                            "composer desc" to By.desc("agent_composer_field")
+                        )
+                        val sb = StringBuilder()
+                        probes.forEach { (name, selector) ->
+                            val nodes = device.findObjects(selector)
+                            sb.append(name).append(": ").append(nodes.size).append('\n')
+                        }
+                        device.findObjects(By.textContains(""))
+                            .take(60)
+                            .forEach { node ->
+                                runCatching { sb.append("text: ").append(node.text).append('\n') }
+                            }
+                        sb.toString()
+                    }
+                )
+            } catch (_: Exception) {
+                walked.set("(ui tree unreadable)")
             }
-        sb.toString()
-    } catch (_: Exception) {
-        "(ui tree unreadable)"
+        }
+        walker.name = "e2e-tree-walker"
+        walker.isDaemon = true
+        walker.start()
+        walker.join(4_000)
+        return walked.get()
+            ?: "tree probe timed out — the window was mid-transition, so the "
+            "walk was abandoned at 4s rather than crawled"
     }
 
     /**

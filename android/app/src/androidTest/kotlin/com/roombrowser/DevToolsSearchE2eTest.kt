@@ -789,45 +789,70 @@ class DevToolsSearchE2eTest {
     // ---------- Failure diagnostics -----------------------------------------
 
     /** Readable failure diagnostics, built at the moment of failure. */
-    private fun uiTree(): String = try {
-        val sb = StringBuilder()
-        val probes = listOf(
-            "'Page Actions' sheet" to By.text("Page Actions"),
-            "'Developer tools' row" to By.desc("Developer tools"),
-            "overview panel chip" to By.desc(overviewChip),
-            "search panel chip" to By.desc(searchChip),
-            "search run button" to By.desc(searchBody),
-            "search field" to By.desc("devtools_search_field"),
-            "console panel chip" to By.desc(consoleChip),
-            "network panel chip" to By.desc(networkChip),
-            "page heading" to By.text(pageHeading),
-            "the fixture global" to By.textContains(globalName),
-            "the storage key" to By.textContains(storageKey),
-            "the revealed value" to By.textContains(storageValue),
-            "the console marker" to By.textContains(logMarker),
-            "the requested path" to By.textContains(netPath)
-        )
-        for ((label, selector) in probes) {
-            val nodes = runCatching { device.findObjects(selector) }.getOrDefault(emptyList())
-            sb.append(label).append(": count=").append(nodes.size).append('\n')
-        }
-        val texts = runCatching {
-            device.findObjects(By.textContains("")).mapNotNull { it.text }.distinct().take(80)
-        }.getOrDefault(emptyList())
-        sb.append("VISIBLE TEXTS: ").append(texts).append('\n')
-        // The strip wraps across rows, so a chip this suite cannot reach names
-        // itself by its y-range as well as its x-range; the window size is the
-        // other half of that.
-        val chips = runCatching {
-            device.findObjects(By.descContains(" panel")).joinToString(" ") { node ->
-                val b = runCatching { node.visibleBounds }.getOrNull()
-                "${node.contentDescription}[${b?.left},${b?.top},${b?.right},${b?.bottom}]"
+    private fun uiTree(): String {
+        // BOUNDED, and the reason is a measured hang: the walk re-reads every
+        // node through the accessibility connection of the window it started
+        // in, and while that window is being recreated each re-read costs the
+        // full cross-process timeout — a crawl, not a crash, that once took a
+        // DevTools search test 104 minutes to finish. A dedicated walker with a
+        // 4-second join is the ceiling: a live window is walked whole, a dying
+        // one is abandoned, and the returned message says which happened. A
+        // fresh thread per walk (never a shared pool) means a window that dies
+        // mid-walk parks one daemon instead of starving every later probe.
+        val walked = java.util.concurrent.atomic.AtomicReference<String?>(null)
+        val walker = Thread {
+            try {
+                walked.set(
+                    run {
+                        val sb = StringBuilder()
+                        val probes = listOf(
+                            "'Page Actions' sheet" to By.text("Page Actions"),
+                            "'Developer tools' row" to By.desc("Developer tools"),
+                            "overview panel chip" to By.desc(overviewChip),
+                            "search panel chip" to By.desc(searchChip),
+                            "search run button" to By.desc(searchBody),
+                            "search field" to By.desc("devtools_search_field"),
+                            "console panel chip" to By.desc(consoleChip),
+                            "network panel chip" to By.desc(networkChip),
+                            "page heading" to By.text(pageHeading),
+                            "the fixture global" to By.textContains(globalName),
+                            "the storage key" to By.textContains(storageKey),
+                            "the revealed value" to By.textContains(storageValue),
+                            "the console marker" to By.textContains(logMarker),
+                            "the requested path" to By.textContains(netPath)
+                        )
+                        for ((label, selector) in probes) {
+                            val nodes = runCatching { device.findObjects(selector) }.getOrDefault(emptyList())
+                            sb.append(label).append(": count=").append(nodes.size).append('\n')
+                        }
+                        val texts = runCatching {
+                            device.findObjects(By.textContains("")).mapNotNull { it.text }.distinct().take(80)
+                        }.getOrDefault(emptyList())
+                        sb.append("VISIBLE TEXTS: ").append(texts).append('\n')
+                        // The strip wraps across rows, so a chip this suite cannot reach names
+                        // itself by its y-range as well as its x-range; the window size is the
+                        // other half of that.
+                        val chips = runCatching {
+                            device.findObjects(By.descContains(" panel")).joinToString(" ") { node ->
+                                val b = runCatching { node.visibleBounds }.getOrNull()
+                                "${node.contentDescription}[${b?.left},${b?.top},${b?.right},${b?.bottom}]"
+                            }
+                        }.getOrDefault("probe failed")
+                        sb.append("STRIP CHIPS (window ").append(device.displayWidth).append('x')
+                            .append(device.displayHeight).append("): ").append(chips)
+                        sb.toString().take(8000)
+                    }
+                )
+            } catch (t: Throwable) {
+                walked.set("probe dump failed: $t")
             }
-        }.getOrDefault("probe failed")
-        sb.append("STRIP CHIPS (window ").append(device.displayWidth).append('x')
-            .append(device.displayHeight).append("): ").append(chips)
-        sb.toString().take(8000)
-    } catch (t: Throwable) {
-        "probe dump failed: $t"
+        }
+        walker.name = "e2e-tree-walker"
+        walker.isDaemon = true
+        walker.start()
+        walker.join(4_000)
+        return walked.get()
+            ?: "tree probe timed out — the window was mid-transition, so the "
+            "walk was abandoned at 4s rather than crawled"
     }
 }

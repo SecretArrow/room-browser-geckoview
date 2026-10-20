@@ -971,38 +971,63 @@ class DevToolsApplicationPanelE2eTest {
     // ---------- Failure diagnostics -----------------------------------------
 
     /** Readable failure diagnostics, built at the moment of failure. */
-    private fun uiTree(): String = try {
-        val sb = StringBuilder()
-        val probes = listOf(
-            "'Page Actions' sheet" to By.text("Page Actions"),
-            "'Developer tools' row" to By.desc(panelHeader),
-            "overview panel chip" to By.desc(overviewChip),
-            "application panel chip" to By.desc(applicationChip),
-            "application panel body" to By.desc(applicationBody),
-            "read-done line" to By.textContains(readDoneLine),
-            "page heading" to By.text(pageHeading),
-            "seeded marker" to By.text(seededMarker),
-            "manifest name" to By.textContains(manifestName),
-            "service worker" to By.textContains("sw-$tag.js"),
-            "localStorage key" to By.textContains(localKey),
-            "sessionStorage key" to By.textContains(sessionKey),
-            "IndexedDB name" to By.textContains(databaseName),
-            "cache name" to By.textContains(cacheName)
-        )
-        for ((label, selector) in probes) {
-            val nodes = runCatching { device.findObjects(selector) }.getOrDefault(emptyList())
-            sb.append(label).append(": count=").append(nodes.size).append('\n')
+    private fun uiTree(): String {
+        // BOUNDED, and the reason is a measured hang: the walk re-reads every
+        // node through the accessibility connection of the window it started
+        // in, and while that window is being recreated each re-read costs the
+        // full cross-process timeout — a crawl, not a crash, that once took a
+        // DevTools search test 104 minutes to finish. A dedicated walker with a
+        // 4-second join is the ceiling: a live window is walked whole, a dying
+        // one is abandoned, and the returned message says which happened. A
+        // fresh thread per walk (never a shared pool) means a window that dies
+        // mid-walk parks one daemon instead of starving every later probe.
+        val walked = java.util.concurrent.atomic.AtomicReference<String?>(null)
+        val walker = Thread {
+            try {
+                walked.set(
+                    run {
+                        val sb = StringBuilder()
+                        val probes = listOf(
+                            "'Page Actions' sheet" to By.text("Page Actions"),
+                            "'Developer tools' row" to By.desc(panelHeader),
+                            "overview panel chip" to By.desc(overviewChip),
+                            "application panel chip" to By.desc(applicationChip),
+                            "application panel body" to By.desc(applicationBody),
+                            "read-done line" to By.textContains(readDoneLine),
+                            "page heading" to By.text(pageHeading),
+                            "seeded marker" to By.text(seededMarker),
+                            "manifest name" to By.textContains(manifestName),
+                            "service worker" to By.textContains("sw-$tag.js"),
+                            "localStorage key" to By.textContains(localKey),
+                            "sessionStorage key" to By.textContains(sessionKey),
+                            "IndexedDB name" to By.textContains(databaseName),
+                            "cache name" to By.textContains(cacheName)
+                        )
+                        for ((label, selector) in probes) {
+                            val nodes = runCatching { device.findObjects(selector) }.getOrDefault(emptyList())
+                            sb.append(label).append(": count=").append(nodes.size).append('\n')
+                        }
+                        for (label in hiddenSectionLabels) {
+                            val nodes = runCatching { device.findObjects(By.textContains(label)) }.getOrDefault(emptyList())
+                            sb.append("hidden '$label': count=").append(nodes.size).append('\n')
+                        }
+                        val texts = runCatching {
+                            device.findObjects(By.textContains("")).mapNotNull { it.text }.distinct().take(80)
+                        }.getOrDefault(emptyList())
+                        sb.append("VISIBLE TEXTS: ").append(texts)
+                        sb.toString().take(8000)
+                    }
+                )
+            } catch (t: Throwable) {
+                walked.set("probe dump failed: $t")
+            }
         }
-        for (label in hiddenSectionLabels) {
-            val nodes = runCatching { device.findObjects(By.textContains(label)) }.getOrDefault(emptyList())
-            sb.append("hidden '$label': count=").append(nodes.size).append('\n')
-        }
-        val texts = runCatching {
-            device.findObjects(By.textContains("")).mapNotNull { it.text }.distinct().take(80)
-        }.getOrDefault(emptyList())
-        sb.append("VISIBLE TEXTS: ").append(texts)
-        sb.toString().take(8000)
-    } catch (t: Throwable) {
-        "probe dump failed: $t"
+        walker.name = "e2e-tree-walker"
+        walker.isDaemon = true
+        walker.start()
+        walker.join(4_000)
+        return walked.get()
+            ?: "tree probe timed out — the window was mid-transition, so the "
+            "walk was abandoned at 4s rather than crawled"
     }
 }

@@ -249,59 +249,84 @@ class BrowserNavigationE2eTest {
     }
 
     /** Readable failure diagnostics (readable from the e2e-reports artifact). */
-    private fun uiTree(): String = try {
-        val sb = StringBuilder()
-        val probes = listOf(
-            "'ROOM-E2E-PAGE-ONE'" to By.text("ROOM-E2E-PAGE-ONE"),
-            "'ROOM-E2E-PAGE-TWO'" to By.text("ROOM-E2E-PAGE-TWO"),
-            "'Goto page 2' link" to By.text("Goto page 2"),
-            "'Go back' button" to By.desc("Go back"),
-            "'Wallet' button" to By.desc("Wallet"),
-            "'Go forward' button" to By.desc("Go forward"),
-            "'Reload' button (omnibox row)" to By.desc("Reload"),
-            "'Open Room Agent' button" to By.desc("Open Room Agent"),
-            "'Exit Room Browser?' dialog" to By.text("Exit Room Browser?"),
-            "'Back to start page' action" to By.text("Back to start page"),
-            "omni_field" to By.desc("omni_field"),
-            // The permission sheets. Probed explicitly because "the page
-            // loaded but its <h1> is not in the tree" has two very different
-            // causes: the sheet is up and its modal window is the ACTIVE one,
-            // so UiAutomator no longer returns the activity window's nodes at
-            // all — or the sheet never came up, which is a real bug in the
-            // permission path. The message alone cannot tell them apart.
-            "'Share your location?' sheet" to By.text("Share your location?"),
-            "'Share your camera and microphone?' sheet"
-                to By.text("Share your camera and microphone?"),
-            "'Deny' button" to By.text("Deny"),
-            "'Allow' button" to By.text("Allow")
-        )
-        for ((label, selector) in probes) {
-            val nodes = runCatching { device.findObjects(selector) }.getOrDefault(emptyList())
-            sb.append(label).append(": count=").append(nodes.size)
-            nodes.take(2).forEach { n ->
-                sb.append(" bounds=").append(runCatching { n.visibleBounds }.getOrNull())
-                    .append(" clickable=").append(runCatching { n.isClickable }.getOrDefault(false))
+    private fun uiTree(): String {
+        // BOUNDED, and the reason is a measured hang: the walk re-reads every
+        // node through the accessibility connection of the window it started
+        // in, and while that window is being recreated each re-read costs the
+        // full cross-process timeout — a crawl, not a crash, that once took a
+        // DevTools search test 104 minutes to finish. A dedicated walker with a
+        // 4-second join is the ceiling: a live window is walked whole, a dying
+        // one is abandoned, and the returned message says which happened. A
+        // fresh thread per walk (never a shared pool) means a window that dies
+        // mid-walk parks one daemon instead of starving every later probe.
+        val walked = java.util.concurrent.atomic.AtomicReference<String?>(null)
+        val walker = Thread {
+            try {
+                walked.set(
+                    run {
+                        val sb = StringBuilder()
+                        val probes = listOf(
+                            "'ROOM-E2E-PAGE-ONE'" to By.text("ROOM-E2E-PAGE-ONE"),
+                            "'ROOM-E2E-PAGE-TWO'" to By.text("ROOM-E2E-PAGE-TWO"),
+                            "'Goto page 2' link" to By.text("Goto page 2"),
+                            "'Go back' button" to By.desc("Go back"),
+                            "'Wallet' button" to By.desc("Wallet"),
+                            "'Go forward' button" to By.desc("Go forward"),
+                            "'Reload' button (omnibox row)" to By.desc("Reload"),
+                            "'Open Room Agent' button" to By.desc("Open Room Agent"),
+                            "'Exit Room Browser?' dialog" to By.text("Exit Room Browser?"),
+                            "'Back to start page' action" to By.text("Back to start page"),
+                            "omni_field" to By.desc("omni_field"),
+                            // The permission sheets. Probed explicitly because "the page
+                            // loaded but its <h1> is not in the tree" has two very different
+                            // causes: the sheet is up and its modal window is the ACTIVE one,
+                            // so UiAutomator no longer returns the activity window's nodes at
+                            // all — or the sheet never came up, which is a real bug in the
+                            // permission path. The message alone cannot tell them apart.
+                            "'Share your location?' sheet" to By.text("Share your location?"),
+                            "'Share your camera and microphone?' sheet"
+                                to By.text("Share your camera and microphone?"),
+                            "'Deny' button" to By.text("Deny"),
+                            "'Allow' button" to By.text("Allow")
+                        )
+                        for ((label, selector) in probes) {
+                            val nodes = runCatching { device.findObjects(selector) }.getOrDefault(emptyList())
+                            sb.append(label).append(": count=").append(nodes.size)
+                            nodes.take(2).forEach { n ->
+                                sb.append(" bounds=").append(runCatching { n.visibleBounds }.getOrNull())
+                                    .append(" clickable=").append(runCatching { n.isClickable }.getOrDefault(false))
+                            }
+                            sb.append('\n')
+                        }
+                        val texts = runCatching {
+                            device.findObjects(By.textContains("")).mapNotNull { it.text }.distinct().take(60)
+                        }.getOrDefault(emptyList())
+                        sb.append("VISIBLE TEXTS: ").append(texts).append('\n')
+                        sb.append("page1Hits=").append(page1Hits.get())
+                            .append(" page2Hits=").append(page2Hits.get()).append('\n')
+                        // The server is the only witness that cannot lie about whether the
+                        // engine ever ASKED for the page. Without it a blank document, a
+                        // blocked request and a page that rendered offscreen all read the
+                        // same from the device side: onPageFinished, right URL, no text.
+                        sb.append("server hits: ").append(
+                            hitsByPath.entries.sortedBy { it.key }
+                                .joinToString(" ") { "${it.key}=${it.value.get()}" }
+                                .ifEmpty { "(none)" }
+                        ).append('\n')
+                        sb.toString().take(8000)
+                    }
+                )
+            } catch (t: Throwable) {
+                walked.set("probe dump failed: $t")
             }
-            sb.append('\n')
         }
-        val texts = runCatching {
-            device.findObjects(By.textContains("")).mapNotNull { it.text }.distinct().take(60)
-        }.getOrDefault(emptyList())
-        sb.append("VISIBLE TEXTS: ").append(texts).append('\n')
-        sb.append("page1Hits=").append(page1Hits.get())
-            .append(" page2Hits=").append(page2Hits.get()).append('\n')
-        // The server is the only witness that cannot lie about whether the
-        // engine ever ASKED for the page. Without it a blank document, a
-        // blocked request and a page that rendered offscreen all read the
-        // same from the device side: onPageFinished, right URL, no text.
-        sb.append("server hits: ").append(
-            hitsByPath.entries.sortedBy { it.key }
-                .joinToString(" ") { "${it.key}=${it.value.get()}" }
-                .ifEmpty { "(none)" }
-        ).append('\n')
-        sb.toString().take(8000)
-    } catch (t: Throwable) {
-        "probe dump failed: $t"
+        walker.name = "e2e-tree-walker"
+        walker.isDaemon = true
+        walker.start()
+        walker.join(4_000)
+        return walked.get()
+            ?: "tree probe timed out — the window was mid-transition, so the "
+            "walk was abandoned at 4s rather than crawled"
     }
 
     /**

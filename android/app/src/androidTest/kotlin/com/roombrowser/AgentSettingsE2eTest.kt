@@ -208,55 +208,80 @@ class AgentSettingsE2eTest {
     /** Probes the live accessibility tree for the nodes we care about and
      *  lists every visible text — goes into the failure message (readable
      *  from the e2e-reports artifact). */
-    private fun uiTree(): String = try {
-        val sb = StringBuilder()
-        val probes: List<Pair<String, BySelector>> = listOf(
-            "pill(AI Agent desc)" to By.desc("AI Agent"),
-            "agent_configure desc" to By.desc("agent_configure"),
-            "'Configure providers' text" to By.text("Configure providers"),
-            "'No AI provider configured'" to By.text("No AI provider configured"),
-            "'Room Agent' text" to By.text("Room Agent"),
-            "Agent settings gear" to By.desc("Agent settings"),
-            "agent_model line" to By.desc("agent_model"),
-            "agent_mode chip" to By.desc("agent_mode"),
-            "Page actions button" to By.desc("Page actions and settings"),
-            "'Page Actions' sheet title" to By.text("Page Actions"),
-            "'AI Agents' entry" to By.text("AI Agents"),
-            "'Browser settings' entry" to By.text("Browser settings"),
-            "'AI Agent chats' entry" to By.text("AI Agent chats"),
-            "'Add provider' text" to By.text("Add provider"),
-            "'AI Agent Settings' title" to By.text("AI Agent Settings"),
-            "'Show AI Agent button' switch" to By.descContains("Show AI Agent button"),
-            "retry switch" to By.descContains("Retry failed requests switch"),
-            "retry_attempts field" to By.desc("retry_attempts"),
-            "max_steps field" to By.desc("max_steps"),
-            "retry_delay field" to By.desc("retry_delay"),
-            "retry_code_400 box" to By.desc("retry_code_400"),
-            "agent hint text" to By.textContains("Ask the agent")
-        )
-        for ((label, selector) in probes) {
-            val nodes = runCatching { device.findObjects(selector) }.getOrDefault(emptyList())
-            sb.append(label).append(": count=").append(nodes.size)
-            nodes.take(2).forEach { n ->
-                sb.append(" bounds=").append(runCatching { n.visibleBounds }.getOrNull())
-                    .append(" clickable=").append(runCatching { n.isClickable }.getOrDefault(false))
+    private fun uiTree(): String {
+        // BOUNDED, and the reason is a measured hang: the walk re-reads every
+        // node through the accessibility connection of the window it started
+        // in, and while that window is being recreated each re-read costs the
+        // full cross-process timeout — a crawl, not a crash, that once took a
+        // DevTools search test 104 minutes to finish. A dedicated walker with a
+        // 4-second join is the ceiling: a live window is walked whole, a dying
+        // one is abandoned, and the returned message says which happened. A
+        // fresh thread per walk (never a shared pool) means a window that dies
+        // mid-walk parks one daemon instead of starving every later probe.
+        val walked = java.util.concurrent.atomic.AtomicReference<String?>(null)
+        val walker = Thread {
+            try {
+                walked.set(
+                    run {
+                        val sb = StringBuilder()
+                        val probes: List<Pair<String, BySelector>> = listOf(
+                            "pill(AI Agent desc)" to By.desc("AI Agent"),
+                            "agent_configure desc" to By.desc("agent_configure"),
+                            "'Configure providers' text" to By.text("Configure providers"),
+                            "'No AI provider configured'" to By.text("No AI provider configured"),
+                            "'Room Agent' text" to By.text("Room Agent"),
+                            "Agent settings gear" to By.desc("Agent settings"),
+                            "agent_model line" to By.desc("agent_model"),
+                            "agent_mode chip" to By.desc("agent_mode"),
+                            "Page actions button" to By.desc("Page actions and settings"),
+                            "'Page Actions' sheet title" to By.text("Page Actions"),
+                            "'AI Agents' entry" to By.text("AI Agents"),
+                            "'Browser settings' entry" to By.text("Browser settings"),
+                            "'AI Agent chats' entry" to By.text("AI Agent chats"),
+                            "'Add provider' text" to By.text("Add provider"),
+                            "'AI Agent Settings' title" to By.text("AI Agent Settings"),
+                            "'Show AI Agent button' switch" to By.descContains("Show AI Agent button"),
+                            "retry switch" to By.descContains("Retry failed requests switch"),
+                            "retry_attempts field" to By.desc("retry_attempts"),
+                            "max_steps field" to By.desc("max_steps"),
+                            "retry_delay field" to By.desc("retry_delay"),
+                            "retry_code_400 box" to By.desc("retry_code_400"),
+                            "agent hint text" to By.textContains("Ask the agent")
+                        )
+                        for ((label, selector) in probes) {
+                            val nodes = runCatching { device.findObjects(selector) }.getOrDefault(emptyList())
+                            sb.append(label).append(": count=").append(nodes.size)
+                            nodes.take(2).forEach { n ->
+                                sb.append(" bounds=").append(runCatching { n.visibleBounds }.getOrNull())
+                                    .append(" clickable=").append(runCatching { n.isClickable }.getOrDefault(false))
+                            }
+                            sb.append('\n')
+                        }
+                        // Compose editable fields expose their content as accessibility text
+                        for (fd in listOf("provider_name_field", "provider_url_field", "provider_key_field")) {
+                            val v = runCatching {
+                                device.findObjects(By.desc(fd)).firstOrNull()?.text
+                            }.getOrNull()
+                            sb.append(fd).append(" value='").append(v).append("'\n")
+                        }
+                        val texts = runCatching {
+                            device.findObjects(By.textContains("")).mapNotNull { it.text }.distinct().take(80)
+                        }.getOrDefault(emptyList())
+                        sb.append("VISIBLE TEXTS: ").append(texts).append('\n')
+                        sb.toString().take(9000)
+                    }
+                )
+            } catch (t: Throwable) {
+                walked.set("probe dump failed: $t")
             }
-            sb.append('\n')
         }
-        // Compose editable fields expose their content as accessibility text
-        for (fd in listOf("provider_name_field", "provider_url_field", "provider_key_field")) {
-            val v = runCatching {
-                device.findObjects(By.desc(fd)).firstOrNull()?.text
-            }.getOrNull()
-            sb.append(fd).append(" value='").append(v).append("'\n")
-        }
-        val texts = runCatching {
-            device.findObjects(By.textContains("")).mapNotNull { it.text }.distinct().take(80)
-        }.getOrDefault(emptyList())
-        sb.append("VISIBLE TEXTS: ").append(texts).append('\n')
-        sb.toString().take(9000)
-    } catch (t: Throwable) {
-        "probe dump failed: $t"
+        walker.name = "e2e-tree-walker"
+        walker.isDaemon = true
+        walker.start()
+        walker.join(4_000)
+        return walked.get()
+            ?: "tree probe timed out — the window was mid-transition, so the "
+            "walk was abandoned at 4s rather than crawled"
     }
 
     /** Types text into the editor field with the given content description —

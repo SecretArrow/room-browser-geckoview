@@ -232,13 +232,38 @@ class PasswordsE2eTest {
         return hasDesc("Address bar", 500)
     }
 
-    private fun uiTree(): String = try {
-        val texts = runCatching {
-            device.findObjects(By.textContains("")).mapNotNull { it.text }.distinct().take(60)
-        }.getOrDefault(emptyList())
-        "TEXTS: $texts"
-    } catch (t: Throwable) {
-        "probe dump failed: $t"
+    private fun uiTree(): String {
+        // BOUNDED, and the reason is a measured hang: the walk re-reads every
+        // node through the accessibility connection of the window it started
+        // in, and while that window is being recreated each re-read costs the
+        // full cross-process timeout — a crawl, not a crash, that once took a
+        // DevTools search test 104 minutes to finish. A dedicated walker with a
+        // 4-second join is the ceiling: a live window is walked whole, a dying
+        // one is abandoned, and the returned message says which happened. A
+        // fresh thread per walk (never a shared pool) means a window that dies
+        // mid-walk parks one daemon instead of starving every later probe.
+        val walked = java.util.concurrent.atomic.AtomicReference<String?>(null)
+        val walker = Thread {
+            try {
+                walked.set(
+                    run {
+                        val texts = runCatching {
+                            device.findObjects(By.textContains("")).mapNotNull { it.text }.distinct().take(60)
+                        }.getOrDefault(emptyList())
+                        "TEXTS: $texts"
+                    }
+                )
+            } catch (t: Throwable) {
+                walked.set("probe dump failed: $t")
+            }
+        }
+        walker.name = "e2e-tree-walker"
+        walker.isDaemon = true
+        walker.start()
+        walker.join(4_000)
+        return walked.get()
+            ?: "tree probe timed out — the window was mid-transition, so the "
+            "walk was abandoned at 4s rather than crawled"
     }
 
     // ---------- Bootstrap: fresh profile ----------------------------------

@@ -251,34 +251,59 @@ class OnDeviceEngineE2eTest {
     }
 
     /** Probes the on-device-engine nodes for readable failure messages. */
-    private fun uiTree(): String = try {
-        val sb = StringBuilder()
-        for (probe in listOf(
-            "section header" to By.textContains("On-device engine"),
-            "localengine_version" to By.desc("localengine_version"),
-            "localengine_models_list" to By.desc("localengine_models_list"),
-            "localengine_use_smoke-story-260k" to By.desc("localengine_use_smoke-story-260k"),
-            "localengine_try_smoke-story-260k" to By.desc("localengine_try_smoke-story-260k"),
-            "localengine_try_output" to By.desc("localengine_try_output"),
-            "localengine_import" to By.desc("localengine_import"),
-            "localengine_url_field" to By.desc("localengine_url_field"),
-            "localengine_download" to By.desc("localengine_download")
-        )) {
-            val nodes = runCatching { device.findObjects(probe.second) }.getOrDefault(emptyList())
-            sb.append(probe.first).append(": count=").append(nodes.size)
-            nodes.take(2).forEach { n ->
-                sb.append(" text='").append(runCatching { n.text }.getOrNull())
-                    .append("' bounds=").append(runCatching { n.visibleBounds }.getOrNull())
+    private fun uiTree(): String {
+        // BOUNDED, and the reason is a measured hang: the walk re-reads every
+        // node through the accessibility connection of the window it started
+        // in, and while that window is being recreated each re-read costs the
+        // full cross-process timeout — a crawl, not a crash, that once took a
+        // DevTools search test 104 minutes to finish. A dedicated walker with a
+        // 4-second join is the ceiling: a live window is walked whole, a dying
+        // one is abandoned, and the returned message says which happened. A
+        // fresh thread per walk (never a shared pool) means a window that dies
+        // mid-walk parks one daemon instead of starving every later probe.
+        val walked = java.util.concurrent.atomic.AtomicReference<String?>(null)
+        val walker = Thread {
+            try {
+                walked.set(
+                    run {
+                        val sb = StringBuilder()
+                        for (probe in listOf(
+                            "section header" to By.textContains("On-device engine"),
+                            "localengine_version" to By.desc("localengine_version"),
+                            "localengine_models_list" to By.desc("localengine_models_list"),
+                            "localengine_use_smoke-story-260k" to By.desc("localengine_use_smoke-story-260k"),
+                            "localengine_try_smoke-story-260k" to By.desc("localengine_try_smoke-story-260k"),
+                            "localengine_try_output" to By.desc("localengine_try_output"),
+                            "localengine_import" to By.desc("localengine_import"),
+                            "localengine_url_field" to By.desc("localengine_url_field"),
+                            "localengine_download" to By.desc("localengine_download")
+                        )) {
+                            val nodes = runCatching { device.findObjects(probe.second) }.getOrDefault(emptyList())
+                            sb.append(probe.first).append(": count=").append(nodes.size)
+                            nodes.take(2).forEach { n ->
+                                sb.append(" text='").append(runCatching { n.text }.getOrNull())
+                                    .append("' bounds=").append(runCatching { n.visibleBounds }.getOrNull())
+                            }
+                            sb.append('\n')
+                        }
+                        val texts = runCatching {
+                            device.findObjects(By.textContains("")).mapNotNull { it.text }.distinct().take(80)
+                        }.getOrDefault(emptyList())
+                        sb.append("VISIBLE TEXTS: ").append(texts).append('\n')
+                        sb.toString().take(9000)
+                    }
+                )
+            } catch (t: Throwable) {
+                walked.set("probe dump failed: $t")
             }
-            sb.append('\n')
         }
-        val texts = runCatching {
-            device.findObjects(By.textContains("")).mapNotNull { it.text }.distinct().take(80)
-        }.getOrDefault(emptyList())
-        sb.append("VISIBLE TEXTS: ").append(texts).append('\n')
-        sb.toString().take(9000)
-    } catch (t: Throwable) {
-        "probe dump failed: $t"
+        walker.name = "e2e-tree-walker"
+        walker.isDaemon = true
+        walker.start()
+        walker.join(4_000)
+        return walked.get()
+            ?: "tree probe timed out — the window was mid-transition, so the "
+            "walk was abandoned at 4s rather than crawled"
     }
 
     // =====================================================================

@@ -667,16 +667,41 @@ class AirplaneModeE2eTest {
 
     /** Every visible text, for the failure message (readable from the
      *  e2e-reports artifact). */
-    private fun uiTree(): String = try {
-        val sb = StringBuilder()
-        device.findObjects(By.textContains(""))
-            .take(60)
-            .forEach { node ->
-                runCatching { sb.append("text: ").append(node.text).append('\n') }
+    private fun uiTree(): String {
+        // BOUNDED, and the reason is a measured hang: the walk re-reads every
+        // node through the accessibility connection of the window it started
+        // in, and while that window is being recreated each re-read costs the
+        // full cross-process timeout — a crawl, not a crash, that once took a
+        // DevTools search test 104 minutes to finish. A dedicated walker with a
+        // 4-second join is the ceiling: a live window is walked whole, a dying
+        // one is abandoned, and the returned message says which happened. A
+        // fresh thread per walk (never a shared pool) means a window that dies
+        // mid-walk parks one daemon instead of starving every later probe.
+        val walked = java.util.concurrent.atomic.AtomicReference<String?>(null)
+        val walker = Thread {
+            try {
+                walked.set(
+                    run {
+                        val sb = StringBuilder()
+                        device.findObjects(By.textContains(""))
+                            .take(60)
+                            .forEach { node ->
+                                runCatching { sb.append("text: ").append(node.text).append('\n') }
+                            }
+                        sb.append("package: ").append(device.currentPackageName).append('\n')
+                        sb.toString()
+                    }
+                )
+            } catch (_: Exception) {
+                walked.set("(ui tree unreadable)")
             }
-        sb.append("package: ").append(device.currentPackageName).append('\n')
-        sb.toString()
-    } catch (_: Exception) {
-        "(ui tree unreadable)"
+        }
+        walker.name = "e2e-tree-walker"
+        walker.isDaemon = true
+        walker.start()
+        walker.join(4_000)
+        return walked.get()
+            ?: "tree probe timed out — the window was mid-transition, so the "
+            "walk was abandoned at 4s rather than crawled"
     }
 }

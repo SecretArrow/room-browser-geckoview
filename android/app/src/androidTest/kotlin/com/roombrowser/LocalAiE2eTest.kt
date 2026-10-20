@@ -863,44 +863,69 @@ class LocalAiE2eTest {
     }
 
     /** Probes the local-AI nodes for readable failure messages. */
-    private fun uiTree(): String = try {
-        val sb = StringBuilder()
-        for (probe in listOf(
-            "AI Agent Settings title" to By.text("AI Agent Settings"),
-            "Local AI row" to By.text("Local AI (Ollama)"),
-            "localai_host_field" to By.desc("localai_host_field"),
-            "localai_connect" to By.desc("localai_connect"),
-            "localai_status" to By.desc("localai_status"),
-            "localai_installed_list" to By.desc("localai_installed_list"),
-            // Prefix probes — the LABEL is the prefix, so count is how many
-            // nodes matched it: "[localai_install_] count=3" is three Install
-            // buttons on screen, NOT one card rendered three times. The row
-            // that used to be labelled with a whole tag ("localai_install_…")
-            // read as a duplicate card for exactly that reason.
-            "[localai_install_]" to By.descContains("localai_install_"),
-            "[localai_installed_]" to By.descContains("localai_installed_"),
-            // The downloads section is the FIRST thing these tests need and the
-            // LAST thing a viewport parked on the catalog can see, so a dump
-            // without it cannot tell "no row" from "row above the fold".
-            "[localai_pull_server_]" to By.descContains("localai_pull_server_"),
-            "[localai_cancel_]" to By.descContains("localai_cancel_"),
-            "[localai_clear_]" to By.descContains("localai_clear_")
-        )) {
-            val nodes = runCatching { device.findObjects(probe.second) }.getOrDefault(emptyList())
-            sb.append(probe.first).append(": count=").append(nodes.size)
-            nodes.take(2).forEach { n ->
-                sb.append(" text='").append(runCatching { n.text }.getOrNull())
-                    .append("' bounds=").append(runCatching { n.visibleBounds }.getOrNull())
+    private fun uiTree(): String {
+        // BOUNDED, and the reason is a measured hang: the walk re-reads every
+        // node through the accessibility connection of the window it started
+        // in, and while that window is being recreated each re-read costs the
+        // full cross-process timeout — a crawl, not a crash, that once took a
+        // DevTools search test 104 minutes to finish. A dedicated walker with a
+        // 4-second join is the ceiling: a live window is walked whole, a dying
+        // one is abandoned, and the returned message says which happened. A
+        // fresh thread per walk (never a shared pool) means a window that dies
+        // mid-walk parks one daemon instead of starving every later probe.
+        val walked = java.util.concurrent.atomic.AtomicReference<String?>(null)
+        val walker = Thread {
+            try {
+                walked.set(
+                    run {
+                        val sb = StringBuilder()
+                        for (probe in listOf(
+                            "AI Agent Settings title" to By.text("AI Agent Settings"),
+                            "Local AI row" to By.text("Local AI (Ollama)"),
+                            "localai_host_field" to By.desc("localai_host_field"),
+                            "localai_connect" to By.desc("localai_connect"),
+                            "localai_status" to By.desc("localai_status"),
+                            "localai_installed_list" to By.desc("localai_installed_list"),
+                            // Prefix probes — the LABEL is the prefix, so count is how many
+                            // nodes matched it: "[localai_install_] count=3" is three Install
+                            // buttons on screen, NOT one card rendered three times. The row
+                            // that used to be labelled with a whole tag ("localai_install_…")
+                            // read as a duplicate card for exactly that reason.
+                            "[localai_install_]" to By.descContains("localai_install_"),
+                            "[localai_installed_]" to By.descContains("localai_installed_"),
+                            // The downloads section is the FIRST thing these tests need and the
+                            // LAST thing a viewport parked on the catalog can see, so a dump
+                            // without it cannot tell "no row" from "row above the fold".
+                            "[localai_pull_server_]" to By.descContains("localai_pull_server_"),
+                            "[localai_cancel_]" to By.descContains("localai_cancel_"),
+                            "[localai_clear_]" to By.descContains("localai_clear_")
+                        )) {
+                            val nodes = runCatching { device.findObjects(probe.second) }.getOrDefault(emptyList())
+                            sb.append(probe.first).append(": count=").append(nodes.size)
+                            nodes.take(2).forEach { n ->
+                                sb.append(" text='").append(runCatching { n.text }.getOrNull())
+                                    .append("' bounds=").append(runCatching { n.visibleBounds }.getOrNull())
+                            }
+                            sb.append('\n')
+                        }
+                        val texts = runCatching {
+                            device.findObjects(By.textContains("")).mapNotNull { it.text }.distinct().take(80)
+                        }.getOrDefault(emptyList())
+                        sb.append("VISIBLE TEXTS: ").append(texts).append('\n')
+                        sb.toString().take(9000)
+                    }
+                )
+            } catch (t: Throwable) {
+                walked.set("probe dump failed: $t")
             }
-            sb.append('\n')
         }
-        val texts = runCatching {
-            device.findObjects(By.textContains("")).mapNotNull { it.text }.distinct().take(80)
-        }.getOrDefault(emptyList())
-        sb.append("VISIBLE TEXTS: ").append(texts).append('\n')
-        sb.toString().take(9000)
-    } catch (t: Throwable) {
-        "probe dump failed: $t"
+        walker.name = "e2e-tree-walker"
+        walker.isDaemon = true
+        walker.start()
+        walker.join(4_000)
+        return walked.get()
+            ?: "tree probe timed out — the window was mid-transition, so the "
+            "walk was abandoned at 4s rather than crawled"
     }
 
     // =====================================================================
