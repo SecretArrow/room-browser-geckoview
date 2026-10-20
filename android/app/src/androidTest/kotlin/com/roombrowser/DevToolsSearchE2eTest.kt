@@ -633,19 +633,38 @@ class DevToolsSearchE2eTest {
      * and [scrollTrace] records which mechanism the body answered to.
      */
     private fun scrollPanelToText(text: String, maxDrags: Int = 24): Boolean {
+        // A window mid-recreation can leave its accessibility nodes null-rooted
+        // for a long moment, and in that state every node query and every
+        // input injection pays a full cross-process timeout - 24 drags have
+        // measured at an hour. The budget bounds the whole hunt: past it the
+        // honest miss returns (the caller's assertion fails with the trace),
+        // and the suite's own second invocation walks a fresh tree.
+        val budgetDeadline = System.currentTimeMillis() + 90_000
+        fun overBudget(): Boolean {
+            if (System.currentTimeMillis() > budgetDeadline) {
+                scrollTrace += "|budget"
+                return true
+            }
+            return false
+        }
         fun found() = device.findObjects(By.textContains(text)).isNotEmpty()
         scrollTrace = "body=${bodyRect()}"
         if (found()) {
             scrollTrace += "|onScreen"
             return true
         }
-        repeat(maxDrags) { if (!found()) dragDownHalf() }
+        repeat(maxDrags) {
+            if (found()) return true
+            if (overBudget()) return false
+            dragDownHalf()
+        }
         if (found()) {
             scrollTrace += "|upHit"
             return true
         }
         repeat(maxDrags) {
             if (found()) return true
+            if (overBudget()) return false
             dragUpHalf()
         }
         if (found()) {
@@ -660,9 +679,14 @@ class DevToolsSearchE2eTest {
         scrollTrace += "|fullscreen=yes"
         // Growing the panel does not move its scroll offset, so a target that was
         // below the docked fold can now sit ABOVE the taller viewport.
-        repeat(maxDrags) { if (!found()) dragDownHalf() }
+        repeat(maxDrags) {
+            if (found()) return true
+            if (overBudget()) return false
+            dragDownHalf()
+        }
         repeat(maxDrags + 12) {
             if (found()) return true
+            if (overBudget()) return false
             dragUpHalf()
         }
         scrollTrace += "|end"

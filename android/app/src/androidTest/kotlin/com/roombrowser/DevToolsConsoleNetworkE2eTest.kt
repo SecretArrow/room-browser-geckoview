@@ -581,8 +581,23 @@ class DevToolsConsoleNetworkE2eTest {
      * evidence already on screen is never scrolled past.
      */
     private fun scrollPanelToText(text: String, maxDrags: Int = 24): Boolean {
+        // A window mid-recreation can leave its accessibility nodes null-rooted
+        // for a long moment, and in that state every node query and every
+        // input injection pays a full cross-process timeout - 24 drags have
+        // measured at an hour. The budget bounds the whole hunt: past it the
+        // honest miss returns (the caller's assertion fails with the trace),
+        // and the suite's own second invocation walks a fresh tree.
+        val budgetDeadline = System.currentTimeMillis() + 90_000
+        fun overBudget(): Boolean {
+            if (System.currentTimeMillis() > budgetDeadline) {
+                scrollTrace += "|budget"
+                return true
+            }
+            return false
+        }
         repeat(maxDrags) {
             if (device.findObjects(By.textContains(text)).isNotEmpty()) return true
+            if (overBudget()) return false
             dragUpHalf()
         }
         return device.findObjects(By.textContains(text)).isNotEmpty()
