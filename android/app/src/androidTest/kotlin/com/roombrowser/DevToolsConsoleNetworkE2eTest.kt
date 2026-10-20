@@ -588,13 +588,7 @@ class DevToolsConsoleNetworkE2eTest {
         // honest miss returns (the caller's assertion fails with the trace),
         // and the suite's own second invocation walks a fresh tree.
         val budgetDeadline = System.currentTimeMillis() + 90_000
-        fun overBudget(): Boolean {
-            if (System.currentTimeMillis() > budgetDeadline) {
-                scrollTrace += "|budget"
-                return true
-            }
-            return false
-        }
+        fun overBudget(): Boolean = System.currentTimeMillis() > budgetDeadline
         repeat(maxDrags) {
             if (device.findObjects(By.textContains(text)).isNotEmpty()) return true
             if (overBudget()) return false
