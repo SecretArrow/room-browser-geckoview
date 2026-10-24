@@ -62,6 +62,14 @@ class AgentRepository(private val db: AppDatabase) {
     /** Stores the step list this chat last wrote, or "" to clear it. */
     suspend fun setSessionPlan(id: Long, planJson: String) = dao.setPlan(id, planJson)
 
+    /**
+     * Adds one turn's token cost onto the chat's cumulative totals. The
+     * increment is applied by the DAO in a single UPDATE — see
+     * [AgentDao.addTokens] for why the caller never reads-modifies-writes.
+     */
+    suspend fun addSessionTokens(id: Long, input: Long, output: Long) =
+        dao.addTokens(id, input, output)
+
     suspend fun createSession(
         profileId: String,
         title: String,

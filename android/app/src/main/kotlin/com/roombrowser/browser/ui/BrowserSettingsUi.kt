@@ -393,10 +393,11 @@ fun BrowserSettingsScreen(viewModel: BrowserViewModel, onClose: () -> Unit) {
         InfoNote(
             "Applies to this app's own connections — the AI agent, downloads " +
                 "and the network checks above. It does NOT change how pages " +
-                "resolve names: Android WebView always resolves through the OS " +
-                "stack, and an app cannot intercept that without routing every " +
-                "packet through a VPN. For DNS that covers browsing, set " +
-                "Private DNS in Android Settings."
+                "resolve names: page loads resolve through the engine's own " +
+                "stack, which follows the system's DNS settings, and an app " +
+                "cannot intercept that without routing every packet through a " +
+                "VPN. For DNS that covers browsing, set Private DNS in " +
+                "Android Settings."
         )
         SettingsGroup {
             DropdownRow(
@@ -450,7 +451,7 @@ fun BrowserSettingsScreen(viewModel: BrowserViewModel, onClose: () -> Unit) {
                 )
             }
         }
-        InfoNote("Browser-level DNS cannot override every DNS request made by the Android OS or WebView page loads — see PRIVACY.md.")
+        InfoNote("Browser-level DNS cannot override every DNS request made by the Android OS or the engine's page loads — see PRIVACY.md.")
 
         SectionHeader("Diagnostics")
         SettingsGroup {
@@ -465,9 +466,11 @@ fun BrowserSettingsScreen(viewModel: BrowserViewModel, onClose: () -> Unit) {
                 }
             )
             val engines = remember { ProfileEngine.installedEngines(context) }
-            // Honest display-only row: Android decides the active WebView
-            // provider, so a picker here could never take effect (see the
-            // InfoNote below). We simply show the current engine as text.
+            // Honest display-only row: the active engine is decided outside
+            // this screen (the platform picks the provider where one is
+            // pluggable; a bundled engine ships with the app), so a picker
+            // here could never take effect (see the InfoNote below). We
+            // simply show the current engine as text.
             val currentEngine = engines.firstOrNull { it.isCurrent } ?: engines.firstOrNull()
             Row(
                 Modifier
@@ -492,7 +495,7 @@ fun BrowserSettingsScreen(viewModel: BrowserViewModel, onClose: () -> Unit) {
                 )
             }
         }
-        InfoNote("Read-only diagnostics — Android decides the active WebView provider; Room Browser cannot switch it.")
+        InfoNote("Read-only diagnostics — the active engine is decided outside this screen; Room Browser cannot switch it.")
 
         // ================= AI Agent =================
         // The floating agent button is hidden by default; this is the global
@@ -814,7 +817,7 @@ fun ProfileSettingsScreen(viewModel: BrowserViewModel, onClose: () -> Unit) {
                 label = "User-Agent",
                 options = UaMode.entries.map { mode ->
                     mode.name to when (mode) {
-                        UaMode.DEFAULT -> "Default (WebView)"
+                        UaMode.DEFAULT -> "Default (system engine)"
                         UaMode.PRESET -> "Preset"
                         UaMode.CUSTOM -> "Custom"
                     }
@@ -879,7 +882,7 @@ fun ProfileSettingsScreen(viewModel: BrowserViewModel, onClose: () -> Unit) {
         }
         val effective = UserAgents.effectiveUserAgent(settings)
         InfoNote(
-            "Current: ${effective ?: "Android WebView default"}\n" +
+            "Current: ${effective ?: "the engine's own default"}\n" +
                 "Changing the User-Agent string does not change other platform/device characteristics (screen, APIs, capabilities)."
         )
 
@@ -1959,7 +1962,7 @@ fun AboutScreen(onClose: () -> Unit) {
                 )
                 Spacer(Modifier.height(12.dp))
                 Text(
-                    "Isolation model: each profile binds the browser engine process to its own WebView data directory (cookies, localStorage, IndexedDB, cache, service workers are physically separated). Profile switching restarts the engine process — no state is reused.",
+                    "Isolation model: each profile binds the browser engine process to its own storage (cookies, localStorage, IndexedDB, cache, service workers are physically separated). Profile switching restarts the engine process — no state is reused.",
                     style = MaterialTheme.typography.bodySmall,
                     color = extras.textSecondary
                 )
@@ -1977,7 +1980,7 @@ fun AboutScreen(onClose: () -> Unit) {
         SectionHeader("Limitations (honesty first)")
         SettingsGroup {
             Text(
-                "• WebView page-load DNS uses the OS resolver; DoH/DoT protects app connections.\n• Full WebRTC IP-handling control is not available to normal Android apps.\n• Private tabs share the profile cookie jar while open; session cookies are cleared on close.\n• This browser is NOT an anonymity tool.",
+                "• Page-load DNS uses the engine's own resolver, which follows the system's DNS settings; DoH/DoT protects app connections.\n• Full WebRTC IP-handling control is not available to normal Android apps.\n• Private tabs share the profile cookie jar while open; session cookies are cleared on close.\n• This browser is NOT an anonymity tool.",
                 style = MaterialTheme.typography.bodySmall,
                 color = extras.textSecondary,
                 modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp)
@@ -1989,13 +1992,13 @@ fun AboutScreen(onClose: () -> Unit) {
 
 /**
  * This display's size in CSS pixels — the numbers `screen.width` and
- * `screen.height` report inside a WebView on this phone.
+ * `screen.height` report inside the engine on this phone.
  *
  * On Android one CSS pixel is one dp, and a dp is a physical pixel divided by
- * the display density, so this is the same arithmetic WebView does before it
- * lays a page out. That is what makes it the honest answer for "this phone's
- * screen": it is not an approximation of the viewport, it is the number the
- * page would have read anyway.
+ * the display density, so this is the same arithmetic the engine does before
+ * it lays a page out. That is what makes it the honest answer for "this
+ * phone's screen": it is not an approximation of the viewport, it is the
+ * number the page would have read anyway.
  *
  * Window metrics are preferred over the resource metrics because from Android
  * 12 the resources can reflect the app's window rather than the display, and a

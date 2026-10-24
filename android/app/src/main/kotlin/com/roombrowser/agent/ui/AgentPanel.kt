@@ -61,6 +61,7 @@ import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Checklist
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ContentCopy
+import androidx.compose.material.icons.filled.DataUsage
 import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.ErrorOutline
@@ -156,6 +157,7 @@ import com.roombrowser.domain.agent.AgentPauseLabels
 import com.roombrowser.domain.agent.AgentPlan
 import com.roombrowser.domain.agent.AgentTools
 import com.roombrowser.domain.agent.SessionApprovals
+import com.roombrowser.domain.agent.TokenUsage
 import com.roombrowser.domain.paging.Paging
 import com.roombrowser.ui.common.LocalRoomExtras
 import com.roombrowser.ui.common.PagingFooter
@@ -534,6 +536,7 @@ private fun AgentPanelHeader(
 ) {
     var showModelPicker by remember { mutableStateOf(false) }
     var showSurfacePicker by remember { mutableStateOf(false) }
+    var showTokenStats by remember { mutableStateOf(false) }
 
     Row(
         Modifier
@@ -608,15 +611,29 @@ private fun AgentPanelHeader(
                 )
             }
         }
-        // Both are off while a turn runs, because both are refused then:
-        // newSession/openSession bail on `running` so the running turn keeps
-        // the one transcript list the panel has. A tap that silently did
-        // nothing is worse than a control that says it is unavailable.
-        IconButton(onClick = onNewSession, enabled = !agent.running) {
+        // No running gates on either button, and that is deliberate: the
+        // per-session rewrite made switching ALWAYS safe — a running turn
+        // writes into its own chat's state, so a new chat or an opened one
+        // detaches only the PANEL while the running chat keeps moving
+        // underneath. The old gates were honest because the tap really was
+        // refused (one shared transcript list); now they would only be a
+        // control that freezes exactly when the user most needs it.
+        IconButton(onClick = onNewSession) {
             Icon(Icons.Filled.Add, contentDescription = "New agent chat")
         }
-        IconButton(onClick = onOpenSessions, enabled = !agent.running) {
+        IconButton(onClick = onOpenSessions) {
             Icon(Icons.Filled.History, contentDescription = "Agent chat history")
+        }
+        // The plan panel's toggle — icon only, the convention every control
+        // in this row follows. The OPEN state is controller-owned
+        // (planPanelOpen), so the panel survives chat switches, tab switches
+        // and whole turns; nothing writes it but this toggle and the sheet's
+        // own dismiss below.
+        IconButton(onClick = { agent.planPanelOpen = !agent.planPanelOpen }) {
+            Icon(Icons.Filled.Checklist, contentDescription = "Toggle plan panel")
+        }
+        IconButton(onClick = { showTokenStats = true }) {
+            Icon(Icons.Filled.DataUsage, contentDescription = "Token usage")
         }
         IconButton(onClick = onOpenSettings) {
             Icon(Icons.Filled.Settings, contentDescription = "Agent settings")
@@ -631,6 +648,12 @@ private fun AgentPanelHeader(
     }
     if (showSurfacePicker) {
         ChatSurfaceSheet(agent = agent, onDismiss = { showSurfacePicker = false })
+    }
+    if (agent.planPanelOpen) {
+        PlanPanelSheet(agent = agent, onDismiss = { agent.planPanelOpen = false })
+    }
+    if (showTokenStats) {
+        TokenStatsDialog(agent = agent, onDismiss = { showTokenStats = false })
     }
 }
 
@@ -908,54 +931,68 @@ private fun AgentConversation(
     // entry, so when either is showing it is the true last item and the list
     // has to scroll past the last entry to keep it above the fold.
     //
-    // F-03: the old keys included entries.lastOrNull(), whose identity — and
-    // equality, since the streaming Assistant is copy()-replaced on every
-    // token — changed per delta, restarting this effect (and its
-    // scrollToItem) per token. The keys now move only when a row LANDS at
-    // the END (tailKey — a same-millisecond repeat still bumps its
-    // disambiguation suffix, so nothing that lands can go unnoticed), when
-    // the plan/approval tail appears, or when the streaming heartbeat/bucket
-    // below moves: the newest row is re-pinned at most STREAM_REFRESH_MS
-    // behind its own growth while it streams, and the -1s make the
-    // completion flip re-fire (the fence leaving shrinks the row).
+    // STABLE KEYS ONLY. The old keys included agent.approval — a data class
+    // holding a respond lambda, a fresh identity on every approval event — and
+    // the raw stream tick; each one restarted this effect (and its
+    // scrollToItem) without the list having moved in any way a scroll cares
+    // about. The keys now move only when the tail itself moves (tailKey — a
+    // same-millisecond repeat still bumps its disambiguation suffix, so
+    // nothing that lands can go unnoticed), when the plan/approval tail
+    // appears or disappears (plan.size; hasApproval as a plain Boolean), or
+    // when the streaming row has grown by a whole bucket (STREAM_REPARSE_CHARS
+    // — the same growth signal that re-renders the row, so the pin never
+    // outruns the pixels). The -1s make the completion flip re-fire (the
+    // fence leaving shrinks the row).
     //
     // tailKey rather than entries.size is what keeps paging history in from
     // jumping to the bottom: older rows land in FRONT, the tail's key —
     // class, timestamp and predecessor count — is untouched by them, and the
-    // effect that pins the newest row simply does not fire.
+    // effect that pins the newest row simply does not fire. entries.size
+    // moves on exactly that prepend, which is why it is not the key here.
     val lastRow = entries.lastOrNull()
     val streamingRow = if (lastRow is AgentEntry.Assistant && lastRow.streaming) lastRow else null
-    val streamTick = rememberStreamTick(streamingRow != null) {
-        (entries.lastOrNull() as? AgentEntry.Assistant)?.let { it.text.length + it.thinking.length } ?: 0
-    }
+    val hasApproval = agent.approval != null
     LaunchedEffect(
         tailKey,
-        agent.approval,
         plan.size,
-        if (streamingRow == null) -1 else streamTick.value,
+        hasApproval,
         if (streamingRow == null) -1
         else (streamingRow.text.length + streamingRow.thinking.length) / STREAM_REPARSE_CHARS
     ) {
         if (entries.isNotEmpty()) {
             var lastItem = leading + entries.size - 1
             if (plan.isNotEmpty()) lastItem++
-            if (agent.approval != null) lastItem++
-            listState.scrollToItem(lastItem)
-            // scrollToItem pins that row to the TOP of the viewport whenever
-            // the transcript outgrows it: the newest row floats over a blank
-            // lower half while every older row is scrolled out of the
-            // composed window — off screen, out of the semantics tree, gone
-            // from anything a11y (and an e2e poll) can see. A transcript
-            // belongs bottom-aligned, its end at the viewport's end: one
-            // layout-info pass measures the blank the pin left below the
-            // last row and lifts the list by exactly that much. A list
-            // shorter than the viewport cannot scroll at all, and a last row
-            // taller than it has no blank to lift — both leave this a no-op.
-            val info = listState.layoutInfo
-            val last = info.visibleItemsInfo.lastOrNull()
-            if (last != null && last.index == lastItem) {
-                val leftover = info.viewportEndOffset - (last.offset + last.size)
-                if (leftover > 0) listState.scrollToItem(lastItem, -leftover)
+            if (hasApproval) lastItem++
+            // The layout read happens BEFORE any scroll: when the viewport
+            // already shows the target row bottom-aligned — the common case
+            // while a stream re-pins itself — the scroll AND its corrective
+            // pass are both skipped. The old shape scrolled first and only
+            // then read a layout, which was stale by a frame, so the
+            // corrective scroll fired once more on every key change whether
+            // the first one had already left the list where it wanted it or
+            // not.
+            val before = listState.layoutInfo
+            val beforeLast = before.visibleItemsInfo.lastOrNull()
+            val alreadyPinned = beforeLast != null && beforeLast.index == lastItem &&
+                beforeLast.offset + beforeLast.size >= before.viewportEndOffset
+            if (!alreadyPinned) {
+                listState.scrollToItem(lastItem)
+                // scrollToItem pins that row to the TOP of the viewport whenever
+                // the transcript outgrows it: the newest row floats over a blank
+                // lower half while every older row is scrolled out of the
+                // composed window — off screen, out of the semantics tree, gone
+                // from anything a11y (and an e2e poll) can see. A transcript
+                // belongs bottom-aligned, its end at the viewport's end: one
+                // layout-info pass measures the blank the pin left below the
+                // last row and lifts the list by exactly that much. A list
+                // shorter than the viewport cannot scroll at all, and a last row
+                // taller than it has no blank to lift — both leave this a no-op.
+                val info = listState.layoutInfo
+                val last = info.visibleItemsInfo.lastOrNull()
+                if (last != null && last.index == lastItem) {
+                    val leftover = info.viewportEndOffset - (last.offset + last.size)
+                    if (leftover > 0) listState.scrollToItem(lastItem, -leftover)
+                }
             }
         }
     }
@@ -1020,13 +1057,19 @@ private fun AgentConversation(
                 )
             }
         }
-        if (plan.isNotEmpty()) item { PlanCard(plan) }
-        agent.approval?.let { approval -> item { ApprovalCard(approval, agent) } }
+        if (plan.isNotEmpty()) item(key = PLAN_ITEM_KEY) { PlanCard(plan) }
+        agent.approval?.let { approval -> item(key = APPROVAL_ITEM_KEY) { ApprovalCard(approval, agent) } }
     }
 }
 
 /** The LazyColumn slot the "load older" affordance always occupies. */
 private const val LOAD_OLDER_ITEM_KEY = "load-older"
+
+/** The LazyColumn slot the plan card occupies when the chat has a step list. */
+private const val PLAN_ITEM_KEY = "plan"
+
+/** The LazyColumn slot the approval card occupies while a prompt is up. */
+private const val APPROVAL_ITEM_KEY = "approval"
 
 /**
  * The transcript's one promise about the past: rows older than the loaded
@@ -1074,6 +1117,27 @@ internal fun olderPageScrollTarget(firstIndex: Int, added: Int, stillMore: Boole
 }
 
 /**
+ * The icon and tint one plan status renders with — shared by the inline
+ * [PlanCard] and the [PlanPanelSheet], so the two surfaces can never disagree
+ * about what a step is saying. FAILED is the distinct error mark on purpose:
+ * it covers every status word the model sent that the domain could not match
+ * ("failed", "blocked", "error", anything unknown — see
+ * AgentPlan.Status.of, which degrades all of them here), and a step that went
+ * wrong must not look merely unstarted.
+ */
+@Composable
+private fun planStatusVisual(status: AgentPlan.Status): Pair<ImageVector, Color> = when (status) {
+    AgentPlan.Status.DONE ->
+        Icons.Filled.CheckCircle to MaterialTheme.colorScheme.primary
+    AgentPlan.Status.IN_PROGRESS ->
+        Icons.Filled.PlayArrow to MaterialTheme.colorScheme.onSurface
+    AgentPlan.Status.PENDING ->
+        Icons.Filled.RadioButtonUnchecked to MaterialTheme.colorScheme.onSurfaceVariant
+    AgentPlan.Status.FAILED ->
+        Icons.Filled.ErrorOutline to MaterialTheme.colorScheme.error
+}
+
+/**
  * The agent's own step list, as the model last wrote it.
  *
  * It is the one surface that shows the SHAPE of a long run rather than its
@@ -1112,14 +1176,7 @@ private fun PlanCard(items: List<AgentPlan.Item>) {
             }
             Spacer(Modifier.height(6.dp))
             items.forEach { item ->
-                val (mark, tint) = when (item.status) {
-                    AgentPlan.Status.DONE ->
-                        Icons.Filled.CheckCircle to MaterialTheme.colorScheme.primary
-                    AgentPlan.Status.IN_PROGRESS ->
-                        Icons.Filled.PlayArrow to MaterialTheme.colorScheme.onSurface
-                    AgentPlan.Status.PENDING ->
-                        Icons.Filled.RadioButtonUnchecked to MaterialTheme.colorScheme.onSurfaceVariant
-                }
+                val (mark, tint) = planStatusVisual(item.status)
                 Row(
                     verticalAlignment = Alignment.Top,
                     modifier = Modifier.padding(vertical = 2.dp)
@@ -1139,6 +1196,133 @@ private fun PlanCard(items: List<AgentPlan.Item>) {
             }
         }
     }
+}
+
+/**
+ * The plan panel — the same step list the tail card shows, as a sheet the
+ * user can open and CLOSE at will from the header's checklist icon. The tail
+ * card stays: it is the shape-of-the-run view in the flow of the transcript,
+ * while this is the shape-of-the-run view on demand.
+ *
+ * LIVE, with no polling and no effect: [BrowserAgentController.plan] is
+ * Compose state owned by the visible chat's own ChatSessionState, so every
+ * PlanUpdated the running turn writes IS the invalidation — the sheet tracks
+ * the list step by step while the turn works, survives chat switches, tab
+ * switches and recompositions (the open flag lives on the controller, nothing
+ * here remembers it), and shows whichever chat's list the panel is on.
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun PlanPanelSheet(agent: BrowserAgentController, onDismiss: () -> Unit) {
+    val plan = agent.plan
+    val done = plan.count { it.status == AgentPlan.Status.DONE }
+    ModalBottomSheet(onDismissRequest = onDismiss, shape = RoomBottomSheetShape) {
+        Column(
+            Modifier
+                .padding(horizontal = 16.dp)
+                // Long runs write long lists; the sheet body scrolls like the
+                // model picker's does rather than clipping the tail.
+                .verticalScroll(rememberScrollState())
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(
+                    Icons.Filled.Checklist,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.size(20.dp)
+                )
+                Spacer(Modifier.width(8.dp))
+                Text("Plan", style = MaterialTheme.typography.titleLarge)
+                Spacer(Modifier.weight(1f))
+                if (plan.isNotEmpty()) {
+                    Text(
+                        "$done of ${plan.size} done",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+            Spacer(Modifier.height(8.dp))
+            if (plan.isEmpty()) {
+                Text(
+                    "The agent has not written a step list for this chat yet. It writes one " +
+                        "with its plan tool when it works on a task, and the list appears here " +
+                        "and under the transcript as it progresses.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            } else {
+                plan.forEach { item ->
+                    val (mark, tint) = planStatusVisual(item.status)
+                    Row(
+                        verticalAlignment = Alignment.Top,
+                        modifier = Modifier.padding(vertical = 6.dp)
+                    ) {
+                        Icon(
+                            mark,
+                            contentDescription = item.status.id,
+                            modifier = Modifier.size(16.dp),
+                            tint = tint
+                        )
+                        Spacer(Modifier.width(10.dp))
+                        Text(
+                            item.text,
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = if (item.status == AgentPlan.Status.PENDING) {
+                                MaterialTheme.colorScheme.onSurfaceVariant
+                            } else {
+                                MaterialTheme.colorScheme.onSurface
+                            }
+                        )
+                    }
+                }
+            }
+            Spacer(Modifier.height(24.dp))
+        }
+    }
+}
+
+/**
+ * The token dialog: two totals, no ledger. "This chat" is the chat's own
+ * row — authoritative and outlives the process — and "today across chats" is
+ * the in-memory profile-wide total (see [BrowserAgentController.todayUsage]
+ * for why it is not persisted). A chat whose row is not written yet (its turn
+ * is still running) falls back to the in-memory total inside tokenStatsFor.
+ */
+@Composable
+private fun TokenStatsDialog(agent: BrowserAgentController, onDismiss: () -> Unit) {
+    // Loaded in an effect because the row read is suspend, and re-read when
+    // the visible chat changes AND whenever today's total moves — todayUsage
+    // is Compose state, so a turn finishing while the dialog is open lands
+    // its numbers here without any polling.
+    var sessionUsage by remember { mutableStateOf<TokenUsage?>(null) }
+    LaunchedEffect(agent.activeSessionId, agent.todayUsage) {
+        sessionUsage = agent.tokenStatsFor(agent.activeSessionId).session
+    }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Token usage") },
+        text = {
+            Column {
+                Text("This chat", style = MaterialTheme.typography.labelLarge)
+                Text(
+                    sessionUsage?.render() ?: "…",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Spacer(Modifier.height(10.dp))
+                Text("Today across chats", style = MaterialTheme.typography.labelLarge)
+                Text(
+                    agent.todayUsage.render(),
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) { Text("Close") }
+        }
+    )
 }
 
 /**

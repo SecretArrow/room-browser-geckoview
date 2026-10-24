@@ -513,6 +513,20 @@ function readRequest(opts) {
       display[field] = opts[field];
     }
   }
+  // The npm store's install root, when the caller has one. Read strictly —
+  // a wrong-typed field refuses the call rather than being ignored — and
+  // required to be absolute for the same reason stateRoot is: the shim uses
+  // it as a containment ROOT, and a relative root would be resolved against
+  // whatever the process's cwd happens to be.
+  let nodeModulesRoot = null;
+  if (opts.nodeModulesRoot !== undefined && opts.nodeModulesRoot !== null) {
+    if (typeof opts.nodeModulesRoot !== 'string' || !path.isAbsolute(opts.nodeModulesRoot)) {
+      throw new Error(
+        'the plugin call was malformed: nodeModulesRoot must be an absolute path'
+      );
+    }
+    nodeModulesRoot = opts.nodeModulesRoot;
+  }
   const payload =
     opts.payload && typeof opts.payload === 'object' && !Array.isArray(opts.payload)
       ? opts.payload
@@ -553,6 +567,7 @@ function readRequest(opts) {
     title: display.title !== undefined ? display.title : null,
     zagentsVersion: display.zagentsVersion !== undefined ? display.zagentsVersion : null,
     zagentsName: display.zagentsName !== undefined ? display.zagentsName : null,
+    nodeModulesRoot: nodeModulesRoot,
     // The wire carries no history of its own (a §6 gap worth one report line,
     // not one invented field): room.chat reads it from here when a caller has
     // some, and answers an empty chat when it does not.
@@ -1131,9 +1146,31 @@ function newCall(request, startedAt) {
         if (parent === base || !insideRoot(parent)) break;
         base = parent;
       }
+      // THE STORE FALLBACK. WHY: bundling every npm dependency in every
+      // plugin ZIP is wasteful, and it keeps a plugin from using the packages
+      // the app already installed beside its runtime (node_packages) — so
+      // when the request carries nodeModulesRoot and the plugin's own tree
+      // had no answer, the shim resolves from the store. THE GUARDS, the same
+      // ones the plugin tree gets: bare names only (a relative require stays
+      // inside the plugin by definition), realpath containment inside the
+      // store root so a symlink planted in the store cannot point the load
+      // elsewhere, and the shared module cache. READ-ONLY, full stop: the
+      // shim only ever reads files, and the store is integrity-verified at
+      // INSTALL time (see NodePackageStore); nothing is re-verified per
+      // require, here or for the plugin's own bytes — both are already on
+      // this device.
+      const store = storeRoot();
+      if (store !== null) {
+        const storeCandidate = resolveModule(path.join(store, spec));
+        if (storeCandidate) {
+          const storeReal = realInsideStore(storeCandidate);
+          if (storeReal !== null) return loadResolved(storeReal, spec);
+        }
+      }
       throw new Error(
         "plugin require cannot find module '" + spec + "': it is not one of the allowed " +
-          'built-ins and not a package bundled in the plugin'
+          'built-ins, not a package bundled in the plugin' +
+          (store !== null ? ', and not installed beside the runtime' : '')
       );
     };
   }
@@ -1142,6 +1179,42 @@ function newCall(request, startedAt) {
     const resolved = path.resolve(target);
     const rootPath = root();
     return resolved === rootPath || resolved.indexOf(rootPath + path.sep) === 0;
+  }
+
+  // The store's realpath, or null when there is no store to fall back to —
+  // computed once per call, and false-as-sentinel so a store that is not
+  // there is remembered as absent rather than re-stat'd per require.
+  let storeReal = null;
+  function storeRoot() {
+    if (storeReal === null) {
+      storeReal = false;
+      if (request.nodeModulesRoot) {
+        try {
+          storeReal = fs.realpathSync(request.nodeModulesRoot);
+        } catch (err) {
+          // The store is not on this device (or the caller passed a dead
+          // path): the fallback is closed, and the error says so in words.
+          storeReal = false;
+        }
+      }
+    }
+    return storeReal === false ? null : storeReal;
+  }
+
+  // The containment check against the STORE root, resolved through symlinks
+  // first — the same shape the plugin tree's check is, because a link inside
+  // the store that points elsewhere is exactly the same escape.
+  function realInsideStore(target) {
+    let real;
+    try {
+      real = fs.realpathSync(target);
+    } catch (err) {
+      return null;
+    }
+    const store = storeRoot();
+    return store !== null && (real === store || real.indexOf(store + path.sep) === 0)
+      ? real
+      : null;
   }
 
   function loadFrom(target, spec) {

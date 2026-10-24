@@ -136,6 +136,13 @@ class AgentToolExecutor(
      */
     private val nodePackages: AgentNodePackages? = null,
     /**
+     * The agent's skills store and tool group (`skills`). Null — a caller
+     * that did not build one, a scheduled run's executor among them — leaves
+     * the tool answering honestly rather than pretending a skill was
+     * installed. See [AgentSkillsTools] for what it does and what it gates.
+     */
+    private val skillsTools: AgentSkillsTools? = null,
+    /**
      * The agent's per-site memory, scoped to this turn's profile. Null leaves
      * the tool unavailable rather than writing under the wrong profile.
      */
@@ -260,6 +267,11 @@ class AgentToolExecutor(
                 }
                 appTools.execute(name, argsJson)?.let { return@withContext answer(name, it) }
                 devtoolsTools.execute(name, argsJson)?.let { return@withContext answer(name, it) }
+                // The skills group's own slot, beside the app tools': it
+                // answers null for every name but `skills`, so a chain built
+                // without one falls through to the honest "not available"
+                // below rather than an unknown-tool dead end.
+                skillsTools?.execute(name, argsJson)?.let { return@withContext answer(name, it) }
                 // Measured BEFORE the action so the page can be compared after
                 // it — see [appendEvidence] and [AgentStepVerifier].
                 val before = if (name in MUTATING_PAGE_TOOLS) measurePage() else null
@@ -290,10 +302,15 @@ class AgentToolExecutor(
                     AgentTools.WALLET_APPROVE -> walletTools.approve(str(args, "request_id"))
                     AgentTools.WALLET_REJECT -> walletTools.reject(str(args, "request_id"))
                     AgentTools.WALLET_SWITCH_NETWORK -> walletTools.switchNetwork(str(args, "network_id"))
+                    AgentTools.WALLET_BALANCE -> walletBalance(strOrNull(args, "network_id"))
                     AgentTools.RUN_JS -> runJs(str(args, "script"))
                     AgentTools.COMPUTE_JS -> computeJs(str(args, "script"))
                     AgentTools.NODE_RUN -> runNode(str(args, "script"))
                     AgentTools.NODE_PACKAGES -> runNodePackages(args)
+                    // Reached only when no skills group was wired (a wired
+                    // group answers at the dispatch slot above): the honest
+                    // "not available" instead of an unknown-tool dead end.
+                    AgentTools.SKILLS -> runSkills(argsJson)
                     AgentTools.DATA_TRANSFORM -> dataTransform(args)
                     AgentTools.SITE_MEMORY -> siteMemoryTool(args)
                     AgentTools.SELECT_OPTION -> selectOption(int(args, "ref"), str(args, "value"))
@@ -725,6 +742,27 @@ class AgentToolExecutor(
             ?: return ToolResult(false, "node_run is not available in this run")
         return runtime.run(code)
     }
+
+    /**
+     * Runs the skills group's action for this call. The group carries its own
+     * confirm gate for install/update/remove — the same refuse() chain the
+     * packages branch below uses — so this wrapper only answers the one case
+     * the executor owns: no group wired, no pretend.
+     */
+    private suspend fun runSkills(argsJson: String): ToolResult {
+        val tools = skillsTools
+            ?: return ToolResult(false, "skills is not available in this run")
+        return tools.execute(AgentTools.SKILLS, argsJson)
+            ?: ToolResult(false, "skills did not answer this call")
+    }
+
+    /**
+     * The read-only balance snapshot. No confirmation — it moves nothing —
+     * and the lock is reported rather than worked around. See
+     * [AgentWalletTools.readBalances] for what it does and cannot do.
+     */
+    private suspend fun walletBalance(networkId: String?): ToolResult =
+        walletTools.readBalances(networkId)
 
     /**
      * Manages the packages `node_run` can `require`. Installing reaches the
@@ -1210,7 +1248,9 @@ class AgentToolExecutor(
      */
     private fun bindTo(id: String) {
         tabId = id
-        vm.pinTabForAgent(id)
+        // The CHAT owner slot: a task host pinning its own page rides the
+        // separate "task" slot, so neither can lift the other's tab.
+        vm.pinTabForAgent(BrowserViewModel.PIN_OWNER_CHAT, id)
     }
 
     private suspend fun formatSnapshot(): String? {

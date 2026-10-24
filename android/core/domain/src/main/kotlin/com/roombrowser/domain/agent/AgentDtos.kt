@@ -64,7 +64,17 @@ data class ChatMessage(
      * union, so a provider that cannot see them is a per-gateway answer rather
      * than a serialization error. Null (the default) is omitted by [AgentJson].
      */
-    val images: List<AgentImage>? = null
+    val images: List<AgentImage>? = null,
+    /**
+     * What the provider said this message cost, when it said anything. Set by
+     * the gateway that read the wire; null (the default) is what every gateway
+     * that does not parse usage answers, and what the loop STRIPS before the
+     * message re-enters a request history — a usage block is a response
+     * concept, and echoing it back risks a strict provider refusing the
+     * request over an argument it never asked for. The caller that wants the
+     * number reads it before the loop files the message away.
+     */
+    val usage: TokenUsage? = null
 )
 
 @Serializable
@@ -83,7 +93,9 @@ data class FunctionCall(val name: String, val arguments: String)
 data class ChatResponse(
     val id: String? = null,
     val model: String? = null,
-    val choices: List<RespChoice> = emptyList()
+    val choices: List<RespChoice> = emptyList(),
+    /** `usage` on the non-streaming body; absent on providers that omit it. */
+    val usage: StreamUsage? = null
 ) {
     val firstMessage: ChatMessage?
         get() = choices.firstOrNull()?.message
@@ -102,7 +114,14 @@ data class RespChoice(
 data class StreamChunk(
     val id: String? = null,
     val model: String? = null,
-    val choices: List<StreamChoice> = emptyList()
+    val choices: List<StreamChoice> = emptyList(),
+    /**
+     * `usage` on a streaming chunk. The OpenAI-compatible shape only carries
+     * it when the client asks for `stream_options.include_usage` and not every
+     * provider honours even that, so this is OPTIONAL on purpose: absent is
+     * the normal case, and the estimate fallback lives in the loop, not here.
+     */
+    val usage: StreamUsage? = null
 )
 
 @Serializable

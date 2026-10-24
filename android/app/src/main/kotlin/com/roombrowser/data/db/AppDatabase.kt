@@ -48,7 +48,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         PluginEntity::class,
         ChatPluginEntity::class
     ],
-    version = 18,
+    version = 19,
     exportSchema = true
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -681,6 +681,35 @@ abstract class AppDatabase : RoomDatabase() {
         }
 
         /**
+         * v18 → v19: token accounting on the chat row (agent_sessions.
+         * `input_tokens`/`output_tokens`, cumulative per chat) and the step
+         * list a scheduled run last wrote (ai_tasks.`plan_json`), so the task
+         * list can show a run's live plan without reloading.
+         *
+         * Purely additive ALTER TABLE statements — every existing row reads
+         * as "nothing recorded yet", which is the truth for it. The NOT NULL
+         * columns carry the defaults the entities declare, which is what
+         * Room's schema validation compares after a migration.
+         *
+         * `internal` for the same reason as [MIGRATION_10_11]: the migration
+         * tests execute it directly, since a fresh install creates v19
+         * directly.
+         */
+        internal val MIGRATION_18_19 = object : Migration(18, 19) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    "ALTER TABLE `agent_sessions` ADD COLUMN `input_tokens` INTEGER NOT NULL DEFAULT 0"
+                )
+                db.execSQL(
+                    "ALTER TABLE `agent_sessions` ADD COLUMN `output_tokens` INTEGER NOT NULL DEFAULT 0"
+                )
+                db.execSQL(
+                    "ALTER TABLE `ai_tasks` ADD COLUMN `plan_json` TEXT NOT NULL DEFAULT ''"
+                )
+            }
+        }
+
+        /**
          * Every migration, oldest first — the ONE list. [build] applies it and
          * the migration tests apply it too, so a version bump cannot leave a
          * test registering a subset that stops short of the current version.
@@ -690,7 +719,7 @@ abstract class AppDatabase : RoomDatabase() {
             MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8,
             MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11, MIGRATION_11_12,
             MIGRATION_12_13, MIGRATION_13_14, MIGRATION_14_15, MIGRATION_15_16,
-            MIGRATION_16_17, MIGRATION_17_18
+            MIGRATION_16_17, MIGRATION_17_18, MIGRATION_18_19
         )
 
         @Volatile

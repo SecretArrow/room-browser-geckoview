@@ -398,6 +398,19 @@ interface AgentDao {
     @Query("UPDATE agent_sessions SET plan_json = :plan WHERE id = :id")
     suspend fun setPlan(id: Long, plan: String)
 
+    /**
+     * Adds one turn's token cost onto the chat's cumulative totals, in ONE
+     * statement: the increment is the database's, not the caller's, so two
+     * writers (or a replayed write) cannot lose a turn's numbers to a
+     * read-modify-write race.
+     */
+    @Query(
+        "UPDATE agent_sessions SET " +
+            "input_tokens = input_tokens + :input, " +
+            "output_tokens = output_tokens + :output WHERE id = :id"
+    )
+    suspend fun addTokens(id: Long, input: Long, output: Long)
+
     @Insert
     suspend fun insertSession(entity: AgentSessionEntity): Long
 
@@ -776,6 +789,10 @@ interface AiTaskDao {
 
     @Query("SELECT * FROM ai_tasks WHERE last_run_status = :status AND enabled = 1 ORDER BY last_run_at_ms ASC")
     suspend fun byStatus(status: String): List<AiTaskEntity>
+
+    /** Replaces the step list a run last wrote, as AgentPlan.encode spells it. */
+    @Query("UPDATE ai_tasks SET plan_json = :plan WHERE id = :id")
+    suspend fun setPlan(id: Long, plan: String)
 
     @Query("DELETE FROM ai_tasks WHERE id = :id")
     suspend fun delete(id: Long)

@@ -8,6 +8,7 @@ import com.roombrowser.browser.wallet.WalletEngineApi
 import com.roombrowser.browser.wallet.WalletLockState
 import com.roombrowser.domain.agent.AgentJson
 import com.roombrowser.domain.agent.ToolResult
+import com.roombrowser.domain.wallet.model.BalanceResult
 import com.roombrowser.domain.wallet.model.ChainType
 import com.roombrowser.domain.wallet.model.NetworkConfig
 import com.roombrowser.domain.wallet.model.WalletException
@@ -18,6 +19,9 @@ import kotlinx.serialization.json.contentOrNull
 /**
  * Narrow slice of [WalletEngineApi] so the tools are JVM-testable and usable
  * without the chat UI. Reads are synchronous (StateFlow); mutations suspend.
+ * The balance read is the newest member and the only one that touches the
+ * network ([refreshBalances] fan-outs per account); it is still read-only —
+ * the engine's own send/sign paths are nowhere on this surface.
  */
 interface AgentWalletAccess {
     val lockState: WalletLockState
@@ -26,9 +30,15 @@ interface AgentWalletAccess {
     val activeNetworks: Map<ChainType, NetworkConfig>
     val networks: List<NetworkRecord>
 
+    /** The most recent balance per ACCOUNT id — possibly stale until [refreshBalances] runs. */
+    val balances: Map<String, BalanceResult>
+
     fun decideDappRequest(decision: DappDecision)
 
     suspend fun setActiveNetwork(chainType: ChainType, networkId: String)
+
+    /** Re-fetches every account's balance on its chain's active network; failures land per account. */
+    suspend fun refreshBalances()
 }
 
 class WalletEngineAccess(private val engine: WalletEngineApi) : AgentWalletAccess {
@@ -37,11 +47,14 @@ class WalletEngineAccess(private val engine: WalletEngineApi) : AgentWalletAcces
     override val accounts: List<WalletAccountRecord> get() = engine.accounts.value
     override val activeNetworks: Map<ChainType, NetworkConfig> get() = engine.activeNetworks.value
     override val networks: List<NetworkRecord> get() = engine.networks.value
+    override val balances: Map<String, BalanceResult> get() = engine.balances.value
 
     override fun decideDappRequest(decision: DappDecision) = engine.decideDappRequest(decision)
 
     override suspend fun setActiveNetwork(chainType: ChainType, networkId: String) =
         engine.setActiveNetwork(chainType, networkId)
+
+    override suspend fun refreshBalances() = engine.refreshBalances()
 }
 
 /**
@@ -144,6 +157,86 @@ class AgentWalletTools(
             true,
             "Rejected ${WalletRequestFormat.summary(request)}. The site received a " +
                 "user-rejected error and nothing was signed or sent."
+        )
+    }
+
+    /**
+     * The read-only balance snapshot behind `wallet_balance`.
+     *
+     * The wallet's lock is checked FIRST and reported, never worked around:
+     * a locked wallet has no balances to show, and "unlock it and ask again"
+     * is the honest answer. The refresh runs the engine's own per-account
+     * fan-out, so one account's RPC failure is that account's error row —
+     * surfaced as failed, never smoothed over into a zero.
+     *
+     * This is the whole of the tool's reach: it signs nothing, sends nothing,
+     * and cannot touch the request queue. Every transaction still travels
+     * the surfaced-request + wallet-approval lane.
+     */
+    suspend fun readBalances(networkId: String?): ToolResult {
+        val w = wallet()
+        if (w.lockState == WalletLockState.LOCKED) {
+            return ToolResult(
+                false,
+                "the wallet is locked — unlock it on the Wallet screen first, then ask again"
+            )
+        }
+        val accounts = w.accounts
+        if (accounts.isEmpty()) {
+            return ToolResult(
+                false,
+                "the wallet has no accounts yet — create or import one on the Wallet screen"
+            )
+        }
+        // A filter on a network the wallet does not know is answered, not
+        // smoothed into "no accounts" — the model needs the known ids to retry.
+        val wanted = networkId?.takeIf { it.isNotBlank() }
+        if (wanted != null && w.networks.none { it.config.id == wanted }) {
+            val known = w.networks.joinToString(" ") { it.config.id }
+            return ToolResult(
+                false,
+                "unknown network '$wanted' — call wallet_state for the ids the wallet knows " +
+                    "($known)"
+            )
+        }
+        val selected = if (wanted == null) {
+            accounts
+        } else {
+            accounts.filter { w.activeNetworks[it.chainType]?.id == wanted }
+        }
+        if (selected.isEmpty()) {
+            return ToolResult(
+                false,
+                "no account's active network is '$wanted' — balances are read on each chain's " +
+                    "ACTIVE network; switch the chain with wallet_switch_network first, or read " +
+                    "every account by omitting network_id"
+            )
+        }
+        runCatching { w.refreshBalances() }.getOrElse { err ->
+            return ToolResult(
+                false,
+                "the balance refresh failed: ${err.message ?: err.javaClass.simpleName}"
+            )
+        }
+        val balances = w.balances
+        val lines = selected.joinToString("\n") { account ->
+            val network = w.activeNetworks[account.chainType]
+            val balance = balances[account.id]
+            val balanceText = when (balance) {
+                is BalanceResult.Ok -> "${balance.amount} ${balance.symbol}"
+                is BalanceResult.Error -> "BALANCE FETCH FAILED: ${balance.message}"
+                null -> "no balance on record (the fetch returned nothing for this account)"
+            }
+            "- ${account.chainType.displayName} · ${network?.name ?: "(no active network)"} " +
+                "(${network?.id ?: "?"}) · ${account.label} · ${account.address}\n" +
+                "  $balanceText"
+        }
+        return ToolResult(
+            true,
+            "Balances on each chain's active network (${selected.size} account(s), refreshed just now):\n" +
+                "$lines\n\n" +
+                "Reading is all this tool does — a transaction or signature still goes through " +
+                "the wallet approval sheet, where the user confirms the full summary."
         )
     }
 

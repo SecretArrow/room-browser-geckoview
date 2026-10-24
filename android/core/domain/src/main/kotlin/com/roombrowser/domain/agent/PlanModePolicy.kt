@@ -66,7 +66,13 @@ object PlanModePolicy {
         // Types the code into the page's login form.
         AgentTools.APP_2FA to setOf("fill"),
         AgentTools.APP_SHIELDS to setOf("toggle", "clear_site_data"),
-        AgentTools.APP_SITE_PERMISSION to setOf("set")
+        AgentTools.APP_SITE_PERMISSION to setOf("set"),
+        // A skill install downloads from GitHub and writes under the app's
+        // data directory, and a remove deletes what is there — carried-out
+        // work, which is exactly what this mode does not do. The read actions
+        // (list, status) and the enable/disable flag stay available: reporting
+        // on what is installed is the mode's whole business.
+        AgentTools.SKILLS to setOf("install", "update", "remove")
     )
 
     /**

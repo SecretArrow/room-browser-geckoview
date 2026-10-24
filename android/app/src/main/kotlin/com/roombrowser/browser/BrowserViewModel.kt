@@ -349,11 +349,25 @@ class BrowserViewModel(
     val devtools = com.roombrowser.devtools.DeveloperToolsManager()
 
     /**
-     * The tab an in-flight agent turn is working on, or null when no turn is
-     * running. See [pinTabForAgent] for why it is held here rather than in
-     * the controller.
+     * Tabs owned by agent work, with the owner that pinned each: "chat" is a
+     * running chat turn's tab, "task" is a scheduled run's visible page. A MAP
+     * and not a single slot because the two writers used to share one nullable
+     * field — a task host's close() would null the slot while a chat turn was
+     * mid-run, un-pinning the turn's tab against LRU eviction. Per-owner pins
+     * cannot lift each other's tab, and [evictStaleWebViews] consults ALL of
+     * them, so both kinds of work are safe under the live-engine budget at the
+     * same time. See [pinTabForAgent].
      */
-    private var agentTabId: String? = null
+    private val agentPins = mutableMapOf<String, String>()
+
+    /**
+     * The tabs a scheduled run's visible page currently occupies. The panel's
+     * tab-follow reads this: a task's tab is open so the run's page really
+     * renders, and the panel must neither re-bind a chat onto it nor wipe the
+     * chat the user was reading when the run takes the screen — see
+     * [BrowserAgentController.onActiveTabChanged], which refuses these ids.
+     */
+    private val taskTabIds = mutableSetOf<String>()
 
     /** Latest page-load event (see [PageEvent]) — for the agent's nav waiting. */
     @Volatile
@@ -1676,9 +1690,44 @@ class BrowserViewModel(
 
     // ---------- Tabs ----------
 
-    suspend fun openNewTab(url: String = "about:home", isPrivate: Boolean = false) {
+    suspend fun openNewTab(
+        url: String = "about:home",
+        isPrivate: Boolean = false,
+        /**
+         * False opens the tab WITHOUT taking the screen: the row lands in the
+         * tab strip, but [activeTabId]/[activeSession]/[pageState] stay with
+         * the tab the user is reading, and the URL loads when the tab is
+         * first selected (the same lazy path a restored background tab takes
+         * — a load started on a detached view wedges, so a background tab is
+         * never loaded here, and it has no engine until then).
+         * Kept for callers that want a tab prepared without a hijack; the
+         * visible-mode task host does NOT use it — its run's navigation tools
+         * wait for the bound tab to be ACTIVE before moving the page, so a
+         * background task tab would wedge every navigate. See the tagging
+         * route documented on [markTaskTab].
+         */
+        activate: Boolean = true,
+        /**
+         * Called with the new tab's id BEFORE [activeTabId] moves to it, in
+         * the same call frame. This is the seam a caller that must TAG the
+         * tab uses (a task's page: the panel's tab-follow has to refuse the
+         * id from the first moment it is active, and a tag set after this
+         * function returns would lose the race against the snapshotFlow that
+         * watches [activeTabId]).
+         */
+        onCreated: (String) -> Unit = {}
+    ) {
         val entity = browserRepo.newTab(profileId, url = url, title = "", isPrivate = isPrivate)
         tabs = browserRepo.openTabs(profileId)
+        if (!activate) {
+            // A background tab carries no live surface: nothing to point
+            // [pageState]/[activeSession] at, and nothing to load yet. Its
+            // engine is created lazily by [engineFor] on first selection.
+            onCreated(entity.id)
+            evictStaleWebViews(activeTabId ?: entity.id)
+            return
+        }
+        onCreated(entity.id)
         activeTabId = entity.id
         pageState = pageState.copy(
             isPrivate = isPrivate,
@@ -1726,6 +1775,36 @@ class BrowserViewModel(
 
     // ------------------------------------------------------ agent tab binding
 
+    // The route a task's tab takes is TAGGING, not a background open, and the
+    // reason is the run's own tools: a visible-mode scheduled run drives its
+    // page through [AgentToolExecutor], whose navigation tools wait for the
+    // bound tab to be ACTIVE before moving it (a load on a detached view
+    // wedges) — an unattended run on a background tab would wedge on its first
+    // navigate and never recover. So the task tab takes the screen exactly as
+    // it always did, and what changed is the PANEL's side: the tab is TAGGED
+    // (see [markTaskTab]) for as long as the run holds it, and the panel's
+    // tab-follow refuses tagged ids — per-session chat states make the tab
+    // switch harmless now, so the only thing to prevent is the pointless
+    // rebind onto a tab whose conversation is a run's, not the user's.
+
+    /** Whether [id] is a tab a scheduled run's visible page currently holds. */
+    fun isTaskTab(id: String): Boolean = id in taskTabIds
+
+    /**
+     * Marks [id] as a task's tab, from just before the run opens it until its
+     * [com.roombrowser.agent.AiTaskPage.close] — the task page's whole
+     * lifetime, so the tag can never outlive the page that asked for it (the
+     * close path clears it, as does [closeTab] for a tab closed under a run).
+     */
+    fun markTaskTab(id: String) {
+        taskTabIds.add(id)
+    }
+
+    /** Ends [id]'s task tagging. A no-op when the id was not tagged. */
+    fun clearTaskTab(id: String) {
+        taskTabIds.remove(id)
+    }
+
     /**
      * The live engine of [id]'s tab, or null when that tab holds none — the
      * start page, an LRU-evicted background tab, or a tab since closed.
@@ -1744,17 +1823,52 @@ class BrowserViewModel(
     fun tabExists(id: String): Boolean = tabs.any { it.id == id }
 
     /**
-     * Pins [id] against LRU eviction, or clears the pin when null.
+     * Pins [tabId] against LRU eviction FOR [owner] — one owner, one tab,
+     * replaceable by that same owner alone. Owners are "chat" (a running
+     * turn's tab, [PIN_OWNER_CHAT]) and "task" (a scheduled run's page,
+     * [PIN_OWNER_TASK]); see [agentPins] for why these are slots and not one
+     * shared field.
      *
      * [MAX_LIVE_WEBVIEWS] is a memory budget and a background tab is its
      * first casualty — which is exactly what an agent's tab is while the
      * agent works in the background and the user browses elsewhere. Evicting
      * it mid-turn destroys the page the turn is reasoning about, so the
-     * budget yields instead: one tab is held above it until the turn ends.
-     * The budget is a bound, not a promise, and a turn is worth one engine.
+     * budget yields instead: one tab per owner is held above it until the
+     * owner lifts its pin. The budget is a bound, not a promise, and a turn
+     * is worth one engine.
      */
-    fun pinTabForAgent(id: String?) {
-        agentTabId = id
+    fun pinTabForAgent(owner: String, tabId: String) {
+        agentPins[owner] = tabId
+    }
+
+    /** Lifts [owner]'s pin. A no-op when the owner holds none. */
+    fun unpinTab(owner: String) {
+        agentPins.remove(owner)
+    }
+
+    /**
+     * Every tab any agent owner currently holds, for [evictStaleWebViews] —
+     * ALL pins protect their tabs, whoever raised them.
+     */
+    fun pinnedAgentTabs(): Set<String> = agentPins.values.toSet()
+
+    /**
+     * The executor's own re-bind ([com.roombrowser.agent.AgentToolExecutor.bindTo]):
+     * the AGENT moved its work to a tab of its own choosing, and the pin must
+     * follow. One-arg because the executor is built per run and cannot know
+     * which owner it serves; every pin naming a different tab follows the
+     * work, and each owner's own end-of-work unpin ([unpinTab]) then lifts
+     * exactly the slot it raised — nothing leaks. With a chat turn and a
+     * scheduled run both pinned at once, the worst case is one owner's
+     * ORIGINAL tab losing its protection until that owner's cleanup, which
+     * the eviction path absorbs (state is saved before any destroy); in the
+     * one-running-work-at-a-time reality this is exactly "the turn's pin
+     * follows the turn", the semantic the old single slot gave by accident.
+     */
+    fun pinTabForAgent(tabId: String) {
+        for ((owner, pinned) in agentPins) {
+            if (pinned != tabId) agentPins[owner] = tabId
+        }
     }
 
     fun selectTab(id: String) {
@@ -1890,6 +2004,12 @@ class BrowserViewModel(
             }
             tabManager.remove(id)
             browserRepo.closeTab(id)
+            // A pin or tag naming a closed tab is memory for a ghost: the pin
+            // would exempt nothing (the tab is gone) but the TAG would make
+            // the panel refuse the id forever, and a run's tab closed by the
+            // user mid-run must not leave either behind.
+            agentPins.entries.removeAll { it.value == id }
+            taskTabIds.remove(id)
             val remaining = browserRepo.openTabs(profileId)
             tabs = remaining
             if (activeTabId == id) {
@@ -1954,6 +2074,13 @@ class BrowserViewModel(
                 }
                 tabManager.remove(tab.id)
                 browserRepo.closeTab(tab.id)
+                // Ghost pins/tags outlive nothing: same rule closeTab applies
+                // to a single tab, applied per swept tab (a tag left behind
+                // would make the panel refuse a future tab's id forever — ids
+                // are unique per row, but the set is in-memory and a REOPENED
+                // tab carries its old row id).
+                agentPins.entries.removeAll { it.value == tab.id }
+                taskTabIds.remove(tab.id)
             }
             tabs = browserRepo.openTabs(profileId)
         }
@@ -2143,10 +2270,11 @@ class BrowserViewModel(
         if (live.size <= MAX_LIVE_WEBVIEWS) return
         val excess = live.size - MAX_LIVE_WEBVIEWS
         tabManager.lruVictims(keepId)
-            // The agent's tab is never a candidate: an in-flight turn owns the
-            // page in it, and destroying that engine mid-turn is the turn
-            // losing the page it was reading. See [pinTabForAgent].
-            .filter { it.id != agentTabId }
+            // Every agent owner's tab is never a candidate: a chat turn or a
+            // scheduled run may own the page in it, and destroying that engine
+            // mid-run is the work losing the page it was reading. See
+            // [pinTabForAgent] and [pinnedAgentTabs].
+            .filter { it.id !in pinnedAgentTabs() }
             .take(excess)
             .forEach { victim ->
                 victim.engine?.let { engine ->
@@ -2175,10 +2303,12 @@ class BrowserViewModel(
             session.engine?.let { destroyEngineQuiet(it) }
         }
         activeSession = null
-        // The pin names a tab of the profile being torn down; a leftover pin
-        // would hold a dead id and silently exempt a LIVE tab of the next
-        // profile from eviction.
-        agentTabId = null
+        // The pins and tags name tabs of the profile being torn down; a
+        // leftover pin would hold a dead id and silently exempt a LIVE tab of
+        // the next profile from eviction, and a leftover tag would make the
+        // panel refuse a perfectly ordinary tab of it.
+        agentPins.clear()
+        taskTabIds.clear()
     }
 
     /** Re-applies profile settings (JS, UA, zoom, cookies…) to EVERY live
@@ -3656,6 +3786,15 @@ class BrowserViewModel(
         /** Live per-tab engine budget — beyond this, oldest background
          *  tabs lose their engine (rebuilt lazily on re-selection). */
         const val MAX_LIVE_WEBVIEWS = 4
+
+        /**
+         * The owners a [pinTabForAgent] pin can belong to. One tab per owner:
+         * a chat turn and a scheduled run may hold two different tabs at the
+         * same time, and neither may lift the other's pin (the old single
+         * slot let a task's close() un-pin a running turn's tab).
+         */
+        const val PIN_OWNER_CHAT = "chat"
+        const val PIN_OWNER_TASK = "task"
 
         /** A scan the user is watching may take longer than the one a bind waits on. */
         const val FINDER_SWEEP_BUDGET_MS = 25_000L

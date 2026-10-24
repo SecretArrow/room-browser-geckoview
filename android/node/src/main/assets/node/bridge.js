@@ -562,6 +562,11 @@ function handle(connection, line) {
           title: command.title,
           zagentsVersion: command.zagentsVersion,
           zagentsName: command.zagentsName,
+          // The npm store's install root, when the request carried one: the
+          // host's require shim falls back to it for packages the plugin did
+          // not bundle (read-only, contained). Absent keeps the shim's old
+          // reach — bundled packages and built-ins, nothing else.
+          nodeModulesRoot: command.nodeModulesRoot,
           // The reverse channels, one per command the family speaks: the
           // generation channel room.agent.generate (and a module's
           // zagents.agent.compose) rides, and the form channel

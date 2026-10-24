@@ -269,6 +269,16 @@ data class AgentSessionEntity(
      * shown to the model again on the next turn. A fresh chat starts empty.
      */
     @ColumnInfo(name = "plan_json", defaultValue = "") val planJson: String = "",
+    /**
+     * Cumulative token cost of this chat, as the provider reported it (or the
+     * documented chars/4 estimate when it did not — see TokenUsageEstimate).
+     * Written INCREMENTALLY by the turn's end ([AgentDao.addTokens]) rather
+     * than rewritten from a cached total: the row is the one copy that
+     * survives the process, and a row read by the export or the token dialog
+     * must never depend on a controller being alive.
+     */
+    @ColumnInfo(name = "input_tokens", defaultValue = "0") val inputTokens: Long = 0,
+    @ColumnInfo(name = "output_tokens", defaultValue = "0") val outputTokens: Long = 0,
     @ColumnInfo(name = "created_at") val createdAt: Long,
     @ColumnInfo(name = "updated_at") val updatedAt: Long
 )
@@ -518,6 +528,14 @@ data class AiTaskEntity(
     /** AiTaskRunConfig JSON: which provider, which model, which surface. Empty
      *  on rows written before the choice existed — those read as AUTO. */
     @ColumnInfo(name = "run_config_json", defaultValue = "") val runConfigJson: String = "",
+    /**
+     * The step list the run last wrote with `plan`, as AgentPlan.encode spells
+     * it; "" when it has none. It lives on the task row because a run's only
+     * transcript IS this row: the task list decodes it and shows the live step
+     * status without any reload — the Room Flow the list already observes
+     * re-emits the row the moment the runner writes the list.
+     */
+    @ColumnInfo(name = "plan_json", defaultValue = "") val planJson: String = "",
     @ColumnInfo(name = "enabled") val enabled: Boolean = true,
     @ColumnInfo(name = "last_run_at_ms") val lastRunAtMs: Long? = null,
     @ColumnInfo(name = "last_run_status") val lastRunStatus: String = "",

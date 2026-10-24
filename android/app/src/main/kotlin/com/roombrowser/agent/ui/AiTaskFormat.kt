@@ -1,6 +1,7 @@
 package com.roombrowser.agent.ui
 
 import com.roombrowser.data.db.AiTaskEntity
+import com.roombrowser.domain.agent.AgentPlan
 import com.roombrowser.domain.agent.UntrustedContent
 import com.roombrowser.domain.task.AiTaskRunStatus
 import com.roombrowser.domain.task.ScheduleKind
@@ -72,6 +73,31 @@ fun lastRunText(task: AiTaskEntity, zone: ZoneId): String? {
         AiTaskRunStatus.DEFERRED -> "Last attempt $whenText: ${summary ?: "deferred"}"
         AiTaskRunStatus.FAILED -> "Last run $whenText failed: ${summary ?: "unknown error"}"
         null -> "Last run $whenText"
+    }
+}
+
+/**
+ * The plan a run last committed to, as one compact live line: "Plan: 2/5 done
+ * · 1 running". This is how a scheduled run's progress reaches the task list
+ * in real time — the runner overwrites [AiTaskEntity.planJson] on every
+ * PlanUpdated event, the list re-reads the row through Room's reactive Flow,
+ * and this renders whatever is current, with no polling and no reload.
+ *
+ * null when the row carries no plan (never run with plan mode, or a pre-plan
+ * row): the line is then simply absent rather than a permanent "0/0".
+ */
+fun taskPlanText(task: AiTaskEntity): String? {
+    val raw = task.planJson
+    if (raw.isBlank()) return null
+    val items = AgentPlan.decode(raw)
+    if (items.isEmpty()) return null
+    val done = items.count { it.status == AgentPlan.Status.DONE }
+    val running = items.count { it.status == AgentPlan.Status.IN_PROGRESS }
+    val failed = items.count { it.status == AgentPlan.Status.FAILED }
+    return buildString {
+        append("Plan: $done/${items.size} done")
+        if (running > 0) append(" · $running running")
+        if (failed > 0) append(" · $failed failed")
     }
 }
 

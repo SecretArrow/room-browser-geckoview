@@ -269,6 +269,19 @@ private fun TaskRow(
                 overflow = TextOverflow.Ellipsis
             )
         }
+        // The run's live plan, when it committed one: the runner rewrites the
+        // row's plan_json on every step transition, this list re-reads rows
+        // through Room's reactive Flow, so the line moves as the run works —
+        // no reload, no polling. Absent entirely for a task with no plan.
+        taskPlanText(task)?.let {
+            Text(
+                it,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.primary,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+        }
     }
 }
 

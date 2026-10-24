@@ -1,6 +1,7 @@
 package com.roombrowser.agent
 
 import com.roombrowser.domain.agent.SecretRedaction
+import com.roombrowser.domain.agent.TokenUsage
 import com.roombrowser.domain.agent.UntrustedContent
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -45,7 +46,9 @@ object AgentChatExport {
         val title: String,
         val model: String,
         val updatedAt: Long,
-        val messages: List<Message>
+        val messages: List<Message>,
+        val inputTokens: Long = 0,
+        val outputTokens: Long = 0
     )
 
     /**
@@ -78,6 +81,11 @@ object AgentChatExport {
         appendLine("Profile: ${header.profileLabel}")
         appendLine("Exported: ${stamp(header.exportedAt)}")
         appendLine("Chats: ${sessions.size}   Messages: ${sessions.sumOf { it.messages.size }}")
+        // Document-level totals: the sum every per-chat line rolls up to.
+        appendLine(
+            "Tokens total: ${TokenUsage.count(sessions.sumOf { it.inputTokens })} in · " +
+                "${TokenUsage.count(sessions.sumOf { it.outputTokens })} out"
+        )
         appendLine(
             "Providers: " +
                 (header.providers.takeIf { it.isNotEmpty() }?.joinToString(", ") ?: "(none configured)")
@@ -95,6 +103,12 @@ object AgentChatExport {
             appendLine()
             appendLine(RULE)
             appendLine("${session.title}  ·  ${session.model}  ·  updated ${stamp(session.updatedAt)}")
+            // Token cost rides the title line's block: it is a per-chat total
+            // the user compares across chats, not a per-message detail.
+            appendLine(
+                "Tokens: ${TokenUsage.count(session.inputTokens)} in · " +
+                    "${TokenUsage.count(session.outputTokens)} out"
+            )
             appendLine(RULE)
             if (session.messages.isEmpty()) {
                 appendLine("(no messages)")

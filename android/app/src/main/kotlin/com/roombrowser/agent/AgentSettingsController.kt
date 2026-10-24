@@ -221,7 +221,9 @@ class AgentSettingsController(
                     title = session.title,
                     model = session.model,
                     updatedAt = session.updatedAt,
-                    messages = messages
+                    messages = messages,
+                    inputTokens = session.inputTokens,
+                    outputTokens = session.outputTokens
                 )
             )
         }
