@@ -343,8 +343,10 @@ class SkillInstaller(
      * fallback path always had.
      */
     private fun headShaOf(spec: SkillSpec, branch: String): String? {
+        // The charset NAME overload: the Charset overload is API 33+, and this
+        // build's minSdk is 28.
         val url = ("https://api.github.com/repos/${spec.owner}/${spec.repo}/branches/" +
-            java.net.URLEncoder.encode(branch, Charsets.UTF_8)).toHttpUrl()
+            java.net.URLEncoder.encode(branch, "UTF-8")).toHttpUrl()
         val response = try {
             fetch.get(url, ACCEPT_GITHUB_JSON)
         } catch (err: Exception) {

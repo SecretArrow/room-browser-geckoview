@@ -32,15 +32,19 @@ data class SkillSpec(
         append("/tar.gz/refs/heads/")
         // A branch may itself contain slashes (feature/x); each SEGMENT is
         // encoded, never the separators, or the URL would name the wrong ref.
-        // URLEncoder is form encoding, so its '+' stands in for a space a
-        // branch name cannot carry anyway; a percent is what the path wants.
-        append(
-            branch.split('/').joinToString("/") { segment ->
-                java.net.URLEncoder.encode(segment, Charsets.UTF_8).replace("+", "%20")
-            }
-        )
+        append(branch.split('/').joinToString("/") { segment -> urlEncode(segment) })
     }
 }
+
+/**
+ * Percent-safe encoding for ONE URL path segment. URLEncoder is form
+ * encoding, so its '+' stands in for a space — swapped for the percent a
+ * path wants — and the charset NAME overload is the one this app's minSdk
+ * can call: the Charset overload arrived at API 33 and lint rightly fails
+ * it on a minSdk-28 build.
+ */
+private fun urlEncode(segment: String): String =
+    java.net.URLEncoder.encode(segment, "UTF-8").replace("+", "%20")
 
 /** What [SkillSpecs.parse] produced: a usable spec, or the reason it refused. */
 sealed class SkillSpecParse {
@@ -263,9 +267,6 @@ object SkillSpecs {
         val capped = if (collapsed.length > 64) collapsed.take(64).trimEnd('-') else collapsed
         return capped.ifEmpty { "skill" }
     }
-
-    private fun urlEncode(segment: String): String =
-        java.net.URLEncoder.encode(segment, Charsets.UTF_8).replace("+", "%20")
 }
 
 /**
