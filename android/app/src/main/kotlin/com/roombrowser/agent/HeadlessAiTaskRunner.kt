@@ -10,8 +10,8 @@ import com.roombrowser.data.repo.runConfig
 import com.roombrowser.di.AppGraph
 import com.roombrowser.domain.agent.AgentConfig
 import com.roombrowser.domain.agent.AgentEvent
-import com.roombrowser.domain.agent.AgentPlan
 import com.roombrowser.domain.agent.AgentGateway
+import com.roombrowser.domain.agent.AgentPlan
 import com.roombrowser.domain.agent.AgentLoop
 import com.roombrowser.domain.agent.AgentPrompts
 import com.roombrowser.domain.agent.AgentVisionSupport
