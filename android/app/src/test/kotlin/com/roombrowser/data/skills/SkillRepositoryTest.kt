@@ -2,7 +2,6 @@ package com.roombrowser.data.skills
 
 import com.google.common.truth.Truth.assertThat
 import com.roombrowser.data.db.AgentSkillDao
-import com.roombrowser.data.db.AgentSkillEntity as Row
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.runBlocking
@@ -10,6 +9,7 @@ import okhttp3.HttpUrl
 import org.junit.Test
 import java.io.File
 import java.nio.file.Files
+import com.roombrowser.data.db.AgentSkillEntity as Row
 
 /**
  * The repository's read-side contract, on a temp directory and a fake DAO:

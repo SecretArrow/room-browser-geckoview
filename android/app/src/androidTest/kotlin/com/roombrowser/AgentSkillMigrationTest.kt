@@ -167,7 +167,7 @@ class AgentSkillMigrationTest {
         //    back from the file — the schema Room itself validated, stated
         //    explicitly rather than inferred.
         assertThat(skillColumns()).containsExactlyEntriesIn(expectedSkillColumns)
-        assertThat(indexNames()).containsAtLeast("index_agent_skills_skill_id")
+        assertThat(indexNames()).containsExactly("index_agent_skills_skill_id")
     }
 
     private fun openRaw(): SQLiteDatabase = SQLiteDatabase.openDatabase(
