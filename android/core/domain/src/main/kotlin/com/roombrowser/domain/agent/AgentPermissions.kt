@@ -35,11 +35,23 @@ object AgentPermissions {
      */
     const val AGENT_PLUGINS = "agent.plugins"
 
+    /**
+     * Installing, reading, following and removing external skills (SKILL.md
+     * packages fetched from git repositories). All four skills tools ride
+     * this one axis, exactly as NODE_RUN and NODE_PACKAGES share
+     * [AGENT_NODE]: the consent being granted is to the whole skills surface —
+     * the network fetch at install time, the files it writes, and the fact
+     * that the skill's instructions reach the model's prompt. There is no
+     * honest use of the read-only tools without the install that stocked
+     * them, so splitting the axis would only make the refusal vaguer.
+     */
+    const val AGENT_SKILLS = "agent.skills"
+
     /** Every permission this build knows, for the settings screen and the tests. */
     val ALL = setOf(
         DEVTOOLS_READ, DEVTOOLS_NETWORK, DEVTOOLS_STORAGE, DEVTOOLS_COOKIES,
         DEVTOOLS_SECURITY, EXPORT_DIAGNOSTICS, AGENT_COMPUTE, AGENT_NODE,
-        AGENT_PLUGINS
+        AGENT_PLUGINS, AGENT_SKILLS
     )
 
     /**
@@ -85,6 +97,13 @@ object AgentPermissions {
         AgentTools.NODE_RUN,
         AgentTools.NODE_PACKAGES -> setOf(AGENT_NODE)
 
+        // The whole skills surface on one switch, list and read included —
+        // see [AGENT_SKILLS] for why the axis is not split.
+        AgentTools.SKILLS_LIST,
+        AgentTools.SKILLS_INSTALL,
+        AgentTools.SKILLS_READ,
+        AgentTools.SKILLS_REMOVE -> setOf(AGENT_SKILLS)
+
         else -> emptySet()
     }
 
@@ -111,6 +130,7 @@ object AgentPermissions {
         AGENT_COMPUTE -> "Compute in a scratchpad"
         AGENT_NODE -> "Run JavaScript in the embedded Node runtime"
         AGENT_PLUGINS -> "Plugin tools"
+        AGENT_SKILLS -> "Install and use external skills"
         else -> permission
     }
 
@@ -134,6 +154,8 @@ object AgentPermissions {
             "Lets the agent run a JavaScript program in the Node.js runtime embedded in this app, with Node's own APIs behind it: it can reach the network, write files in this profile's own storage and use packages you installed. It runs in a process of its own, but that process shares this app's identity and data directory, so a program that means harm is not contained by it. Every request it makes carries this profile's user agent."
         AGENT_PLUGINS ->
             "Lets the agent call the tools a chat plugin registered in this chat. The plugin's code runs in the embedded Node runtime under the app's own identity — it is not a security boundary — and its output is fenced as untrusted data before the model reads it. Which plugins exist is a per-chat choice, made in the agent panel with their permissions spelled out."
+        AGENT_SKILLS ->
+            "Lets the agent install skills from GitHub repositories (a skill is a SKILL.md plus reference files), read them, follow their instructions in chats and remove them again. Installing fetches from the network and writes into the app's data directory; the skill's instructions then reach the model's system prompt, so treat an install like letting a stranger hand you a playbook. Nothing from a skill is ever executed, and npm packages a skill declares are installed only through the Node runtime's own confirmed path."
         else -> permission
     }
 }

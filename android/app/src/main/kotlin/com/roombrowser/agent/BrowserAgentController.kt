@@ -429,6 +429,13 @@ class BrowserAgentController(
         private set
 
     /**
+     * Whether the plan panel sheet is on screen. ONLY a user toggle flips it
+     * (the header button, the sheet's own dismissal); chat switches, plan
+     * updates, running turns and recompositions must never mutate it.
+     */
+    var planPanelOpen by mutableStateOf(false)
+
+    /**
      * Whether the DB holds transcript rows older than the ones [entries]
      * currently shows. The panel turns exactly this into its "load older"
      * affordance, so a chat under one window renders an item list with
@@ -1444,6 +1451,10 @@ class BrowserAgentController(
                 scratchpad = pad,
                 nodeRuntime = AgentNodeRuntime(appContext, vm.profile),
                 nodePackages = AgentNodePackages(appContext),
+                // The skills tools ride the same process-wide surface the /skills
+                // chat commands and the skills screen share — one repository, one
+                // fetch transport, built lazily inside (see AgentSkillsTools).
+                skills = AgentSkillsTools.access(appContext),
                 onPause = { state -> applyPauseState(state) },
                 awaitChallengeResume = { awaitChallengeDone() },
                 visionUnsupportedReason = {
@@ -1655,7 +1666,10 @@ class BrowserAgentController(
             // them — so the model knows what else runs in the conversation
             // and treats its messages as data; a chat with none adds nothing,
             // and its prompt is byte-identical to the pre-plugin one.
-            val prompt = modePrompt + pluginContextAddition(sessionId)
+            // The enabled skills follow the same pattern one block later:
+            // a chat with none enabled adds nothing at all, so the prompt is
+            // byte-identical to the pre-skills one whenever it should be.
+            val prompt = modePrompt + pluginContextAddition(sessionId) + skillsContextAddition()
             val config = com.roombrowser.domain.agent.AgentConfig(
                 model = model,
                 maxSteps = settings.maxSteps,
@@ -1777,16 +1791,31 @@ class BrowserAgentController(
                         // The model sometimes copies the fence's frame back out
                         // of the tool result it just read.
                         val answer = UntrustedContent.stripMarkers(event.text)
+                        // The row is written BEFORE the entry list updates so
+                        // its id exists by the time the usage recorder runs:
+                        // the provider's reported counts land on exactly the
+                        // row this answer produced, never on a guess at which
+                        // row that is. A turn with no report writes the row
+                        // with null columns and records nothing.
+                        val answerRowId = repo.addMessage(sessionId, "assistant", answer)
+                        val reportedUsage = event.usage
                         // The answer is the bubble the user watched appear, so
                         // it lands in it rather than beside it.
                         entries = AgentTranscript.answer(
                             entries = entries,
                             openIndex = streamingIndex,
                             answer = answer,
-                            at = System.currentTimeMillis()
+                            at = System.currentTimeMillis(),
+                            usage = reportedUsage,
+                            recordUsage = { usage ->
+                                repo.setMessageUsage(
+                                    answerRowId,
+                                    usage.promptTokens,
+                                    usage.completionTokens
+                                )
+                            }
                         )
                         streamingIndex = -1
-                        repo.addMessage(sessionId, "assistant", answer)
                         repo.touchSession(sessionId)
                         setStatus(null)
                     }
@@ -1935,6 +1964,18 @@ class BrowserAgentController(
         AgentPluginCatalog.systemPromptAddition(
             runCatching { pluginCatalog.sessionPlugins(sessionId) }.getOrDefault(emptyList())
         )
+
+    /**
+     * The system-prompt addition for the ENABLED skills — name, description
+     * and SKILL.md body per skill, worded and capped by the repository's own
+     * [SkillRepository.skillsPromptBlock]. Empty when no skill is enabled, so
+     * a chat without skills keeps a byte-identical prompt — the same contract
+     * [pluginContextAddition] holds for plugins. A read failure is an empty
+     * string rather than a broken turn: the skills block is an addition, and
+     * the turn must not die for want of an addition.
+     */
+    private suspend fun skillsContextAddition(): String =
+        runCatching { AgentSkillsTools.access(appContext).promptBlock() }.getOrNull().orEmpty()
 
     /**
      * The transcript as a `chat.context` grant reads it: the chat's last

@@ -4,6 +4,7 @@ import com.roombrowser.domain.agent.AgentClientIdentity
 import com.roombrowser.domain.agent.AgentGateway
 import com.roombrowser.domain.agent.AgentHttpException
 import com.roombrowser.domain.agent.AgentJson
+import com.roombrowser.domain.agent.AgentUsage
 import com.roombrowser.domain.agent.AgentVisionRequest
 import com.roombrowser.domain.agent.ChatMessage
 import com.roombrowser.domain.agent.ChatRequest
@@ -118,6 +119,17 @@ class OkHttpAgentGateway(
                 val line = reader.readLine() ?: break
                 val payload = parser.feed(line) ?: continue
                 if (payload == "[DONE]") break
+                // The final chunk (empty choices + a `usage` object) is where
+                // an OpenAI-shaped provider reports the turn's token counts,
+                // when it reports at all — the request asked for it via
+                // stream_options.include_usage. The cheap contains() probe
+                // keeps this free for every token chunk; a payload that only
+                // mentions the word parses to null and costs one decode.
+                if (payload.contains("\"usage\"")) {
+                    AgentUsage.fromOpenAiChunk(payload)?.let {
+                        events(StreamEvent.Usage(it.promptTokens, it.completionTokens))
+                    }
+                }
                 val chunk = runCatching {
                     AgentJson.decodeFromString(StreamChunk.serializer(), payload)
                 }.getOrNull() ?: continue
@@ -173,6 +185,11 @@ class OkHttpAgentGateway(
             AgentJson.decodeFromString(ChatResponse.serializer(), text).firstMessage
         }.getOrNull() ?: ChatMessage(role = "assistant", content = "")
         message.content?.takeIf { it.isNotEmpty() }?.let { events(StreamEvent.Text(it)) }
+        // The same body's top-level `usage` — present only when the server's
+        // accounting is; absent means unknown here, never a guess.
+        AgentUsage.fromOpenAiResponse(text)?.let {
+            events(StreamEvent.Usage(it.promptTokens, it.completionTokens))
+        }
         message
     }
 

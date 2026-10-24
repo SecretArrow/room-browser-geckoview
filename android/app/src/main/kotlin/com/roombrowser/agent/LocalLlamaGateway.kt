@@ -107,6 +107,11 @@ class LocalLlamaGateway(
         // describe an action but never take one: the reply carried no
         // toolCalls, and the agent loop stopped at "no calls → final answer"
         // on every step.
+        // No usage event here, on purpose: [LlamaEngineApi.chat] returns the
+        // reply text only — the engine exposes no token accounting, and a
+        // count guessed from the prompt is exactly the estimate this pipeline
+        // refuses. A LOCAL turn reports no usage; its row's token columns
+        // stay null.
         val answer = engine.chat(LocalToolProtocol.conversationFor(request.messages, request.tools))
         return when (val reply = LocalToolProtocol.parseReply(answer)) {
             is LocalToolProtocol.Reply.Call -> ChatMessage(

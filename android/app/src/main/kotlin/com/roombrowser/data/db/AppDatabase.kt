@@ -46,9 +46,10 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         TotpEntity::class,
         AgentSiteMemoryEntity::class,
         PluginEntity::class,
-        ChatPluginEntity::class
+        ChatPluginEntity::class,
+        AgentSkillEntity::class
     ],
-    version = 18,
+    version = 19,
     exportSchema = true
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -75,6 +76,7 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun agentSiteMemoryDao(): AgentSiteMemoryDao
     abstract fun pluginDao(): PluginDao
     abstract fun chatPluginDao(): ChatPluginDao
+    abstract fun agentSkillDao(): AgentSkillDao
 
     companion object {
         const val NAME = "room-browser.db"
@@ -681,6 +683,46 @@ abstract class AppDatabase : RoomDatabase() {
         }
 
         /**
+         * v18 → v19: token-usage columns on agent messages and the agent-skill
+         * table. Two ALTERs on `agent_messages` — nullable columns, so no
+         * default is needed and existing rows read back as null ("unknown") —
+         * plus one additive CREATE TABLE + UNIQUE INDEX for `agent_skills`, the
+         * metadata row of an installed SKILL.md package. The column set mirrors
+         * [AgentSkillEntity] exactly (snake_case, NOT NULL on non-null Kotlin
+         * types, INTEGER affinity for Long/Boolean), which is what the
+         * migration-test read-back compares.
+         *
+         * `internal` for the same reason as [MIGRATION_16_17]: a fresh install
+         * creates v19 directly, so only AgentSkillMigrationTest executes this.
+         */
+        internal val MIGRATION_18_19 = object : Migration(18, 19) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE `agent_messages` ADD COLUMN `prompt_tokens` INTEGER")
+                db.execSQL("ALTER TABLE `agent_messages` ADD COLUMN `completion_tokens` INTEGER")
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `agent_skills` (" +
+                        "`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, " +
+                        "`skill_id` TEXT NOT NULL, " +
+                        "`display_name` TEXT NOT NULL, " +
+                        "`description` TEXT NOT NULL, " +
+                        "`source_repo` TEXT NOT NULL, " +
+                        "`sub_path` TEXT NOT NULL, " +
+                        "`version` TEXT NOT NULL, " +
+                        "`commit_ref` TEXT NOT NULL, " +
+                        "`skill_md_sha256` TEXT NOT NULL, " +
+                        "`npm_deps_json` TEXT NOT NULL, " +
+                        "`enabled` INTEGER NOT NULL, " +
+                        "`installed_at` INTEGER NOT NULL, " +
+                        "`updated_at` INTEGER NOT NULL)"
+                )
+                db.execSQL(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS `index_agent_skills_skill_id` " +
+                        "ON `agent_skills` (`skill_id`)"
+                )
+            }
+        }
+
+        /**
          * Every migration, oldest first — the ONE list. [build] applies it and
          * the migration tests apply it too, so a version bump cannot leave a
          * test registering a subset that stops short of the current version.
@@ -690,7 +732,7 @@ abstract class AppDatabase : RoomDatabase() {
             MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8,
             MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11, MIGRATION_11_12,
             MIGRATION_12_13, MIGRATION_13_14, MIGRATION_14_15, MIGRATION_15_16,
-            MIGRATION_16_17, MIGRATION_17_18
+            MIGRATION_16_17, MIGRATION_17_18, MIGRATION_18_19
         )
 
         @Volatile

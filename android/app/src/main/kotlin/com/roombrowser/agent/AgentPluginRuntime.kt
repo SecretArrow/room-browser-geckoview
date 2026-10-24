@@ -434,6 +434,16 @@ class AgentPluginRuntime(
 ) {
 
     /**
+     * The app context this runtime was built with, re-exposed for the ONE
+     * surface that needs the same application context the plugin tree lives
+     * beside but reaches this class instead of a Context: the /skills chat
+     * commands, which build their skill repository over the same filesDir.
+     * The runtime OWNS a context by construction; the accessor exists so its
+     * consumers need not carry a second one around. Nothing else reads it.
+     */
+    internal val appContext: Context get() = context
+
+    /**
      * Runs one event and returns what it produced — the raw result envelope,
      * cards still JSON. [history] is the chat's transcript as
      * [historyOf] shapes it; it is put on the wire only when this call's

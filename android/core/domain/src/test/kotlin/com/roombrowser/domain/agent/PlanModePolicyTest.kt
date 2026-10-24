@@ -19,12 +19,21 @@ class PlanModePolicyTest {
             AgentTools.SCROLL, AgentTools.WAIT, AgentTools.WAIT_FOR, AgentTools.GO_BACK,
             AgentTools.LIST_TABS, AgentTools.OPEN_NEW_TAB, AgentTools.SWITCH_TAB,
             AgentTools.CLOSE_TAB, AgentTools.WALLET_STATE, AgentTools.WALLET_REQUESTS,
-            AgentTools.WALLET_REJECT, AgentTools.APP_OPEN, AgentTools.APP_DATA,
-            AgentTools.APP_SETTINGS, AgentTools.APP_NOTES, AgentTools.APP_TABS
+            AgentTools.WALLET_REJECT, AgentTools.WALLET_BALANCES, AgentTools.APP_OPEN,
+            AgentTools.APP_DATA, AgentTools.APP_SETTINGS, AgentTools.APP_NOTES, AgentTools.APP_TABS
         )
         allowed.forEach { name ->
             assertThat(PlanModePolicy.refusal(name, null)).isNull()
         }
+    }
+
+    @Test
+    fun `wallet_send is refused in plan mode while wallet_balances reads on`() {
+        // A send moves funds with nothing asked of a page, which is exactly
+        // what a plan promises not to do; reading balances is a read, like
+        // wallet_state, and stays available for "what would this cost" plans.
+        assertThat(PlanModePolicy.refusal(AgentTools.WALLET_SEND, null)).isNotNull()
+        assertThat(PlanModePolicy.refusal(AgentTools.WALLET_BALANCES, null)).isNull()
     }
 
     @Test
@@ -48,6 +57,18 @@ class PlanModePolicyTest {
         // is supposed to be about, so neither belongs in a plan-only turn.
         assertThat(PlanModePolicy.refusal(AgentTools.NODE_RUN, null)).isNotNull()
         assertThat(PlanModePolicy.refusal(AgentTools.NODE_PACKAGES, null)).isNotNull()
+    }
+
+    @Test
+    fun `a skill install and removal are refused while the reads stay legal`() {
+        // An install fetches a repository and writes its files, and a removal
+        // deletes them — both are work carried out, which a plan promises to
+        // propose instead of do. Reading an installed skill is a read like
+        // read_page, and it is exactly what a plan about one needs.
+        assertThat(PlanModePolicy.refusal(AgentTools.SKILLS_INSTALL, null)).isNotNull()
+        assertThat(PlanModePolicy.refusal(AgentTools.SKILLS_REMOVE, null)).isNotNull()
+        assertThat(PlanModePolicy.refusal(AgentTools.SKILLS_LIST, null)).isNull()
+        assertThat(PlanModePolicy.refusal(AgentTools.SKILLS_READ, null)).isNull()
     }
 
     @Test

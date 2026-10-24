@@ -5,6 +5,7 @@ import com.roombrowser.data.db.AgentMessageEntity
 import com.roombrowser.data.db.AgentProviderEntity
 import com.roombrowser.data.db.AgentSessionEntity
 import com.roombrowser.data.db.AppDatabase
+import com.roombrowser.data.db.UsageTotals
 import kotlinx.coroutines.flow.Flow
 
 /**
@@ -173,6 +174,22 @@ class AgentRepository(private val db: AppDatabase) {
     )
 
     suspend fun messageCount(sessionId: Long): Int = dao.messageCount(sessionId)
+
+    // ---------- Token usage ----------
+
+    /**
+     * Records the token usage a provider reported for one assistant row. Both
+     * counts may be null — a one-sided or absent report is written as absent,
+     * because this only ever stores what arrived on the wire.
+     */
+    suspend fun setMessageUsage(messageId: Long, promptTokens: Int?, completionTokens: Int?) =
+        dao.setMessageUsage(messageId, promptTokens, completionTokens)
+
+    /** Per-chat token totals; a chat with no usage-bearing row totals zeros. */
+    suspend fun usageForSession(sessionId: Long): UsageTotals = dao.usageForSession(sessionId)
+
+    /** Every chat of the profile, summed — the grand total behind the per-chat rows. */
+    suspend fun usageForProfile(profileId: String): UsageTotals = dao.usageForProfile(profileId)
 }
 
 /**

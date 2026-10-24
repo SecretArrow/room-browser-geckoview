@@ -58,6 +58,20 @@ class HeadlessChatToolGate(
                     "Switch this chat to the browser tab and ask again."
             )
         }
+        if (name in AgentTools.SKILLS_TOOLS) {
+            // The executor below refuses these with "run this as a chat", which
+            // is not what is wrong here: this IS a chat. The truth is narrower
+            // — install/remove are interactive writes whose confirmation reaches
+            // the user through the visible chat, and the skills block this
+            // turn's prompt would otherwise carry is a tab conversation's
+            // feature, so the read tools have nothing honest to answer here.
+            return ToolResult(
+                false,
+                "tool '$name' works when this chat has the browser tab open: the skill's " +
+                    "confirmation, listing and files live with that conversation. Switch this " +
+                    "chat to the browser tab and ask again."
+            )
+        }
         if (name in HeadlessToolExecutor.TAB_TOOLS) {
             return ToolResult(
                 false,

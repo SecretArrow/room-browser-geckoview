@@ -4,6 +4,7 @@ import com.roombrowser.domain.agent.AgentClientIdentity
 import com.roombrowser.domain.agent.AgentGateway
 import com.roombrowser.domain.agent.AgentHttpException
 import com.roombrowser.domain.agent.AgentJson
+import com.roombrowser.domain.agent.AgentUsage
 import com.roombrowser.domain.agent.AgentVisionSupport
 import com.roombrowser.domain.agent.ChatMessage
 import com.roombrowser.domain.agent.ChatRequest
@@ -13,6 +14,7 @@ import com.roombrowser.domain.agent.OpenCodeToolCallParser
 import com.roombrowser.domain.agent.OpenCodeWire
 import com.roombrowser.domain.agent.StreamEvent
 import com.roombrowser.domain.agent.ToolDef
+import com.roombrowser.domain.agent.TurnUsage
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.currentCoroutineContext
@@ -24,6 +26,7 @@ import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.intOrNull
 import okhttp3.Call
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
@@ -187,7 +190,13 @@ class OpenCodeAgentGateway(
 
     // ------------------------------------------------------------------ poll
 
-    private class OpMessage(val id: String?, val role: String, val text: String)
+    private class OpMessage(
+        val id: String?,
+        val role: String,
+        val text: String,
+        /** The message's reported token counts, null when the server attached none. */
+        val usage: TurnUsage? = null
+    )
 
     /**
      * Polls `GET /session/{id}/message` until a NEW assistant message appears
@@ -202,6 +211,15 @@ class OpenCodeAgentGateway(
         var streamedLen = 0
         var stablePolls = 0
         var lastText = ""
+
+        // The one exit for a COMPLETED assistant message: its token report —
+        // when the server attached one — is emitted exactly where the text is
+        // declared final, so the count belongs to the message it describes.
+        // A deadline exit emits nothing: the message never finished.
+        suspend fun complete(message: OpMessage): String {
+            message.usage?.let { events(StreamEvent.Usage(it.promptTokens, it.completionTokens)) }
+            return message.text
+        }
 
         while (System.currentTimeMillis() < deadline) {
             if (!currentCoroutineContext().isActive) throw CancellationException("opencode poll cancelled")
@@ -232,12 +250,12 @@ class OpenCodeAgentGateway(
                     target.text.contains("```")
                 if (hasToolBlock && OpenCodeToolCallParser.parse(target.text, enabled = true).toolCalls.isNotEmpty()) {
                     target.id?.let { consumedIds.add(it) }
-                    return@withContext target.text
+                    return@withContext complete(target)
                 }
                 stablePolls++
                 if (stablePolls >= 2) {
                     target.id?.let { consumedIds.add(it) }
-                    return@withContext target.text
+                    return@withContext complete(target)
                 }
             } else {
                 stablePolls = 0
@@ -287,7 +305,21 @@ class OpenCodeAgentGateway(
                     (po["text"] as? JsonPrimitive)?.contentOrNull
                 } else null
             }.joinToString("")
-            OpMessage(id, role, text)
+            // opencode reports per-message token counts on the message info
+            // ("tokens": {"input": …, "output": …}) in the builds this
+            // targets; shapes without them read as null, and a null pair
+            // yields no usage at all — the count is taken from the wire or
+            // not taken, never invented.
+            val tokens = msg["tokens"] as? JsonObject
+            OpMessage(
+                id,
+                role,
+                text,
+                AgentUsage.of(
+                    (tokens?.get("input") as? JsonPrimitive)?.intOrNull,
+                    (tokens?.get("output") as? JsonPrimitive)?.intOrNull
+                )
+            )
         }
     }.getOrDefault(emptyList())
 

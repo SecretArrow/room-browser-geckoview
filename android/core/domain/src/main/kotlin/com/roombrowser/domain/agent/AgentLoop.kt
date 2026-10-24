@@ -11,7 +11,24 @@ sealed interface StreamEvent {
 
     /** A reasoning/"thinking" token (e.g. GLM `reasoning_content`). */
     data class Thinking(val text: String) : StreamEvent
+
+    /**
+     * The token usage a provider REPORTED on the wire (OpenAI's final `usage`
+     * chunk, Anthropic's `message_start`/`message_delta` pair). Emitted only
+     * when a report actually arrives — an absent count never becomes an
+     * event, so a consumer sees null rather than an estimate. The loop keeps
+     * the last one and attaches it to [AgentEvent.FinalAnswer].
+     */
+    data class Usage(val promptTokens: Int?, val completionTokens: Int?) : StreamEvent
 }
+
+/**
+ * The token usage a provider reported for one answer: prompt tokens (what was
+ * sent) and completion tokens (what came back). Either side is null when the
+ * provider did not report it — this type is filled from wire reports only and
+ * is never the product of an estimate.
+ */
+data class TurnUsage(val promptTokens: Int?, val completionTokens: Int?)
 
 /**
  * Provider transport implemented by the app layer (OkHttp + SSE).
@@ -105,7 +122,14 @@ sealed interface AgentEvent {
      * than as a delta, so a surface that missed one still shows the truth.
      */
     data class PlanUpdated(val items: List<AgentPlan.Item>) : AgentEvent
-    data class FinalAnswer(val text: String) : AgentEvent
+
+    /**
+     * The turn's closing answer. [usage] is the last token report the provider
+     * made while producing it (see [TurnUsage]) — null when the provider
+     * reported nothing, which is normal for a turn cut short, a gateway whose
+     * wire shape carries no counts, or a stop the user asked for.
+     */
+    data class FinalAnswer(val text: String, val usage: TurnUsage? = null) : AgentEvent
     data class AgentError(val message: String, val fatal: Boolean) : AgentEvent
     data class Notice(val text: String) : AgentEvent
 }
@@ -164,6 +188,12 @@ class AgentLoop(
             // One turn's worth: a tool that failed twice in a previous turn is
             // not a loop in this one.
             val failures = AgentFailureWatch()
+            // The last usage the provider reported this turn. Each step of a
+            // multi-step turn reports its own completion; the LAST one is what
+            // the answer carries, because the row it is persisted on is the
+            // row of the step that produced the answer. Never summed across
+            // steps, never filled in when a provider stays silent.
+            var turnUsage: TurnUsage? = null
             // The list this turn is working to, as the last `plan` call set it.
             var currentPlan = emptyList<AgentPlan.Item>()
             var planRefusals = 0
@@ -203,6 +233,10 @@ class AgentLoop(
                     when (ev) {
                         is StreamEvent.Text -> listener(AgentEvent.AssistantText(ev.text))
                         is StreamEvent.Thinking -> listener(AgentEvent.AssistantThinking(ev.text))
+                        // A report without a model answer behind it is still
+                        // kept: the provider's own accounting is the truth
+                        // this pipeline has, and later steps overwrite it.
+                        is StreamEvent.Usage -> turnUsage = TurnUsage(ev.promptTokens, ev.completionTokens)
                     }
                 }
                 history.add(assistant)
@@ -234,7 +268,12 @@ class AgentLoop(
                         history.add(ChatMessage(role = "user", content = AgentPlan.continueNudge(currentPlan)))
                         continue
                     }
-                    listener(AgentEvent.FinalAnswer(assistant.content.orEmpty().ifBlank { "(the model returned an empty answer)" }))
+                    listener(
+                        AgentEvent.FinalAnswer(
+                            assistant.content.orEmpty().ifBlank { "(the model returned an empty answer)" },
+                            usage = turnUsage
+                        )
+                    )
                     // After the answer, so it reads as the closing line of the
                     // turn rather than as something said before it.
                     if (config.planBeforeActions && currentPlan.any { it.status != AgentPlan.Status.DONE }) {
@@ -320,7 +359,12 @@ class AgentLoop(
                 if (ev is StreamEvent.Text) listener(AgentEvent.AssistantText(ev.text))
             }
             history.add(final)
-            listener(AgentEvent.FinalAnswer(final.content.orEmpty().ifBlank { "(stopped at the step limit without a final answer)" }))
+            listener(
+                AgentEvent.FinalAnswer(
+                    final.content.orEmpty().ifBlank { "(stopped at the step limit without a final answer)" },
+                    usage = turnUsage
+                )
+            )
             // A turn cut off mid-list is exactly when the count matters most,
             // and it goes under the answer for the same reason as above.
             if (config.planBeforeActions && currentPlan.any { it.status != AgentPlan.Status.DONE }) {

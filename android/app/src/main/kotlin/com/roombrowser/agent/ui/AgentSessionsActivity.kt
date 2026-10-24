@@ -29,15 +29,20 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.FileDownload
+import androidx.compose.material.icons.filled.QueryStats
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
@@ -53,13 +58,17 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.roombrowser.agent.AgentChatExport
 import com.roombrowser.agent.AgentSettingsController
+import com.roombrowser.agent.TokenStats
 import com.roombrowser.data.db.AgentSessionEntity
 import com.roombrowser.ui.common.EmptyState
+import com.roombrowser.ui.common.RoomBottomSheetShape
 import com.roombrowser.ui.common.RoomBrowserTheme
+import com.roombrowser.ui.common.RoomSheetHeader
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -122,6 +131,10 @@ private fun AgentSessionsRoot(
     // Destructive action guard: the delete icon only ARMS the confirmation
     // dialog — the actual delete runs after the user confirms.
     var deleteTarget by remember { mutableStateOf<AgentSessionEntity?>(null) }
+    // The stats sheet's data, fetched only when the icon is tapped: the reads
+    // behind it touch every chat of the profile, so they must not run on
+    // composition — the same reason the export gathers after the picker.
+    var tokenStats by remember { mutableStateOf<TokenStats?>(null) }
 
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -170,6 +183,24 @@ private fun AgentSessionsRoot(
                     }
                 },
                 actions = {
+                    // An ICON, not a row: this is a rarely used action on a
+                    // screen whose whole point is the list. It is hidden
+                    // while there is nothing to summarise.
+                    if (controller.sessions.isNotEmpty()) {
+                        IconButton(onClick = {
+                            scope.launch {
+                                runCatching { controller.tokenStats() }
+                                    .onSuccess { tokenStats = it }
+                                    .onFailure {
+                                        hostState.showSnackbar(
+                                            "Could not load usage: ${it.message ?: it.javaClass.simpleName}"
+                                        )
+                                    }
+                            }
+                        }) {
+                            Icon(Icons.Filled.QueryStats, contentDescription = "Token usage stats")
+                        }
+                    }
                     // An ICON, not a row: this is a rarely used action on a
                     // screen whose whole point is the list. It is hidden
                     // while there is nothing to export, so it can never
@@ -264,4 +295,80 @@ private fun AgentSessionsRoot(
             }
         )
     }
+
+    tokenStats?.let { stats ->
+        ModalBottomSheet(
+            onDismissRequest = { tokenStats = null },
+            shape = RoomBottomSheetShape
+        ) {
+            TokenUsageSheet(stats)
+        }
+    }
 }
+
+/**
+ * The per-chat token totals plus the profile grand total.
+ *
+ * Numbers render in a monospace face so the rows line up chat to chat — this
+ * is a table people scan, not prose they read — and chats whose provider
+ * reported nothing are already gone by the time they get here (the controller
+ * drops them), because zeros would read as data.
+ */
+@Composable
+private fun TokenUsageSheet(stats: TokenStats) {
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .verticalScroll(rememberScrollState())
+            .padding(horizontal = 16.dp)
+    ) {
+        RoomSheetHeader("Token usage")
+        Text(
+            "As reported by the model provider. prompt + completion = total.",
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Spacer(Modifier.height(12.dp))
+        if (stats.rows.isEmpty()) {
+            Text(
+                "No token usage reported yet.",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        } else {
+            stats.rows.forEach { row ->
+                Column(Modifier.padding(vertical = 6.dp)) {
+                    Text(
+                        row.title,
+                        style = MaterialTheme.typography.bodyMedium,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    Text(
+                        usageLine(row.totals.promptTokens, row.totals.completionTokens, row.totals.turns),
+                        style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+        }
+        HorizontalDivider(Modifier.padding(vertical = 8.dp))
+        Text("All chats", style = MaterialTheme.typography.titleSmall)
+        Spacer(Modifier.height(2.dp))
+        Text(
+            usageLine(stats.profileTotals.promptTokens, stats.profileTotals.completionTokens, stats.profileTotals.turns),
+            style = MaterialTheme.typography.bodyMedium.copy(fontFamily = FontFamily.Monospace)
+        )
+        Spacer(Modifier.height(24.dp))
+    }
+}
+
+/** "1,234 + 567 = 1,801 · 3 turns" — one scannable line per chat / total. */
+private fun usageLine(promptTokens: Long, completionTokens: Long, turns: Int): String {
+    val turnWord = if (turns == 1) "turn" else "turns"
+    return "${num(promptTokens)} + ${num(completionTokens)} = " +
+        "${num(promptTokens + completionTokens)} · $turns $turnWord"
+}
+
+/** Grouped thousands in the device locale — this never leaves the device. */
+private fun num(value: Long): String = String.format(Locale.getDefault(), "%,d", value)

@@ -197,6 +197,44 @@ class AgentGatewayTest {
         assertThat(json).contains("\"name\":\"fill_input\"")
     }
 
+    @Test
+    fun `final usage chunk surfaces as a usage event`() = runTest {
+        server.enqueue(
+            MockResponse()
+                .setHeader("Content-Type", "text/event-stream")
+                .setBody(
+                    sseBody(
+                        """{"choices":[{"delta":{"content":"Hi"}}]}""",
+                        """{"choices":[],"usage":{"prompt_tokens":118,"completion_tokens":27}}"""
+                    )
+                )
+        )
+        val usage = mutableListOf<StreamEvent.Usage>()
+        gateway.chat(request(), events = { if (it is StreamEvent.Usage) usage.add(it) })
+
+        assertThat(usage).containsExactly(StreamEvent.Usage(118, 27))
+        // The counts only exist because the request ASKED for them: the body
+        // must carry stream_options.include_usage.
+        assertThat(server.takeRequest().body.readUtf8())
+            .contains("\"stream_options\":{\"include_usage\":true}")
+    }
+
+    @Test
+    fun `non-stream body's usage surfaces as a usage event`() = runTest {
+        server.enqueue(
+            MockResponse()
+                .setHeader("Content-Type", "application/json")
+                .setBody(
+                    """{"choices":[{"message":{"role":"assistant","content":"plain answer"}}],""" +
+                        """"usage":{"prompt_tokens":10,"completion_tokens":3}}"""
+                )
+        )
+        val usage = mutableListOf<StreamEvent.Usage>()
+        gateway.chat(request(), events = { if (it is StreamEvent.Usage) usage.add(it) })
+
+        assertThat(usage).containsExactly(StreamEvent.Usage(10, 3))
+    }
+
     private fun request(): ChatRequest = ChatRequest(
         model = "test-model",
         messages = listOf(ChatMessage(role = "user", content = "hi")),

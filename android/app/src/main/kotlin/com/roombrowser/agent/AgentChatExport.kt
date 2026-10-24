@@ -59,6 +59,27 @@ object AgentChatExport {
         val providers: List<String>
     )
 
+    /** One chat's line of the token-usage section. */
+    data class UsageRow(
+        val title: String,
+        val promptTokens: Long,
+        val completionTokens: Long,
+        val turns: Int
+    )
+
+    /**
+     * The usage section's input, already detached from the database and
+     * already filtered by the caller (zero-usage chats omitted — a table of
+     * zeros is absence dressed as data). Null when the caller has no usage
+     * reader at all; the section is also skipped when nothing was reported.
+     */
+    data class UsageSection(
+        val rows: List<UsageRow>,
+        val totalPrompt: Long,
+        val totalCompletion: Long,
+        val totalTurns: Int
+    )
+
     private const val RULE = "================================================================"
 
     /**
@@ -70,10 +91,10 @@ object AgentChatExport {
      * list of fields someone remembered. Masking the whole document cannot miss
      * a line added later.
      */
-    fun render(header: Header, sessions: List<Session>): String =
-        SecretRedaction.redact(buildDocument(header, sessions))
+    fun render(header: Header, sessions: List<Session>, usage: UsageSection? = null): String =
+        SecretRedaction.redact(buildDocument(header, sessions, usage))
 
-    private fun buildDocument(header: Header, sessions: List<Session>): String = buildString {
+    private fun buildDocument(header: Header, sessions: List<Session>, usage: UsageSection?): String = buildString {
         appendLine("Room Browser — AI agent chat export")
         appendLine("Profile: ${header.profileLabel}")
         appendLine("Exported: ${stamp(header.exportedAt)}")
@@ -115,6 +136,33 @@ object AgentChatExport {
                 }
             }
         }
+
+        // The usage section closes the document, after the transcripts it
+        // summarises. Skipped entirely when nothing was reported anywhere —
+        // a section that says "0" everywhere is not information.
+        if (usage != null && (usage.rows.isNotEmpty() ||
+                usage.totalPrompt > 0 || usage.totalCompletion > 0)
+        ) {
+            appendLine()
+            appendLine(RULE)
+            appendLine("Token usage")
+            appendLine(RULE)
+            appendLine("(as reported by the provider; counts it did not send are not shown)")
+            usage.rows.forEach { row ->
+                appendLine()
+                appendLine(row.title)
+                appendLine(
+                    "    prompt ${num(row.promptTokens)}   completion ${num(row.completionTokens)}   " +
+                        "total ${num(row.promptTokens + row.completionTokens)}   turns ${row.turns}"
+                )
+            }
+            appendLine()
+            appendLine("All chats")
+            appendLine(
+                "    prompt ${num(usage.totalPrompt)}   completion ${num(usage.totalCompletion)}   " +
+                    "total ${num(usage.totalPrompt + usage.totalCompletion)}   turns ${usage.totalTurns}"
+            )
+        }
     }
 
     /**
@@ -144,4 +192,7 @@ object AgentChatExport {
 
     private fun fileStamp(at: Long): String =
         SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US).format(Date(at))
+
+    /** Grouped thousands, US form — an export is read away from the device. */
+    private fun num(value: Long): String = String.format(Locale.US, "%,d", value)
 }

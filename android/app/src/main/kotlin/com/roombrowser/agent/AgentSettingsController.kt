@@ -8,6 +8,7 @@ import com.roombrowser.RoomBrowserApp
 import com.roombrowser.data.db.AgentProviderEntity
 import com.roombrowser.data.db.AgentSessionEntity
 import com.roombrowser.data.db.AgentSiteMemoryEntity
+import com.roombrowser.data.db.UsageTotals
 import com.roombrowser.data.net.AppHttpClients
 import com.roombrowser.data.repo.AgentRepository
 import com.roombrowser.data.repo.AgentSettings
@@ -18,6 +19,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
 
 /**
@@ -228,13 +230,57 @@ class AgentSettingsController(
         val label = runCatching {
             graph.profileRepo.profiles().firstOrNull { it.id.value == pid }?.name
         }.getOrNull()?.takeIf { it.isNotBlank() } ?: "this profile"
+        // The usage section rides the same read path as the stats sheet
+        // (tokenStats), so the file and the screen can never disagree about
+        // what was reported. Chats with zero reported usage are dropped
+        // inside tokenStats — a table of zeros is absence dressed as data.
+        val stats = tokenStats()
         return AgentChatExport.render(
             header = AgentChatExport.Header(
                 profileLabel = label,
                 exportedAt = now,
                 providers = providers.map { "${it.name} (${it.protocol})" }
             ),
-            sessions = sessionModels
+            sessions = sessionModels,
+            usage = AgentChatExport.UsageSection(
+                rows = stats.rows.map {
+                    AgentChatExport.UsageRow(
+                        title = it.title,
+                        promptTokens = it.totals.promptTokens,
+                        completionTokens = it.totals.completionTokens,
+                        turns = it.totals.turns
+                    )
+                },
+                totalPrompt = stats.profileTotals.promptTokens,
+                totalCompletion = stats.profileTotals.completionTokens,
+                totalTurns = stats.profileTotals.turns
+            )
+        )
+    }
+
+    /**
+     * Per-chat + profile-wide token usage for the sessions screen's stats
+     * sheet and the chat export — one read path so the two can never
+     * disagree about what was reported.
+     *
+     * Read on demand (on [Dispatchers.IO]) rather than observed: totals are a
+     * summary people glance at, not state anything reacts to. A chat whose
+     * rows carry no reported usage is omitted from [TokenStats.rows] — a
+     * provider that reported nothing has nothing to show, and zeros would
+     * read as data. [TokenStats.profileTotals] stays unfiltered: it is the
+     * whole truth of the profile, also covering chats deleted between the
+     * two reads.
+     */
+    suspend fun tokenStats(): TokenStats = withContext(Dispatchers.IO) {
+        val pid = profileId.orEmpty()
+        val rows = if (pid.isBlank()) emptyList() else repo.sessions(pid).mapNotNull { session ->
+            val totals = repo.usageForSession(session.id)
+            if (totals.promptTokens == 0L && totals.completionTokens == 0L) null
+            else TokenStatRow(session.id, session.title, totals)
+        }
+        TokenStats(
+            rows = rows,
+            profileTotals = if (pid.isBlank()) UsageTotals(0L, 0L, 0) else repo.usageForProfile(pid)
         )
     }
 
@@ -417,3 +463,20 @@ class AgentSettingsController(
         }
     }
 }
+
+/** One chat's reported token totals, detached from the database. */
+data class TokenStatRow(
+    val sessionId: Long,
+    val title: String,
+    val totals: UsageTotals
+)
+
+/**
+ * What the token-stats sheet and the chat export are handed: the per-chat
+ * rows worth showing (zero-usage chats omitted by [AgentSettingsController.tokenStats])
+ * and the profile-wide grand total.
+ */
+data class TokenStats(
+    val rows: List<TokenStatRow>,
+    val profileTotals: UsageTotals
+)

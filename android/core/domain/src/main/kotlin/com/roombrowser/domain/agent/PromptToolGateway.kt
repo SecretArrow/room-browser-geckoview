@@ -132,7 +132,15 @@ class PromptToolGateway(
         // an answer.
         val streamed = StringBuilder()
         val message = delegate.chat(rewritten) { event ->
-            if (event is StreamEvent.Text) streamed.append(event.text)
+            // Usage is neither prose nor a call — it is the provider's own
+            // accounting, and swallowing it here would make every text-mode
+            // provider (one that refuses the `tools` field) look like it
+            // reported nothing. Thinking stays swallowed with the text: this
+            // mode has always declined to show it.
+            when (event) {
+                is StreamEvent.Usage -> events(event)
+                else -> if (event is StreamEvent.Text) streamed.append(event.text)
+            }
         }
         val answer = message.content ?: streamed.toString()
 

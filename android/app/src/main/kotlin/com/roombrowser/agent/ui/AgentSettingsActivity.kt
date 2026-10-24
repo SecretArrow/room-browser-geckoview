@@ -581,6 +581,33 @@ private fun AgentSettingsRoot(
                 onClick = { AgentPackagesActivity.launch(packagesContext) }
             )
 
+            // ================= Skills =================
+            // Its own section rather than the Developer Tools one: a skill is
+            // UNTRUSTED INSTRUCTIONS fetched from a git repository that then
+            // reach the model's system prompt — a consent about instruction
+            // provenance, not about reading a panel. One axis covers the whole
+            // skills surface (install, read, list, remove) exactly as
+            // AGENT_NODE covers node_run and node_packages: there is no honest
+            // use of the read-only half without the install that stocked it.
+            SectionHeader("Skills")
+            SettingSwitchRow(
+                title = AgentPermissions.label(AgentPermissions.AGENT_SKILLS),
+                subtitle = AgentPermissions.description(AgentPermissions.AGENT_SKILLS),
+                checked = AgentPermissions.AGENT_SKILLS !in controller.profileSettings.agentWithheldPermissions,
+                onCheckedChange = { checked ->
+                    controller.setAgentPermission(AgentPermissions.AGENT_SKILLS, checked)
+                }
+            )
+            // The skills themselves are shared by every profile (like the Node
+            // packages); the permission above is this profile's decision about
+            // what ITS agent may do with them, and the skills screen shows it.
+            val skillsContext = LocalContext.current
+            SettingActionRow(
+                title = "Installed skills",
+                subtitle = "See, enable, install and remove the SKILL.md packages the agent follows",
+                onClick = { AgentSkillsActivity.launch(skillsContext, controller.profileId) }
+            )
+
             // ================= Agent vision =================
             // Its own section, not the Developer Tools one: see_page is a
             // reading tool like read_page, and the thing it sends is the page
