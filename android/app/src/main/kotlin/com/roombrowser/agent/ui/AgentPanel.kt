@@ -554,15 +554,22 @@ private fun AgentPanelHeader(
             .padding(start = 16.dp, end = 4.dp, top = 10.dp, bottom = 2.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        Icon(
-            Icons.Filled.AutoAwesome,
-            contentDescription = null,
-            tint = MaterialTheme.colorScheme.primary,
-            modifier = Modifier.size(22.dp)
-        )
-        Spacer(Modifier.width(10.dp))
         Column(Modifier.weight(1f)) {
-            Text("Room Agent", style = MaterialTheme.typography.titleMedium)
+            // One line, always. The header is five buttons wide now, and on
+            // the e2e suite's narrow display the weighted column is left a
+            // dozen pixels: a wrapping title turned those pixels into three
+            // text lines, the header ate the transcript's share of the panel,
+            // and a zero-height transcript rendered nothing at all — the
+            // empty state included — while every send "worked" invisibly.
+            // Ellipsis keeps the height fixed no matter how little width the
+            // buttons leave; Compose still reports the full string through
+            // semantics, so the suite's text probes keep matching.
+            Text(
+                "Room Agent",
+                style = MaterialTheme.typography.titleMedium,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
             val provider = agent.activeProvider
             val modelLine = when {
                 provider == null -> "No provider configured"
