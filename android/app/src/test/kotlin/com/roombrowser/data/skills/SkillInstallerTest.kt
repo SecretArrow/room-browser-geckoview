@@ -239,8 +239,8 @@ class SkillInstallerTest {
                     hubTarball(
                         "demo-hub-main",
                         skillMdFor("1.13.0"),
-                        skillDir = "demo-hub-main/skills/w",
-                        "demo-hub-main/skills/w/only-first.md" to "first"
+                        "demo-hub-main/skills/w/only-first.md" to "first",
+                        skillDir = "demo-hub-main/skills/w"
                     )
                 )
         )
@@ -320,11 +320,15 @@ class SkillInstallerTest {
      * the skill at skills/binance-web3/binance-agentic-wallet, a hub README
      * OUTSIDE the skill (which must not leak into the install).
      */
+    // skillDir sits AFTER the vararg on purpose: the executable-refusal test
+    // passes its extra entry positionally, and a defaulted parameter before
+    // the vararg would swallow it. Kotlin lets the named call sites reach
+    // past the vararg.
     private fun hubTarball(
         repoRoot: String = "demo-hub-main",
         skillMd: String = skillMdFor("1.13.0"),
-        skillDir: String = "$repoRoot/skills/binance-web3/binance-agentic-wallet",
-        vararg extra: Pair<String, String>
+        vararg extra: Pair<String, String>,
+        skillDir: String = "$repoRoot/skills/binance-web3/binance-agentic-wallet"
     ): ByteArray {
         val entries = mutableListOf(
             tarEntry("$skillDir/SKILL.md", skillMd.toByteArray(Charsets.UTF_8)),
