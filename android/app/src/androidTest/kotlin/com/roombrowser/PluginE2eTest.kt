@@ -966,7 +966,30 @@ class PluginE2eTest {
      * later wait lands re-aligns onto a view it recognizes.
      */
     private fun moduleMessageAppears(needle: String, timeoutMs: Long): Boolean =
-        rockingFind(needle, timeoutMs) != null
+        rockingFind(needle, timeoutMs) != null || cardCarries(needle)
+
+    /**
+     * Whether a plugin card's SUBTREE carries [needle] anywhere in its node
+     * texts. The poll above matches a node whose text CONTAINS the needle as
+     * a one-line substring - UiAutomator compiles textContains as an
+     * anchored, line-bound regex, so a needle sitting on the second line of
+     * a multi-line node ("Module: <name> v<ver>" above the module's own
+     * body) can never match it, even with the message fully on screen - the
+     * exact state one CI run captured: the card rendered its whole body and
+     * the poll still timed out. The walk reads the same tree the failure
+     * dump does, so a rendered message is a rendered message whatever node
+     * the host composed it into.
+     */
+    private fun cardCarries(needle: String): Boolean = try {
+        device.findObjects(By.descContains("plugin_card")).any { card ->
+            fun walk(node: UiObject2): Boolean =
+                node.text?.contains(needle) == true ||
+                    (node.children?.any { walk(it) } ?: false)
+            walk(card)
+        }
+    } catch (_: Exception) {
+        false
+    }
 
     /**
      * [moduleMessageAppears]'s wait, returning the row it found instead of a
