@@ -50,33 +50,6 @@ class HeadlessChatToolGate(
             )
         }
         appTools?.invoke(name, argsJson)?.let { return it }
-        // The two names answered BEFORE the wallet group's blanket refusal
-        // and before the page executor's map, because the sentences those
-        // would give are the wrong ones for a read:
-        //
-        // wallet_balance signs and sends nothing — its honest answer here is
-        // "this hidden turn cannot reach the wallet", not the sheet-and-
-        // broadcast wording the mutating tools earn.
-        //
-        // skills is refused because a hidden page's executor has no skills
-        // store wired (the tab chat's executor does), and "unknown tool"
-        // would send the model hunting for a route that does not exist.
-        if (name == AgentTools.WALLET_BALANCE) {
-            return ToolResult(
-                false,
-                "tool 'wallet_balance' reads the wallet, and this turn is running on a hidden " +
-                    "page where the wallet is not reachable. Switch this chat to the browser " +
-                    "tab and ask again."
-            )
-        }
-        if (name == AgentTools.SKILLS) {
-            return ToolResult(
-                false,
-                "tool 'skills' is not available to this hidden-page turn — its store lives with " +
-                    "the browser tab's executor. Switch this chat to the browser tab and ask " +
-                    "again."
-            )
-        }
         if (name in AgentTools.WALLET_TOOLS) {
             return ToolResult(
                 false,

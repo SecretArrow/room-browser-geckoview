@@ -1302,6 +1302,11 @@ private fun PlanStepRow(item: AgentPlan.Item) {
             Icons.Filled.PlayArrow to MaterialTheme.colorScheme.onSurface
         AgentPlan.Status.PENDING ->
             Icons.Filled.RadioButtonUnchecked to MaterialTheme.colorScheme.onSurfaceVariant
+        // A status the model invented ("failed", "blocked", an emoji) lands
+        // here as FAILED: an error mark, the row still on the list — the
+        // failure is VISIBLE, which is the whole point of the card.
+        AgentPlan.Status.FAILED ->
+            Icons.Filled.ErrorOutline to MaterialTheme.colorScheme.error
     }
     Row(
         verticalAlignment = Alignment.Top,
