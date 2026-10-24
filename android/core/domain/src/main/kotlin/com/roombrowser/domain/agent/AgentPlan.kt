@@ -40,6 +40,7 @@ object AgentPlan {
         PENDING("pending", "[ ]"),
         IN_PROGRESS("in_progress", "[>]"),
         DONE("done", "[x]"),
+
         /**
          * Not a word the model is ASKED to send — the tool's refusal names
          * only the three above — but a word models send anyway ("failed",

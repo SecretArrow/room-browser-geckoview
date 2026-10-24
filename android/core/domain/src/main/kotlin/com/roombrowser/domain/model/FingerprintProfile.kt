@@ -7,7 +7,7 @@ import javax.crypto.spec.SecretKeySpec
  * The fingerprint surfaces derived from a profile's seed. A null seed yields
  * [legacy], which is what the shim reported before seeds existed.
  */
-data class FingerprintProfile private constructor(
+data class FingerprintProfile public constructor(
     val platform: String,
     val colorDepth: Int?,
     val pixelDepth: Int?,
