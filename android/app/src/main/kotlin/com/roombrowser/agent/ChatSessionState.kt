@@ -189,8 +189,14 @@ class ChatSessionState(val sessionId: Long?) {
      * open bubble is REPLACED (its text was this same answer's deltas), and
      * anything else gets a row of its own. The pure function keeps the WHERE;
      * this applies it in place so the other rows are not re-materialized.
+     *
+     * SUSPEND only because [AgentTranscript.answer] is (its usage hook is);
+     * the transcript work itself is in-memory list shaping.
      */
-    internal fun applyAnswer(openIndex: Int, answer: String, at: Long) {
+    internal suspend fun applyAnswer(openIndex: Int, answer: String, at: Long) {
+        // Usage is NOT this state's business: the controller's FinalAnswer
+        // branch persists the reported counts onto the assistant row directly
+        // (repo.setMessageUsage), because the row id exists only there.
         val next = AgentTranscript.answer(entries.toList(), openIndex, answer, at)
         when {
             // The replace branch of AgentTranscript.answer: same size, one row.

@@ -812,7 +812,6 @@ class BrowserAgentController(
         turnJob?.cancel()
         AgentForeground.stopCurrentTurn = null
         AgentForeground.pauseCurrentTurn = null
-        AgentForeground.currentTurnSessionId = null
         AgentForeground.finish()
         // Everything cached dies with the controller: held windows, decrypted
         // keys and model lists must not outlive the profile they were read
@@ -1492,7 +1491,6 @@ class BrowserAgentController(
         // the adoption below.
         var st = stateFor(activeSessionId)
         turnOriginSessionId = st.sessionId
-        AgentForeground.currentTurnSessionId = st.sessionId
         running = true
         st.running = true
         gateFailureNoted = false
@@ -1725,7 +1723,6 @@ class BrowserAgentController(
             // the scratch id must reach them too — a Stop arriving between
             // here and the end of the turn has to land on THIS turn's chat.
             turnOriginSessionId = sessionId
-            AgentForeground.currentTurnSessionId = sessionId
             // Adopting the tab's chat is continuing it, so what it was already
             // allowed to do on a site still stands.
             pointApprovalsAt(sessionId)
@@ -2777,6 +2774,34 @@ class BrowserAgentController(
 
     companion object {
         private const val APPROVAL_TIMEOUT_MS = 120_000L
+
+        /**
+         * The LRU cap on held transcript windows (see [trimStatesLocked]).
+         * Twelve loaded transcripts cover any browsing session a person
+         * actually does; beyond that the eldest non-running, non-visible
+         * state falls out and costs a reload when it is wanted again. Never
+         * larger than the live-engine budget, for the same reason: a cache
+         * bigger than what a session can touch is only memory.
+         */
+        private const val SESSION_STATE_CAP = 12
+
+        /**
+         * The cap on the provider-derived caches below ([apiKeyCache] and
+         * [modelCache]): one entry per provider is all a profile can ask
+         * for, and a profile with a dozen providers edited in and out over
+         * a long session must not accumulate unbounded maps.
+         */
+        private const val BOUNDED_CACHE_CAP = 12
+
+        /**
+         * The freshness window under which a second [refreshProviders] call
+         * is a no-op. The panel and the activity each ask on resume; without
+         * this guard a settings round-trip pays two Room reads for one
+         * answer. Short enough that a provider added elsewhere is picked up
+         * on the next resume anyway — the collectors are the live path, this
+         * only de-duplicates the resume bursts.
+         */
+        private const val PROVIDERS_REFRESH_MIN_INTERVAL_MS = 10_000L
 
         /**
          * How many transcript rows a chat opens with, and how many each
