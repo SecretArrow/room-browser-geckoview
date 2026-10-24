@@ -32,7 +32,13 @@ data class SkillSpec(
         append("/tar.gz/refs/heads/")
         // A branch may itself contain slashes (feature/x); each SEGMENT is
         // encoded, never the separators, or the URL would name the wrong ref.
-        append(branch.split('/').joinToString("/") { segment -> urlEncode(segment) })
+        // URLEncoder is form encoding, so its '+' stands in for a space a
+        // branch name cannot carry anyway; a percent is what the path wants.
+        append(
+            branch.split('/').joinToString("/") { segment ->
+                java.net.URLEncoder.encode(segment, Charsets.UTF_8).replace("+", "%20")
+            }
+        )
     }
 }
 

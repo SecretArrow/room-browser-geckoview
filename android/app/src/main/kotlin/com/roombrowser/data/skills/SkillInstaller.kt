@@ -163,7 +163,9 @@ class DaoSkillStore(private val dao: AgentSkillDao) : SkillStore {
  * JVM-testable with a fake [SkillFetch] and a fake [SkillStore].
  */
 class SkillInstaller(
-    private val skillsDir: File,
+    // Visible to SkillRepository, which exposes the same directory to the
+    // manager screen — one dir, one source of truth, two read-only faces.
+    val skillsDir: File,
     private val fetch: SkillFetch,
     private val store: SkillStore
 ) {
