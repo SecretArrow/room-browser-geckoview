@@ -105,7 +105,7 @@ class SkillInstallerTest {
 
     @Test
     fun `the sha256 recorded is the digest of the installed SKILL md`() = runBlocking<Unit> {
-        val fetch = hubFetch()
+        val fetch = hubFetch(skillDir = "skills/w")
         val result = installer(fetch).install("owner/demo-hub/skills/w", nowMs = 1) as SkillInstallResult.Installed
         val expected = MessageDigest.getInstance("SHA-256").digest(SKILL_MD_BYTES)
             .joinToString("") { "%02x".format(it) }
@@ -199,7 +199,8 @@ class SkillInstallerTest {
         runBlocking<Unit> {
             val fetch = FakeFetch(
                 "https://api.github.com/repos/owner/demo-hub" to (403 to ByteArray(0)),
-                "https://codeload.github.com/owner/demo-hub/tar.gz/refs/heads/main" to ok(hubTarball())
+                "https://codeload.github.com/owner/demo-hub/tar.gz/refs/heads/main" to
+                    ok(hubTarball(skillDir = "demo-hub-main/skills/w"))
             )
             val result = installer(fetch).install("owner/demo-hub/skills/w", nowMs = 1) as SkillInstallResult.Installed
             assertThat(result.entity.commitRef).isEqualTo("main")
@@ -210,7 +211,8 @@ class SkillInstallerTest {
         val fetch = FakeFetch(
             "https://api.github.com/repos/owner/demo-hub/branches/legacy" to
                 ok("""{"commit":{"sha":"feed0001"}}"""),
-            "https://codeload.github.com/owner/demo-hub/tar.gz/refs/heads/legacy" to ok(hubTarball())
+            "https://codeload.github.com/owner/demo-hub/tar.gz/refs/heads/legacy" to
+                ok(hubTarball(skillDir = "demo-hub-main/skills/w"))
         )
         val result = installer(fetch).install(
             "https://github.com/owner/demo-hub/tree/legacy/skills/w",
@@ -237,7 +239,8 @@ class SkillInstallerTest {
                     hubTarball(
                         "demo-hub-main",
                         skillMdFor("1.13.0"),
-                        "demo-hub-main/skills/binance-web3/binance-agentic-wallet/only-first.md" to "first"
+                        skillDir = "demo-hub-main/skills/w",
+                        "demo-hub-main/skills/w/only-first.md" to "first"
                     )
                 )
         )
@@ -251,7 +254,7 @@ class SkillInstallerTest {
             "https://api.github.com/repos/other/demo-hub/branches/main" to
                 ok("""{"commit":{"sha":"newsha"}}"""),
             "https://codeload.github.com/other/demo-hub/tar.gz/refs/heads/main" to
-                ok(hubTarball(skillMd = skillMdFor("2.0.0")))
+                ok(hubTarball(skillMd = skillMdFor("2.0.0"), skillDir = "demo-hub-main/skills/w"))
         )
         val result = SkillInstaller(skillsDir, fetch, store)
             .install("other/demo-hub/skills/w", nowMs = 2_000) as SkillInstallResult.Installed
@@ -281,10 +284,14 @@ class SkillInstallerTest {
     private fun ok(body: ByteArray) = 200 to body
 
     /** The API answers a fake needs for one repo whose skill lives at skills/w. */
-    private fun hubFetch(host: String = "owner") = FakeFetch(
+    private fun hubFetch(
+        host: String = "owner",
+        skillDir: String
+    ) = FakeFetch(
         "https://api.github.com/repos/$host/demo-hub/branches/" to ok("""{"commit":{"sha":"abc"}}"""),
         "https://api.github.com/repos/$host/demo-hub" to ok("""{"default_branch":"main"}"""),
-        "https://codeload.github.com/$host/demo-hub/tar.gz/refs/heads/main" to ok(hubTarball())
+        "https://codeload.github.com/$host/demo-hub/tar.gz/refs/heads/main" to
+            ok(hubTarball(skillDir = "demo-hub-main/$skillDir"))
     )
 
     private val SKILL_MD_BYTES = skillMdFor("1.13.0").toByteArray(Charsets.UTF_8)
@@ -316,9 +323,9 @@ class SkillInstallerTest {
     private fun hubTarball(
         repoRoot: String = "demo-hub-main",
         skillMd: String = skillMdFor("1.13.0"),
+        skillDir: String = "$repoRoot/skills/binance-web3/binance-agentic-wallet",
         vararg extra: Pair<String, String>
     ): ByteArray {
-        val skillDir = "$repoRoot/skills/binance-web3/binance-agentic-wallet"
         val entries = mutableListOf(
             tarEntry("$skillDir/SKILL.md", skillMd.toByteArray(Charsets.UTF_8)),
             tarEntry("$skillDir/references/send.md", "send: `baw wallet send`".toByteArray()),
