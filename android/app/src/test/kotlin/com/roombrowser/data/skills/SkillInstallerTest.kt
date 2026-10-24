@@ -277,6 +277,9 @@ class SkillInstallerTest {
 
     private fun ok(body: String) = 200 to body.toByteArray(Charsets.UTF_8)
 
+    /** The same answer for a fixture that is already bytes — a tarball. */
+    private fun ok(body: ByteArray) = 200 to body
+
     /** The API answers a fake needs for one repo whose skill lives at skills/w. */
     private fun hubFetch(host: String = "owner") = FakeFetch(
         "https://api.github.com/repos/$host/demo-hub/branches/" to ok("""{"commit":{"sha":"abc"}}"""),

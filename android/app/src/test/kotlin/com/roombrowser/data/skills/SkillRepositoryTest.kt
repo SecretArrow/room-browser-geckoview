@@ -66,8 +66,8 @@ class SkillRepositoryTest {
 
     /** A store that refuses upserts — the reads under test never install. */
     private object DaolessStore : SkillStore {
-        override suspend fun bySkillId(skillId: String): AgentSkillEntity? = null
-        override suspend fun upsert(entity: AgentSkillEntity) =
+        override suspend fun bySkillId(skillId: String): Row? = null
+        override suspend fun upsert(entity: Row) =
             error("the reads under test must never install")
     }
 
