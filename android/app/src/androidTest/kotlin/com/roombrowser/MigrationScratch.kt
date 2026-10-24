@@ -134,9 +134,4 @@ internal fun stripTaskPlanJsonColumn(db: SQLiteDatabase) {
     db.execSQL(
         "CREATE INDEX `index_ai_tasks_profile_id` ON `ai_tasks` (`profile_id`)"
     )
-        "CREATE INDEX IF NOT EXISTS `index_agent_messages_session_id` " +
-            "ON `agent_messages` (`session_id`)"
-    )
-    // agent_skills arrives at v19; the replay's 18 -> 19 CREATE recreates it.
-    db.execSQL("DROP TABLE IF EXISTS `agent_skills`")
 }
