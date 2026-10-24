@@ -816,8 +816,13 @@ internal class TranscriptKeyCache {
     private var keys: List<String> = emptyList()
 
     fun keysFor(entries: List<AgentEntry>): List<String> {
+        // No identity shortcut: with the controller handing over live
+        // SnapshotStateLists in places, `entries === source` is true forever
+        // after the first call and would freeze the keys at the first
+        // generation's size — exactly the stale-short-keys crash the
+        // AgentConversation snapshot exists to prevent. Size + stems is the
+        // only honest hit test, and it answers the same-object case too.
         val cached = source ?: return recompute(entries)
-        if (entries === cached) return keys
         if (entries.size == cached.size && sameKeyStems(cached, entries)) {
             source = entries
             return keys
@@ -931,7 +936,22 @@ private fun AgentConversation(
     modifier: Modifier = Modifier
 ) {
     val listState = rememberLazyListState()
-    val entries = agent.entries
+    // ONE SNAPSHOT per recomposition — never the live list. [ChatSessionState]
+    // holds [entries] as a SnapshotStateList the turn thread mutates in place
+    // (append, in-place upsert), while everything below — [keysFor]'s memo,
+    // and the LazyColumn key lambda's `keys[index]` — leans on the F-16
+    // whole-list contract: the list this composable sees must not change
+    // under the keys computed FOR it. A live list breaks that in the window
+    // between this read and the item provider's key pass: a row lands, Lazy
+    // asks for the new index's key, the key list still holds the old
+    // generation's size, and `keys[index]` takes the whole :browser process
+    // down (CI 40138280360: IndexOutOfBoundsException Index: 1, Size: 1, and
+    // every suite after it failing on the relaunch). `toList()` reads the
+    // snapshot state inside composition — so the copy still registers the
+    // observation and every later append/replace recomposes with a fresh,
+    // self-consistent pair — and it is O(window), paid once per
+    // recomposition, not per token.
+    val entries = agent.entries.toList()
     val plan = agent.plan
 
     // Keys are per ENTRY, not per slot. Position was the key before, so item
