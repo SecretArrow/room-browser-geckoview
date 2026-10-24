@@ -72,7 +72,7 @@ class SkillRepositoryTest {
     }
 
     /** Installs the files by hand and one row through the fake DAO. */
-    private fun givenSkill(
+    private suspend fun givenSkill(
         id: String,
         enabled: Boolean = true,
         body: String = "Drive the `baw` CLI. Never ask for a seed phrase.",

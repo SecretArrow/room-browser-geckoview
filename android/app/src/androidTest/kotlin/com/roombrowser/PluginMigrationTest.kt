@@ -453,6 +453,10 @@ class PluginMigrationTest {
             db.execSQL("DROP TABLE IF EXISTS `chat_plugins`")
             db.execSQL("DROP TABLE IF EXISTS `plugins`")
             db.execSQL("DROP TABLE IF EXISTS `room_master_table`")
+            // The v19 delta is undone here too (usage columns off
+            // agent_messages, agent_skills dropped) or the replay's
+            // 18 -> 19 step dies on a duplicate column.
+            stripAgentMessageUsageColumns(db)
             db.version = 16
         } finally {
             db.close()
@@ -538,6 +542,8 @@ class PluginMigrationTest {
                     "`index_chat_plugins_session_id_plugin_id` " +
                     "ON `chat_plugins` (`session_id`, `plugin_id`)"
             )
+            // The v19 delta is undone here too — see the v16 revert above.
+            stripAgentMessageUsageColumns(db)
             db.version = 17
         } finally {
             db.close()

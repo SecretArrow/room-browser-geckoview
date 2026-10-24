@@ -90,9 +90,10 @@ class AgentSkillsGateTest {
             val refusal = AgentPermissions.refusal(tool, setOf(AgentPermissions.AGENT_SKILLS))
             assertThat(refusal).isNotNull()
             assertThat(refusal).contains(tool)
-            // The sentence names the axis the settings screen labels, so the
-            // user can find the switch the refusal is about.
-            assertThat(refusal).contains("agent.skills")
+            // The sentence names the axis by its LABEL — the string the
+            // settings screen shows next to the switch — so the user can
+            // find what to grant; the raw "agent.skills" id is for profiles
+            // and manifests, not for people.
             assertThat(refusal).contains(AgentPermissions.label(AgentPermissions.AGENT_SKILLS))
 
             // Granted: every tool answers normally.

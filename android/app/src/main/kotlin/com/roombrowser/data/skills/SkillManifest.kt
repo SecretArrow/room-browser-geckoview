@@ -409,12 +409,14 @@ object SkillManifest {
             val path = stack.map { it.second }
 
             when {
-                path == listOf("name") && value.isEmpty() -> {
-                    // A folded name is not a documented shape, but it is still
-                    // a name — read it rather than refuse a skill over punctuation.
+                path == listOf("name") && (value.isEmpty() || isBlockScalar(value)) -> {
+                    // A block or folded name is not a documented shape, but it
+                    // is still a name — read it rather than refuse a skill over
+                    // punctuation. The real hub writes plain scalars; parsers
+                    // that refuse the block form refuse valid skills.
                     blockKey = "name"
                     blockParent = indent
-                    blockFold = false
+                    blockFold = value.startsWith(">")
                     blockIndent = -1
                 }
                 path == listOf("name") -> name = unquote(value).take(MAX_NAME)
