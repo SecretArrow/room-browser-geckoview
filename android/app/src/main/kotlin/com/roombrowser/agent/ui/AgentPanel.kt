@@ -238,18 +238,22 @@ fun AgentPanelHost(
                             .weight(1f)
                             .fillMaxWidth()
                     )
-                    // Keyed on the tab AND the chat so unsent input cannot
-                    // follow the user into another conversation: the composer
-                    // text and its attached files are remembered across both
-                    // switches otherwise, and the next Send would file them
-                    // under a chat they were never written for. The tab is
-                    // only HALF of "whose input is this" — opening a chat from
-                    // history (openSession) and starting a new one (newSession)
-                    // change the conversation without changing the tab, so the
-                    // session id is the second key: either one changing hands
-                    // the composer over empty, discarding every remember{}/
-                    // rememberSaveable{} the draft lives in.
-                    key(viewModel.activeTabId, agent.activeSessionId) {
+                    // Keyed on the tab AND a draft epoch so unsent input
+                    // cannot follow the user into another conversation: the
+                    // composer text and its attached files are remembered
+                    // across switches otherwise, and the next Send would file
+                    // them under a chat they were never written for. The tab
+                    // is only HALF of "whose input is this" — opening a chat
+                    // from history and starting a new one change the
+                    // conversation without changing the tab, so the second key
+                    // is the controller's draftEpoch, which the chat-switch
+                    // paths bump and NOTHING else does. It is deliberately NOT
+                    // the session id: a chat's first message creates its
+                    // session row mid-send, and a key that moved there would
+                    // rebuild the composer under the send tap — the click
+                    // landing on a node the recomposition had replaced, the
+                    // prompt never leaving the field.
+                    key(viewModel.activeTabId, agent.draftEpoch) {
                         AgentComposer(
                             agent = agent,
                             // No imePadding: the browser Scaffold already
@@ -340,7 +344,7 @@ fun AgentScreenHost(
         )
         // Same two-dimensional composer key as the panel: the tab AND the
         // chat decide whose input this is — see AgentPanelHost.
-        key(viewModel.activeTabId, agent.activeSessionId) {
+        key(viewModel.activeTabId, agent.draftEpoch) {
             AgentComposer(
                 agent = agent,
                 // The panel is lifted by the browser Scaffold, which is why it

@@ -169,6 +169,10 @@ class AgentSessionMigrationTest {
             // the replay's 17 -> 18 ADD COLUMN finds the columns already there.
             db.execSQL("DROP TABLE IF EXISTS `chat_plugins`")
             db.execSQL("DROP TABLE IF EXISTS `plugins`")
+            // The v19 delta is undone here too: the usage columns leave
+            // agent_messages and agent_skills drops, or the replay's
+            // 18 -> 19 step dies on a duplicate column. (v9 replay)
+            stripAgentMessageUsageColumns(db)
             db.version = 9
         } finally {
             db.close()

@@ -436,6 +436,21 @@ class BrowserAgentController(
     var planPanelOpen by mutableStateOf(false)
 
     /**
+     * Bumped every time the chat the panel points at CHANGES (new chat,
+     * history adoption, tab resolve) and never otherwise. The composer keys
+     * on this rather than on [activeSessionId] because the two move at
+     * different moments: a chat's FIRST message creates its session row
+     * mid-send, and keying on the id there would rebuild the composer under
+     * the send tap — the click that had just been dispatched would land on a
+     * node the recomposition had already replaced, and the prompt would never
+     * leave the field (CI's "the composer releases it" guard exists because
+     * of exactly that class of race). A draft reset belongs to a chat SWITCH,
+     * which is a user action, never to the turn machinery starting up.
+     */
+    var draftEpoch by mutableStateOf(0)
+        private set
+
+    /**
      * Whether the DB holds transcript rows older than the ones [entries]
      * currently shows. The panel turns exactly this into its "load older"
      * affordance, so a chat under one window renders an item list with
@@ -930,6 +945,9 @@ class BrowserAgentController(
         if (running) return
         // Takes the panel: any tab resolve still reading is now stale.
         conversationRequest++
+        // A new chat is a new draft: the composer's text and attachments
+        // belong to the conversation they were typed for.
+        draftEpoch++
         val previous = activeSessionId
         activeSessionId = null
         // A site-scoped approval belongs to the chat it was given in.
@@ -977,6 +995,9 @@ class BrowserAgentController(
                 repo.bindSessionToTab(id, tabId)
                 conversationTabId = tabId
             }
+            // The adopted chat is a different conversation: its draft starts
+            // empty, whatever the previous chat left in the field.
+            draftEpoch++
             activeSessionId = session.id
             pointApprovalsAt(session.id)
             plan = AgentPlan.decode(session.planJson)
@@ -1002,6 +1023,10 @@ class BrowserAgentController(
         val session = repo.sessionForTab(profileId.value, tabId)
         if (token != conversationRequest || vm.activeTabId != tabId) return
         conversationTabId = tabId
+        // A resolved tab conversation is a chat switch whenever the id moves
+        // — including onto a tab whose chat is still unwritten (null), whose
+        // composer must start empty rather than inherit another tab's draft.
+        if (activeSessionId != session?.id) draftEpoch++
         activeSessionId = session?.id
         // Another chat is another site; coming back to this one keeps what it
         // was told "for the rest of this chat".
