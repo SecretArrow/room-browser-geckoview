@@ -357,6 +357,18 @@ jobs:
         working-directory: android
         run: ./gradlew ktlintCheck --console=plain
 
+      - name: WebView defaults static test
+        working-directory: android
+        # The out-of-the-box web-compatibility contract (what a fresh install
+        # sends: a neutralized UA, no X-Requested-With header, cookies and DOM
+        # storage on, no shield on by default) is decided in a handful of
+        # source lines, and this proof reads those lines and asserts what they
+        # say. Plain Node, no Gradle, so it costs seconds here -- the repo's
+        # rule that a fast-job failure is worth more than an e2e one applies,
+        # and the file is edition-aware: the WebView sibling runs the same
+        # proof for its half of the parity.
+        run: node tools/test_webview_defaults.js
+
       - name: Unit tests (domain + engine + app)
         working-directory: android
         # --continue so a failure in one module still reports the other's
