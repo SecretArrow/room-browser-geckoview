@@ -198,7 +198,7 @@ class SkillInstallerTest {
     fun `a rate limited api falls back to main and records the branch as the ref`() =
         runBlocking<Unit> {
             val fetch = FakeFetch(
-                "https://api.github.com/repos/owner/demo-hub" to SkillHttpResponse(403, ByteArray(0), "rate limited"),
+                "https://api.github.com/repos/owner/demo-hub" to (403 to ByteArray(0)),
                 "https://codeload.github.com/owner/demo-hub/tar.gz/refs/heads/main" to ok(hubTarball())
             )
             val result = installer(fetch).install("owner/demo-hub/skills/w", nowMs = 1) as SkillInstallResult.Installed
