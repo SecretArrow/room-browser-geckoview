@@ -33,6 +33,14 @@ class AiTaskRepositoryTest {
 
         override suspend fun get(id: Long): AiTaskEntity? = rows[id]
 
+        // The scheduled run's live plan line: the runner overwrites the row's
+        // plan on every PlanUpdated, so the fake mirrors the real DAO's
+        // single-column UPDATE.
+        override suspend fun setPlan(id: Long, plan: String) {
+            val row = rows[id] ?: return
+            rows[id] = row.copy(planJson = plan)
+        }
+
         override suspend fun upsert(entity: AiTaskEntity): Long {
             val id = if (entity.id == 0L) nextId++ else entity.id
             rows[id] = entity.copy(id = id)
