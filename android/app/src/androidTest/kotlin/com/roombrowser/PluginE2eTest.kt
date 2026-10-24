@@ -991,16 +991,31 @@ class PluginE2eTest {
             }
             val card = device.findObject(By.descContains("plugin_card"))
             if (card != null) {
-                val bounds = card.visibleBounds
-                val x = bounds.centerX()
-                val fromY = bounds.centerY().coerceIn(16, device.displayHeight - 16)
-                val toY = if (towardBeginning) {
-                    (fromY + 120).coerceAtMost(device.displayHeight - 8)
-                } else {
-                    (fromY - 120).coerceAtLeast(8)
+                // The anchor's bounds are read in the same breath as the
+                // find, and that breath is where uiautomator can invalidate
+                // the node (CI 40070510408 attempt 2: the counter test died
+                // at exactly this read, in uiautomator's own staleness
+                // words). A stale anchor is not "no anchor" — the loop
+                // re-finds the card and rocks again, the same answer the
+                // atomic measures below give the same race.
+                val bounds = try {
+                    card.visibleBounds
+                } catch (_: IllegalStateException) {
+                    null
+                } catch (_: StaleObjectException) {
+                    null
                 }
-                if (toY != fromY) device.swipe(x, fromY, x, toY, 60)
-                towardBeginning = !towardBeginning
+                if (bounds != null) {
+                    val x = bounds.centerX()
+                    val fromY = bounds.centerY().coerceIn(16, device.displayHeight - 16)
+                    val toY = if (towardBeginning) {
+                        (fromY + 120).coerceAtMost(device.displayHeight - 8)
+                    } else {
+                        (fromY - 120).coerceAtLeast(8)
+                    }
+                    if (toY != fromY) device.swipe(x, fromY, x, toY, 60)
+                    towardBeginning = !towardBeginning
+                }
             } else {
                 // No card composed: the list is scrolled somewhere a card is
                 // not. The end is where a module message lives, so the

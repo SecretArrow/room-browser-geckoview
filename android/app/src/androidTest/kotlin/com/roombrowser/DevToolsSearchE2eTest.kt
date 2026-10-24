@@ -644,13 +644,27 @@ class DevToolsSearchE2eTest {
      * buffers, and the panels re-open on a tree that answers. This test alone
      * earns the recovery because it alone holds its panels open across a
      * multi-minute walk while that recycle lands.
+     *
+     * TWO relaunches, not one: after the 2026-10 runner image change the
+     * crawl outlasted a single fresh activity twice in a row (CI run
+     * 40070510408, attempts 1 and 2: the network feed's row was never found,
+     * and the failure's own tree probe reported "the window was
+     * mid-transition"), so the first relaunch can come up while the tree is
+     * still wedged. The second starts a full walk later, from a tree that
+     * has had that much longer to settle, and the first attempt's heading
+     * wait is doubled to 60 seconds for the same reason. Each attempt is
+     * bounded by the walk budget, so the whole recovery costs minutes, not
+     * the hour the un-walked crawl once did.
      */
     private fun recoveredFeedScroll(panelChip: String, panelBody: String, text: String): Boolean {
-        launchEngine(server.url("/page-$tag").toString())
-        if (!hasText(pageHeading, 30_000)) return false
-        if (!openDeveloperToolsPanel(consoleChip, consoleBody)) return false
-        if (panelChip != consoleChip && !selectPanel(panelChip, panelBody)) return false
-        return scrollPanelToText(text)
+        repeat(2) { attempt ->
+            launchEngine(server.url("/page-$tag").toString())
+            if (!hasText(pageHeading, if (attempt == 0) 60_000 else 30_000)) return@repeat
+            if (!openDeveloperToolsPanel(consoleChip, consoleBody)) return@repeat
+            if (panelChip != consoleChip && !selectPanel(panelChip, panelBody)) return@repeat
+            if (scrollPanelToText(text)) return true
+        }
+        return false
     }
 
     private fun scrollPanelToText(text: String, maxDrags: Int = 24): Boolean {
