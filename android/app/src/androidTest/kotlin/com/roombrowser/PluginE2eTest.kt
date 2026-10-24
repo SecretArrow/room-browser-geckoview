@@ -966,7 +966,30 @@ class PluginE2eTest {
      * later wait lands re-aligns onto a view it recognizes.
      */
     private fun moduleMessageAppears(needle: String, timeoutMs: Long): Boolean =
-        rockingFind(needle, timeoutMs) != null
+        rockingFind(needle, timeoutMs) != null || cardCarries(needle)
+
+    /**
+     * Whether a plugin card's SUBTREE carries [needle] anywhere in its node
+     * texts. The poll above matches a node whose text CONTAINS the needle as
+     * a one-line substring - UiAutomator compiles textContains as an
+     * anchored, line-bound regex, so a needle sitting on the second line of
+     * a multi-line node ("Module: <name> v<ver>" above the module's own
+     * body) can never match it, even with the message fully on screen - the
+     * exact state one CI run captured: the card rendered its whole body and
+     * the poll still timed out. The walk reads the same tree the failure
+     * dump does, so a rendered message is a rendered message whatever node
+     * the host composed it into.
+     */
+    private fun cardCarries(needle: String): Boolean = try {
+        device.findObjects(By.descContains("plugin_card")).any { card ->
+            fun walk(node: UiObject2): Boolean =
+                node.text?.contains(needle) == true ||
+                    (node.children?.any { walk(it) } ?: false)
+            walk(card)
+        }
+    } catch (_: Exception) {
+        false
+    }
 
     /**
      * [moduleMessageAppears]'s wait, returning the row it found instead of a
@@ -1040,6 +1063,7 @@ class PluginE2eTest {
         val deadline = System.currentTimeMillis() + timeoutMs
         while (System.currentTimeMillis() < deadline) {
             val row = rockingFind(needle, deadline - System.currentTimeMillis())
+                ?: cardNodeCarrying(needle)
             if (row == null) return null
             try {
                 return row.visibleBounds.top
@@ -1054,6 +1078,32 @@ class PluginE2eTest {
             }
         }
         return null
+    }
+
+    /**
+     * The card-subtree node whose text carries [needle], with live bounds —
+     * the bounds-capable twin of [cardCarries]. The poll's line-bound regex
+     * cannot match a needle sitting on the second line of the card's
+     * multi-line text node, and the bounds capture needs a NODE, not a
+     * boolean: the walk hands back the matching child, whose visibleBounds
+     * are the ordering witness the caller wanted.
+     */
+    private fun cardNodeCarrying(needle: String): UiObject2? = try {
+        device.findObjects(By.descContains("plugin_card")).firstNotNullOfOrNull { card ->
+            var hit: UiObject2? = null
+            fun walk(node: UiObject2) {
+                if (hit != null) return
+                if (node.text?.contains(needle) == true) {
+                    hit = node
+                    return
+                }
+                node.children?.forEach { walk(it) }
+            }
+            walk(card)
+            hit
+        }
+    } catch (_: Exception) {
+        null
     }
 
     /**
