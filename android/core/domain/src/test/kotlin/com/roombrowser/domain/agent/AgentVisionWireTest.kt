@@ -34,7 +34,7 @@ class AgentVisionWireTest {
             """{"model":"glm-4.6","messages":[{"role":"user","content":""" +
                 """[{"type":"text","text":"what is this?"},""" +
                 """{"type":"image_url","image_url":{"url":"data:image/png;base64,QUJD"}}]}],""" +
-                """"stream":true}"""
+                """"stream":true,"stream_options":{"include_usage":true}}"""
         )
     }
 
@@ -62,7 +62,10 @@ class AgentVisionWireTest {
         assertThat(plain).doesNotContain("images")
         assertThat(
             AgentVisionRequest.openAiBody(ChatRequest(model = "m", messages = listOf(message)))
-        ).isEqualTo("""{"model":"m","messages":[{"role":"user","content":"hi"}],"stream":true}""")
+        ).isEqualTo(
+            """{"model":"m","messages":[{"role":"user","content":"hi"}],"stream":true,""" +
+                """"stream_options":{"include_usage":true}}"""
+        )
     }
 
     @Test
@@ -72,7 +75,10 @@ class AgentVisionWireTest {
             messages = listOf(ChatMessage(role = "user", content = "hi", images = emptyList()))
         )
         assertThat(AgentVisionRequest.openAiBody(request))
-            .isEqualTo("""{"model":"m","messages":[{"role":"user","content":"hi"}],"stream":true}""")
+            .isEqualTo(
+            """{"model":"m","messages":[{"role":"user","content":"hi"}],"stream":true,""" +
+                """"stream_options":{"include_usage":true}}"""
+        )
     }
 
     // ---------------------------------------------------------------- Anthropic
