@@ -5,8 +5,8 @@ import com.roombrowser.browser.wallet.DappDecision
 import com.roombrowser.browser.wallet.DappRequest
 import com.roombrowser.browser.wallet.NetworkRecord
 import com.roombrowser.browser.wallet.WalletAccountRecord
-import com.roombrowser.browser.wallet.WalletLockedException
 import com.roombrowser.browser.wallet.WalletLockState
+import com.roombrowser.browser.wallet.WalletLockedException
 import com.roombrowser.domain.agent.AgentTools
 import com.roombrowser.domain.task.AiTaskPermissions
 import com.roombrowser.domain.task.ToolGroup

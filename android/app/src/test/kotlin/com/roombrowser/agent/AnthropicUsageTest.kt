@@ -1,8 +1,8 @@
 package com.roombrowser.agent
 
 import com.google.common.truth.Truth.assertThat
-import com.roombrowser.domain.agent.AnthropicMessages
 import com.roombrowser.domain.agent.AgentUsage
+import com.roombrowser.domain.agent.AnthropicMessages
 import com.roombrowser.domain.agent.TurnUsage
 import org.junit.Test
 

@@ -5,6 +5,7 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.add
 import kotlinx.serialization.json.addJsonObject
 import kotlinx.serialization.json.buildJsonArray
+import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.put
@@ -42,7 +43,10 @@ object AgentVisionRequest {
         val withUsage = if (request.stream) {
             JsonObject(
                 LinkedHashMap(root).apply {
-                    putJsonObject("stream_options") { put("include_usage", true) }
+                    // A MutableMap has no putJsonObject — that builder lives on
+                    // JsonObjectBuilder — so the nested object is built first
+                    // and inserted as a value.
+                    put("stream_options", buildJsonObject { put("include_usage", true) })
                 }
             )
         } else {

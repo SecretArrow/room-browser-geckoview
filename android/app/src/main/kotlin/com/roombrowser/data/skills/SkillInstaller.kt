@@ -1,7 +1,7 @@
 package com.roombrowser.data.skills
 
-import com.roombrowser.data.db.AgentSkillEntity
 import com.roombrowser.data.db.AgentSkillDao
+import com.roombrowser.data.db.AgentSkillEntity
 import com.roombrowser.data.net.AppHttpClients
 import com.roombrowser.domain.agent.AgentJson
 import com.roombrowser.node.packages.TarGz
