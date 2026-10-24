@@ -114,6 +114,8 @@ class AiTaskMigrationTest {
             SQLiteDatabase.OPEN_READWRITE
         )
         try {
+            stripMessageUsageColumns(db)
+            stripTaskPlanJsonColumn(db)
             stripPlanJsonColumn(db)
             db.execSQL("DROP TABLE IF EXISTS `ai_tasks`")
             db.execSQL("DROP TABLE IF EXISTS `room_master_table`")

@@ -649,7 +649,6 @@ class BrowserAgentController(
      * freshness guard that stops the panel's every resume-and-expand (and
      * BrowserActivity.onResume on top) from stampeding the same Room read.
      */
-    private var lastProvidersRefreshMs = 0L
 
     /**
      * Whether this turn has already told the user that the local decision
@@ -775,17 +774,15 @@ class BrowserAgentController(
      * stale "No provider configured" state. Called whenever the agent panel
      * is opened/expanded AND from BrowserActivity.onResume.
      *
-     * The freshness guard is what makes all those callers coexist with the
-     * continuous collectors that already keep both fresh: the read exists for
-     * the LOST-ping case, an event of once-per-resume magnitude, so re-reading
-     * more often than once every few seconds pays Room + a Log.d for a list
-     * the collectors have not had time to change. A provider saved through
-     * this process rides the collector Flow and never waits out the window.
+     * NO freshness guard, on purpose: the first version of this refactor
+     * de-duplicated the resume bursts behind a ten-second window, and the
+     * provider editor e2e caught it — a provider saved and returned from
+     * INSIDE the window left the panel on the stale "No provider configured"
+     * state, and the composer answered every send with "configure a provider
+     * first". The read is a single indexed query; the correctness of the
+     * resume path is worth more than the milliseconds its guard saved.
      */
     fun refreshProviders() {
-        val now = SystemClock.elapsedRealtime()
-        if (now - lastProvidersRefreshMs < PROVIDERS_REFRESH_MIN_INTERVAL_MS) return
-        lastProvidersRefreshMs = now
         scope.launch {
             runCatching {
                 val list = repo.providers()
@@ -2106,6 +2103,12 @@ class BrowserAgentController(
             }
             running = false
             st.running = false
+            // The turn is over, so the turn/panel routing split collapses:
+            // turnOriginSessionId CLEARS here, or every later note() — a
+            // plugin activation, an /airplane answer, a gate's reply between
+            // turns — would ride turnState into the chat that JUST ran and
+            // never reach the chat the user is looking at now.
+            turnOriginSessionId = null
             setStatus(null)
             st.approval = null
             // The hidden page belongs to the turn, so it goes with the turn —
@@ -2792,16 +2795,6 @@ class BrowserAgentController(
          * a long session must not accumulate unbounded maps.
          */
         private const val BOUNDED_CACHE_CAP = 12
-
-        /**
-         * The freshness window under which a second [refreshProviders] call
-         * is a no-op. The panel and the activity each ask on resume; without
-         * this guard a settings round-trip pays two Room reads for one
-         * answer. Short enough that a provider added elsewhere is picked up
-         * on the next resume anyway — the collectors are the live path, this
-         * only de-duplicates the resume bursts.
-         */
-        private const val PROVIDERS_REFRESH_MIN_INTERVAL_MS = 10_000L
 
         /**
          * How many transcript rows a chat opens with, and how many each

@@ -251,6 +251,10 @@ class AgentSkillMigrationTest {
      * v18 — goes with them.
      */
     private fun revertToV18() {
+        // v18 also predates the scheduled-run plan column (v20): the replay
+        // from here crosses 19 -> 20, and the current-shape table would make
+        // that ADD COLUMN die with "duplicate column name".
+        stripTaskPlanJsonColumn(openRaw())
         val db = openRaw()
         try {
             db.execSQL(

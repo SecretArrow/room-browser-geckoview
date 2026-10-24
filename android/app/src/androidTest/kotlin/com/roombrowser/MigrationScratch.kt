@@ -53,3 +53,77 @@ internal fun stripPlanJsonColumn(db: SQLiteDatabase) {
             "ON `agent_sessions` (`profile_id`, `tab_id`)"
     )
 }
+
+/**
+ * Undoes the v18->v19 delta on `agent_messages`, in place: the two nullable
+ * usage columns go, everything v18 had stays.
+ *
+ * Same story as [stripPlanJsonColumn] above — the migration tests build their
+ * "old" database from the CURRENT schema, so a replay from below v19 finds
+ * the columns already there and dies with "duplicate column name". Rebuilt
+ * from the v18 CREATE TABLE with the rows copied across, ids included; the
+ * two columns are nullable with no index, so nothing else drops with them.
+ */
+internal fun stripMessageUsageColumns(db: SQLiteDatabase) {
+    db.execSQL(
+        "CREATE TABLE `agent_messages_v18` (" +
+            "`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, " +
+            "`session_id` INTEGER NOT NULL, " +
+            "`role` TEXT NOT NULL, " +
+            "`content` TEXT NOT NULL, " +
+            "`tool_name` TEXT, " +
+            "`tool_args` TEXT, " +
+            "`tool_result` TEXT, " +
+            "`created_at` INTEGER NOT NULL)"
+    )
+    db.execSQL(
+        "INSERT INTO `agent_messages_v18` " +
+            "(`id`, `session_id`, `role`, `content`, `tool_name`, `tool_args`, `tool_result`, `created_at`) " +
+            "SELECT `id`, `session_id`, `role`, `content`, `tool_name`, `tool_args`, `tool_result`, `created_at` " +
+            "FROM `agent_messages`"
+    )
+    db.execSQL("DROP TABLE `agent_messages`")
+    db.execSQL("ALTER TABLE `agent_messages_v18` RENAME TO `agent_messages`")
+    db.execSQL(
+        "CREATE INDEX `index_agent_messages_session_id` ON `agent_messages` (`session_id`)"
+    )
+}
+
+/**
+ * Undoes the v19->v20 delta on `ai_tasks`, in place: the `plan_json` column
+ * goes, everything v19 had stays.
+ *
+ * Same pattern again: the migration tests that replay from below v20 must not
+ * leave the column in place, or the replay's 19 -> 20 ADD COLUMN dies with
+ * "duplicate column name" before it tests anything.
+ */
+internal fun stripTaskPlanJsonColumn(db: SQLiteDatabase) {
+    db.execSQL(
+        "CREATE TABLE `ai_tasks_v19` (" +
+            "`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, " +
+            "`name` TEXT NOT NULL, " +
+            "`prompt` TEXT NOT NULL, " +
+            "`profile_id` TEXT NOT NULL, " +
+            "`schedule_json` TEXT NOT NULL, " +
+            "`permissions_json` TEXT NOT NULL, " +
+            "`run_config_json` TEXT NOT NULL DEFAULT '', " +
+            "`enabled` INTEGER NOT NULL, " +
+            "`last_run_at_ms` INTEGER, " +
+            "`last_run_status` TEXT NOT NULL, " +
+            "`last_result_summary` TEXT, " +
+            "`created_at` INTEGER NOT NULL)"
+    )
+    db.execSQL(
+        "INSERT INTO `ai_tasks_v19` " +
+            "(`id`, `name`, `prompt`, `profile_id`, `schedule_json`, `permissions_json`, " +
+            "`run_config_json`, `enabled`, `last_run_at_ms`, `last_run_status`, `last_result_summary`, `created_at`) " +
+            "SELECT `id`, `name`, `prompt`, `profile_id`, `schedule_json`, `permissions_json`, " +
+            "`run_config_json`, `enabled`, `last_run_at_ms`, `last_run_status`, `last_result_summary`, `created_at` " +
+            "FROM `ai_tasks`"
+    )
+    db.execSQL("DROP TABLE `ai_tasks`")
+    db.execSQL("ALTER TABLE `ai_tasks_v19` RENAME TO `ai_tasks`")
+    db.execSQL(
+        "CREATE INDEX `index_ai_tasks_profile_id` ON `ai_tasks` (`profile_id`)"
+    )
+}

@@ -254,6 +254,8 @@ class AgentSiteMemoryMigrationTest {
     private fun revertToV14() {
         val db = openRaw()
         try {
+            stripMessageUsageColumns(db)
+            stripTaskPlanJsonColumn(db)
             stripPlanJsonColumn(db)
             db.execSQL("DROP TABLE IF EXISTS `agent_site_memory`")
             db.execSQL("DROP TABLE IF EXISTS `room_master_table`")

@@ -137,6 +137,8 @@ class AgentSessionMigrationTest {
             SQLiteDatabase.OPEN_READWRITE
         )
         try {
+            stripMessageUsageColumns(db)
+            stripTaskPlanJsonColumn(db)
             db.execSQL(
                 "CREATE TABLE `agent_sessions_v9` (" +
                     "`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, " +
