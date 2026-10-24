@@ -1063,6 +1063,7 @@ class PluginE2eTest {
         val deadline = System.currentTimeMillis() + timeoutMs
         while (System.currentTimeMillis() < deadline) {
             val row = rockingFind(needle, deadline - System.currentTimeMillis())
+                ?: cardNodeCarrying(needle)
             if (row == null) return null
             try {
                 return row.visibleBounds.top
@@ -1077,6 +1078,32 @@ class PluginE2eTest {
             }
         }
         return null
+    }
+
+    /**
+     * The card-subtree node whose text carries [needle], with live bounds —
+     * the bounds-capable twin of [cardCarries]. The poll's line-bound regex
+     * cannot match a needle sitting on the second line of the card's
+     * multi-line text node, and the bounds capture needs a NODE, not a
+     * boolean: the walk hands back the matching child, whose visibleBounds
+     * are the ordering witness the caller wanted.
+     */
+    private fun cardNodeCarrying(needle: String): UiObject2? = try {
+        device.findObjects(By.descContains("plugin_card")).firstNotNullOfOrNull { card ->
+            var hit: UiObject2? = null
+            fun walk(node: UiObject2) {
+                if (hit != null) return
+                if (node.text?.contains(needle) == true) {
+                    hit = node
+                    return
+                }
+                node.children?.forEach { walk(it) }
+            }
+            walk(card)
+            hit
+        }
+    } catch (_: Exception) {
+        null
     }
 
     /**
