@@ -1,6 +1,8 @@
 package com.roombrowser.agent
 
 import com.google.common.truth.Truth.assertThat
+import com.roombrowser.domain.agent.TurnUsage
+import kotlinx.coroutines.runBlocking
 import org.junit.Test
 
 /**
@@ -18,7 +20,9 @@ class AgentTranscriptTest {
     fun `the streamed answer is replaced rather than shown twice`() {
         val entries = listOf(AgentEntry.Assistant("Hello", "", streaming = true, at = 1))
 
-        val after = AgentTranscript.answer(entries, openIndex = 0, answer = "Hello!", at = 2)
+        val after = runBlocking {
+            AgentTranscript.answer(entries, openIndex = 0, answer = "Hello!", at = 2)
+        }
 
         assertThat(after).hasSize(1)
         assertThat((after[0] as AgentEntry.Assistant).text).isEqualTo("Hello!")
@@ -34,7 +38,9 @@ class AgentTranscriptTest {
             AgentEntry.Assistant("Sure, I could do that.", "", streaming = true, at = 1)
         )
 
-        val after = AgentTranscript.answer(entries, openIndex = 0, answer = "1. Open the page", at = 2)
+        val after = runBlocking {
+            AgentTranscript.answer(entries, openIndex = 0, answer = "1. Open the page", at = 2)
+        }
 
         assertThat(after).hasSize(1)
         assertThat((after[0] as AgentEntry.Assistant).text).isEqualTo("1. Open the page")
@@ -44,7 +50,9 @@ class AgentTranscriptTest {
     fun `an answer that never streamed gets its own bubble`() {
         val entries = listOf(AgentEntry.User("do it", 1))
 
-        val after = AgentTranscript.answer(entries, openIndex = -1, answer = "Stopped.", at = 2)
+        val after = runBlocking {
+            AgentTranscript.answer(entries, openIndex = -1, answer = "Stopped.", at = 2)
+        }
 
         assertThat(after).hasSize(2)
         assertThat(after.last()).isInstanceOf(AgentEntry.Assistant::class.java)
@@ -58,7 +66,9 @@ class AgentTranscriptTest {
             AgentEntry.Tool("c1", "navigate", "Open example.com", running = false, ok = true, summary = "ok", at = 2)
         )
 
-        val after = AgentTranscript.answer(entries, openIndex = -1, answer = "It is open.", at = 3)
+        val after = runBlocking {
+            AgentTranscript.answer(entries, openIndex = -1, answer = "It is open.", at = 3)
+        }
 
         assertThat(after).hasSize(3)
         assertThat((after[0] as AgentEntry.Assistant).text).isEqualTo("Opening it.")
@@ -69,7 +79,9 @@ class AgentTranscriptTest {
     fun `an index pointing at something other than a bubble appends`() {
         val entries = listOf(AgentEntry.Notice("Step limit reached", error = false, at = 1))
 
-        val after = AgentTranscript.answer(entries, openIndex = 0, answer = "Done.", at = 2)
+        val after = runBlocking {
+            AgentTranscript.answer(entries, openIndex = 0, answer = "Done.", at = 2)
+        }
 
         assertThat(after).hasSize(2)
         assertThat(after.last()).isInstanceOf(AgentEntry.Assistant::class.java)
@@ -80,7 +92,9 @@ class AgentTranscriptTest {
     fun `an index past the end appends rather than throwing`() {
         val entries = listOf(AgentEntry.User("hi", 1))
 
-        val after = AgentTranscript.answer(entries, openIndex = 7, answer = "Hello.", at = 2)
+        val after = runBlocking {
+            AgentTranscript.answer(entries, openIndex = 7, answer = "Hello.", at = 2)
+        }
 
         assertThat(after).hasSize(2)
         assertThat((after.last() as AgentEntry.Assistant).text).isEqualTo("Hello.")
@@ -90,8 +104,46 @@ class AgentTranscriptTest {
     fun `the answer keeps the thinking the bubble was showing`() {
         val entries = listOf(AgentEntry.Assistant("", "weighing it up", streaming = true, at = 1))
 
-        val after = AgentTranscript.answer(entries, openIndex = 0, answer = "Yes.", at = 2)
+        val after = runBlocking {
+            AgentTranscript.answer(entries, openIndex = 0, answer = "Yes.", at = 2)
+        }
 
         assertThat((after[0] as AgentEntry.Assistant).thinking).isEqualTo("weighing it up")
+    }
+
+    @Test
+    fun `a reported usage reaches the recorder and an absent one does not`() = runBlocking<Unit> {
+        val recorded = mutableListOf<TurnUsage>()
+        val entries = listOf(AgentEntry.User("hi", 1))
+
+        AgentTranscript.answer(
+            entries, openIndex = -1, answer = "Done.", at = 2,
+            usage = TurnUsage(promptTokens = 120, completionTokens = 45),
+            recordUsage = { recorded.add(it) }
+        )
+        assertThat(recorded).containsExactly(TurnUsage(120, 45))
+
+        // No report → the recorder is never invoked: absence is persisted as
+        // absence, never as a number.
+        AgentTranscript.answer(
+            entries, openIndex = -1, answer = "Done again.", at = 3,
+            usage = null,
+            recordUsage = { recorded.add(it) }
+        )
+        assertThat(recorded).hasSize(1)
+    }
+
+    @Test
+    fun `a failing recorder never breaks the transcript`() = runBlocking<Unit> {
+        val entries = listOf(AgentEntry.User("hi", 1))
+
+        val after = AgentTranscript.answer(
+            entries, openIndex = -1, answer = "Done.", at = 2,
+            usage = TurnUsage(10, 5),
+            recordUsage = { error("persistence blew up") }
+        )
+
+        assertThat(after).hasSize(2)
+        assertThat((after.last() as AgentEntry.Assistant).text).isEqualTo("Done.")
     }
 }

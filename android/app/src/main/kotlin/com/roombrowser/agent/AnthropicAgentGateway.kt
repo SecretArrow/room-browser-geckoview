@@ -179,6 +179,13 @@ class AnthropicAgentGateway(
         // A mid-stream `error` frame (e.g. overloaded_error) is a real failure,
         // not a shape mismatch: surface it so the UI shows why the turn ended.
         decoder.errorMessage?.let { throw AgentHttpException(-1, it) }
+        // The message completed: emit the usage the provider reported for it,
+        // combined from message_start (prompt) + message_delta (completion).
+        // A provider that reported neither yields no event — unknown stays
+        // unknown rather than becoming an estimate.
+        decoder.usage()?.let {
+            events(StreamEvent.Usage(it.promptTokens, it.completionTokens))
+        }
         decoder.finish()
     }
 
@@ -193,6 +200,10 @@ class AnthropicAgentGateway(
         if (looksOpenAiShaped(text)) throw ShapeMismatch("200 body is OpenAI-shaped")
         val message = AnthropicMessages.parseResponse(text)
         message.content?.takeIf { it.isNotEmpty() }?.let { events(StreamEvent.Text(it)) }
+        // No usage read here, on purpose: this shape only appears when a
+        // provider ignored `stream`, and counts are parsed where the shape is
+        // pinned and tested — the streaming decoder above. The OpenAI fallback
+        // transport reports usage for its own shape.
         message
     }
 

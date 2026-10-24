@@ -61,7 +61,6 @@ import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Checklist
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ContentCopy
-import androidx.compose.material.icons.filled.DataUsage
 import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.ErrorOutline
@@ -106,6 +105,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.State
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableFloatStateOf
@@ -157,7 +157,6 @@ import com.roombrowser.domain.agent.AgentPauseLabels
 import com.roombrowser.domain.agent.AgentPlan
 import com.roombrowser.domain.agent.AgentTools
 import com.roombrowser.domain.agent.SessionApprovals
-import com.roombrowser.domain.agent.TokenUsage
 import com.roombrowser.domain.paging.Paging
 import com.roombrowser.ui.common.LocalRoomExtras
 import com.roombrowser.ui.common.PagingFooter
@@ -239,12 +238,18 @@ fun AgentPanelHost(
                             .weight(1f)
                             .fillMaxWidth()
                     )
-                    // Keyed on the tab so unsent input cannot follow the user
-                    // into another tab's conversation: the composer text and
-                    // its attached files are remembered across tab switches
-                    // otherwise, and the next Send would file them under a
-                    // chat they were never written for.
-                    key(viewModel.activeTabId) {
+                    // Keyed on the tab AND the chat so unsent input cannot
+                    // follow the user into another conversation: the composer
+                    // text and its attached files are remembered across both
+                    // switches otherwise, and the next Send would file them
+                    // under a chat they were never written for. The tab is
+                    // only HALF of "whose input is this" — opening a chat from
+                    // history (openSession) and starting a new one (newSession)
+                    // change the conversation without changing the tab, so the
+                    // session id is the second key: either one changing hands
+                    // the composer over empty, discarding every remember{}/
+                    // rememberSaveable{} the draft lives in.
+                    key(viewModel.activeTabId, agent.activeSessionId) {
                         AgentComposer(
                             agent = agent,
                             // No imePadding: the browser Scaffold already
@@ -333,7 +338,9 @@ fun AgentScreenHost(
                 .weight(1f)
                 .fillMaxWidth()
         )
-        key(viewModel.activeTabId) {
+        // Same two-dimensional composer key as the panel: the tab AND the
+        // chat decide whose input this is — see AgentPanelHost.
+        key(viewModel.activeTabId, agent.activeSessionId) {
             AgentComposer(
                 agent = agent,
                 // The panel is lifted by the browser Scaffold, which is why it
@@ -536,7 +543,6 @@ private fun AgentPanelHeader(
 ) {
     var showModelPicker by remember { mutableStateOf(false) }
     var showSurfacePicker by remember { mutableStateOf(false) }
-    var showTokenStats by remember { mutableStateOf(false) }
 
     Row(
         Modifier
@@ -611,29 +617,27 @@ private fun AgentPanelHeader(
                 )
             }
         }
-        // No running gates on either button, and that is deliberate: the
-        // per-session rewrite made switching ALWAYS safe — a running turn
-        // writes into its own chat's state, so a new chat or an opened one
-        // detaches only the PANEL while the running chat keeps moving
-        // underneath. The old gates were honest because the tap really was
-        // refused (one shared transcript list); now they would only be a
-        // control that freezes exactly when the user most needs it.
-        IconButton(onClick = onNewSession) {
+        // Both are off while a turn runs, because both are refused then:
+        // newSession/openSession bail on `running` so the running turn keeps
+        // the one transcript list the panel has. A tap that silently did
+        // nothing is worse than a control that says it is unavailable.
+        IconButton(onClick = onNewSession, enabled = !agent.running) {
             Icon(Icons.Filled.Add, contentDescription = "New agent chat")
         }
-        IconButton(onClick = onOpenSessions) {
+        IconButton(onClick = onOpenSessions, enabled = !agent.running) {
             Icon(Icons.Filled.History, contentDescription = "Agent chat history")
         }
-        // The plan panel's toggle — icon only, the convention every control
-        // in this row follows. The OPEN state is controller-owned
-        // (planPanelOpen), so the panel survives chat switches, tab switches
-        // and whole turns; nothing writes it but this toggle and the sheet's
-        // own dismiss below.
+        // The plan panel toggle. A pure user flip (planPanelOpen's contract),
+        // deliberately NOT gated on running: a running turn is exactly when
+        // the step list moves, and the sheet only READS the plan. Lit while
+        // open so the button doubles as the sheet's state indicator.
         IconButton(onClick = { agent.planPanelOpen = !agent.planPanelOpen }) {
-            Icon(Icons.Filled.Checklist, contentDescription = "Toggle plan panel")
-        }
-        IconButton(onClick = { showTokenStats = true }) {
-            Icon(Icons.Filled.DataUsage, contentDescription = "Token usage")
+            Icon(
+                Icons.Filled.Checklist,
+                contentDescription = "Plan panel",
+                tint = if (agent.planPanelOpen) MaterialTheme.colorScheme.primary
+                else MaterialTheme.colorScheme.onSurfaceVariant
+            )
         }
         IconButton(onClick = onOpenSettings) {
             Icon(Icons.Filled.Settings, contentDescription = "Agent settings")
@@ -649,11 +653,13 @@ private fun AgentPanelHeader(
     if (showSurfacePicker) {
         ChatSurfaceSheet(agent = agent, onDismiss = { showSurfacePicker = false })
     }
+    // The plan sheet lives HERE, in the header both hosts share, so one site
+    // covers the panel and the full-screen agent — the same reason the two
+    // sheets above do. Dismissal is its only closer: plan updates, chat
+    // switches and the turn ending must never write planPanelOpen (its
+    // contract on the controller).
     if (agent.planPanelOpen) {
         PlanPanelSheet(agent = agent, onDismiss = { agent.planPanelOpen = false })
-    }
-    if (showTokenStats) {
-        TokenStatsDialog(agent = agent, onDismiss = { showTokenStats = false })
     }
 }
 
@@ -864,6 +870,15 @@ private const val STREAM_TICK_IDLE_ROUNDS = 240
 // mid-answer.
 private const val STREAM_REPARSE_CHARS = 256
 
+// How many items from the end still count as "at the bottom" for the
+// auto-scroll gate below (and the jump chip): a reader standing this close
+// is having the bottom move under them as rows land, so following them is
+// continuation, not a yank. It also covers the one-frame window where a row
+// has landed but is not laid out yet — the gate reads the layout as the
+// frame BEFORE the append left it, and a normal turn adds 1–2 items at the
+// tail (a row, then its approval card) between two effect firings.
+private const val NEAR_BOTTOM_SLACK_ITEMS = 3
+
 /**
  * The heartbeat itself: a tick counter that advances ONLY when [observed] has
  * grown since the last beat, while [active] holds. Reading the returned
@@ -931,73 +946,103 @@ private fun AgentConversation(
     // entry, so when either is showing it is the true last item and the list
     // has to scroll past the last entry to keep it above the fold.
     //
-    // STABLE KEYS ONLY. The old keys included agent.approval — a data class
-    // holding a respond lambda, a fresh identity on every approval event — and
-    // the raw stream tick; each one restarted this effect (and its
-    // scrollToItem) without the list having moved in any way a scroll cares
-    // about. The keys now move only when the tail itself moves (tailKey — a
-    // same-millisecond repeat still bumps its disambiguation suffix, so
-    // nothing that lands can go unnoticed), when the plan/approval tail
-    // appears or disappears (plan.size; hasApproval as a plain Boolean), or
-    // when the streaming row has grown by a whole bucket (STREAM_REPARSE_CHARS
-    // — the same growth signal that re-renders the row, so the pin never
-    // outruns the pixels). The -1s make the completion flip re-fire (the
-    // fence leaving shrinks the row).
+    // F-03: the old keys included entries.lastOrNull(), whose identity — and
+    // equality, since the streaming Assistant is copy()-replaced on every
+    // token — changed per delta, restarting this effect (and its
+    // scrollToItem) per token. The keys now move only when a row LANDS at
+    // the END (tailKey — a same-millisecond repeat still bumps its
+    // disambiguation suffix, so nothing that lands can go unnoticed), when
+    // the plan/approval tail appears, or when the streaming heartbeat/bucket
+    // below moves: the newest row is re-pinned at most STREAM_REFRESH_MS
+    // behind its own growth while it streams, and the -1s make the
+    // completion flip re-fire (the fence leaving shrinks the row).
     //
     // tailKey rather than entries.size is what keeps paging history in from
     // jumping to the bottom: older rows land in FRONT, the tail's key —
     // class, timestamp and predecessor count — is untouched by them, and the
-    // effect that pins the newest row simply does not fire. entries.size
-    // moves on exactly that prepend, which is why it is not the key here.
+    // effect that pins the newest row simply does not fire.
     val lastRow = entries.lastOrNull()
     val streamingRow = if (lastRow is AgentEntry.Assistant && lastRow.streaming) lastRow else null
-    val hasApproval = agent.approval != null
+    val streamTick = rememberStreamTick(streamingRow != null) {
+        (entries.lastOrNull() as? AgentEntry.Assistant)?.let { it.text.length + it.thinking.length } ?: 0
+    }
+
+    // "Near the bottom" as derived state, so the auto-scroll gate below and
+    // the jump chip read the SAME definition of where the reader stands.
+    // Reading layoutInfo inside derivedStateOf recomputes on every layout
+    // pass but only NOTIFIES its readers when the boolean itself flips — no
+    // recomposition loop, and no extra work beyond what scrolling already
+    // pays. Without the flip-only propagation, tracking this in composition
+    // would re-compose the transcript on every scroll frame.
+    val nearBottom by remember {
+        derivedStateOf {
+            val info = listState.layoutInfo
+            val last = info.visibleItemsInfo.lastOrNull()?.index ?: 0
+            last >= info.totalItemsCount - 1 - NEAR_BOTTOM_SLACK_ITEMS
+        }
+    }
+    // The gate resets per chat: opening or switching a conversation has no
+    // reader to protect, so a fresh chat's first auto-scroll is unconditional
+    // — it is the chat opening on its newest row, the behavior the panel has
+    // always had. Consumed by the first run that scrolls; deliberately kept
+    // when a run is cancelled mid-scroll, so the next firing re-forces it.
+    var forceFirstScroll by remember(agent.activeSessionId) { mutableStateOf(true) }
+
     LaunchedEffect(
         tailKey,
+        agent.approval,
         plan.size,
-        hasApproval,
+        if (streamingRow == null) -1 else streamTick.value,
         if (streamingRow == null) -1
         else (streamingRow.text.length + streamingRow.thinking.length) / STREAM_REPARSE_CHARS
     ) {
-        if (entries.isNotEmpty()) {
-            var lastItem = leading + entries.size - 1
-            if (plan.isNotEmpty()) lastItem++
-            if (hasApproval) lastItem++
-            // The layout read happens BEFORE any scroll: when the viewport
-            // already shows the target row bottom-aligned — the common case
-            // while a stream re-pins itself — the scroll AND its corrective
-            // pass are both skipped. The old shape scrolled first and only
-            // then read a layout, which was stale by a frame, so the
-            // corrective scroll fired once more on every key change whether
-            // the first one had already left the list where it wanted it or
-            // not.
-            val before = listState.layoutInfo
-            val beforeLast = before.visibleItemsInfo.lastOrNull()
-            val alreadyPinned = beforeLast != null && beforeLast.index == lastItem &&
-                beforeLast.offset + beforeLast.size >= before.viewportEndOffset
-            if (!alreadyPinned) {
-                listState.scrollToItem(lastItem)
-                // scrollToItem pins that row to the TOP of the viewport whenever
-                // the transcript outgrows it: the newest row floats over a blank
-                // lower half while every older row is scrolled out of the
-                // composed window — off screen, out of the semantics tree, gone
-                // from anything a11y (and an e2e poll) can see. A transcript
-                // belongs bottom-aligned, its end at the viewport's end: one
-                // layout-info pass measures the blank the pin left below the
-                // last row and lifts the list by exactly that much. A list
-                // shorter than the viewport cannot scroll at all, and a last row
-                // taller than it has no blank to lift — both leave this a no-op.
-                val info = listState.layoutInfo
-                val last = info.visibleItemsInfo.lastOrNull()
-                if (last != null && last.index == lastItem) {
-                    val leftover = info.viewportEndOffset - (last.offset + last.size)
-                    if (leftover > 0) listState.scrollToItem(lastItem, -leftover)
-                }
+        // The reader's courtesy gate: auto-scroll only follows someone ALREADY
+        // near the bottom. Content that lands while they have scrolled up to
+        // read leaves the viewport where they put it — the old unconditional
+        // scrollToItem yanked the row they were reading off the screen on
+        // every plan step, approval and stream beat. The jump chip below is
+        // the way back down; a reader at the bottom (and every fresh chat,
+        // via forceFirstScroll) keeps the exact pin behavior as before.
+        if ((entries.isNotEmpty() || plan.isNotEmpty()) && (forceFirstScroll || nearBottom)) {
+            val lastItem = lastTranscriptItem(
+                leading = leading,
+                entryCount = entries.size,
+                planShown = plan.isNotEmpty(),
+                approvalShown = agent.approval != null
+            )
+            listState.scrollToItem(lastItem)
+            // scrollToItem pins that row to the TOP of the viewport whenever
+            // the transcript outgrows it: the newest row floats over a blank
+            // lower half while every older row is scrolled out of the
+            // composed window — off screen, out of the semantics tree, gone
+            // from anything a11y (and an e2e poll) can see. A transcript
+            // belongs bottom-aligned, its end at the viewport's end: one
+            // layout-info pass measures the blank the pin left below the
+            // last row and lifts the list by exactly that much. A list
+            // shorter than the viewport cannot scroll at all, and a last row
+            // taller than it has no blank to lift — both leave this a no-op.
+            val info = listState.layoutInfo
+            val last = info.visibleItemsInfo.lastOrNull()
+            if (last != null && last.index == lastItem) {
+                val leftover = info.viewportEndOffset - (last.offset + last.size)
+                if (leftover > 0) listState.scrollToItem(lastItem, -leftover)
             }
+            // Consumed only AFTER the scroll ran to completion: an effect run
+            // cancelled mid-scroll leaves the flag standing, so the next
+            // firing still forces the fresh chat onto its newest row.
+            forceFirstScroll = false
         }
     }
 
-    if (entries.isEmpty()) {
+    // The empty state yields to the transcript when EITHER half of it has
+    // something to show: a chat whose stored plan outlived its renderable
+    // rows (nothing else parsed, or the window simply has none) must still
+    // show its plan card. Gating the early return on entries alone used to
+    // swallow the whole LazyColumn — plan card included — so a plan-only chat
+    // looked exactly like an empty one. Including plan.isEmpty() here is the
+    // least invasive fix: the list below already renders PlanCard for a
+    // non-empty plan, so the same code path serves both cases.
+    if (entries.isEmpty() && plan.isEmpty()) {
         Box(modifier.fillMaxSize().padding(24.dp), contentAlignment = Alignment.Center) {
             if (agent.activeProvider == null) {
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
@@ -1033,43 +1078,125 @@ private fun AgentConversation(
         return
     }
 
-    LazyColumn(
-        state = listState,
-        modifier = modifier,
-        contentPadding = androidx.compose.foundation.layout.PaddingValues(
-            start = 16.dp, end = 16.dp, top = 8.dp, bottom = 12.dp
-        ),
-        verticalArrangement = Arrangement.spacedBy(8.dp)
-    ) {
-        if (agent.hasOlderEntries) {
-            item(key = LOAD_OLDER_ITEM_KEY) { LoadOlderMessages(agent, listState) }
-        }
-        itemsIndexed(entries, key = { index, _ -> keys[index] }) { _, entry ->
-            when (entry) {
-                is AgentEntry.User -> UserBubble(entry)
-                is AgentEntry.Assistant -> AssistantMessage(entry)
-                is AgentEntry.Tool -> ToolCard(entry)
-                is AgentEntry.Notice -> NoticeLine(entry)
-                is AgentEntry.Plugin -> PluginCardView(
-                    card = entry.card,
-                    pluginName = entry.pluginName,
-                    tag = pluginCardTag(agent.pluginUi.installed, entry.pluginName)
-                )
+    // The Box is the transcript's stage: the list fills it, and the jump chip
+    // overlays its bottom edge when the reader has scrolled away from the
+    // live tail and the auto-scroll stopped following them (see nearBottom).
+    Box(modifier) {
+        LazyColumn(
+            state = listState,
+            modifier = Modifier.fillMaxSize(),
+            contentPadding = androidx.compose.foundation.layout.PaddingValues(
+                start = 16.dp, end = 16.dp, top = 8.dp, bottom = 12.dp
+            ),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            if (agent.hasOlderEntries) {
+                item(key = LOAD_OLDER_ITEM_KEY) { LoadOlderMessages(agent, listState) }
             }
+            itemsIndexed(entries, key = { index, _ -> keys[index] }) { _, entry ->
+                when (entry) {
+                    is AgentEntry.User -> UserBubble(entry)
+                    is AgentEntry.Assistant -> AssistantMessage(entry)
+                    is AgentEntry.Tool -> ToolCard(entry)
+                    is AgentEntry.Notice -> NoticeLine(entry)
+                    is AgentEntry.Plugin -> PluginCardView(
+                        card = entry.card,
+                        pluginName = entry.pluginName,
+                        tag = pluginCardTag(agent.pluginUi.installed, entry.pluginName)
+                    )
+                }
+            }
+            if (plan.isNotEmpty()) item { PlanCard(plan) }
+            agent.approval?.let { approval -> item { ApprovalCard(approval, agent) } }
         }
-        if (plan.isNotEmpty()) item(key = PLAN_ITEM_KEY) { PlanCard(plan) }
-        agent.approval?.let { approval -> item(key = APPROVAL_ITEM_KEY) { ApprovalCard(approval, agent) } }
+        if (!nearBottom && entries.isNotEmpty()) {
+            JumpToLatestChip(
+                entryCount = entries.size,
+                planShown = plan.isNotEmpty(),
+                approvalShown = agent.approval != null,
+                leading = leading,
+                listState = listState,
+                modifier = Modifier.align(Alignment.BottomCenter)
+            )
+        }
     }
 }
 
 /** The LazyColumn slot the "load older" affordance always occupies. */
 private const val LOAD_OLDER_ITEM_KEY = "load-older"
 
-/** The LazyColumn slot the plan card occupies when the chat has a step list. */
-private const val PLAN_ITEM_KEY = "plan"
+/**
+ * The transcript's true LAST item: the newest entry's slot, plus the plan
+ * card and the approval card, which are composed as items AFTER the last
+ * entry (see the item block in [AgentConversation]). One home for the
+ * arithmetic the auto-scroll and the jump chip must agree on — a scroll that
+ * lands one short of the real tail leaves the plan card below the fold,
+ * which reads as a broken pin rather than a stylistic choice.
+ *
+ * Returns a negative index only when there is nothing to show at all
+ * (no entries and neither tail card), which callers treat as "do nothing".
+ */
+private fun lastTranscriptItem(
+    leading: Int,
+    entryCount: Int,
+    planShown: Boolean,
+    approvalShown: Boolean
+): Int {
+    var last = leading + entryCount - 1
+    if (planShown) last++
+    if (approvalShown) last++
+    return last
+}
 
-/** The LazyColumn slot the approval card occupies while a prompt is up. */
-private const val APPROVAL_ITEM_KEY = "approval"
+/**
+ * The "jump to latest" pill: shown only while the reader has scrolled away
+ * from the live tail — the same [NEAR_BOTTOM_SLACK_ITEMS] definition the
+ * auto-scroll gate uses — because content landing under the fold would
+ * otherwise arrive invisibly. One tap animates back down to the true last
+ * item ([lastTranscriptItem], the same target the auto-scroll pins to), and
+ * the pill removes itself as the scroll lands and `nearBottom` flips.
+ */
+@Composable
+private fun JumpToLatestChip(
+    entryCount: Int,
+    planShown: Boolean,
+    approvalShown: Boolean,
+    leading: Int,
+    listState: LazyListState,
+    modifier: Modifier = Modifier
+) {
+    val scope = rememberCoroutineScope()
+    Box(modifier.padding(bottom = 10.dp)) {
+        Surface(
+            shape = RoundedCornerShape(50),
+            tonalElevation = 3.dp,
+            shadowElevation = 2.dp
+        ) {
+            TextButton(
+                onClick = {
+                    scope.launch {
+                        val target = lastTranscriptItem(
+                            leading = leading,
+                            entryCount = entryCount,
+                            planShown = planShown,
+                            approvalShown = approvalShown
+                        )
+                        if (target >= 0) listState.animateScrollToItem(target)
+                    }
+                },
+                modifier = Modifier.semantics { contentDescription = "agent_jump_latest" }
+            ) {
+                Icon(
+                    Icons.Filled.KeyboardArrowDown,
+                    contentDescription = null,
+                    modifier = Modifier.size(16.dp)
+                )
+                Spacer(Modifier.width(4.dp))
+                Text("Jump to latest")
+            }
+        }
+    }
+}
 
 /**
  * The transcript's one promise about the past: rows older than the loaded
@@ -1117,27 +1244,6 @@ internal fun olderPageScrollTarget(firstIndex: Int, added: Int, stillMore: Boole
 }
 
 /**
- * The icon and tint one plan status renders with — shared by the inline
- * [PlanCard] and the [PlanPanelSheet], so the two surfaces can never disagree
- * about what a step is saying. FAILED is the distinct error mark on purpose:
- * it covers every status word the model sent that the domain could not match
- * ("failed", "blocked", "error", anything unknown — see
- * AgentPlan.Status.of, which degrades all of them here), and a step that went
- * wrong must not look merely unstarted.
- */
-@Composable
-private fun planStatusVisual(status: AgentPlan.Status): Pair<ImageVector, Color> = when (status) {
-    AgentPlan.Status.DONE ->
-        Icons.Filled.CheckCircle to MaterialTheme.colorScheme.primary
-    AgentPlan.Status.IN_PROGRESS ->
-        Icons.Filled.PlayArrow to MaterialTheme.colorScheme.onSurface
-    AgentPlan.Status.PENDING ->
-        Icons.Filled.RadioButtonUnchecked to MaterialTheme.colorScheme.onSurfaceVariant
-    AgentPlan.Status.FAILED ->
-        Icons.Filled.ErrorOutline to MaterialTheme.colorScheme.error
-}
-
-/**
  * The agent's own step list, as the model last wrote it.
  *
  * It is the one surface that shows the SHAPE of a long run rather than its
@@ -1175,154 +1281,44 @@ private fun PlanCard(items: List<AgentPlan.Item>) {
                 )
             }
             Spacer(Modifier.height(6.dp))
-            items.forEach { item ->
-                val (mark, tint) = planStatusVisual(item.status)
-                Row(
-                    verticalAlignment = Alignment.Top,
-                    modifier = Modifier.padding(vertical = 2.dp)
-                ) {
-                    Icon(mark, contentDescription = null, modifier = Modifier.size(14.dp), tint = tint)
-                    Spacer(Modifier.width(8.dp))
-                    Text(
-                        item.text,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = if (item.status == AgentPlan.Status.PENDING) {
-                            MaterialTheme.colorScheme.onSurfaceVariant
-                        } else {
-                            MaterialTheme.colorScheme.onSurface
-                        }
-                    )
-                }
-            }
+            items.forEach { PlanStepRow(it) }
         }
     }
 }
 
 /**
- * The plan panel — the same step list the tail card shows, as a sheet the
- * user can open and CLOSE at will from the header's checklist icon. The tail
- * card stays: it is the shape-of-the-run view in the flow of the transcript,
- * while this is the shape-of-the-run view on demand.
- *
- * LIVE, with no polling and no effect: [BrowserAgentController.plan] is
- * Compose state owned by the visible chat's own ChatSessionState, so every
- * PlanUpdated the running turn writes IS the invalidation — the sheet tracks
- * the list step by step while the turn works, survives chat switches, tab
- * switches and recompositions (the open flag lives on the controller, nothing
- * here remembers it), and shows whichever chat's list the panel is on.
+ * One plan step — the status mark and the model's own sentence about the
+ * step. Extracted from [PlanCard] so the transcript card and the plan panel
+ * sheet ([PlanPanelSheet]) render the SAME row: they are two windows onto
+ * one list, and a step that looks different in each would read as two
+ * different lists.
  */
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun PlanPanelSheet(agent: BrowserAgentController, onDismiss: () -> Unit) {
-    val plan = agent.plan
-    val done = plan.count { it.status == AgentPlan.Status.DONE }
-    ModalBottomSheet(onDismissRequest = onDismiss, shape = RoomBottomSheetShape) {
-        Column(
-            Modifier
-                .padding(horizontal = 16.dp)
-                // Long runs write long lists; the sheet body scrolls like the
-                // model picker's does rather than clipping the tail.
-                .verticalScroll(rememberScrollState())
-        ) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Icon(
-                    Icons.Filled.Checklist,
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.primary,
-                    modifier = Modifier.size(20.dp)
-                )
-                Spacer(Modifier.width(8.dp))
-                Text("Plan", style = MaterialTheme.typography.titleLarge)
-                Spacer(Modifier.weight(1f))
-                if (plan.isNotEmpty()) {
-                    Text(
-                        "$done of ${plan.size} done",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-            }
-            Spacer(Modifier.height(8.dp))
-            if (plan.isEmpty()) {
-                Text(
-                    "The agent has not written a step list for this chat yet. It writes one " +
-                        "with its plan tool when it works on a task, and the list appears here " +
-                        "and under the transcript as it progresses.",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
+private fun PlanStepRow(item: AgentPlan.Item) {
+    val (mark, tint) = when (item.status) {
+        AgentPlan.Status.DONE ->
+            Icons.Filled.CheckCircle to MaterialTheme.colorScheme.primary
+        AgentPlan.Status.IN_PROGRESS ->
+            Icons.Filled.PlayArrow to MaterialTheme.colorScheme.onSurface
+        AgentPlan.Status.PENDING ->
+            Icons.Filled.RadioButtonUnchecked to MaterialTheme.colorScheme.onSurfaceVariant
+    }
+    Row(
+        verticalAlignment = Alignment.Top,
+        modifier = Modifier.padding(vertical = 2.dp)
+    ) {
+        Icon(mark, contentDescription = null, modifier = Modifier.size(14.dp), tint = tint)
+        Spacer(Modifier.width(8.dp))
+        Text(
+            item.text,
+            style = MaterialTheme.typography.bodySmall,
+            color = if (item.status == AgentPlan.Status.PENDING) {
+                MaterialTheme.colorScheme.onSurfaceVariant
             } else {
-                plan.forEach { item ->
-                    val (mark, tint) = planStatusVisual(item.status)
-                    Row(
-                        verticalAlignment = Alignment.Top,
-                        modifier = Modifier.padding(vertical = 6.dp)
-                    ) {
-                        Icon(
-                            mark,
-                            contentDescription = item.status.id,
-                            modifier = Modifier.size(16.dp),
-                            tint = tint
-                        )
-                        Spacer(Modifier.width(10.dp))
-                        Text(
-                            item.text,
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = if (item.status == AgentPlan.Status.PENDING) {
-                                MaterialTheme.colorScheme.onSurfaceVariant
-                            } else {
-                                MaterialTheme.colorScheme.onSurface
-                            }
-                        )
-                    }
-                }
+                MaterialTheme.colorScheme.onSurface
             }
-            Spacer(Modifier.height(24.dp))
-        }
+        )
     }
-}
-
-/**
- * The token dialog: two totals, no ledger. "This chat" is the chat's own
- * row — authoritative and outlives the process — and "today across chats" is
- * the in-memory profile-wide total (see [BrowserAgentController.todayUsage]
- * for why it is not persisted). A chat whose row is not written yet (its turn
- * is still running) falls back to the in-memory total inside tokenStatsFor.
- */
-@Composable
-private fun TokenStatsDialog(agent: BrowserAgentController, onDismiss: () -> Unit) {
-    // Loaded in an effect because the row read is suspend, and re-read when
-    // the visible chat changes AND whenever today's total moves — todayUsage
-    // is Compose state, so a turn finishing while the dialog is open lands
-    // its numbers here without any polling.
-    var sessionUsage by remember { mutableStateOf<TokenUsage?>(null) }
-    LaunchedEffect(agent.activeSessionId, agent.todayUsage) {
-        sessionUsage = agent.tokenStatsFor(agent.activeSessionId).session
-    }
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("Token usage") },
-        text = {
-            Column {
-                Text("This chat", style = MaterialTheme.typography.labelLarge)
-                Text(
-                    sessionUsage?.render() ?: "…",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-                Spacer(Modifier.height(10.dp))
-                Text("Today across chats", style = MaterialTheme.typography.labelLarge)
-                Text(
-                    agent.todayUsage.render(),
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
-        },
-        confirmButton = {
-            TextButton(onClick = onDismiss) { Text("Close") }
-        }
-    )
 }
 
 /**
@@ -2321,6 +2317,78 @@ private fun readAttachmentText(resolver: ContentResolver, uri: Uri): Pair<String
             }
         }
     }.getOrNull()
+
+// ------------------------------------------------------------------- plan panel
+
+/**
+ * The plan panel: the live sheet behind the header's checklist button.
+ *
+ * It reads [BrowserAgentController.plan] DIRECTLY in composition — never a
+ * remembered copy — so a model rewriting the list mid-turn re-renders it the
+ * moment the state lands: this is the real-time window on the work, not a
+ * snapshot taken when it opened. Its ONLY closer is the user (swipe, scrim,
+ * or the toggle that opened it), because [planPanelOpen] is a user toggle by
+ * contract: plan updates, chat switches and the turn ending must never write
+ * it. A chat switch that lands an empty plan therefore does not close the
+ * sheet — it shows the empty-state line below until the user dismisses it.
+ *
+ * Shown from [AgentPanelHeader], which both hosts render, so one site covers
+ * the floating panel and the full-screen agent alike.
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun PlanPanelSheet(agent: BrowserAgentController, onDismiss: () -> Unit) {
+    // Read per recomposition, deliberately NOT remembered: a remembered list
+    // would freeze the very thing this sheet exists to show live.
+    val plan = agent.plan
+    ModalBottomSheet(onDismissRequest = onDismiss, shape = RoomBottomSheetShape) {
+        Column(
+            Modifier
+                .padding(horizontal = 16.dp)
+                // The plan is capped at 24 steps, but a short landscape window
+                // shows only a handful of rows: like the model picker's body,
+                // this one scrolls so step 1 stays reachable.
+                .verticalScroll(rememberScrollState())
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(
+                    Icons.Filled.Checklist,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.size(20.dp)
+                )
+                Spacer(Modifier.width(8.dp))
+                Text("Plan", style = MaterialTheme.typography.titleLarge)
+            }
+            Spacer(Modifier.height(4.dp))
+            if (plan.isEmpty()) {
+                Text(
+                    "No active plan",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.semantics { contentDescription = "agent_plan" }
+                )
+                Spacer(Modifier.height(6.dp))
+                Text(
+                    "The agent keeps its own step list with the `plan` tool. Ask it to plan a " +
+                        "task first — or switch the chat to Plan mode — and every revision it " +
+                        "sends appears here while it works.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            } else {
+                Text(
+                    "${plan.count { it.status == AgentPlan.Status.DONE }} of ${plan.size} steps done",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Spacer(Modifier.height(8.dp))
+                plan.forEach { step -> PlanStepRow(step) }
+            }
+            Spacer(Modifier.height(24.dp))
+        }
+    }
+}
 
 // ------------------------------------------------------------------- model picker
 

@@ -206,6 +206,17 @@
             android:exported="false"
             android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboard|keyboardHidden|density|uiMode" />
         <!--
+          The installed agent skills (SKILL.md packages fetched from GitHub) —
+          its OWN activity in the default process, like the other agent
+          screens. Installs and removals run through the same repository and
+          the same per-profile agent.skills permission the skills tools ride;
+          the list itself is read from the shared Room rows + files directory.
+        -->
+        <activity
+            android:name=".agent.ui.AgentSkillsActivity"
+            android:exported="false"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboard|keyboardHidden|density|uiMode" />
+        <!--
           The installed chat plugins — its OWN activity in the default process,
           like the other agent screens. Installs arrive from a ZIP through the
           system file picker or from the bundled example, every uninstall is

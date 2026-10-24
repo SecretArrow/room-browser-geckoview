@@ -7,7 +7,6 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshots.SnapshotStateList
 import com.roombrowser.domain.agent.AgentPlan
-import com.roombrowser.domain.agent.TokenUsage
 import com.roombrowser.domain.agent.UntrustedContent
 
 /**
@@ -119,10 +118,6 @@ class ChatSessionState(val sessionId: Long?) {
     /** Whether [plan] was ever read from the chat's row (vs the default empty). */
     var planLoaded: Boolean = false
 
-    /** Tokens this chat has spent while this process has known it. */
-    var tokenUsage: TokenUsage by mutableStateOf(TokenUsage.ZERO)
-        internal set
-
     // ------------------------------------------------------------ transcript
 
     /** Appends one row at the end. */
@@ -218,15 +213,8 @@ class ChatSessionState(val sessionId: Long?) {
         if (other === this) return
         entries.addAll(other.entries)
         retryable = other.retryable
-        tokenUsage = other.tokenUsage
         other.entries.clear()
         other.retryable = null
-        other.tokenUsage = TokenUsage.ZERO
-    }
-
-    /** One turn's cost, onto the chat's running total. */
-    internal fun addTokens(usage: TokenUsage) {
-        tokenUsage += usage
     }
 
     /** Empties the transcript and the window bookkeeping that paged it in. */

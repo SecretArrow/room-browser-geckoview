@@ -27,7 +27,7 @@ import org.junit.Test
 class HeadlessToolCatalogTest {
 
     @Test
-    fun `every catalogue tool is supported, a tab tool, an app tool or a wallet tool`() {
+    fun `every catalogue tool is supported, a tab tool, an app tool, a wallet tool or a skills tool`() {
         val everyTool = AgentTools.toolDefs().map { it.function.name }
         val classified = HeadlessToolExecutor.SUPPORTED_TOOLS +
             HeadlessToolExecutor.TAB_TOOLS +
@@ -35,7 +35,12 @@ class HeadlessToolCatalogTest {
             HeadlessToolExecutor.PDF_TOOLS +
             HeadlessToolExecutor.APP_TOOLS +
             HeadlessToolExecutor.DEVELOPER_TOOLS +
-            AgentTools.WALLET_TOOLS
+            AgentTools.WALLET_TOOLS +
+            // The skills tools are RECOGNISED here so the refusal says what
+            // they are (see skillsUnattendedRefusal) instead of "unknown":
+            // a scheduled run is never told what skills exist, so even the
+            // read-only names have nothing honest to answer there.
+            AgentTools.SKILLS_TOOLS
 
         assertThat(classified).containsExactlyElementsIn(everyTool)
         assertThat(everyTool).containsNoDuplicates()
@@ -50,7 +55,8 @@ class HeadlessToolCatalogTest {
             HeadlessToolExecutor.PDF_TOOLS,
             HeadlessToolExecutor.APP_TOOLS,
             HeadlessToolExecutor.DEVELOPER_TOOLS,
-            AgentTools.WALLET_TOOLS
+            AgentTools.WALLET_TOOLS,
+            AgentTools.SKILLS_TOOLS
         )
 
         sets.forEachIndexed { i, a ->
@@ -83,14 +89,16 @@ class HeadlessToolCatalogTest {
     fun `every tool that would have to ask the user is classified`() {
         // confirmActions turns these into a refusal, so a missing one would go
         // unrefused in an unattended run — the exact action the switch exists
-        // to hold back. The app and wallet tools answer differently (a run
-        // cannot use them at all), which is why the union is the set to check.
+        // to hold back. The app, wallet and skills tools answer differently
+        // (a run cannot use them at all), which is why the union is the set
+        // to check.
         val classified = HeadlessToolExecutor.SUPPORTED_TOOLS +
             HeadlessToolExecutor.DOWNLOAD_TOOLS +
             HeadlessToolExecutor.PDF_TOOLS +
             HeadlessToolExecutor.APP_TOOLS +
             HeadlessToolExecutor.DEVELOPER_TOOLS +
-            AgentTools.WALLET_TOOLS
+            AgentTools.WALLET_TOOLS +
+            AgentTools.SKILLS_TOOLS
         assertThat(classified).containsAtLeastElementsIn(AgentTools.INTERACTIVE_TOOLS)
         assertThat(AgentTools.INTERACTIVE_TOOLS).isNotEmpty()
     }

@@ -136,12 +136,14 @@ class AgentToolExecutor(
      */
     private val nodePackages: AgentNodePackages? = null,
     /**
-     * The agent's skills store and tool group (`skills`). Null — a caller
-     * that did not build one, a scheduled run's executor among them — leaves
-     * the tool answering honestly rather than pretending a skill was
-     * installed. See [AgentSkillsTools] for what it does and what it gates.
+     * The external skills surface the four skills_* tools drive. Null — a
+     * caller that supplied none — leaves the tools unavailable rather than
+     * pretending a skill could be installed; the gates (confirm for
+     * install/remove, the profile's agent.skills permission, the Plan-mode
+     * refusal) apply on the routes around this class, so the access itself
+     * stays a plain read/write surface over the repository.
      */
-    private val skillsTools: AgentSkillsTools? = null,
+    private val skills: AgentSkillsAccess? = null,
     /**
      * The agent's per-site memory, scoped to this turn's profile. Null leaves
      * the tool unavailable rather than writing under the wrong profile.
@@ -267,11 +269,6 @@ class AgentToolExecutor(
                 }
                 appTools.execute(name, argsJson)?.let { return@withContext answer(name, it) }
                 devtoolsTools.execute(name, argsJson)?.let { return@withContext answer(name, it) }
-                // The skills group's own slot, beside the app tools': it
-                // answers null for every name but `skills`, so a chain built
-                // without one falls through to the honest "not available"
-                // below rather than an unknown-tool dead end.
-                skillsTools?.execute(name, argsJson)?.let { return@withContext answer(name, it) }
                 // Measured BEFORE the action so the page can be compared after
                 // it — see [appendEvidence] and [AgentStepVerifier].
                 val before = if (name in MUTATING_PAGE_TOOLS) measurePage() else null
@@ -302,15 +299,21 @@ class AgentToolExecutor(
                     AgentTools.WALLET_APPROVE -> walletTools.approve(str(args, "request_id"))
                     AgentTools.WALLET_REJECT -> walletTools.reject(str(args, "request_id"))
                     AgentTools.WALLET_SWITCH_NETWORK -> walletTools.switchNetwork(str(args, "network_id"))
-                    AgentTools.WALLET_BALANCE -> walletBalance(strOrNull(args, "network_id"))
+                    AgentTools.WALLET_BALANCES -> walletTools.readBalances(strOrNull(args, "account_id"))
+                    AgentTools.WALLET_SEND -> walletTools.send(
+                        str(args, "account_id"),
+                        str(args, "network_id"),
+                        str(args, "to"),
+                        str(args, "amount")
+                    )
                     AgentTools.RUN_JS -> runJs(str(args, "script"))
                     AgentTools.COMPUTE_JS -> computeJs(str(args, "script"))
                     AgentTools.NODE_RUN -> runNode(str(args, "script"))
                     AgentTools.NODE_PACKAGES -> runNodePackages(args)
-                    // Reached only when no skills group was wired (a wired
-                    // group answers at the dispatch slot above): the honest
-                    // "not available" instead of an unknown-tool dead end.
-                    AgentTools.SKILLS -> runSkills(argsJson)
+                    AgentTools.SKILLS_LIST -> skillsList()
+                    AgentTools.SKILLS_INSTALL -> skillsInstall(str(args, "spec"))
+                    AgentTools.SKILLS_READ -> skillsRead(str(args, "skill_id"), str(args, "path"))
+                    AgentTools.SKILLS_REMOVE -> skillsRemove(str(args, "skill_id"))
                     AgentTools.DATA_TRANSFORM -> dataTransform(args)
                     AgentTools.SITE_MEMORY -> siteMemoryTool(args)
                     AgentTools.SELECT_OPTION -> selectOption(int(args, "ref"), str(args, "value"))
@@ -744,27 +747,6 @@ class AgentToolExecutor(
     }
 
     /**
-     * Runs the skills group's action for this call. The group carries its own
-     * confirm gate for install/update/remove — the same refuse() chain the
-     * packages branch below uses — so this wrapper only answers the one case
-     * the executor owns: no group wired, no pretend.
-     */
-    private suspend fun runSkills(argsJson: String): ToolResult {
-        val tools = skillsTools
-            ?: return ToolResult(false, "skills is not available in this run")
-        return tools.execute(AgentTools.SKILLS, argsJson)
-            ?: ToolResult(false, "skills did not answer this call")
-    }
-
-    /**
-     * The read-only balance snapshot. No confirmation — it moves nothing —
-     * and the lock is reported rather than worked around. See
-     * [AgentWalletTools.readBalances] for what it does and cannot do.
-     */
-    private suspend fun walletBalance(networkId: String?): ToolResult =
-        walletTools.readBalances(networkId)
-
-    /**
      * Manages the packages `node_run` can `require`. Installing reaches the
      * registry and writes under the runtime's own directory, so it asks first —
      * with a label naming the package — unless YOLO was chosen; listing only
@@ -793,6 +775,52 @@ class AgentToolExecutor(
             null -> ToolResult(false, "missing 'action' argument")
             else -> ToolResult(false, "unknown node_packages action: $action")
         }
+    }
+
+    // ------------------------------------------------------------- skills
+    // The four skills_* tools over the [AgentSkillsAccess] seam, structured
+    // exactly like the wallet/node branches above: the access does the work,
+    // this class owns the arg checks and the confirm gate. The profile's
+    // agent.skills permission and the Plan-mode refusal are applied by the
+    // gates wrapped around this executor, not here.
+
+    /** skills_list reads; it never asks. */
+    private suspend fun skillsList(): ToolResult =
+        skills?.list() ?: ToolResult(false, "skills_list is not available in this run")
+
+    /**
+     * skills_install fetches a git repository and writes its files, and its
+     * instructions then reach the model's prompt — so it asks first, with a
+     * label naming the spec, exactly as node_packages' install does. The
+     * user's answer here is the ONLY install gate besides the profile's
+     * permission: a skill is instructions, and instructions only ever come
+     * from something the user approved fetching.
+     */
+    private suspend fun skillsInstall(spec: String?): ToolResult {
+        val access = skills
+            ?: return ToolResult(false, "skills_install is not available in this run")
+        val requested = nonBlank(spec)
+            ?: return ToolResult(false, "missing 'spec' argument — e.g. \"owner/repo/path/to/skill\"")
+        refuse(AgentTools.SKILLS_INSTALL, "install skill $requested")?.let { return it }
+        return access.install(requested)
+    }
+
+    /** skills_read reads a containment-checked file inside an installed skill; it never asks. */
+    private suspend fun skillsRead(skillId: String?, path: String?): ToolResult {
+        val access = skills
+            ?: return ToolResult(false, "skills_read is not available in this run")
+        val id = nonBlank(skillId) ?: return ToolResult(false, "missing 'skill_id' argument")
+        val file = nonBlank(path) ?: return ToolResult(false, "missing 'path' argument")
+        return access.readEntry(id, file)
+    }
+
+    /** skills_remove deletes files and a row, so it asks first, naming the skill. */
+    private suspend fun skillsRemove(skillId: String?): ToolResult {
+        val access = skills
+            ?: return ToolResult(false, "skills_remove is not available in this run")
+        val id = nonBlank(skillId) ?: return ToolResult(false, "missing 'skill_id' argument")
+        refuse(AgentTools.SKILLS_REMOVE, "remove skill $id")?.let { return it }
+        return access.remove(id)
     }
 
     /**
@@ -1249,7 +1277,8 @@ class AgentToolExecutor(
     private fun bindTo(id: String) {
         tabId = id
         // The CHAT owner slot: a task host pinning its own page rides the
-        // separate "task" slot, so neither can lift the other's tab.
+        // separate "task" slot, so neither can lift the other's tab — see
+        // BrowserViewModel.pinTabForAgent's per-owner map.
         vm.pinTabForAgent(BrowserViewModel.PIN_OWNER_CHAT, id)
     }
 

@@ -259,6 +259,12 @@ object AnthropicMessages {
         private val thinking = StringBuilder()
         private val tools = sortedMapOf<Int, ToolAccumulator>()
 
+        // The two halves of the message's reported usage: the prompt count
+        // arrives on `message_start`, the completion count on (the final)
+        // `message_delta`. Read from the wire or left null — never estimated.
+        private var startInputTokens: Int? = null
+        private var deltaOutputTokens: Int? = null
+
         /** Set when the stream reports `error`; the gateway surfaces it. */
         var errorMessage: String? = null
             private set
@@ -309,8 +315,25 @@ object AnthropicMessages {
                     emptyList()
                 }
 
+                "message_start" -> {
+                    // The prompt count rides inside the announced message
+                    // object (`message.usage.input_tokens`); the completion
+                    // count arrives later, on `message_delta`.
+                    (obj["message"] as? JsonObject)?.let { message ->
+                        (message["usage"] as? JsonObject)?.let { usage ->
+                            startInputTokens = usage.int("input_tokens")
+                        }
+                    }
+                    emptyList()
+                }
+
                 "message_delta" -> {
                     (obj["delta"] as? JsonObject)?.string("stop_reason")?.let { stopReason = it }
+                    // The completion count rides at the event's TOP level here
+                    // — same `usage` key, different place from message_start.
+                    (obj["usage"] as? JsonObject)?.let { usage ->
+                        deltaOutputTokens = usage.int("output_tokens")
+                    }
                     emptyList()
                 }
 
@@ -322,9 +345,17 @@ object AnthropicMessages {
                     emptyList()
                 }
 
-                else -> emptyList() // message_start / content_block_stop / ping
+                else -> emptyList() // content_block_stop / ping
             }
         }
+
+        /**
+         * The token usage the provider reported for this message, combined
+         * from `message_start` (prompt) and `message_delta` (completion) —
+         * null when neither arrived, because a count is read from the wire,
+         * never guessed.
+         */
+        fun usage(): TurnUsage? = AgentUsage.of(startInputTokens, deltaOutputTokens)
 
         /** The assistant message the accumulated stream amounts to. */
         fun finish(): ChatMessage {
@@ -358,4 +389,7 @@ object AnthropicMessages {
 
     private fun JsonObject.string(key: String): String? =
         (this[key] as? JsonPrimitive)?.contentOrNull
+
+    private fun JsonObject.int(key: String): Int? =
+        (this[key] as? JsonPrimitive)?.intOrNull
 }

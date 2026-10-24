@@ -345,6 +345,13 @@ interface ThemeDao {
 // AI AGENT
 // =========================================================================
 
+/** Column-sum result Room materializes for the usage queries in [AgentDao]. */
+data class UsageTotals(
+    val promptTokens: Long,
+    val completionTokens: Long,
+    val turns: Int
+)
+
 @Dao
 interface AgentDao {
 
@@ -397,19 +404,6 @@ interface AgentDao {
     /** Replaces this chat's step list, as AgentPlan.encode writes it. */
     @Query("UPDATE agent_sessions SET plan_json = :plan WHERE id = :id")
     suspend fun setPlan(id: Long, plan: String)
-
-    /**
-     * Adds one turn's token cost onto the chat's cumulative totals, in ONE
-     * statement: the increment is the database's, not the caller's, so two
-     * writers (or a replayed write) cannot lose a turn's numbers to a
-     * read-modify-write race.
-     */
-    @Query(
-        "UPDATE agent_sessions SET " +
-            "input_tokens = input_tokens + :input, " +
-            "output_tokens = output_tokens + :output WHERE id = :id"
-    )
-    suspend fun addTokens(id: Long, input: Long, output: Long)
 
     @Insert
     suspend fun insertSession(entity: AgentSessionEntity): Long
@@ -488,6 +482,37 @@ interface AgentDao {
 
     @Query("DELETE FROM agent_messages")
     suspend fun deleteAllMessages()
+
+    // ---------- Token usage (schema v19) ----------
+
+    /**
+     * Records the provider-reported usage of the turn that produced this
+     * assistant row. A separate statement rather than a re-write of the row:
+     * usage arrives while the answer is already displayed, and the row must
+     * not lose anything the streaming write put there.
+     */
+    @Query(
+        "UPDATE agent_messages SET prompt_tokens = :promptTokens, completion_tokens = :completionTokens " +
+            "WHERE id = :messageId"
+    )
+    suspend fun setMessageUsage(messageId: Long, promptTokens: Int?, completionTokens: Int?)
+
+    /** Per-chat totals; null sums mean the chat has no usage-bearing row at all. */
+    @Query(
+        "SELECT COALESCE(SUM(prompt_tokens), 0) AS promptTokens, " +
+            "COALESCE(SUM(completion_tokens), 0) AS completionTokens, " +
+            "COUNT(*) AS turns FROM agent_messages WHERE session_id = :sessionId"
+    )
+    suspend fun usageForSession(sessionId: Long): UsageTotals
+
+    /** Every chat this profile owns, for the sessions-screen summary. */
+    @Query(
+        "SELECT COALESCE(SUM(m.prompt_tokens), 0) AS promptTokens, " +
+            "COALESCE(SUM(m.completion_tokens), 0) AS completionTokens, " +
+            "COUNT(*) AS turns FROM agent_messages m " +
+            "JOIN agent_sessions s ON s.id = m.session_id WHERE s.profile_id = :profileId"
+    )
+    suspend fun usageForProfile(profileId: String): UsageTotals
 }
 
 // =========================================================================
@@ -972,4 +997,37 @@ interface ChatPluginDao {
     /** Whether a session has ANY binding row — the orphan-data sweep's one question. */
     @Query("SELECT EXISTS(SELECT 1 FROM chat_plugins WHERE session_id = :sessionId)")
     suspend fun hasAny(sessionId: Long): Boolean
+}
+
+// =========================================================================
+// AGENT SKILLS (schema v19)
+// =========================================================================
+
+@Dao
+interface AgentSkillDao {
+
+    @Query("SELECT * FROM agent_skills ORDER BY display_name ASC")
+    fun observeAll(): Flow<List<AgentSkillEntity>>
+
+    @Query("SELECT * FROM agent_skills ORDER BY display_name ASC")
+    suspend fun all(): List<AgentSkillEntity>
+
+    @Query("SELECT * FROM agent_skills WHERE skill_id = :skillId")
+    suspend fun bySkillId(skillId: String): AgentSkillEntity?
+
+    @Query("SELECT * FROM agent_skills WHERE id = :id")
+    suspend fun byId(id: Long): AgentSkillEntity?
+
+    /** Insert-or-replace keyed on the unique skill_id — a re-install updates in place. */
+    @Upsert
+    suspend fun upsert(entity: AgentSkillEntity)
+
+    @Query("UPDATE agent_skills SET enabled = :enabled, updated_at = :updatedAt WHERE skill_id = :skillId")
+    suspend fun setEnabled(skillId: String, enabled: Boolean, updatedAt: Long)
+
+    @Query("DELETE FROM agent_skills WHERE skill_id = :skillId")
+    suspend fun delete(skillId: String)
+
+    @Query("DELETE FROM agent_skills")
+    suspend fun deleteAll()
 }

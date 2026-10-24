@@ -4,6 +4,7 @@ import com.roombrowser.domain.agent.AgentClientIdentity
 import com.roombrowser.domain.agent.AgentGateway
 import com.roombrowser.domain.agent.AgentHttpException
 import com.roombrowser.domain.agent.AgentJson
+import com.roombrowser.domain.agent.AgentUsage
 import com.roombrowser.domain.agent.ChatMessage
 import com.roombrowser.domain.agent.ChatRequest
 import com.roombrowser.domain.agent.FunctionCall
@@ -28,6 +29,7 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.intOrNull
 import okhttp3.Call
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
@@ -239,6 +241,14 @@ class OllamaAgentGateway(
         // servers that re-send a whole call on a later line.
         val toolAcc = mutableListOf<Pair<String, JsonObject>>()
 
+        // Ollama reports its counts on the FINAL line (`done: true`):
+        // `prompt_eval_count` is the prompt, `eval_count` the completion.
+        // Intermediate lines carry neither, so the last non-null values seen
+        // are the message's — read from the wire or not at all, never
+        // estimated.
+        var promptTokens: Int? = null
+        var completionTokens: Int? = null
+
         var reader: BufferedReader? = null
         try {
             reader = body.byteStream().bufferedReader(Charsets.UTF_8)
@@ -260,6 +270,9 @@ class OllamaAgentGateway(
 
                 (message?.get("tool_calls") as? JsonArray)?.let { accumulateTools(it, toolAcc) }
 
+                (root["prompt_eval_count"] as? JsonPrimitive)?.intOrNull?.let { promptTokens = it }
+                (root["eval_count"] as? JsonPrimitive)?.intOrNull?.let { completionTokens = it }
+
                 if ((root["done"] as? JsonPrimitive)?.booleanOrNull == true) break
             }
         } catch (ce: CancellationException) {
@@ -273,6 +286,11 @@ class OllamaAgentGateway(
             runCatching { reader?.close() }
         }
 
+        // The stream is over: report what Ollama said it cost (a server that
+        // sent no counts emits nothing here).
+        AgentUsage.of(promptTokens, completionTokens)?.let {
+            events(StreamEvent.Usage(it.promptTokens, it.completionTokens))
+        }
         assembleAssistant(content.toString(), toolAcc)
     }
 
@@ -287,6 +305,11 @@ class OllamaAgentGateway(
         val toolAcc = mutableListOf<Pair<String, JsonObject>>()
         (message?.get("tool_calls") as? JsonArray)?.let { accumulateTools(it, toolAcc) }
         content.takeIf { it.isNotEmpty() }?.let { events(StreamEvent.Text(it)) }
+        // Same counts as the stream, at the body's top level.
+        AgentUsage.of(
+            (root?.get("prompt_eval_count") as? JsonPrimitive)?.intOrNull,
+            (root?.get("eval_count") as? JsonPrimitive)?.intOrNull
+        )?.let { events(StreamEvent.Usage(it.promptTokens, it.completionTokens)) }
         assembleAssistant(content, toolAcc)
     }
 

@@ -35,6 +35,12 @@ object PlanModePolicy {
         AgentTools.AUTO_REPLY,
         AgentTools.AUTO_POST,
         AgentTools.WALLET_APPROVE,
+        // An agent-initiated send is the wallet's own way of moving funds, with
+        // no page involved — which is exactly what a plan promises not to do.
+        // The mode can still answer "what would this cost": read the state and
+        // the balances, write the transfer into the plan, and run it once the
+        // user has switched to Ask or YOLO and confirmed the approval card.
+        AgentTools.WALLET_SEND,
         AgentTools.WALLET_SWITCH_NETWORK,
         // A patch runs script in a live page, so it belongs with run_js and
         // every other tool that can change what the page does.
@@ -49,7 +55,14 @@ object PlanModePolicy {
         AgentTools.NODE_RUN,
         // Installing a package reaches the registry and writes to disk, which
         // is a change a plan-only turn has no business making.
-        AgentTools.NODE_PACKAGES
+        AgentTools.NODE_PACKAGES,
+        // A skill install fetches a repository and writes its files, and a
+        // removal deletes them — both are work carried out, which this mode
+        // promises to propose instead of do. Reading an already-installed
+        // skill (skills_list, skills_read) is a read like read_page and stays
+        // legal here: a plan is exactly where the instructions matter.
+        AgentTools.SKILLS_INSTALL,
+        AgentTools.SKILLS_REMOVE
     )
 
     /**

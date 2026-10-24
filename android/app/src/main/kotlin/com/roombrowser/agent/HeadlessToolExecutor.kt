@@ -25,6 +25,7 @@ import com.roombrowser.domain.plugins.PluginToolNaming
 import com.roombrowser.domain.task.AiTaskPermissions
 import com.roombrowser.domain.task.pluginUnattendedRefusal
 import com.roombrowser.domain.task.profileUnattendedRefusal
+import com.roombrowser.domain.task.skillsUnattendedRefusal
 import com.roombrowser.domain.task.unattendedRefusal
 import com.roombrowser.domain.task.walletUnattendedRefusal
 import com.roombrowser.engine.EngineSession
@@ -261,6 +262,7 @@ class HeadlessToolExecutor(
             return ToolResult(false, pluginUnattendedRefusal(name))
         }
         if (name in AgentTools.WALLET_TOOLS) return ToolResult(false, walletUnattendedRefusal(name))
+        if (name in AgentTools.SKILLS_TOOLS) return ToolResult(false, skillsUnattendedRefusal(name))
         if (name in AgentAppActions.PROFILE_TOOLS) {
             // One setting can hand these over, so the permission map's refusal
             // for them is answered here instead — see [profileUnattendedRefusal].

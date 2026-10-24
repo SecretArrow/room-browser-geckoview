@@ -10,6 +10,7 @@ import com.roombrowser.data.plugins.PluginDirZipper
 import com.roombrowser.data.plugins.PluginInstallResult
 import com.roombrowser.data.repo.PluginRepository
 import com.roombrowser.data.repo.decodePermissions
+import com.roombrowser.domain.agent.UntrustedContent
 import com.roombrowser.domain.plugins.PluginCard
 import com.roombrowser.domain.plugins.PluginCommand
 import com.roombrowser.domain.plugins.PluginCommandParser
@@ -200,8 +201,30 @@ class PluginUiState(
      * live (never snapshotted) because rooted-ness and the master switch are
      * facts of the moment the command lands.
      */
-    private val airplane: AirplaneModeBridge? = null
+    private val airplane: AirplaneModeBridge? = null,
+    /**
+     * The skills surface the `/skills` commands ride, or null — the caller's
+     * explicit choice to leave them unwired. LEFT UNWIRED by the controller's
+     * own construction on purpose: the first `/skills` command builds the
+     * DEFAULT access over the plugin runtime's app context (the lazily-built,
+     * process-wide surface the skills tools share), so a chat that never
+     * touches skills pays nothing for one, JVM tests that pass a fake are
+     * never touched by the real store, and a build where the default cannot
+     * be constructed answers the command with a notice instead of crashing.
+     */
+    private val skills: AgentSkillsAccess? = null
 ) {
+
+    /**
+     * The skills surface, resolved on first `/skills` use — see the [skills]
+     * parameter for why this is lazy and why the runtime's context is the
+     * fallback's source. Null only when nothing was injected AND the default
+     * could not be built; the command then answers with a notice, never a
+     * crash, because a chat command is chat surface, not agent machinery.
+     */
+    private val skillSurface: AgentSkillsAccess? by lazy {
+        skills ?: runCatching { AgentSkillsTools.access(runtime.appContext) }.getOrNull()
+    }
 
     var installed by mutableStateOf<List<PluginEntity>>(emptyList())
         private set
@@ -333,6 +356,13 @@ class PluginUiState(
     suspend fun interceptChatCommand(text: String, sessionAtTap: Long?): Boolean {
         val trimmed = text.trim()
         if (!trimmed.startsWith("/")) return false
+        // Skills commands come BEFORE the plugin parser: /skills is this
+        // app's own surface (like /airplane), never a plugin-declared name,
+        // and a plugin that declared "skills" must not shadow it.
+        if (trimmed == "/skills" || trimmed.startsWith("/skills ")) {
+            handleSkillsCommand(trimmed.removePrefix("/skills").trim())
+            return true
+        }
         val commands = sessionAtTap
             ?.let { id -> runCatching { catalog.commandOwners(id) }.getOrElse { emptyMap() } }
             ?: emptyMap()
@@ -370,6 +400,56 @@ class PluginUiState(
                 true
             }
             PluginCommand.NotACommand -> false
+        }
+    }
+
+    /**
+     * The `/skills` command: list, add, remove (confirm-gated by an explicit
+     * `confirm` word), enable/disable. These run through the SAME access the
+     * skills tools use, so a command result and a tool result are one
+     * promise; the fence is stripped for the transcript (it is model-facing
+     * framing, and this is the person's own screen). There is no extra
+     * permission question here because the USER typed the command — the same
+     * consent-by-authorship a /plugins toggle carries — while the agent's
+     * own tool calls stay behind the profile's agent.skills permission.
+     */
+    private suspend fun handleSkillsCommand(rest: String) {
+        val surface = skillSurface
+        if (surface == null) {
+            onNotice("The skills commands are not available in this panel.", true)
+            return
+        }
+        when (val command = SkillChatCommand.parse(rest)) {
+            is SkillChatCommand.List ->
+                surface.list().let { onNotice(UntrustedContent.payload(it.output), !it.ok) }
+            is SkillChatCommand.Add ->
+                surface.install(command.spec).let { onNotice(UntrustedContent.payload(it.output), !it.ok) }
+            is SkillChatCommand.Remove ->
+                if (!command.confirmed) {
+                    onNotice(
+                        "Removing \"${command.skillId}\" deletes its files and its prompt entry for " +
+                            "every chat. Send `/skills remove ${command.skillId} confirm` to do it.",
+                        false
+                    )
+                } else {
+                    surface.remove(command.skillId).let { onNotice(it.output, !it.ok) }
+                }
+            is SkillChatCommand.SetEnabled ->
+                surface.setEnabled(command.skillId, command.enabled)
+                    .let { onNotice(it.output, !it.ok) }
+            is SkillChatCommand.Unknown ->
+                onNotice(
+                    "Unknown /skills command (${command.words}). Usage: /skills · " +
+                        "/skills add owner/repo/path/to/skill · /skills remove <skillId> confirm · " +
+                        "/skills enable|disable <skillId>",
+                    true
+                )
+            null ->
+                onNotice(
+                    "Usage: /skills · /skills add owner/repo/path/to/skill · " +
+                        "/skills remove <skillId> confirm · /skills enable|disable <skillId>",
+                    true
+                )
         }
     }
 
@@ -1510,5 +1590,68 @@ class PluginUiState(
 
         /** The auto-continue poll cadence behind a raised airplane request. */
         const val AIRPLANE_POLL_MS = 500L
+    }
+}
+
+/**
+ * The parsed shape of a `/skills ...` chat command — pure and JVM-testable,
+ * exactly as [com.roombrowser.domain.plugins.PluginCommandParser] is for the
+ * plugin commands. Parsing is separate from executing so the grammar's
+ * refusals (an unknown sub-command, a remove without its `confirm`) are
+ * pinned without dragging the skills store into a test.
+ */
+internal sealed class SkillChatCommand {
+
+    /** Bare `/skills` (or `/skills list`): the installed skills. */
+    object List : SkillChatCommand()
+
+    /** `/skills add <spec>` — the spec text is handed to the parser untouched. */
+    data class Add(val spec: String) : SkillChatCommand()
+
+    /**
+     * `/skills remove <skillId>` — [confirmed] only when the command ends
+     * with the literal word `confirm`, which is the command's own gate: a
+     * removal deletes files for every chat, so one typed command must not be
+     * enough.
+     */
+    data class Remove(val skillId: String, val confirmed: Boolean) : SkillChatCommand()
+
+    /** `/skills enable|disable <skillId>`. */
+    data class SetEnabled(val skillId: String, val enabled: Boolean) : SkillChatCommand()
+
+    /** Words after `/skills` that name no sub-command. */
+    data class Unknown(val words: String) : SkillChatCommand()
+
+    companion object {
+
+        /**
+         * Parses the text AFTER `/skills` (empty for the bare command). Null
+         * means "no command at all" — blank text beyond the bare `/skills`,
+         * which is still a list request, cannot reach this parser from the
+         * caller's prefix check; the shape exists for tests and symmetry.
+         */
+        fun parse(rest: String): SkillChatCommand? {
+            val words = rest.trim().split(Regex("\\s+")).filter { it.isNotEmpty() }
+            if (words.isEmpty()) return SkillChatCommand.List
+            return when (words[0].lowercase()) {
+                "list" -> SkillChatCommand.List
+                "add", "install" -> {
+                    val spec = words.drop(1).joinToString(" ").trim()
+                    if (spec.isEmpty()) Unknown(words.joinToString(" ")) else Add(spec)
+                }
+                "remove" -> {
+                    val confirmed = words.size >= 2 && words.last().equals("confirm", ignoreCase = true)
+                    val idWords = if (confirmed) words.drop(1).dropLast(1) else words.drop(1)
+                    val id = idWords.joinToString("-")
+                    if (id.isEmpty()) Unknown(words.joinToString(" ")) else Remove(id, confirmed)
+                }
+                "enable", "disable" -> {
+                    val id = words.drop(1).joinToString("-")
+                    if (id.isEmpty()) Unknown(words.joinToString(" "))
+                    else SetEnabled(id, words[0].lowercase() == "enable")
+                }
+                else -> Unknown(words.joinToString(" "))
+            }
+        }
     }
 }

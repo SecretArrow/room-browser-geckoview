@@ -11,7 +11,24 @@ sealed interface StreamEvent {
 
     /** A reasoning/"thinking" token (e.g. GLM `reasoning_content`). */
     data class Thinking(val text: String) : StreamEvent
+
+    /**
+     * The token usage a provider REPORTED on the wire (OpenAI's final `usage`
+     * chunk, Anthropic's `message_start`/`message_delta` pair). Emitted only
+     * when a report actually arrives — an absent count never becomes an
+     * event, so a consumer sees null rather than an estimate. The loop keeps
+     * the last one and attaches it to [AgentEvent.FinalAnswer].
+     */
+    data class Usage(val promptTokens: Int?, val completionTokens: Int?) : StreamEvent
 }
+
+/**
+ * The token usage a provider reported for one answer: prompt tokens (what was
+ * sent) and completion tokens (what came back). Either side is null when the
+ * provider did not report it — this type is filled from wire reports only and
+ * is never the product of an estimate.
+ */
+data class TurnUsage(val promptTokens: Int?, val completionTokens: Int?)
 
 /**
  * Provider transport implemented by the app layer (OkHttp + SSE).
@@ -105,7 +122,14 @@ sealed interface AgentEvent {
      * than as a delta, so a surface that missed one still shows the truth.
      */
     data class PlanUpdated(val items: List<AgentPlan.Item>) : AgentEvent
-    data class FinalAnswer(val text: String) : AgentEvent
+
+    /**
+     * The turn's closing answer. [usage] is the last token report the provider
+     * made while producing it (see [TurnUsage]) — null when the provider
+     * reported nothing, which is normal for a turn cut short, a gateway whose
+     * wire shape carries no counts, or a stop the user asked for.
+     */
+    data class FinalAnswer(val text: String, val usage: TurnUsage? = null) : AgentEvent
     data class AgentError(val message: String, val fatal: Boolean) : AgentEvent
     data class Notice(val text: String) : AgentEvent
 }
@@ -154,23 +178,22 @@ class AgentLoop(
     /**
      * Runs one user turn. [history] is MUTATED in place (assistant and tool
      * messages are appended) so the caller can persist or continue it.
-     *
-     * Returns what the turn cost in tokens: the providers' own `usage` numbers
-     * summed over every request of the turn, and — for a provider that sent
-     * none — the deterministic [TokenUsageEstimate] from the characters each
-     * request and reply actually carried. The caller (the chat controller, a
-     * scheduled run) accumulates it per chat; the loop itself keeps no state.
      */
     suspend fun runTurn(
         history: MutableList<ChatMessage>,
         listener: suspend (AgentEvent) -> Unit
-    ): TokenUsage {
-        var usage = TokenUsage.ZERO
+    ) {
         try {
             var step = 0
             // One turn's worth: a tool that failed twice in a previous turn is
             // not a loop in this one.
             val failures = AgentFailureWatch()
+            // The last usage the provider reported this turn. Each step of a
+            // multi-step turn reports its own completion; the LAST one is what
+            // the answer carries, because the row it is persisted on is the
+            // row of the step that produced the answer. Never summed across
+            // steps, never filled in when a provider stays silent.
+            var turnUsage: TurnUsage? = null
             // The list this turn is working to, as the last `plan` call set it.
             var currentPlan = emptyList<AgentPlan.Item>()
             var planRefusals = 0
@@ -181,14 +204,14 @@ class AgentLoop(
             // finish the turn with an answer rather than wedge the loop.
             var continueNudges = 0
             while (step < config.steps) {
-                if (!currentCoroutineContext().isActive) return usage
+                if (!currentCoroutineContext().isActive) return
                 beforeStep()
-                if (!currentCoroutineContext().isActive) return usage
+                if (!currentCoroutineContext().isActive) return
                 if (stopRequested()) {
                     val reason = stopReason()
                     listener(AgentEvent.Notice(reason))
                     listener(AgentEvent.FinalAnswer(reason))
-                    return usage
+                    return
                 }
                 step++
 
@@ -210,13 +233,13 @@ class AgentLoop(
                     when (ev) {
                         is StreamEvent.Text -> listener(AgentEvent.AssistantText(ev.text))
                         is StreamEvent.Thinking -> listener(AgentEvent.AssistantThinking(ev.text))
+                        // A report without a model answer behind it is still
+                        // kept: the provider's own accounting is the truth
+                        // this pipeline has, and later steps overwrite it.
+                        is StreamEvent.Usage -> turnUsage = TurnUsage(ev.promptTokens, ev.completionTokens)
                     }
                 }
-                usage += usageOf(request, assistant)
-                // The usage block is a RESPONSE concept: stripped here so the
-                // message re-entering the history — and every later request —
-                // carries only the fields a provider asked for.
-                history.add(assistant.copy(usage = null))
+                history.add(assistant)
 
                 val calls = assistant.toolCalls.orEmpty()
                 if (calls.isEmpty()) {
@@ -245,13 +268,18 @@ class AgentLoop(
                         history.add(ChatMessage(role = "user", content = AgentPlan.continueNudge(currentPlan)))
                         continue
                     }
-                    listener(AgentEvent.FinalAnswer(assistant.content.orEmpty().ifBlank { "(the model returned an empty answer)" }))
+                    listener(
+                        AgentEvent.FinalAnswer(
+                            assistant.content.orEmpty().ifBlank { "(the model returned an empty answer)" },
+                            usage = turnUsage
+                        )
+                    )
                     // After the answer, so it reads as the closing line of the
                     // turn rather than as something said before it.
                     if (config.planBeforeActions && currentPlan.any { it.status != AgentPlan.Status.DONE }) {
                         listener(AgentEvent.Notice(AgentPlan.completionNotice(currentPlan)))
                     }
-                    return usage
+                    return
                 }
 
                 val turnImages = mutableListOf<AgentImage>()
@@ -320,24 +348,28 @@ class AgentLoop(
 
             listener(AgentEvent.Notice("Step limit reached (${config.steps}) — wrapping up."))
             trimHistory(history)
-            val lastRequest = ChatRequest(
-                model = config.model,
-                messages = history.toList(),
-                stream = true,
-                temperature = config.temperature
-            )
-            val final = gateway.chat(lastRequest) { ev ->
+            val final = gateway.chat(
+                ChatRequest(
+                    model = config.model,
+                    messages = history.toList(),
+                    stream = true,
+                    temperature = config.temperature
+                )
+            ) { ev ->
                 if (ev is StreamEvent.Text) listener(AgentEvent.AssistantText(ev.text))
             }
-            usage += usageOf(lastRequest, final)
-            history.add(final.copy(usage = null))
-            listener(AgentEvent.FinalAnswer(final.content.orEmpty().ifBlank { "(stopped at the step limit without a final answer)" }))
+            history.add(final)
+            listener(
+                AgentEvent.FinalAnswer(
+                    final.content.orEmpty().ifBlank { "(stopped at the step limit without a final answer)" },
+                    usage = turnUsage
+                )
+            )
             // A turn cut off mid-list is exactly when the count matters most,
             // and it goes under the answer for the same reason as above.
             if (config.planBeforeActions && currentPlan.any { it.status != AgentPlan.Status.DONE }) {
                 listener(AgentEvent.Notice(AgentPlan.completionNotice(currentPlan)))
             }
-            return usage
         } catch (ce: CancellationException) {
             throw ce
         } catch (t: Throwable) {
@@ -345,28 +377,7 @@ class AgentLoop(
             // surface as a fake provider error.
             if (!currentCoroutineContext().isActive) throw CancellationException("agent turn cancelled")
             listener(AgentEvent.AgentError(t.message ?: t.javaClass.simpleName, fatal = true))
-            return usage
         }
-    }
-
-    /**
-     * What one gateway call cost: the provider's own number when it sent one,
-     * otherwise the char/4 estimate over what this call actually moved — the
-     * request's message bodies (system prompt, history, tool results) and the
-     * reply's text plus tool-call arguments. Estimated per STEP rather than
-     * once per turn because the history grows every step; summing per-step
-     * estimates reproduces what a billing meter would have counted.
-     */
-    private fun usageOf(request: ChatRequest, assistant: ChatMessage): TokenUsage {
-        assistant.usage?.let { return it }
-        val inputChars = request.messages.sumOf { message ->
-            (message.content?.length ?: 0).toLong() +
-                message.toolCalls.orEmpty().sumOf { it.function.name.length + it.function.arguments.length }
-        }
-        val outputChars = (assistant.content?.length ?: 0).toLong() +
-            assistant.toolCalls.orEmpty()
-                .sumOf { it.function.name.length.toLong() + it.function.arguments.length }
-        return TokenUsageEstimate.fromChars(inputChars, outputChars)
     }
 
     /**

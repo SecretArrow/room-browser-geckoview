@@ -6,7 +6,10 @@ import com.roombrowser.browser.wallet.DappRequest
 import com.roombrowser.browser.wallet.NetworkRecord
 import com.roombrowser.browser.wallet.WalletAccountRecord
 import com.roombrowser.browser.wallet.WalletLockState
+import com.roombrowser.domain.wallet.model.BalanceResult
+import com.roombrowser.domain.wallet.model.BroadcastResult
 import com.roombrowser.domain.wallet.model.ChainType
+import com.roombrowser.domain.wallet.model.FeeEstimate
 import com.roombrowser.domain.wallet.model.NetworkConfig
 import com.roombrowser.domain.wallet.model.WalletException
 import kotlinx.coroutines.runBlocking
@@ -26,6 +29,7 @@ class AgentWalletToolsTest {
         override var accounts: List<WalletAccountRecord> = emptyList()
         override var activeNetworks: Map<ChainType, NetworkConfig> = emptyMap()
         override var networks: List<NetworkRecord> = emptyList()
+        override var balances: Map<String, BalanceResult> = emptyMap()
         val decisions = mutableListOf<DappDecision>()
         var switchCalls = 0
         var switchThrows: WalletException? = null
@@ -39,6 +43,23 @@ class AgentWalletToolsTest {
             switchThrows?.let { throw it }
             switchCalls++
         }
+
+        // The send-path members exist so the interface is fully faked; the
+        // behavioural send tests live in AgentWalletSendTest.
+        override suspend fun estimateSendFee(
+            chainType: ChainType,
+            networkId: String,
+            fromAccountId: String,
+            to: String,
+            amount: String
+        ): FeeEstimate? = null
+
+        override suspend fun sendNative(
+            accountId: String,
+            networkId: String,
+            to: String,
+            amount: String
+        ): BroadcastResult = BroadcastResult.Ok("0xhash")
     }
 
     /** Records each prompt; the default answer is deny. */
@@ -266,6 +287,7 @@ class AgentWalletToolsTest {
             )
             networks = listOf(network("EVM:1"))
             activeNetworks = mapOf(ChainType.EVM to network("EVM:1").config)
+            balances = mapOf("a1" to BalanceResult.Ok("1.5", "ETH"))
         }
         val tools = AgentWalletTools({ wallet }, { false })
 
@@ -274,6 +296,34 @@ class AgentWalletToolsTest {
         assertThat(output).contains("Main")
         assertThat(output).contains("0x1234")
         assertThat(output).contains("EVM:1")
+        assertThat(output).contains("1.5 ETH")
         assertThat(output).contains("lock_state: UNLOCKED")
+    }
+
+    @Test
+    fun `the state listing stays compact when a balance is missing or failed`() {
+        // wallet_balances is the tool that reports missing and failed rows;
+        // wallet_state only carries the balances it can state in one token.
+        val wallet = FakeWallet().apply {
+            accounts = listOf(
+                WalletAccountRecord(
+                    id = "a1",
+                    walletId = "w1",
+                    chainType = ChainType.EVM,
+                    address = "0x1234",
+                    label = "Main",
+                    path = "",
+                    source = WalletAccountRecord.Source.IMPORTED
+                )
+            )
+            balances = mapOf("a1" to BalanceResult.Error("rpc down"))
+        }
+        val tools = AgentWalletTools({ wallet }, { false })
+
+        val output = tools.readState().output
+
+        assertThat(output).contains("Main")
+        assertThat(output).doesNotContain("rpc down")
+        assertThat(output).doesNotContain("balance")
     }
 }

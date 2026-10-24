@@ -26,6 +26,13 @@ import kotlinx.serialization.Serializable
  * front of it, so an unattended run has nothing to gain from it and a great
  * deal to lose (see [ToolGroup.NODE]).
  *
+ * The skills tools are the eighth, and are denied outright for the same
+ * shape of reason: the skills prompt block is a chat-prompt feature, so a
+ * scheduled run is never even told what skills exist, and an unattended run
+ * reading arbitrary SKILL.md instructions would be the least-supervised
+ * place for untrusted instructions to steer behaviour (see
+ * [ToolGroup.SKILLS]).
+ *
  * The authenticator codes and the notes are the last two, and they differ from
  * every group above in one way: [allows] refuses them here, because a task must
  * never grant itself a live code, but the RUNNER may override that refusal when
@@ -83,6 +90,7 @@ data class AiTaskPermissions(
             AgentTools.AUTO_REPLY, AgentTools.AUTO_POST -> ToolGroup.POST
             in AgentTools.WALLET_TOOLS -> ToolGroup.WALLET
             in AgentTools.DEVTOOLS_TOOLS -> ToolGroup.DEVTOOLS
+            in AgentTools.SKILLS_TOOLS -> ToolGroup.SKILLS
             // A program with Node's own APIs behind it, and the tool that installs
             // packages for it. A scheduled run is offered the same catalogue, so the
             // refusal has to be a real one rather than a tool that runs because
@@ -119,6 +127,10 @@ data class AiTaskPermissions(
         // and no page in front of it, so there is nothing a scheduled run could
         // want it for that a chat turn could not do with the user watching.
         ToolGroup.NODE -> false
+        // The skills tools: a run is never told what skills exist, and an
+        // unattended run following skill instructions off the disk is the one
+        // place nobody could weigh them. See [skillsUnattendedRefusal].
+        ToolGroup.SKILLS -> false
         // The one group a SETTING can hand over: see [ToolGroup.TOTP].
         ToolGroup.TOTP, ToolGroup.NOTES -> false
         null -> false
@@ -151,6 +163,9 @@ enum class ToolGroup(val label: String) {
     /** Never granted to a task; see [nodeUnattendedRefusal]. */
     NODE("the embedded Node runtime"),
 
+    /** Never granted to a task; see [skillsUnattendedRefusal]. */
+    SKILLS("the external-skills tools"),
+
     /** Never granted by a task itself; one setting can hand it over. */
     TOTP("the authenticator codes"),
 
@@ -169,6 +184,7 @@ internal fun refusalMessage(toolName: String, group: ToolGroup?): String = when 
     ToolGroup.WALLET -> walletUnattendedRefusal(toolName)
     ToolGroup.APP -> appUnattendedRefusal(toolName)
     ToolGroup.DEVTOOLS -> devtoolsUnattendedRefusal(toolName)
+    ToolGroup.SKILLS -> skillsUnattendedRefusal(toolName)
     // A plugin's tool rides the NODE group but is not a Node script the model
     // wrote, so it is refused in its own words.
     ToolGroup.NODE ->
@@ -255,6 +271,21 @@ fun nodeUnattendedRefusal(toolName: String): String =
     "tool '$toolName' works only in a chat: it runs a program with Node's own APIs, or installs " +
         "a package for one, and both can reach the network and write to this profile's files. A " +
         "scheduled run has nobody to ask, so run it as a chat."
+
+/**
+ * The refusal for the skills tools in a scheduled run — all four, read-only
+ * names included. A scheduled run's system prompt never carries the skills
+ * block (that is a chat-prompt feature, injected beside the chat's plugins),
+ * so skills_list answers a question the run was never given the context for;
+ * worse, skills_read would let an unattended run pull instructions off the
+ * disk and act on them with nobody able to weigh who wrote them. Install and
+ * remove are writes and confirmations besides. A chat turn is the only place
+ * any of this has an honest meaning.
+ */
+fun skillsUnattendedRefusal(toolName: String): String =
+    "tool '$toolName' works only in a chat: skills are installed, read and followed with the " +
+        "user present — a scheduled run never receives the skills block in its prompt, and a " +
+        "skill's instructions are content that should not steer an unattended run. Run it as a chat."
 
 /**
  * The refusal for a chat plugin's tool in an unattended run. The permission

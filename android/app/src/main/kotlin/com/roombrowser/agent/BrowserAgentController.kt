@@ -7,10 +7,6 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import com.roombrowser.RoomBrowserApp
-import com.roombrowser.agent.skills.AgentSkillsTools
-import com.roombrowser.agent.skills.SkillInstaller
-import com.roombrowser.agent.skills.SkillPrompts
-import com.roombrowser.agent.skills.SkillRegistry
 import com.roombrowser.browser.BrowserControlApiImpl
 import com.roombrowser.browser.BrowserViewModel
 import com.roombrowser.browser.engine.ProfileEngine
@@ -38,7 +34,6 @@ import com.roombrowser.domain.agent.ChatRequest
 import com.roombrowser.domain.agent.LocalAiTuning
 import com.roombrowser.domain.agent.SessionApprovals
 import com.roombrowser.domain.agent.SiteMemory
-import com.roombrowser.domain.agent.TokenUsage
 import com.roombrowser.domain.agent.ToolExecutor
 import com.roombrowser.domain.agent.UntrustedContent
 import com.roombrowser.domain.agent.formatDurationMs
@@ -71,7 +66,6 @@ import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import okhttp3.OkHttpClient
 import java.time.ZoneId
-import java.time.LocalDate
 import kotlin.coroutines.resume
 
 /** Display model for one row of the agent chat. */
@@ -528,42 +522,11 @@ class BrowserAgentController(
 
     /**
      * The step list of the chat the panel is showing is [panelState].plan;
-     * this is the running total of what TODAY's turns cost across the
-     * profile's chats, for the token dialog's second line. In-memory on
-     * purpose — per-turn rows would cost a write per turn for a number
-     * nobody reconciles against a bill — and it resets when the day rolls
-     * over or the process restarts; the dialog says "today", not "invoice".
+     * token costs are NOT held here — the provider's reported counts land on
+     * the assistant row that ended the turn (see the FinalAnswer handler and
+     * [AgentUsage]), which is a per-row fact the transcript and the export
+     * read back from the database.
      */
-    var todayUsage by mutableStateOf(TokenUsage.ZERO)
-        private set
-    private var todayStamp: LocalDate? = null
-
-    private fun recordToday(usage: TokenUsage) {
-        val today = LocalDate.now()
-        if (today != todayStamp) {
-            todayStamp = today
-            todayUsage = TokenUsage.ZERO
-        }
-        todayUsage += usage
-    }
-
-    /** What the token dialog shows: one chat's totals and today's across chats. */
-    data class TokenStats(val session: TokenUsage, val today: TokenUsage)
-
-    /**
-     * [sessionId]'s chat totals as they will be SHOWN: the persisted row
-     * first (it is authoritative and outlives this process), falling back to
-     * the in-memory state for a chat whose row was not written yet.
-     */
-    suspend fun tokenStatsFor(sessionId: Long?): TokenStats {
-        val row = sessionId?.let { id -> runCatching { repo.session(id) }.getOrNull() }
-        val session = if (row != null) {
-            TokenUsage(row.inputTokens, row.outputTokens)
-        } else {
-            stateFor(sessionId).tokenUsage
-        }
-        return TokenStats(session = session, today = todayUsage)
-    }
 
     /**
      * The "allow on this site for this session" answers, kept per controller —
@@ -715,33 +678,12 @@ class BrowserAgentController(
     private val pluginCatalog = AgentPluginCatalog(pluginRepo, pluginRuntime)
 
     // ------------------------------------------------------------- skills
-
-    /**
-     * The skills store and its `skills` tool group, ONE pair per controller:
-     * the chat turn's executor chain and the system-prompt assembly below both
-     * read the same [SkillRegistry], so a listing and the prompt block can
-     * never disagree about what is installed. Lazy on purpose — building the
-     * pair touches only a File handle, but the registry's first read walks the
-     * skills directory, and a controller that never runs a turn should never
-     * pay for it. See [AgentSkillsTools] for what the group gates (install,
-     * update and remove ride the same confirm gate every other write does).
-     */
-    private val skillsDir: java.io.File by lazy { java.io.File(appContext.filesDir, "skills") }
-    private val skillRegistry by lazy { SkillRegistry(skillsDir) }
-    private val skillsTools by lazy {
-        AgentSkillsTools(
-            registry = skillRegistry,
-            installer = SkillInstaller(skillsDir, pluginRepo),
-            confirmGate = { name, label -> gate(name, label) }
-        ).also { tools ->
-            // A plugin-format skill's code lives in the PLUGIN store, so its
-            // removal has to uninstall that row too — the seam the registry
-            // leaves for exactly this app to fill.
-            skillRegistry.pluginUninstaller = { pluginId ->
-                pluginRepo.uninstall(pluginId)
-            }
-        }
-    }
+    //
+    // The skills store lives one call away, not here: AgentSkillsTools.access
+    // (the same accessor the executor chain's `skills` tool reads) owns the
+    // registry and the installer, and skillsContextAddition() below reads it
+    // for the system prompt — one store, so a listing and the prompt block
+    // can never disagree about what is installed.
 
     /**
      * The airplane surface the /airplane command and the airplane_mode tool
@@ -1704,7 +1646,7 @@ class BrowserAgentController(
                 visionUnsupportedReason = {
                     activeProvider?.protocol?.let { AgentVisionSupport.unsupportedReason(it) }
                 },
-                skillsTools = skillsTools,
+                skills = AgentSkillsTools.access(appContext),
                 // The turn's tool chain gets the same airplane bridge the
                 // /airplane command rides — one promise, two callers.
                 airplane = airplaneBridge
@@ -1929,15 +1871,11 @@ class BrowserAgentController(
             // prompt's own text — one block each, the order the chat enabled
             // them — so the model knows what else runs in the conversation
             // and treats its messages as data; a chat with none adds nothing,
-            // and its prompt is byte-identical to the pre-plugin one. The
-            // installed skills follow on the same terms: one fenced block per
-            // enabled instruction skill, or nothing — null means no skill is
-            // installed or enabled, and the prompt stays byte-identical to
-            // the one before skills existed. One registry, the same pair the
-            // executor chain's `skills` tool reads, so the prompt and a
-            // listing can never disagree about what is installed.
-            val prompt = modePrompt + pluginContextAddition(sessionId) +
-                (SkillPrompts.systemPromptBlock(skillRegistry) ?: "")
+            // and its prompt is byte-identical to the pre-plugin one.
+            // The enabled skills follow the same pattern one block later:
+            // a chat with none enabled adds nothing at all, so the prompt is
+            // byte-identical to the pre-skills one whenever it should be.
+            val prompt = modePrompt + pluginContextAddition(sessionId) + skillsContextAddition()
             val config = com.roombrowser.domain.agent.AgentConfig(
                 model = model,
                 maxSteps = settings.maxSteps,
@@ -2004,7 +1942,7 @@ class BrowserAgentController(
             // whichever chat the panel shows now; a turn cancelled out of the
             // loop loses its usage, which is the honest reading of an answer
             // nobody received.
-            val turnUsage = loop.runTurn(history) { event ->
+            loop.runTurn(history) { event ->
                 when (event) {
                     is AgentEvent.AssistantText -> {
                         // The delta is buffered, not applied: one window of
@@ -2067,13 +2005,24 @@ class BrowserAgentController(
                         // The model sometimes copies the fence's frame back out
                         // of the tool result it just read.
                         val answer = UntrustedContent.stripMarkers(event.text)
-                        // The answer is the bubble the user watched appear, so
-                        // it lands in it rather than beside it — the state's
+                        // The row is written BEFORE the entry list updates so
+                        // its id exists by the time the usage recorder runs:
+                        // the provider's reported counts land on exactly the
+                        // row this answer produced, never on a guess at which
+                        // row that is. A turn with no report writes the row
+                        // with null columns and records nothing. The state's
                         // own apply finds the open bubble wherever the panel
                         // has drifted to, because it reads THIS chat's list.
+                        val answerRowId = repo.addMessage(sessionId, "assistant", answer)
+                        event.usage?.let { usage ->
+                            repo.setMessageUsage(
+                                answerRowId,
+                                usage.promptTokens,
+                                usage.completionTokens
+                            )
+                        }
                         st.applyAnswer(st.streamingIndex ?: -1, answer, System.currentTimeMillis())
                         st.streamingIndex = -1
-                        repo.addMessage(sessionId, "assistant", answer)
                         repo.touchSession(sessionId)
                         setStatus(null)
                     }
@@ -2098,16 +2047,6 @@ class BrowserAgentController(
                     }
                 }
             }
-            st.addTokens(turnUsage)
-            recordToday(turnUsage)
-            repo.touchSession(sessionId)
-            // The row is the authoritative total — it outlives this process
-            // and is what the token dialog reads first — so the turn's cost
-            // lands in the same single-UPDATE increment the in-memory state
-            // just mirrored. Skipping this write would leave every chat's
-            // persisted total at zero until restart, and the dialog would
-            // then show the memory fallback for a chat whose row says 0.
-            repo.addSessionTokens(sessionId, turnUsage.inputTokens, turnUsage.outputTokens)
             if (!turnFailed) st.retryable = null
             // The turn finished, so the panel belongs to the user again: if
             // they moved to another tab while it ran, that tab's conversation
@@ -2231,6 +2170,9 @@ class BrowserAgentController(
      * reading it also settles the catalogue's cache for the tool definitions
      * the turn resolves further down (the same probe, paid once).
      */
+    private suspend fun skillsContextAddition(): String =
+        runCatching { AgentSkillsTools.access(appContext).promptBlock() }.getOrNull().orEmpty()
+
     private suspend fun pluginContextAddition(sessionId: Long): String =
         AgentPluginCatalog.systemPromptAddition(
             runCatching { pluginCatalog.sessionPlugins(sessionId) }.getOrDefault(emptyList())

@@ -157,6 +157,46 @@ class OllamaLocalTest {
     }
 
     @Test
+    fun `chat reports the usage ollama puts on the final line`() = runTest {
+        server.enqueue(
+            MockResponse()
+                .setHeader("Content-Type", "application/x-ndjson")
+                .setBody(
+                    ndjson(
+                        """{"model":"llama3.2:1b","message":{"role":"assistant","content":"Hel"},"done":false}""",
+                        """{"model":"llama3.2:1b","message":{"role":"assistant","content":"lo!"},"done":false}""",
+                        """{"model":"llama3.2:1b","message":{"role":"assistant","content":""},"done":true,""" +
+                            """"prompt_eval_count":118,"eval_count":27}"""
+                    )
+                )
+        )
+        val gateway = OllamaAgentGateway(OkHttpClient(), base, apiKey = "")
+        val usage = mutableListOf<StreamEvent.Usage>()
+
+        gateway.chat(request(), events = { if (it is StreamEvent.Usage) usage.add(it) })
+
+        // The counts ride the final `done` line; one event, exactly as sent.
+        assertThat(usage).containsExactly(StreamEvent.Usage(118, 27))
+    }
+
+    @Test
+    fun `chat without ollama counts emits no usage`() = runTest {
+        server.enqueue(
+            MockResponse()
+                .setHeader("Content-Type", "application/x-ndjson")
+                .setBody(chatDone("plain"))
+        )
+        val gateway = OllamaAgentGateway(OkHttpClient(), base, apiKey = "")
+        val usage = mutableListOf<StreamEvent.Usage>()
+
+        gateway.chat(request(), events = { if (it is StreamEvent.Usage) usage.add(it) })
+
+        // No counts on the wire → no event: absence is never turned into a
+        // number.
+        assertThat(usage).isEmpty()
+    }
+
+    @Test
     fun `chat parses tool calls with object arguments`() = runTest {
         server.enqueue(
             MockResponse()

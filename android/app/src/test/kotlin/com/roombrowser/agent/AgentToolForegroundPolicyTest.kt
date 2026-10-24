@@ -107,6 +107,15 @@ class AgentToolForegroundPolicyTest {
         AgentTools.WALLET_APPROVE,
         AgentTools.WALLET_REJECT,
         AgentTools.WALLET_SWITCH_NETWORK,
+        AgentTools.WALLET_BALANCES,
+        AgentTools.WALLET_SEND,
+        // The skills tools talk to the skill store (a Room row and a files
+        // directory beside the app's own data), never to a page, so they start
+        // no navigation and keep working on a background tab.
+        AgentTools.SKILLS_LIST,
+        AgentTools.SKILLS_INSTALL,
+        AgentTools.SKILLS_READ,
+        AgentTools.SKILLS_REMOVE,
         // The Developer Tools reads drive their own probes on this chat's engine
         // and start no navigation, so they keep working in the background. The
         // two that DO move the page — a diagnostic reload and a page patch —

@@ -36,13 +36,14 @@ object AgentPermissions {
     const val AGENT_PLUGINS = "agent.plugins"
 
     /**
-     * Installing, updating, removing and listing the agent's skills. Its own
-     * permission rather than riding [AGENT_PLUGINS] because a skill need not
-     * be a plugin: an instruction skill is TEXT the agent is told to treat as
-     * data, and a user may want the agent reading instructions while the
-     * plugin-tool axis (code, run per chat) stays shut. Like [AGENT_PLUGINS]
-     * it defaults to GRANTED — the withheld set only ever holds what the user
-     * turned off.
+     * Installing, reading, following and removing external skills (SKILL.md
+     * packages fetched from git repositories). All four skills tools ride
+     * this one axis, exactly as NODE_RUN and NODE_PACKAGES share
+     * [AGENT_NODE]: the consent being granted is to the whole skills surface —
+     * the network fetch at install time, the files it writes, and the fact
+     * that the skill's instructions reach the model's prompt. There is no
+     * honest use of the read-only tools without the install that stocked
+     * them, so splitting the axis would only make the refusal vaguer.
      */
     const val AGENT_SKILLS = "agent.skills"
 
@@ -96,11 +97,12 @@ object AgentPermissions {
         AgentTools.NODE_RUN,
         AgentTools.NODE_PACKAGES -> setOf(AGENT_NODE)
 
-        // Installing a skill reaches GitHub and writes under the app's own
-        // data directory; listing and enabling only read local state. It is
-        // its own permission (see [AGENT_SKILLS]) so the instruction-skill
-        // half can be granted while the plugin axis stays shut.
-        AgentTools.SKILLS -> setOf(AGENT_SKILLS)
+        // The whole skills surface on one switch, list and read included —
+        // see [AGENT_SKILLS] for why the axis is not split.
+        AgentTools.SKILLS_LIST,
+        AgentTools.SKILLS_INSTALL,
+        AgentTools.SKILLS_READ,
+        AgentTools.SKILLS_REMOVE -> setOf(AGENT_SKILLS)
 
         else -> emptySet()
     }
@@ -128,7 +130,7 @@ object AgentPermissions {
         AGENT_COMPUTE -> "Compute in a scratchpad"
         AGENT_NODE -> "Run JavaScript in the embedded Node runtime"
         AGENT_PLUGINS -> "Plugin tools"
-        AGENT_SKILLS -> "Skills"
+        AGENT_SKILLS -> "Install and use external skills"
         else -> permission
     }
 
@@ -153,7 +155,7 @@ object AgentPermissions {
         AGENT_PLUGINS ->
             "Lets the agent call the tools a chat plugin registered in this chat. The plugin's code runs in the embedded Node runtime under the app's own identity — it is not a security boundary — and its output is fenced as untrusted data before the model reads it. Which plugins exist is a per-chat choice, made in the agent panel with their permissions spelled out."
         AGENT_SKILLS ->
-            "Lets the agent manage the skills you installed: list and inspect them, and install, update or remove one from a GitHub source you name. An install downloads and validates a skill but never runs anything from it at install time; a skill's instructions reach the model as untrusted data, and a skill that is also a plugin still needs the per-chat plugin consent before its tools run."
+            "Lets the agent install skills from GitHub repositories (a skill is a SKILL.md plus reference files), read them, follow their instructions in chats and remove them again. Installing fetches from the network and writes into the app's data directory; the skill's instructions then reach the model's system prompt, so treat an install like letting a stranger hand you a playbook. Nothing from a skill is ever executed, and npm packages a skill declares are installed only through the Node runtime's own confirmed path."
         else -> permission
     }
 }

@@ -269,16 +269,6 @@ data class AgentSessionEntity(
      * shown to the model again on the next turn. A fresh chat starts empty.
      */
     @ColumnInfo(name = "plan_json", defaultValue = "") val planJson: String = "",
-    /**
-     * Cumulative token cost of this chat, as the provider reported it (or the
-     * documented chars/4 estimate when it did not — see TokenUsageEstimate).
-     * Written INCREMENTALLY by the turn's end ([AgentDao.addTokens]) rather
-     * than rewritten from a cached total: the row is the one copy that
-     * survives the process, and a row read by the export or the token dialog
-     * must never depend on a controller being alive.
-     */
-    @ColumnInfo(name = "input_tokens", defaultValue = "0") val inputTokens: Long = 0,
-    @ColumnInfo(name = "output_tokens", defaultValue = "0") val outputTokens: Long = 0,
     @ColumnInfo(name = "created_at") val createdAt: Long,
     @ColumnInfo(name = "updated_at") val updatedAt: Long
 )
@@ -301,7 +291,15 @@ data class AgentMessageEntity(
     @ColumnInfo(name = "tool_name") val toolName: String? = null,
     @ColumnInfo(name = "tool_args") val toolArgs: String? = null,
     @ColumnInfo(name = "tool_result") val toolResult: String? = null,
-    @ColumnInfo(name = "created_at") val createdAt: Long
+    @ColumnInfo(name = "created_at") val createdAt: Long,
+    /**
+     * Token usage the provider reported for the turn that produced this
+     * assistant row (schema v19). Null on every row a provider without
+     * usage reporting wrote, and on user/tool rows, which carry no usage
+     * of their own — the turn's totals land on the row that ended it.
+     */
+    @ColumnInfo(name = "prompt_tokens") val promptTokens: Int? = null,
+    @ColumnInfo(name = "completion_tokens") val completionTokens: Int? = null
 )
 
 // =========================================================================
@@ -735,4 +733,49 @@ data class ChatPluginEntity(
     @ColumnInfo(name = "updated_at") val updatedAt: Long,
     /** This chat's answers to the manifest's `inputs` form; null = never answered. */
     @ColumnInfo(name = "inputs_values_json") val inputsValuesJson: String? = null
+)
+
+// =========================================================================
+// AGENT SKILLS (schema v19) — externally authored SKILL.md packages the
+// agent discovers, installs, reads and follows.
+// =========================================================================
+
+/**
+ * One installed skill. A skill is a directory fetched from a git repository
+ * (the `npx skills add <owner>/<repo>[/path]` convention) whose SKILL.md —
+ * YAML front-matter `name`/`description` plus an instruction body — is
+ * injected into the system prompt of chats that have it enabled, and whose
+ * supporting files stay on disk for the agent to read through skills_read.
+ *
+ * Files live at `<filesDir>/skills/<skillId>/`; this row is the metadata
+ * that survives restarts and lets the manager list/re-enable/remove them.
+ * Nothing here is a credential: skills never carry secrets in this table,
+ * and their instructions are UNTRUSTED content at prompt time (fenced).
+ */
+@Entity(
+    tableName = "agent_skills",
+    indices = [Index(value = ["skill_id"], unique = true)]
+)
+data class AgentSkillEntity(
+    @PrimaryKey(autoGenerate = true) @ColumnInfo(name = "id") val id: Long = 0,
+    /** Directory name on disk and stable handle for tools; the SKILL.md `name`. */
+    @ColumnInfo(name = "skill_id") val skillId: String,
+    @ColumnInfo(name = "display_name") val displayName: String,
+    /** The front-matter description — what the agent reads to decide relevance. */
+    @ColumnInfo(name = "description") val description: String,
+    /** `owner/repo` the skill came from, for updates and provenance. */
+    @ColumnInfo(name = "source_repo") val sourceRepo: String,
+    /** Path of the skill directory inside the repo, "" for a repo root skill. */
+    @ColumnInfo(name = "sub_path") val subPath: String,
+    /** Front-matter `metadata.version`, "" when the skill declares none. */
+    @ColumnInfo(name = "version") val version: String,
+    /** Resolved git ref the tarball was fetched at, for update checks. */
+    @ColumnInfo(name = "commit_ref") val commitRef: String,
+    /** SHA-256 of the installed SKILL.md, to detect drift on re-install. */
+    @ColumnInfo(name = "skill_md_sha256") val skillMdSha256: String,
+    /** npm packages the skill's install hint declares; JSON array, "[]" = none. */
+    @ColumnInfo(name = "npm_deps_json") val npmDepsJson: String,
+    @ColumnInfo(name = "enabled") val enabled: Boolean,
+    @ColumnInfo(name = "installed_at") val installedAt: Long,
+    @ColumnInfo(name = "updated_at") val updatedAt: Long
 )
