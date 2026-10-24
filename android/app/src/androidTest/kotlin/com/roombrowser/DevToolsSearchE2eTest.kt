@@ -658,6 +658,7 @@ class DevToolsSearchE2eTest {
      */
     private fun recoveredFeedScroll(panelChip: String, panelBody: String, text: String): Boolean {
         repeat(2) { attempt ->
+            restartEngineProcess()
             launchEngine(server.url("/page-$tag").toString())
             if (!hasText(pageHeading, if (attempt == 0) 60_000 else 30_000)) return@repeat
             if (!openDeveloperToolsPanel(consoleChip, consoleBody)) return@repeat
@@ -665,6 +666,39 @@ class DevToolsSearchE2eTest {
             if (scrollPanelToText(text)) return true
         }
         return false
+    }
+
+    /**
+     * Kills the engine-bearing process so the next [launchEngine] is a cold
+     * one.
+     *
+     * CLEAR_TASK alone was proven not to heal what this suite recovers
+     * from: the activity is destroyed but the `:browser` process survives
+     * it, and with the process survive both wedges the recovery exists for.
+     * The network feed's extension port, dead since an earlier
+     * content-process recycle, stays dead (CI 40070510408 attempts 1-2 and
+     * 40083429230: one pid served every CLEAR_TASK relaunch, and the
+     * Network panel's body composed empty each time while the console feed
+     * — a separate path — carried on); the degraded accessibility window is
+     * the same process's window. A cold process restores exactly the
+     * conditions the feed demonstrably works under, which the suite's own
+     * early tests prove on every run. `run-as` is available because the
+     * build under test is debuggable, and a kill that cannot happen (pidof
+     * misses, run-as refuses) degrades to the plain relaunch — the
+     * recovery this suite has always had, only with a higher floor.
+     */
+    private fun restartEngineProcess() {
+        runCatching {
+            val pids = device.executeShellCommand(
+                "pidof ${targetContext.packageName}:browser"
+            ).trim()
+            if (pids.isNotEmpty()) {
+                device.executeShellCommand(
+                    "run-as ${targetContext.packageName} sh -c 'kill $pids'"
+                )
+            }
+        }
+        device.waitForIdle(1_000)
     }
 
     private fun scrollPanelToText(text: String, maxDrags: Int = 24): Boolean {
