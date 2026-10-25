@@ -4,6 +4,7 @@ import android.content.Context
 import com.roombrowser.data.repo.AiTaskRepository
 import com.roombrowser.di.AppGraph
 import com.roombrowser.domain.task.AiTaskRunStatus
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.currentCoroutineContext
@@ -90,7 +91,19 @@ class AiTaskDelivery(
             while (currentCoroutineContext().isActive) {
                 // The signal carries nothing; the drain reads the queue.
                 wake.receive()
-                drainOnce()
+                // ONE BAD ROW MUST NOT STOP DELIVERY FOR THE PROCESS'S LIFE.
+                // A drain that throws out of this loop kills its only
+                // consumer: every later signal queues behind a receiver that
+                // no longer exists, and every scheduled run stays deferred
+                // until the app is restarted. Cancellation is the one throw
+                // that is allowed through — it is the scope shutting down.
+                try {
+                    drainOnce()
+                } catch (ce: CancellationException) {
+                    throw ce
+                } catch (t: Throwable) {
+                    // The next signal (or the fallback) tries again.
+                }
             }
         }
     }
@@ -101,10 +114,21 @@ class AiTaskDelivery(
      * written to the row; Deferred is left exactly as it is, because the
      * reason on the row already says why and rewriting it would re-emit the
      * very row this drain is reading.
+     *
+     * A DECLINED ROW IS NOT RE-READ IN THE SAME DRAIN. The outer loop exists
+     * so a run that left NEW rows deferred gets them handled now — but a row
+     * that just declined is still in the queue, and re-reading it would run
+     * it again immediately: the queue never empties, the loop never ends, and
+     * the process spins on database reads (and, for the model-probe deferral,
+     * on network calls) until the user notices the battery. Declining is
+     * final for this drain; the fallback poll or the next signal is when the
+     * state that blocked it may have changed.
      */
     private suspend fun drainOnce() {
+        val declined = mutableSetOf<Long>()
         while (currentCoroutineContext().isActive) {
             val tasks = runCatching { repo.deferredNow() }.getOrDefault(emptyList())
+                .filterNot { it.id in declined }
             if (tasks.isEmpty()) return
             for (task in tasks) {
                 val outcome = runCatching { runner.run(task) }.getOrElse { error ->
@@ -113,13 +137,17 @@ class AiTaskDelivery(
                 val at = System.currentTimeMillis()
                 when (outcome) {
                     is AiTaskRunOutcome.Completed ->
-                        repo.recordRun(task.id, at, AiTaskRunStatus.COMPLETED.name, outcome.summary)
+                        runCatching {
+                            repo.recordRun(task.id, at, AiTaskRunStatus.COMPLETED.name, outcome.summary)
+                        }
                     is AiTaskRunOutcome.Failed ->
-                        repo.recordRun(task.id, at, AiTaskRunStatus.FAILED.name, outcome.message)
+                        runCatching {
+                            repo.recordRun(task.id, at, AiTaskRunStatus.FAILED.name, outcome.message)
+                        }
                     // Unchanged: the reason on the row already says why, and
                     // rewriting it would re-emit the very row this drain is
                     // reading.
-                    is AiTaskRunOutcome.Deferred -> Unit
+                    is AiTaskRunOutcome.Deferred -> declined += task.id
                 }
             }
             // The loop re-reads: the runs above may have left NEW rows
