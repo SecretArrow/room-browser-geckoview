@@ -199,7 +199,6 @@ class NetworkWarningActivity : ComponentActivity() {
 
         /** Bounded so a dead network fails the refresh instead of hanging it. */
         private const val PROBE_TIMEOUT_MS = 6_000L
-
     }
 }
 
