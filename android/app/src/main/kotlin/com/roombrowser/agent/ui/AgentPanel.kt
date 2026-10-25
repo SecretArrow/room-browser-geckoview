@@ -798,8 +798,10 @@ internal fun transcriptKeys(entries: List<AgentEntry>): List<String> {
  * F-03: every delta copy()-replaces the whole entries LIST, so
  * `remember(entries) { transcriptKeys(entries) }` re-ran an O(n) HashMap pass
  * per token. The cache answers from memory whenever the new list provably
- * yields the same keys: the same object, or the same SIZE with the same key
- * stem at every index — a stem being exactly what [transcriptKeys] reads
+ * yields the same keys — the same SIZE with the same key stem at every
+ * index, checked against a frozen COPY of the content it last computed from
+ * (never the caller's list itself: a live list would grow under the memo and
+ * vouch for itself) — a stem being exactly what [transcriptKeys] reads
  * (the branch plus `at`/`callId`; token appends and the tool/assistant
  * in-place copies never touch those). Keys are a pure function of the stems,
  * so equal stems mean equal keys: the hit is correct by construction, not by
@@ -821,17 +823,25 @@ internal class TranscriptKeyCache {
         // after the first call and would freeze the keys at the first
         // generation's size — exactly the stale-short-keys crash the
         // AgentConversation snapshot exists to prevent. Size + stems is the
-        // only honest hit test, and it answers the same-object case too.
+        // only honest hit test — and it only WORKS because [recompute] stored
+        // a COPY, never the caller's list itself: an aliased live list would
+        // grow with the caller, its size would always equal the caller's, and
+        // the stem scan would compare the list to itself (CI 40150299760: the
+        // JVM pin caught the alias returning first-generation keys).
         val cached = source ?: return recompute(entries)
         if (entries.size == cached.size && sameKeyStems(cached, entries)) {
-            source = entries
             return keys
         }
         return recompute(entries)
     }
 
     private fun recompute(entries: List<AgentEntry>): List<String> {
-        source = entries
+        // The memo holds a COPY of the content it computed from, so the hit
+        // test below compares against frozen content rather than against
+        // whatever the caller's list has grown into since. O(window) per
+        // recompute — recomputes are the rare shape (a row landed, a chat
+        // switched), and hits pay only the stem scan.
+        source = entries.toList()
         keys = transcriptKeys(entries)
         return keys
     }
