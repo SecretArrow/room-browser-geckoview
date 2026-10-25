@@ -145,7 +145,10 @@ class ProfileModelTest {
         // Compatibility behavior stays on.
         assertThat(s.blockThirdPartyCookies).isFalse()
         assertThat(s.javascriptEnabled).isTrue()
-        assertThat(s.httpsUpgrade).isTrue()
+        // 2026-10: httpsUpgrade joins the shields as default-off (captive
+        // portals and plain-http LAN endpoints), search defaults to Google.
+        assertThat(s.httpsUpgrade).isFalse()
+        assertThat(s.searchEngineId).isEqualTo("google")
     }
 
     @Test

@@ -37,7 +37,7 @@ object UrlIntelligence {
      * Supports: full URLs, bare hosts, IPv4/IPv6 literals, localhost,
      * file:// URIs, and search queries.
      */
-    fun classify(input: String, searchEngineId: String = "duckduckgo"): Pair<Input, String> {
+    fun classify(input: String, searchEngineId: String = "google"): Pair<Input, String> {
         val raw = input.trim()
         if (raw.isEmpty()) return Input.Search("") to ""
 

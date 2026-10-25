@@ -125,8 +125,8 @@ fixture('profile-compat-defaults', function () {
         });
     matches(
         profile,
-        /val\s+httpsUpgrade:\s*Boolean\s*=\s*true/,
-        'httpsUpgrade stays on (its http fallback is what makes it safe)');
+        /val\s+httpsUpgrade:\s*Boolean\s*=\s*false/,
+        'httpsUpgrade is default-off (2026-10: captive portals and plain-http LAN endpoints); still available per profile');
     matches(
         profile,
         /val\s+blockThirdPartyCookies:\s*Boolean\s*=\s*false/,
