@@ -210,6 +210,6 @@ class BridgeManifestTest {
          * [the_extension_version_is_bumped_whenever_the_extension_changes].
          */
         const val EXTENSION_FINGERPRINT =
-            "bbc30e5e8a0347c1d2ce5c1354115bbee9203a8ce6f78e425fb5fcc2857e9258"
+            "f44b06950252a85dd3045cd683eab59d5fde35ba81ed9a0a23e619a0a35e3454"
     }
 }

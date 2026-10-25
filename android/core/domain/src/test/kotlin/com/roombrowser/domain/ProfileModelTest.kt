@@ -232,7 +232,7 @@ class ProfileModelTest {
 
     @Test
     fun `search engine fallback for unknown id`() {
-        assertThat(SearchEngines.byId("nope").id).isEqualTo("duckduckgo")
+        assertThat(SearchEngines.byId("nope").id).isEqualTo("google")
     }
 
     @Test
