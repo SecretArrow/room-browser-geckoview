@@ -1004,10 +1004,31 @@ class PluginE2eTest {
     private fun rockingFind(needle: String, timeoutMs: Long): UiObject2? {
         val deadline = System.currentTimeMillis() + timeoutMs
         val settledAt = System.currentTimeMillis() + 10_000
+        // One mid-wait REOPEN, at the halfway mark. Two CI runs (40132911170
+        // attempt 2, 40138280360's sibling) watched the same wait fail for
+        // its whole window while the module's own kv.json proved the card had
+        // landed: in one the panel surface had drifted away entirely (no
+        // pill, no composer, no card), in the other the card stayed composed
+        // but only its FOOTER was in the tree — the body sat culled above the
+        // viewport, past everything a ±120px rock around the card's center
+        // can reach, because the turn's tail (the error row) had re-pinned
+        // the list below the card and nothing new ever lands to re-fire the
+        // auto-scroll. Closing and re-opening the panel answers both: the
+        // conversation recomposes from the controller's own state, the first
+        // scroll pins the newest row into view, and a culled body is culled
+        // no more. The turn is long over by the halfway mark (the dead
+        // endpoint fails in seconds), so the reopen races nothing.
+        val reopenAt = System.currentTimeMillis() + timeoutMs / 2
+        var reopened = false
         var towardBeginning = true
         while (true) {
             device.findObjects(By.textContains(needle)).firstOrNull()?.let { return it }
             if (System.currentTimeMillis() >= deadline) return null
+            if (!reopened && System.currentTimeMillis() >= reopenAt) {
+                reopened = true
+                openAgentPanelFromMenu()
+                continue
+            }
             if (System.currentTimeMillis() < settledAt) {
                 device.waitForIdle(400)
                 continue
@@ -1127,6 +1148,12 @@ class PluginE2eTest {
      */
     private fun endAnchoredFirstOf(needles: List<String>, timeoutMs: Long): Pair<String, Int>? {
         val deadline = System.currentTimeMillis() + timeoutMs
+        // The same mid-wait reopen rockingFind carries: a surface that drifts
+        // away mid-wait (or a tail row whose body the end-pin culled) never
+        // answers the end-ward swipes — the reopen recomposes the panel and
+        // re-pins the newest row, which is where a turn's last rows live.
+        val reopenAt = System.currentTimeMillis() + timeoutMs / 2
+        var reopened = false
         while (true) {
             for (needle in needles) {
                 device.findObjects(By.textContains(needle)).firstOrNull()?.let { row ->
@@ -1140,6 +1167,11 @@ class PluginE2eTest {
                 }
             }
             if (System.currentTimeMillis() >= deadline) return null
+            if (!reopened && System.currentTimeMillis() >= reopenAt) {
+                reopened = true
+                openAgentPanelFromMenu()
+                continue
+            }
             device.swipe(
                 device.displayWidth / 2, device.displayHeight * 11 / 16,
                 device.displayWidth / 2, device.displayHeight * 7 / 16, 60
