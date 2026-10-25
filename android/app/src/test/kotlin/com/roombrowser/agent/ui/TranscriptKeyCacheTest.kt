@@ -117,7 +117,7 @@ class TranscriptKeyCacheTest {
         // :browser process dead). A grown same-object list is a MISS: the
         // recompute must see the new size.
         val cache = TranscriptKeyCache()
-        val live = mutableListOf(AgentEntry.User("hi", at = 1L))
+        val live = mutableListOf<AgentEntry>(AgentEntry.User("hi", at = 1L))
         assertThat(cache.keysFor(live)).hasSize(1)
         live += AgentEntry.Assistant("yo", thinking = "", streaming = false, at = 2L)
         val grown = cache.keysFor(live)
