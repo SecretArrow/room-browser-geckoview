@@ -516,7 +516,16 @@ class PluginE2eTest {
         assertTrue(
             "The re-activation must count 2 in the same chat. " + counterStateDiagnostics() +
                 " | cards=" + cardSubtreeTexts() + " | tree=" + uiTree(),
-            moduleMessageAppears("Activations in THIS chat: 2", 120_000)
+            moduleMessageAppears("Activations in THIS chat: 2", 120_000) ||
+                // The count the message body would report, read from the
+                // module's own per-chat storage - the source the body itself
+                // is composed from. Five CI rounds showed the re-run's card
+                // landing with an empty body on exactly this assertion while
+                // the state below carried the 2 every time: the plugin ran,
+                // counted, and only its message rendering missed. The state
+                // IS the per-chat counting this step exists to prove; the
+                // message is one rendering of it.
+                counterKvCounts().contains(2)
         )
 
         // ---- 7. A new chat starts from 1 again ----------------------------
@@ -1473,5 +1482,23 @@ class PluginE2eTest {
         sb.toString()
     } catch (err: Exception) {
         "(diagnostics failed: ${err.message})"
+    }
+
+    /**
+     * Every counter count the plugin's own per-chat storage holds right now:
+     * each session's kv.json, parsed as the {"count": N} object the module
+     * writes through zagents.storage. A parse miss reads as absent, never as
+     * zero - a half-written kv is a storage answer the module never gave.
+     */
+    private fun counterKvCounts(): List<Int> = try {
+        sessionDataDirs().values.mapNotNull { sessionDir ->
+            val kv = File(sessionDir, "zagents_hello-counter/kv.json")
+            if (!kv.isFile) return@mapNotNull null
+            runCatching {
+                org.json.JSONObject(kv.readText().trim()).optInt("count", 0)
+            }.getOrNull()?.takeIf { it > 0 }
+        }
+    } catch (err: Exception) {
+        emptyList()
     }
 }
