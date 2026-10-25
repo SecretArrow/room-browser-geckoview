@@ -57,7 +57,7 @@ object AgentClientIdentity {
      */
     const val DEFAULT: String =
         "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) " +
-            "Chrome/131.0.6778.135 Mobile Safari/537.36"
+            "Chrome/156.0.8078.48 Mobile Safari/537.36"
 
     /** The Claude Code CLI identity, in the canonical accepted spelling. */
     const val CLAUDE_CLI: String = "claude-cli/1.0.60 (external, cli)"

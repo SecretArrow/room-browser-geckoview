@@ -76,15 +76,18 @@ ANDROID_BY_YEAR = {
     2025: "15",
 }
 
-# Chrome for Android stable, by the year the device launched.  A device ships
-# with the Chrome of its era and updates from there; pinning the era's version
-# keeps the pair (Android, Chrome) coherent instead of every entry claiming
-# the newest browser.
+# Chrome for Android stable.  Chrome updates itself on every one of these
+# handsets, so by the time a catalogue generation is curated every entry in
+# it runs the SAME current stable - a 2022 handset and a 2025 one report the
+# same browser, and pinning each launch year to a different, older build
+# would claim a Chrome those devices no longer run.  One current build,
+# refreshed with the catalogue (this one: Chrome 156 stable, October 2026;
+# the product floor is Chromium 153, never 150 or below).
 CHROME_BY_YEAR = {
-    2022: "108.0.5359.128",
-    2023: "120.0.6099.144",
-    2024: "131.0.6778.135",
-    2025: "138.0.7204.157",
+    2022: "156.0.8078.48",
+    2023: "156.0.8078.48",
+    2024: "156.0.8078.48",
+    2025: "156.0.8078.48",
 }
 
 # --------------------------------------------------------------------------

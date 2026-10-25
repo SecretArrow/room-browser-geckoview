@@ -215,7 +215,7 @@ differences:
 - `navigator.platform` and `userAgentData.platform` follow the OS —
   `Win32`/`Windows`, `MacIntel`/`macOS`, `Linux x86_64`/`Linux`.
 - The User-Agent carries the **major** Chrome version only
-  (`Chrome/131.0.0.0`), which is the reduced form Chrome has sent since
+  (`Chrome/156.0.0.0`), which is the reduced form Chrome has sent since
   2022; the build number lives in the `uaFullVersion` client hint.
 - `deviceMemory` is never above 8, because that is where Chromium caps it —
   a 64 GB workstation honestly reports 8, exactly as a real one does.

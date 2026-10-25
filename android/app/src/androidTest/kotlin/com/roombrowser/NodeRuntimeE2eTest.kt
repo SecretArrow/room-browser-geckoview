@@ -25,7 +25,7 @@ class NodeRuntimeE2eTest {
 
     private val profileUserAgent =
         "Mozilla/5.0 (Linux; Android 11; Pixel 5) AppleWebKit/537.36 " +
-            "(KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36"
+            "(KHTML, like Gecko) Chrome/156.0.0.0 Mobile Safari/537.36"
 
     @Test
     fun the_runtime_boots_in_this_apk_and_echoes_the_profile_identity() {

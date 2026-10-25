@@ -88,12 +88,12 @@ class UserAgentsTest {
         assertThat(ua("chrome_android_tablet")).contains("Android 14; SM-X710)")
         assertThat(ua("chrome_android_tablet")).doesNotContain("Tablet")
         assertThat(ua("firefox_android_tablet")).contains("Tablet")
-        assertThat(ua("opera_android")).contains("OPR/79")
+        assertThat(ua("opera_android")).contains("OPR/99")
         // Brave's mobile browser is Chromium-based and ships the plain Chrome
         // mobile UA on purpose, so the two values are identical.
         assertThat(ua("brave_android")).isEqualTo(ua("chrome_android"))
         assertThat(ua("duckduckgo_android")).contains("DuckDuckGo/5")
-        assertThat(ua("vivaldi_android")).contains("Vivaldi/6.8")
+        assertThat(ua("vivaldi_android")).contains("Vivaldi/8.2")
         // No preset invents a vendor token: "ChromeBetA" does not exist in any
         // Chrome channel's UA, and neither does anything else spelled like it.
         for (p in UserAgents.all) {
@@ -118,10 +118,13 @@ class UserAgentsTest {
     fun `chrome presets speak the Chrome build the device catalogue ships`() {
         // The point of the version: a profile on a preset and a profile on a
         // device must not tell the same site two different things about the
-        // same app. Every Chrome-identity preset therefore carries one of the
-        // real builds the catalogue's handsets report, in the same full
-        // 4-part form — never the `<major>.0.0.0` placeholder, whose zero
-        // build and patch are what made presets and devices disagree.
+        // same app. Every stable Chrome-identity preset therefore carries the
+        // real build the catalogue's handsets report, in the same full 4-part
+        // form - never the `<major>.0.0.0` placeholder, whose zero build and
+        // patch are what made presets and devices disagree. The Beta row is
+        // the deliberate exception: devices run stable, so its newer real
+        // Beta-channel build cannot also be in the catalogue; the beta test
+        // below pins it.
         val shipped = Devices.all.map { it.chromeVersion }.toSet()
         for (id in chromeIdentityIds) {
             val match = chromeToken.find(ua(id))
@@ -130,7 +133,26 @@ class UserAgentsTest {
             assertThat(minor).isEqualTo("0") // Chrome's own Android version scheme
             assertThat(build).isNotEqualTo("0")
             assertThat(patch).isNotEqualTo("0")
-            assertThat(shipped).contains("$major.$minor.$build.$patch")
+            if (id != "chrome_beta_android") {
+                assertThat(shipped).contains("$major.$minor.$build.$patch")
+            }
+        }
+    }
+
+    @Test
+    fun `every chromium token claims a current generation and never a stale one`() {
+        // The product floor: no User-Agent this app sends may claim a Chromium
+        // generation below 153, and the Firefox presets must carry the current
+        // Firefox release. A preset that goes stale is caught here, at unit
+        // time, instead of shipping an identity years behind the web.
+        for (p in UserAgents.all) {
+            val major = chromeToken.find(p.value)?.groupValues?.get(1)?.toIntOrNull()
+                ?: continue // the webview preset carries no Chromium token
+            assertThat(major).isAtLeast(153)
+        }
+        for (id in listOf("firefox_android", "firefox_android_tablet")) {
+            val major = Regex("rv:([0-9]+)").find(ua(id))!!.groupValues[1].toInt()
+            assertThat(major).isAtLeast(158)
         }
     }
 
@@ -192,7 +214,7 @@ class UserAgentsTest {
     @Test
     fun `the desktop mode UA is not a preset`() {
         assertThat(UserAgents.desktopModeUserAgent).contains("Windows NT")
-        assertThat(UserAgents.desktopModeUserAgent).contains("Chrome/124")
+        assertThat(UserAgents.desktopModeUserAgent).contains("Chrome/156")
         // Not offered as a preset by id...
         assertThat(UserAgents.all.map { it.id }).doesNotContain("chrome_windows")
         // ...and its value is not any preset's value.
@@ -206,7 +228,7 @@ class UserAgentsTest {
     /** A stock WebView UA, in the shape a real device reports it. */
     private val engineUa =
         "Mozilla/5.0 (Linux; Android 14; SM-S918B Build/UP1A.231005.007; wv) " +
-            "AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/131.0.6778.135 " +
+            "AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/156.0.8078.48 " +
             "Mobile Safari/537.36"
 
     @Test
@@ -222,7 +244,7 @@ class UserAgentsTest {
         assertThat(cleaned).doesNotContain("  ")
         assertThat(cleaned).isEqualTo(
             "Mozilla/5.0 (Linux; Android 14; SM-S918B Build/UP1A.231005.007) " +
-                "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.6778.135 " +
+                "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/156.0.8078.48 " +
                 "Mobile Safari/537.36"
         )
     }
@@ -231,10 +253,10 @@ class UserAgentsTest {
     fun `neutralising keeps the engine's real Chrome version`() {
         val cleaned = UserAgents.webViewNeutralUserAgent(engineUa)!!
 
-        // Substituting a fixed "Chrome 131" would go stale within months and
+        // Substituting a fixed "Chrome 156" would go stale within months and
         // would fight the per-profile identity system. Only the two WebView
         // markers go.
-        assertThat(cleaned).contains("Chrome/131.0.6778.135")
+        assertThat(cleaned).contains("Chrome/156.0.8078.48")
         assertThat(cleaned).contains("Android 14")
         assertThat(cleaned).contains("SM-S918B")
     }
@@ -242,7 +264,7 @@ class UserAgentsTest {
     @Test
     fun `a UA without WebView markers is returned unchanged`() {
         val alreadyClean = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
-            "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+            "(KHTML, like Gecko) Chrome/156.0.0.0 Safari/537.36"
 
         assertThat(UserAgents.webViewNeutralUserAgent(alreadyClean)).isEqualTo(alreadyClean)
         assertThat(UserAgents.webViewNeutralUserAgent(UserAgents.desktopModeUserAgent))
