@@ -383,6 +383,13 @@ class DevToolsSearchE2eTest {
      * The fixture page: a named global holding the run's tag, one storage key,
      * a heading, one console marker logged at load, and a fetch that keeps
      * repeating so the network feed has something live to hold.
+     *
+     * The beat is 2s, not the 700ms it once was: the fetch loop IS the load
+     * that triggers the engine's content-process recycle (see the recovery
+     * below), and a 700ms beat gave a 104-test suite a recycle mid-test every
+     * round - exactly while this test holds its panels open. A 2s beat still
+     * lands 8+ events inside the 20s feed await, so every assertion reads the
+     * same evidence, and the recycle pressure drops by a factor of three.
      */
     private fun fixturePage(): String = """
         <!DOCTYPE html><html><head>
@@ -398,7 +405,7 @@ class DevToolsSearchE2eTest {
             catch (e) {}
           }
           beat();
-          setInterval(beat, 700);
+          setInterval(beat, 2000);
         </script>
         </body></html>
     """.trimIndent()
@@ -649,19 +656,22 @@ class DevToolsSearchE2eTest {
      * earns the recovery because it alone holds its panels open across a
      * multi-minute walk while that recycle lands.
      *
-     * TWO relaunches, not one: after the 2026-10 runner image change the
+     * THREE relaunches, not one: after the 2026-10 runner image change the
      * crawl outlasted a single fresh activity twice in a row (CI run
      * 40070510408, attempts 1 and 2: the network feed's row was never found,
      * and the failure's own tree probe reported "the window was
      * mid-transition"), so the first relaunch can come up while the tree is
      * still wedged. The second starts a full walk later, from a tree that
      * has had that much longer to settle, and the first attempt's heading
-     * wait is doubled to 60 seconds for the same reason. Each attempt is
+     * wait is doubled to 60 seconds for the same reason. A third attempt
+     * joined them after runs 40161081030/40161082512 still failed twice with
+     * an empty tree dump - the fixture beat also slowed to 2s to cut the
+     * recycle pressure at its source. Each attempt is
      * bounded by the walk budget, so the whole recovery costs minutes, not
      * the hour the un-walked crawl once did.
      */
     private fun recoveredFeedScroll(panelChip: String, panelBody: String, text: String): Boolean {
-        repeat(2) { attempt ->
+        repeat(3) { attempt ->
             restartEngineProcess()
             launchEngine(server.url("/page-$tag").toString())
             if (!hasText(pageHeading, if (attempt == 0) 60_000 else 30_000)) return@repeat

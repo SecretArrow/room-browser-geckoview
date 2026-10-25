@@ -1241,13 +1241,32 @@ class PluginUiState(
             // module-message shape: its cards-and-notice half is unchanged,
             // and a module that only pushed cards keeps them ahead of the
             // notice.
-            if (plugin.format == PluginFormat.ZAGENTS && activated.output.isNotBlank()) {
-                runCatching {
-                    onCard(
-                        session,
-                        PluginCard(text = activated.output.take(PLUGIN_MESSAGE_CHARS)),
-                        plugin.name
-                    )
+            //
+            // output and logs are composed from the same host-side capture,
+            // so a blank output beside a non-empty logs list is a dropped
+            // body on the wire, not a silent module — the logs are the same
+            // lines and the honest body to render instead. And a card the
+            // transcript refused is never swallowed silently: one retry, then
+            // the failure says its own words in the notice lane, because a
+            // module that RAN and a chat that shows nothing for it is the
+            // exact "did it even happen?" silence this panel exists to
+            // prevent.
+            val body = activated.output.ifBlank {
+                activated.logs.joinToString("\n").take(PLUGIN_MESSAGE_CHARS)
+            }
+            if (plugin.format == PluginFormat.ZAGENTS && body.isNotBlank()) {
+                val card = PluginCard(text = body)
+                val delivered = runCatching { onCard(session, card, plugin.name) }.isSuccess
+                if (!delivered) {
+                    runCatching { onCard(session, card, plugin.name) }
+                        .onFailure { err ->
+                            android.util.Log.w("PluginUiState", "the activation card was dropped: $err")
+                            onNotice(
+                                "${plugin.name} ran, but its message could not be shown: " +
+                                    firstLine(err.message ?: "no reason given"),
+                                true
+                            )
+                        }
                 }
             }
             onNotice(successNotice, false)
