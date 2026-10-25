@@ -300,9 +300,7 @@ fun BrowserContent(
             when {
                 error != null -> ErrorPage(
                     error = error,
-                    proxy = viewModel.pageProxyLabel,
-                    onRetry = { viewModel.reload() },
-                    onDisableProxy = { viewModel.disableProxyForProfile() }
+                    onRetry = { viewModel.reload() }
                 )
                 page.isHomepage -> Homepage(
                     viewModel = viewModel,
@@ -350,24 +348,14 @@ private suspend fun PointerInputScope.detectDoubleTap(onDoubleTap: () -> Unit) {
 
 /**
  * Error pages (spec section 52): No Internet / SSL / DNS / generic.
- *
- * [proxy] and [onDisableProxy] belong to the certificate page alone: a proxy is
- * the one cause of a refused connection this app can see and undo, so it is
- * named there and offered as an action. Both are ignored on every other page.
  */
 @Composable
 private fun ErrorPage(
     error: PageError,
-    onRetry: () -> Unit,
-    proxy: String? = null,
-    onDisableProxy: () -> Unit = {}
+    onRetry: () -> Unit
 ) {
     val context = LocalContext.current
     val extras = LocalRoomExtras.current
-    // Resolved once: the certificate page both prints this and offers the
-    // button that answers it, and the two must never disagree about whether
-    // there is a proxy to turn off.
-    val proxyLine = if (error is PageError.Ssl) CertificateNotice.proxyLine(proxy) else null
     Column(
         Modifier
             .fillMaxSize()
@@ -413,15 +401,6 @@ private fun ErrorPage(
         if (error is PageError.Ssl) {
             Spacer(Modifier.height(16.dp))
             CertificateBlock(error.certificate)
-            if (proxyLine != null) {
-                Spacer(Modifier.height(12.dp))
-                Text(
-                    proxyLine,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = extras.textSecondary,
-                    modifier = Modifier.padding(horizontal = 8.dp)
-                )
-            }
             Spacer(Modifier.height(12.dp))
             Text(
                 CertificateNotice.TRUST_HINT,
@@ -432,10 +411,6 @@ private fun ErrorPage(
         }
         Spacer(Modifier.height(24.dp))
         Button(onClick = onRetry) { Text("Try Again") }
-        if (proxyLine != null) {
-            Spacer(Modifier.height(8.dp))
-            OutlinedButton(onClick = onDisableProxy) { Text(CertificateNotice.DISABLE_PROXY) }
-        }
         Spacer(Modifier.height(8.dp))
         OutlinedButton(onClick = {
             runCatching { context.openWirelessSettings() }

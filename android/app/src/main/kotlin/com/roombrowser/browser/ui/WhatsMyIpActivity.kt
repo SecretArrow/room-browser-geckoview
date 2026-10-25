@@ -52,14 +52,13 @@ import com.roombrowser.data.net.ConnectionFacts
 import com.roombrowser.data.net.DeviceFacts
 import com.roombrowser.data.net.SystemFacts
 import com.roombrowser.data.net.fetchExitIp
-import com.roombrowser.domain.model.BrowserGlobalSettings
 import com.roombrowser.domain.model.DnsMode
 import com.roombrowser.domain.model.ProfileId
 import com.roombrowser.domain.model.ProfileSettings
 import com.roombrowser.domain.model.UserAgents
 import com.roombrowser.domain.net.ExitIp
+import com.roombrowser.domain.net.IpAddress
 import com.roombrowser.domain.net.NetFacts
-import com.roombrowser.domain.proxy.ProxyHealthRules
 import com.roombrowser.engine.EngineRuntime
 import com.roombrowser.ui.common.LocalRoomExtras
 import com.roombrowser.ui.common.RoomBrowserTheme
@@ -75,12 +74,12 @@ import okhttp3.OkHttpClient
  * Everything here is reported, nothing is configured, and the two halves are
  * kept apart on purpose:
  *
- *  - the ADDRESS is measured DIRECTLY, never through the profile's proxy. That
- *    reading is the one a proxy is judged against, so asking for it through a
- *    proxy would confirm the proxy by trusting it.
- *  - the IDENTITY (user agent, proxy route) is read from the profile's own
- *    settings through the same resolvers the engine is configured from, so a
- *    row cannot claim something the engine does not send.
+ *  - the ADDRESS is measured DIRECTLY, over a bare client that carries none of
+ *    this profile's configuration, because the whole point is the address a
+ *    site would actually see.
+ *  - the IDENTITY (user agent, DNS) is read from the profile's own settings
+ *    through the same resolvers the engine is configured from, so a row cannot
+ *    claim something the engine does not send.
  *
  * A refresh re-measures both: the address may have changed, and so may the
  * transport it came over.
@@ -149,8 +148,6 @@ private data class IpFacts(
     val ipv4: String?,
     val ipv6: String?,
     val identity: IdentityFacts,
-    val proxySummary: String,
-    val proxyScopes: String,
     val dnsSummary: String,
     val connection: ConnectionFacts,
     val device: DeviceFacts
@@ -166,21 +163,19 @@ private suspend fun loadFacts(context: Context, profileId: ProfileId): IpFacts =
         val graph = (context.applicationContext as RoomBrowserApp).graph
         val profile = runCatching { graph.profileRepo.getProfile(profileId) }.getOrNull()
         val settings = profile?.settings ?: ProfileSettings()
-        val global = runCatching { graph.appState.globalSettingsSnapshot() }
-            .getOrDefault(BrowserGlobalSettings())
 
         // A fresh client, never the browser's: the browser's carries this
-        // profile's proxy and its DNS choice, and a proxied address is the
-        // wrong answer to "what address does the internet see ME from".
+        // profile's DNS choice, and a reading taken through that resolver is
+        // the wrong answer to "what address does the internet see ME from".
         val client = OkHttpClient()
         val ipv4 = runCatching {
-            fetchExitIp(client, PROBE_TIMEOUT_MS, ProxyHealthRules::looksLikeIp)
+            fetchExitIp(client, PROBE_TIMEOUT_MS, IpAddress::looksLike)
         }.getOrNull()
         val ipv6 = runCatching {
             fetchExitIp(
                 client,
                 PROBE_TIMEOUT_MS,
-                ProxyHealthRules::looksLikeIp,
+                IpAddress::looksLike,
                 ExitIp.IPV6_ENDPOINTS
             )
         }.getOrNull()
@@ -212,19 +207,6 @@ private suspend fun loadFacts(context: Context, profileId: ProfileId): IpFacts =
                 engineName = runCatching { host?.engineName(context) }.getOrNull().orEmpty(),
                 engineStockUserAgent = engineStock
             ),
-            proxySummary = NetFacts.proxySummary(
-                finderEnabled = global.proxyEnabled,
-                mode = settings.proxyMode,
-                host = settings.proxyHost,
-                port = settings.proxyPort,
-                scheme = settings.proxyScheme,
-                scopes = settings.proxyScopes
-            ),
-            proxyScopes = if (global.proxyEnabled && settings.proxyScopes.isEmpty()) {
-                "none - nothing is routed"
-            } else {
-                NetFacts.scopeList(settings.proxyScopes).ifEmpty { "none - nothing is routed" }
-            },
             dnsSummary = dnsSummary(settings),
             connection = SystemFacts.connection(context),
             device = SystemFacts.device(context)
@@ -329,9 +311,8 @@ private fun WhatsMyIpScreen(
                         desc = "whatsmyip_ipv6"
                     )
                     Text(
-                        "Measured directly, without this profile's proxy. A proxy route " +
-                            "is a deliberate detour, so the address above is the one every " +
-                            "proxy decision is judged against.",
+                        "Measured directly, over a bare connection that carries none of " +
+                            "this profile's settings.",
                         style = MaterialTheme.typography.bodySmall,
                         color = extras.textSecondary,
                         modifier = Modifier.padding(top = 6.dp)
@@ -358,12 +339,6 @@ private fun WhatsMyIpScreen(
                 }
 
                 Section("Route") {
-                    FactRow(
-                        label = "Proxy for page traffic",
-                        value = shown.proxySummary,
-                        desc = "whatsmyip_proxy"
-                    )
-                    FactRow(label = "Scopes routed", value = shown.proxyScopes)
                     FactRow(label = "DNS", value = shown.dnsSummary)
                 }
 

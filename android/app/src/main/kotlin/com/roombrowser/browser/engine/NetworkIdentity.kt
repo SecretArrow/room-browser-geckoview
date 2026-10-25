@@ -15,8 +15,8 @@ import okhttp3.OkHttpClient
 
 /**
  * Network identity: fetches the observed public IP (privacy-respecting
- * endpoints, shared with the proxy sweep through [ExitIp]), caches results
- * with a cooldown, and runs the profile IP conflict check (spec 6 / 74).
+ * endpoints, listed in [ExitIp]), caches results with a cooldown, and runs the
+ * profile IP conflict check (spec 6 / 74).
  *
  * The public IP is fetched ONLY when network protection or network
  * diagnostics are enabled. All IP data stays in local Room storage —

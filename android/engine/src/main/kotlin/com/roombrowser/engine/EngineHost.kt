@@ -3,7 +3,6 @@ package com.roombrowser.engine
 import android.content.Context
 import com.roombrowser.domain.model.Profile
 import com.roombrowser.domain.model.ProfileId
-import com.roombrowser.domain.proxy.ProxyScheme
 import com.roombrowser.engine.devtools.DeveloperToolsCapabilities
 
 /**
@@ -155,36 +154,55 @@ interface EngineHost {
     fun setActivityDelegate(delegate: EngineActivityDelegate?)
 
     /**
-     * Whether this engine can be pointed at a proxy at all.
+     * Whether this engine can keep the request headers that identify an
+     * embedded browser off the wire.
      *
-     * WebView answers from the provider's own feature set and returns false on a device
-     * whose provider predates the override API; GeckoView always answers true. The
-     * settings screen shows the truthful answer rather than a switch that does nothing.
+     * The header in question is `X-Requested-With: <applicationId>`, which
+     * WebView stamps on every request. Sites read it as "an app is embedding a
+     * browser, not a browser" — Google's sign-in refusal is the visible cost —
+     * and it hands every site the app's package name for free.
+     *
+     * WebView answers from the provider's own feature set: a provider that
+     * predates the opt-out API leaves no app-side way to remove a header the
+     * engine adds itself, and answers false here so the app can tell the person
+     * the truth instead of promising a sign-in that will be refused. GeckoView
+     * sends no such header and answers true.
      */
-    fun proxySupported(): Boolean
+    fun suppressesEmbeddedBrowserHeaders(): Boolean = true
 
     /**
-     * Whether this engine's proxy mechanism can carry [scheme] at all.
+     * Whether this engine can install a script that runs BEFORE a page's own
+     * JavaScript.
      *
-     * WebView's override speaks HTTP and HTTPS; Necko also speaks SOCKS. A candidate the
-     * engine cannot carry is refused here rather than applied and silently ignored, which
-     * would leave the settings screen claiming a proxy that is not there.
+     * Every identity surface the app presents inside the page — the device
+     * shim that answers `navigator.userAgentData`, the WebRTC policy, the text
+     * scale — is a document-start script, and there is no earlier injection
+     * point in either engine. An engine that cannot do it still sends the right
+     * User-Agent (that is a settings value), but the page-side half of the
+     * identity is simply absent, and a sign-in page reads that absence as one
+     * more thing a browser would have had.
+     *
+     * WebView answers from the installed provider, exactly like the two above;
+     * a provider older than the API says false so the app can tell the person
+     * their engine is behind instead of blaming the site.
+     * GeckoView's `webview` has always answered true.
      */
-    fun proxySupportsScheme(scheme: ProxyScheme): Boolean
+    fun supportsDocumentStartScripts(): Boolean = true
 
     /**
-     * Send this engine's page traffic through [config], or back to the direct network
-     * when it is null.
+     * Whether this engine lets the app REPLACE the `Sec-CH-UA*` identity the
+     * engine would otherwise derive from its own build.
      *
-     * Suspends until the engine has ACCEPTED the change, because both mechanisms apply
-     * it asynchronously and a page loaded before that point goes out over the real
-     * address — the one outcome the setting promises not to have.
-     *
-     * Replace, never accumulate: this is called at every profile bind, so a profile with
-     * no proxy clears whatever the previous one left behind. Suspending work is bounded
-     * by the implementation; it must not hang the caller indefinitely.
+     * The User-Agent string and the client-hint headers are two descriptions of
+     * one browser, and a site that receives contradictory ones has a stronger
+     * embedded-browser signal than the `wv` token ever was — it needs no
+     * JavaScript to see it. WebView answers from the installed provider: one
+     * older than the User-Agent-Metadata API sends its own brand list, which
+     * still names `Android WebView`, and nothing on the app side can replace a
+     * header the engine builds itself. GeckoView derives the hints from the
+     * User-Agent it was given, so it answers true.
      */
-    suspend fun setProxy(config: EngineProxyConfig?)
+    fun supportsUserAgentClientHints(): Boolean = true
 
     /**
      * Erase all engine storage for the bound profile.

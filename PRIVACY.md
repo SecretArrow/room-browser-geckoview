@@ -36,10 +36,6 @@ Every item below is off by default.
 - **Pages you load.** That traffic goes to the site, and to whichever DNS
   resolver is in use. `DNS mode` defaults to the system resolver; choosing
   DNS-over-HTTPS or DNS-over-TLS sends the query to the resolver you name.
-- **The proxy finder** (`proxyEnabled`, default off). When enabled, the app
-  fetches the public proxy lists named in
-  `android/app/src/main/assets/proxies/sources.json` so it has candidates to
-  test. Each profile's own proxy mode decides whether that profile uses one.
 - **The AI agent**, when it is pointed at a remote provider: the page text, DOM
   or screenshot a tool asks for goes to that endpoint, under that provider's
   policy. Pointing the agent at a local llama.cpp model keeps all of it on the

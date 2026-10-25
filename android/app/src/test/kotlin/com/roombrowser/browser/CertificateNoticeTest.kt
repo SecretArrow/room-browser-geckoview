@@ -59,14 +59,4 @@ class CertificateNoticeTest {
         assertThat(CertificateNotice.WHY).contains("will not bypass it for you")
         assertThat(CertificateNotice.TRUST_HINT).contains("Android Settings")
     }
-
-    @Test
-    fun `a proxy is named only when one is actually in force`() {
-        assertThat(CertificateNotice.proxyLine("127.0.0.1:8080"))
-            .isEqualTo(
-                "This profile is browsing through the proxy 127.0.0.1:8080, which can be the cause."
-            )
-        assertThat(CertificateNotice.proxyLine(null)).isNull()
-        assertThat(CertificateNotice.proxyLine("   ")).isNull()
-    }
 }

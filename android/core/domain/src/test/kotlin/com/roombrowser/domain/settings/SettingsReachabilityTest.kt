@@ -10,8 +10,8 @@ import java.io.File
  *
  * A field the settings screen writes and nothing else ever reads is a control
  * the user can press that does nothing — the bug class this guard exists to
- * turn into a build failure instead of an audit finding. `homepageEnabled`,
- * `offerNetworkChangeOptions` and `downloadSubfolder` were each exactly that.
+ * turn into a build failure instead of an audit finding. `homepageEnabled`
+ * and `downloadSubfolder` were each exactly that.
  *
  * WHAT DOES NOT COUNT AS A READER. Two files are skipped on purpose:
  * `BrowserSettingsUi.kt` reads every field back to draw its own switch, and
@@ -197,13 +197,7 @@ class SettingsReachabilityTest {
          * control. Keep this list short: every entry is a control that cannot
          * be checked by this guard.
          */
-        val ALLOWED_WITHOUT_READER = setOf(
-            // Read only by the proxy picker in the settings screen, which is a
-            // skipped file, to remember which swept candidate the user chose.
-            // It is provenance: the proxy that is actually applied comes from
-            // proxyHost/proxyPort (ProxyCoordinator.pinnedCandidate).
-            "ProfileSettings.proxyPinnedId"
-        )
+        val ALLOWED_WITHOUT_READER = emptySet<String>()
 
         val DECLARATION_SAMPLE = """
             @Serializable

@@ -666,12 +666,10 @@ private fun AgentSettingsRoot(
             ) {
                 Text(
                     "Agent requests go straight from this device to the provider you configured, " +
-                        "and Room Browser adds no telemetry of its own. If the profile's proxy " +
-                        "setting has \"Route the AI agent\" turned on — it is off by default — " +
-                        "those requests go through that proxy instead, and its operator sees " +
-                        "them. API keys are encrypted with AndroidKeyStore and never leave the " +
-                        "device except as the provider's own Authorization header. Chat sessions " +
-                        "are stored per profile and stay local.",
+                        "and Room Browser adds no telemetry of its own. API keys are encrypted " +
+                        "with AndroidKeyStore and never leave the device except as the " +
+                        "provider's own Authorization header. Chat sessions are stored per " +
+                        "profile and stay local.",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )

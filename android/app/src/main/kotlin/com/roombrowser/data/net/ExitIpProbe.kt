@@ -12,14 +12,13 @@ import java.util.concurrent.TimeUnit
  * first body [isValid] accepts. [endpoints] defaults to the IPv4 list; the
  * diagnostics screen passes [ExitIp.IPV6_ENDPOINTS] to ask the other question.
  *
- * It deliberately never carries a proxy. This reading is the measurement a
- * proxy is judged against, so asking for it through a proxy would confirm the
- * proxy by trusting it.
+ * It deliberately carries none of the profile's configuration. This reading is
+ * the address a site would see, so taking it through anything the profile
+ * configures would measure the detour instead of the destination.
  *
- * [isValid] is the caller's own rule and stays that way: the profile network
- * check and the proxy sweep prefer to judge a response body differently (a
- * sweep is reading whatever an unknown middlebox returned), and neither should
- * be forced onto the other's guess.
+ * [isValid] is the caller's own rule and stays that way: a caller reading a
+ * response body from an unknown middlebox may judge it differently, and neither
+ * caller should be forced onto the other's guess.
  */
 suspend fun fetchExitIp(
     client: OkHttpClient,

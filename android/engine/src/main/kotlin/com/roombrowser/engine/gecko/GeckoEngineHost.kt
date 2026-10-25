@@ -4,21 +4,16 @@ import android.content.Context
 import android.content.Intent
 import android.os.Handler
 import android.os.Looper
-import android.util.Log
 import com.roombrowser.domain.engine.FilterEngine
 import com.roombrowser.domain.model.Profile
 import com.roombrowser.domain.model.ProfileId
-import com.roombrowser.domain.proxy.ProxyScheme
 import com.roombrowser.engine.BlockedResourceSink
 import com.roombrowser.engine.EngineActivityDelegate
 import com.roombrowser.engine.EngineHost
 import com.roombrowser.engine.EngineOption
-import com.roombrowser.engine.EngineProxyConfig
 import com.roombrowser.engine.EngineSession
 import com.roombrowser.engine.ResourceFilter
 import com.roombrowser.engine.devtools.EngineNetworkSignal
-import kotlinx.coroutines.suspendCancellableCoroutine
-import kotlinx.coroutines.withTimeoutOrNull
 import org.json.JSONArray
 import org.json.JSONObject
 import org.mozilla.geckoview.ContentBlocking
@@ -32,8 +27,6 @@ import org.mozilla.geckoview.WebExtension
 import java.io.File
 import java.util.concurrent.CopyOnWriteArraySet
 import java.util.concurrent.CountDownLatch
-import kotlin.coroutines.resume
-import kotlin.coroutines.resumeWithException
 
 /**
  * The GeckoView implementation of [EngineHost].
@@ -204,10 +197,7 @@ internal class GeckoEngineHost : EngineHost {
         // The rest of the chain is re-asserted where its inputs exist. Cookie
         // behavior (BOTH jars) and the mixed-content pref on every [configure]
         // -- see [applyEngineWideSettings], which the facade's createSession
-        // path reaches before any load is issued. The proxy prefs on every
-        // proxy decision, whose null case CLEARS the user branch rather than
-        // merely switching the mode off, so a proxy a previous install left
-        // behind cannot quietly carry sign-in traffic to a dead endpoint.
+        // path reaches before any load is issued.
         // JavaScript is a session setting ([GeckoEngineSession.settingsFor]),
         // not a persisted pref, so it cannot go stale. Nothing here may
         // weaken any of these: no TLS or certificate bypass exists in this
@@ -269,78 +259,6 @@ internal class GeckoEngineHost : EngineHost {
             true,
             GeckoPreferenceController.PREF_BRANCH_USER
         )
-    }
-
-    /**
-     * Necko carries SOCKS as well as HTTP, so unlike WebView nothing is refused here.
-     */
-    override fun proxySupported(): Boolean = true
-
-    /** Necko carries every scheme the settings can express. */
-    override fun proxySupportsScheme(scheme: ProxyScheme): Boolean = true
-
-    /**
-     * GeckoView exposes no proxy API; Necko's own prefs are the only route, reached
-     * through the same experimental preference controller [hideWebAuthn] already uses.
-     *
-     * These prefs PERSIST into the profile, which is the opposite of WebView's override:
-     * a stale one would outlive the profile that set it, so this runs at every bind and
-     * a null config clears the branch rather than merely switching the mode off.
-     */
-    @androidx.annotation.OptIn(ExperimentalGeckoViewApi::class)
-    override suspend fun setProxy(config: EngineProxyConfig?) {
-        if (config == null) {
-            PROXY_MANAGED_PREFS.forEach { GeckoPreferenceController.clearGeckoUserPref(it) }
-            awaitPref(GeckoPreferenceController.setGeckoPref(PROXY_TYPE, 0, GeckoPreferenceController.PREF_BRANCH_USER))
-            return
-        }
-        val branch = GeckoPreferenceController.PREF_BRANCH_USER
-        when (config.scheme) {
-            ProxyScheme.SOCKS4, ProxyScheme.SOCKS5 -> {
-                GeckoPreferenceController.setGeckoPref("network.proxy.socks", config.host, branch)
-                GeckoPreferenceController.setGeckoPref("network.proxy.socks_port", config.port, branch)
-                GeckoPreferenceController.setGeckoPref(
-                    "network.proxy.socks_version",
-                    if (config.scheme == ProxyScheme.SOCKS4) 4 else 5,
-                    branch
-                )
-                // Without this the hostname is resolved locally and leaks the DNS query
-                // past the tunnel, which is the part of "using a proxy" that actually hides.
-                GeckoPreferenceController.setGeckoPref("network.proxy.socks_remote_dns", true, branch)
-            }
-            else -> {
-                GeckoPreferenceController.setGeckoPref("network.proxy.http", config.host, branch)
-                GeckoPreferenceController.setGeckoPref("network.proxy.http_port", config.port, branch)
-                // An https page is carried by CONNECT through the same endpoint, so both
-                // entries are the same host; a separate ssl entry could only be a second
-                // proxy the user never chose.
-                GeckoPreferenceController.setGeckoPref("network.proxy.ssl", config.host, branch)
-                GeckoPreferenceController.setGeckoPref("network.proxy.ssl_port", config.port, branch)
-                GeckoPreferenceController.setGeckoPref("network.proxy.share_proxy_settings", true, branch)
-            }
-        }
-        // Pinned, not defaulted: the oct:// document is served from a local origin and a
-        // future engine default must not be able to put it behind the proxy.
-        GeckoPreferenceController.setGeckoPref("network.proxy.allow_hijacking_localhost", false, branch)
-        awaitPref(GeckoPreferenceController.setGeckoPref(PROXY_TYPE, 1, branch))
-    }
-
-    /**
-     * Wait for the pref service to confirm a write, bounded: the caller is holding the
-     * profile bind, and a result that never arrives must not hold it forever.
-     */
-    private suspend fun awaitPref(result: GeckoResult<Void>) {
-        val settled = withTimeoutOrNull(PROXY_APPLY_TIMEOUT_MS) {
-            suspendCancellableCoroutine<Unit> { continuation ->
-                result.accept(
-                    { continuation.resume(Unit) },
-                    // The listener is declared @Nullable, so a failure without a cause is a
-                    // real shape here and still has to settle the continuation.
-                    { error -> continuation.resumeWithException(error ?: IllegalStateException("pref write rejected")) }
-                )
-            }
-        }
-        if (settled == null) Log.w(TAG, "proxy pref not acknowledged before the timeout")
     }
 
     // These live on the runtime, not on a session, so they are re-applied on every
@@ -973,11 +891,6 @@ internal class GeckoEngineHost : EngineHost {
     }
 
     private companion object {
-        const val TAG = "RoomProxy"
-
-        /** A pref service that never answers must not hold the profile bind open. */
-        const val PROXY_APPLY_TIMEOUT_MS = 5_000L
-
         /** Matches `browser_specific_settings.gecko.id` in the manifest. */
         const val BRIDGE_ID = "roombridge@roombrowser.com"
 
@@ -996,23 +909,6 @@ internal class GeckoEngineHost : EngineHost {
 
         /** Passive/display mixed content; active content is already blocked by default. */
         const val MIXED_CONTENT_PREF = "security.mixed_content.block_display_content"
-
-        /** 0 = no proxy, 1 = manual. Set LAST, so the endpoint is in place before it is read. */
-        const val PROXY_TYPE = "network.proxy.type"
-
-        /** Every pref [setProxy] writes, so returning to direct clears the branch and not just the mode. */
-        val PROXY_MANAGED_PREFS = listOf(
-            "network.proxy.http",
-            "network.proxy.http_port",
-            "network.proxy.ssl",
-            "network.proxy.ssl_port",
-            "network.proxy.share_proxy_settings",
-            "network.proxy.socks",
-            "network.proxy.socks_port",
-            "network.proxy.socks_version",
-            "network.proxy.socks_remote_dns",
-            "network.proxy.allow_hijacking_localhost"
-        )
 
         /**
          * The native-app name the BACKGROUND page's port is opened under.

@@ -22,7 +22,7 @@ dependencies {
 
     // JSON-RPC transports for every chain (shared with the app's OkHttp).
     implementation(libs.okhttp)
-    // The outbound-proxy policy the transports consult (domain:pure Kotlin, no engine).
+    // The domain model the transports answer to (pure Kotlin, no engine).
     implementation(project(":core:domain"))
     // EVM: secp256k1 signing, RLP, EIP-155/1559 transactions, EIP-712 typed
     // data, V3 keystore files, BIP39 mnemonics, scrypt.

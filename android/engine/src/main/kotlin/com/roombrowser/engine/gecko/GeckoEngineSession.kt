@@ -1373,9 +1373,10 @@ internal class GeckoEngineSession(
      * http URL is the HTTPS-First behaviour the app promises -- nothing is
      * listening on 443, or the TLS endpoint did not answer. [HOST_LOOKUP] is
      * the opposite answer on purpose: a name that does not resolve, a device
-     * with no network, and a proxy that refuses the tunnel all fail over http
-     * exactly as they failed over https, so retrying would only add a second
-     * failure to the same page. Mapping those onto the "unreachable" code
+     * with no network, and a proxy on the network path that refuses the tunnel
+     * all fail over http exactly as they failed over https, so retrying would
+     * only add a second failure to the same page. Mapping those onto the
+     * "unreachable" code
      * states the behaviour the app wants; the number is a policy input, and
      * the raw GeckoView code is preserved in the description.
      */
@@ -1398,7 +1399,7 @@ internal class GeckoEngineSession(
         error.code == WebRequestError.ERROR_NET_INTERRUPT -> EngineErrorCode.CONNECT
         error.code == WebRequestError.ERROR_PORT_BLOCKED -> EngineErrorCode.CONNECT
         // Not recoverable by a scheme change: the device is offline, or a
-        // proxy the http retry would also go through refused the connection.
+        // proxy on the network path refused the connection.
         error.code == WebRequestError.ERROR_OFFLINE -> EngineErrorCode.HOST_LOOKUP
         error.code == WebRequestError.ERROR_PROXY_CONNECTION_REFUSED -> EngineErrorCode.HOST_LOOKUP
         else -> EngineErrorCode.UNKNOWN

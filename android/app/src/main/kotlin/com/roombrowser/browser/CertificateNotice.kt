@@ -58,22 +58,6 @@ object CertificateNotice {
     const val TRUST_HINT = "If this is a network you trust, install its certificate authority " +
         "in Android Settings and this site will open."
 
-    /** The button that takes this profile off its proxy. */
-    const val DISABLE_PROXY = "Turn off proxy for this profile"
-
-    /**
-     * The line naming the proxy this profile is browsing through, or null when
-     * it is going direct.
-     *
-     * A proxy is the one candidate cause this app can both see and undo, so it
-     * is stated rather than left to be guessed at — but only when one is
-     * actually in force, because a line about a proxy that is off would send
-     * the user to a setting that is already where it should be.
-     */
-    fun proxyLine(proxy: String?): String? =
-        proxy?.takeIf { it.isNotBlank() }
-            ?.let { "This profile is browsing through the proxy $it, which can be the cause." }
-
     /** Empty when there is nothing to list — see [NOT_REPORTED]. */
     fun rows(certificate: EngineCertificate?): List<Row> {
         if (certificate == null) return emptyList()

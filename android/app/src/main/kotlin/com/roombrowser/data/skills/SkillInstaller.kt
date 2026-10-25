@@ -40,8 +40,8 @@ class SkillHttpResponse(val code: Int, val body: ByteArray, val message: String)
 
 /**
  * The app's own OkHttp client doing the fetching, on the AGENT scope — a skill
- * install is agent traffic, so the profile's "Route the AI agent" proxy covers
- * it like every other agent call (see [AppHttpClients]).
+ * install is agent traffic, so it shares the agent's client and its timeouts
+ * (see [AppHttpClients]).
  *
  * Redirects are refused, not followed, for the same reason the npm installer
  * refuses them: a host check performed before the request is worthless if a

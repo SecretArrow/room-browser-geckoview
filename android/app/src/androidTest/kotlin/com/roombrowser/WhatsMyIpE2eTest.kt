@@ -345,7 +345,6 @@ class WhatsMyIpE2eTest {
         )
         assertTrue("The address rows must be present", hasDescWithScroll("whatsmyip_ipv4"))
         assertTrue("The IPv6 row must be present", hasDescWithScroll("whatsmyip_ipv6"))
-        assertTrue("The proxy route must be reported", hasDescWithScroll("whatsmyip_proxy"))
 
         assertTrue("The screen must close", clickDesc("Close", 5_000))
         assertTrue("Closing must return to the engine\n${uiTree()}", engineUiUp(20_000))
@@ -400,8 +399,8 @@ class WhatsMyIpE2eTest {
             hasDescWithScroll("whatsmyip_user_agent") && !descValue("whatsmyip_user_agent").isNullOrBlank()
         )
         assertTrue(
-            "The proxy row must survive a refresh with a value",
-            hasDescWithScroll("whatsmyip_proxy") && !descValue("whatsmyip_proxy").isNullOrBlank()
+            "The address row must survive a refresh with a value",
+            hasDescWithScroll("whatsmyip_ipv4") && !descValue("whatsmyip_ipv4").isNullOrBlank()
         )
 
         assertTrue("The screen must close", clickDesc("Close", 5_000))

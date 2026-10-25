@@ -3,9 +3,6 @@ package com.roombrowser.domain.net
 import com.roombrowser.domain.model.ProfileSettings
 import com.roombrowser.domain.model.UaMode
 import com.roombrowser.domain.model.UserAgents
-import com.roombrowser.domain.proxy.ProxyMode
-import com.roombrowser.domain.proxy.ProxyScheme
-import com.roombrowser.domain.proxy.ProxyScope
 
 /** Where the identity a site is told comes from, as the diagnostics screen labels it. */
 enum class UaSource { DEVICE, PRESET, CUSTOM, ENGINE_DEFAULT }
@@ -51,43 +48,5 @@ object NetFacts {
         UaSource.PRESET -> "User-agent preset"
         UaSource.CUSTOM -> "Custom string"
         UaSource.ENGINE_DEFAULT -> "Engine default"
-    }
-
-    fun scopeLabel(scope: ProxyScope): String = when (scope) {
-        ProxyScope.PAGES -> "pages"
-        ProxyScope.AGENT -> "AI agent"
-        ProxyScope.WALLET -> "wallet"
-    }
-
-    /** "pages, wallet" — the scopes a profile routes, in a stable order. */
-    fun scopeList(scopes: Set<ProxyScope>): String =
-        ProxyScope.entries.filter { it in scopes }.joinToString(", ") { scopeLabel(it) }
-
-    /**
-     * What the profile's proxy setting means for page traffic, in one line.
-     *
-     * [finderEnabled] is the app-wide master switch, which outranks the profile:
-     * a profile that opted in still goes direct while the finder is off, and the
-     * line says so instead of describing a proxy that is not there.
-     */
-    fun proxySummary(
-        finderEnabled: Boolean,
-        mode: ProxyMode,
-        host: String?,
-        port: Int,
-        scheme: ProxyScheme,
-        scopes: Set<ProxyScope>
-    ): String {
-        if (!finderEnabled) return "Direct - the free proxy finder is off"
-        if (mode == ProxyMode.OFF) return "Direct - this profile opts out"
-        val routed = if (scopes.isEmpty()) "no traffic" else "for ${scopeList(scopes)}"
-        if (mode == ProxyMode.MANUAL) {
-            val pinned = host?.trim().orEmpty()
-            if (pinned.isEmpty() || port !in 1..65535) {
-                return "Manual, but no endpoint is saved - nothing is routed"
-            }
-            return "${scheme.id}://$pinned:$port, $routed"
-        }
-        return "Chosen from the verified list at every open, $routed"
     }
 }

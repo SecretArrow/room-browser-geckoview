@@ -15,9 +15,9 @@ import kotlinx.serialization.json.JsonPrimitive
  *
  * The node answers circles over JSON-RPC and nothing else — there is no HTTP gateway to
  * fall back on — so this rides the wallet's existing [RpcEndpointChain], which is what
- * gives it the endpoint failover, the last-known-good memo and the profile's proxy
- * selector for free. No second HTTP client is built here, on purpose: a second one would
- * be a second place where the proxy scope can be forgotten.
+ * gives it the endpoint failover and the last-known-good memo for free. No second HTTP
+ * client is built here, on purpose: a second one would be a second place where the
+ * transport's timeouts and error handling can drift.
  *
  * Two calls, in order, because the second one depends on the first: `circle_info` says
  * whether the circle is public or sealed, and the two are fetched by different methods

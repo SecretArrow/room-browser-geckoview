@@ -154,8 +154,8 @@ class AppGraph(context: Context) {
 
     /**
      * The `oct://` reader. Circles come over JSON-RPC, so this rides the wallet's own
-     * transport and inherits its endpoint failover and its proxy scope; there is deliberately
-     * no second HTTP client here.
+     * transport and inherits its endpoint failover; there is deliberately no second HTTP
+     * client here.
      */
     val octCircles: com.roombrowser.domain.wallet.chains.octra.OctCircleClient by lazy {
         com.roombrowser.domain.wallet.chains.octra.OctCircleClient()
@@ -185,20 +185,6 @@ class AppGraph(context: Context) {
     }
 
     val filterEngine: FilterEngine by lazy { FilterListLoader.load(appContext) }
-
-    /**
-     * The proxy finder: the bundled catalogue, the sweep that verifies candidates, and
-     * the per-profile decision made at every bind.
-     *
-     * One per process, like the rest of the graph. The engine's page proxy is process-wide,
-     * so a second instance would only be a second cache of the same answer.
-     */
-    val proxyCoordinator: com.roombrowser.data.proxy.ProxyCoordinator by lazy {
-        com.roombrowser.data.proxy.ProxyCoordinator(
-            appState,
-            com.roombrowser.data.proxy.ProxyCatalogue(appContext)
-        )
-    }
 
     val ipConflictDetector: IpConflictDetector by lazy { IpConflictDetector() }
 }
