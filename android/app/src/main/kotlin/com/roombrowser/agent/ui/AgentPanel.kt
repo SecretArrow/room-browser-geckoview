@@ -798,8 +798,10 @@ internal fun transcriptKeys(entries: List<AgentEntry>): List<String> {
  * F-03: every delta copy()-replaces the whole entries LIST, so
  * `remember(entries) { transcriptKeys(entries) }` re-ran an O(n) HashMap pass
  * per token. The cache answers from memory whenever the new list provably
- * yields the same keys: the same object, or the same SIZE with the same key
- * stem at every index — a stem being exactly what [transcriptKeys] reads
+ * yields the same keys — the same SIZE with the same key stem at every
+ * index, checked against a frozen COPY of the content it last computed from
+ * (never the caller's list itself: a live list would grow under the memo and
+ * vouch for itself) — a stem being exactly what [transcriptKeys] reads
  * (the branch plus `at`/`callId`; token appends and the tool/assistant
  * in-place copies never touch those). Keys are a pure function of the stems,
  * so equal stems mean equal keys: the hit is correct by construction, not by
@@ -816,17 +818,30 @@ internal class TranscriptKeyCache {
     private var keys: List<String> = emptyList()
 
     fun keysFor(entries: List<AgentEntry>): List<String> {
+        // No identity shortcut: with the controller handing over live
+        // SnapshotStateLists in places, `entries === source` is true forever
+        // after the first call and would freeze the keys at the first
+        // generation's size — exactly the stale-short-keys crash the
+        // AgentConversation snapshot exists to prevent. Size + stems is the
+        // only honest hit test — and it only WORKS because [recompute] stored
+        // a COPY, never the caller's list itself: an aliased live list would
+        // grow with the caller, its size would always equal the caller's, and
+        // the stem scan would compare the list to itself (CI 40150299760: the
+        // JVM pin caught the alias returning first-generation keys).
         val cached = source ?: return recompute(entries)
-        if (entries === cached) return keys
         if (entries.size == cached.size && sameKeyStems(cached, entries)) {
-            source = entries
             return keys
         }
         return recompute(entries)
     }
 
     private fun recompute(entries: List<AgentEntry>): List<String> {
-        source = entries
+        // The memo holds a COPY of the content it computed from, so the hit
+        // test below compares against frozen content rather than against
+        // whatever the caller's list has grown into since. O(window) per
+        // recompute — recomputes are the rare shape (a row landed, a chat
+        // switched), and hits pay only the stem scan.
+        source = entries.toList()
         keys = transcriptKeys(entries)
         return keys
     }
@@ -931,7 +946,22 @@ private fun AgentConversation(
     modifier: Modifier = Modifier
 ) {
     val listState = rememberLazyListState()
-    val entries = agent.entries
+    // ONE SNAPSHOT per recomposition — never the live list. [ChatSessionState]
+    // holds [entries] as a SnapshotStateList the turn thread mutates in place
+    // (append, in-place upsert), while everything below — [keysFor]'s memo,
+    // and the LazyColumn key lambda's `keys[index]` — leans on the F-16
+    // whole-list contract: the list this composable sees must not change
+    // under the keys computed FOR it. A live list breaks that in the window
+    // between this read and the item provider's key pass: a row lands, Lazy
+    // asks for the new index's key, the key list still holds the old
+    // generation's size, and `keys[index]` takes the whole :browser process
+    // down (CI 40138280360: IndexOutOfBoundsException Index: 1, Size: 1, and
+    // every suite after it failing on the relaunch). `toList()` reads the
+    // snapshot state inside composition — so the copy still registers the
+    // observation and every later append/replace recomposes with a fresh,
+    // self-consistent pair — and it is O(window), paid once per
+    // recomposition, not per token.
+    val entries = agent.entries.toList()
     val plan = agent.plan
 
     // Keys are per ENTRY, not per slot. Position was the key before, so item
@@ -1313,6 +1343,11 @@ private fun PlanStepRow(item: AgentPlan.Item) {
             Icons.Filled.PlayArrow to MaterialTheme.colorScheme.onSurface
         AgentPlan.Status.PENDING ->
             Icons.Filled.RadioButtonUnchecked to MaterialTheme.colorScheme.onSurfaceVariant
+        // A status the model invented ("failed", "blocked", an emoji) lands
+        // here as FAILED: an error mark, the row still on the list — the
+        // failure is VISIBLE, which is the whole point of the card.
+        AgentPlan.Status.FAILED ->
+            Icons.Filled.ErrorOutline to MaterialTheme.colorScheme.error
     }
     Row(
         verticalAlignment = Alignment.Top,

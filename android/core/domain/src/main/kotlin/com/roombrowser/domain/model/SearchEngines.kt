@@ -45,7 +45,7 @@ object SearchEngines {
     )
 
     fun byId(id: String): SearchEngine =
-        all.firstOrNull { it.id == id } ?: all.first { it.id == "duckduckgo" }
+        all.firstOrNull { it.id == id } ?: all.first { it.id == "google" }
 
     fun buildSearchUrl(engineId: String, query: String): String =
         byId(engineId).searchUrlTemplate.replace("{query}", java.net.URLEncoder.encode(query, "UTF-8"))

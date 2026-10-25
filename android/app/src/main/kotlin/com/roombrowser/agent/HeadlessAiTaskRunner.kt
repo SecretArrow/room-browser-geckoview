@@ -12,6 +12,7 @@ import com.roombrowser.domain.agent.AgentConfig
 import com.roombrowser.domain.agent.AgentEvent
 import com.roombrowser.domain.agent.AgentGateway
 import com.roombrowser.domain.agent.AgentLoop
+import com.roombrowser.domain.agent.AgentPlan
 import com.roombrowser.domain.agent.AgentPrompts
 import com.roombrowser.domain.agent.AgentVisionSupport
 import com.roombrowser.domain.agent.AutoModelPicker
@@ -189,11 +190,26 @@ class HeadlessAiTaskRunner(
                 // step budget running out — have nowhere to land unless they
                 // ride out on the summary the row shows.
                 val notes = mutableListOf<String>()
+                // The plan is not chat UI here, but it is still state someone
+                // reads while the run is away: the task row carries the latest
+                // plan the model committed to, so the task list shows steps
+                // flipping status in real time instead of a silent run. Each
+                // update OVERWRITES the row's plan_json — the row is the
+                // current plan, not a history of plans.
                 AgentLoop(gateway, executor, config).runTurn(history) { event ->
                     when (event) {
                         is AgentEvent.FinalAnswer -> answer = event.text
                         is AgentEvent.AgentError -> failure = event.message
                         is AgentEvent.Notice -> notes += event.text
+                        is AgentEvent.PlanUpdated ->
+                            if (event.items.isNotEmpty()) {
+                                runCatching {
+                                    graph.aiTaskRepo.setTaskPlan(
+                                        task.id,
+                                        AgentPlan.encode(event.items)
+                                    )
+                                }
+                            }
                         else -> Unit
                     }
                 }

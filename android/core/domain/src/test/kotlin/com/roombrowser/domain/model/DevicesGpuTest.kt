@@ -82,20 +82,20 @@ class DevicesGpuTest {
         // identity a page actually sees.
         assertThat(Devices.find("google-pixel-9")!!.userAgent).isEqualTo(
             "Mozilla/5.0 (Linux; Android 14; Pixel 9 Build/UP1A.231005.007) " +
-                "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.6778.135 Mobile Safari/537.36"
+                "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/156.0.8078.48 Mobile Safari/537.36"
         )
         assertThat(Devices.find("samsung-sm-s928b")!!.userAgent).isEqualTo(
             "Mozilla/5.0 (Linux; Android 14; SM-S928B Build/UP1A.231005.007) " +
-                "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.6778.135 Mobile Safari/537.36"
+                "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/156.0.8078.48 Mobile Safari/537.36"
         )
         assertThat(Devices.find("infinix-infinix-x6836")!!.userAgent).isEqualTo(
             "Mozilla/5.0 (Linux; Android 14; Infinix X6836 Build/UP1A.231005.007) " +
-                "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.6778.135 Mobile Safari/537.36"
+                "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/156.0.8078.48 Mobile Safari/537.36"
         )
         // A tablet's UA carries no "Mobile"; a phone's does.
         assertThat(Devices.find("google-pixel-tablet")!!.userAgent).isEqualTo(
             "Mozilla/5.0 (Linux; Android 13; Pixel Tablet Build/TP1A.220624.014) " +
-                "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.6099.144 Safari/537.36"
+                "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/156.0.8078.48 Safari/537.36"
         )
 
         for (device in Devices.all) {

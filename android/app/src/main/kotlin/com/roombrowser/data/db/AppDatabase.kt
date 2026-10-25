@@ -49,7 +49,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         ChatPluginEntity::class,
         AgentSkillEntity::class
     ],
-    version = 19,
+    version = 20,
     exportSchema = true
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -723,6 +723,19 @@ abstract class AppDatabase : RoomDatabase() {
         }
 
         /**
+         * v19 -> v20: the scheduled-run plan line. A run's only transcript is
+         * its task row, and the runner now overwrites `plan_json` on every
+         * PlanUpdated event so the task list shows the step list flipping
+         * status in real time — the same list shape a chat carries on
+         * `agent_sessions.plan_json`, on the row a task actually has.
+         */
+        internal val MIGRATION_19_20 = object : Migration(19, 20) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE `ai_tasks` ADD COLUMN `plan_json` TEXT NOT NULL DEFAULT ''")
+            }
+        }
+
+        /**
          * Every migration, oldest first — the ONE list. [build] applies it and
          * the migration tests apply it too, so a version bump cannot leave a
          * test registering a subset that stops short of the current version.
@@ -732,7 +745,7 @@ abstract class AppDatabase : RoomDatabase() {
             MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8,
             MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11, MIGRATION_11_12,
             MIGRATION_12_13, MIGRATION_13_14, MIGRATION_14_15, MIGRATION_15_16,
-            MIGRATION_16_17, MIGRATION_17_18, MIGRATION_18_19
+            MIGRATION_16_17, MIGRATION_17_18, MIGRATION_18_19, MIGRATION_19_20
         )
 
         @Volatile

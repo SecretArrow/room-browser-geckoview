@@ -57,11 +57,25 @@ class BrowserTaskPageHost(
         // else's session.
         if (vm.profileId.value != request.profileId) return null
 
-        vm.openNewTab(START_URL)
+        // The tab takes the screen (the run's navigation tools wait for the
+        // bound tab to be ACTIVE — a background task tab would wedge every
+        // navigate — so openNewTab(activate = false) is NOT the route; see the
+        // tagging note on BrowserViewModel.markTaskTab). The tag is set INSIDE
+        // openNewTab, before the tab becomes active, so the panel's tab-follow
+        // refuses this tab from the first moment it is on screen; the switch
+        // the run needs then costs the user's chat nothing: the per-session
+        // states keep every conversation, and the panel simply stays on the
+        // chat it was showing.
+        vm.openNewTab(START_URL, onCreated = { id -> vm.markTaskTab(id) })
         val tabId = vm.activeTabId ?: return null
-        vm.pinTabForAgent(tabId)
+        // Pinned under the TASK owner: the chat turn's pin ("chat") is a
+        // separate slot, so a running turn's tab keeps its protection while
+        // this page is up, and this close() can never lift it. See
+        // BrowserViewModel.pinTabForAgent.
+        vm.pinTabForAgent(BrowserViewModel.PIN_OWNER_TASK, tabId)
         if (vm.tabSession(tabId) == null) {
-            vm.pinTabForAgent(null)
+            vm.unpinTab(BrowserViewModel.PIN_OWNER_TASK)
+            vm.clearTaskTab(tabId)
             if (!request.keepTab) vm.closeTab(tabId)
             return null
         }
@@ -103,7 +117,12 @@ class BrowserTaskPageHost(
             )
 
             override fun close() {
-                vm.pinTabForAgent(null)
+                // The tag and the pin belong to THIS page, so both lift here —
+                // exactly the lifetime the panel's refusal and the eviction
+                // protection were promised for, whether the run ended, failed,
+                // or was cancelled.
+                vm.unpinTab(BrowserViewModel.PIN_OWNER_TASK)
+                vm.clearTaskTab(tabId)
                 if (!request.keepTab) vm.closeTab(tabId)
             }
         }

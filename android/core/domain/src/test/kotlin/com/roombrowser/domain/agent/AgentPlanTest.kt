@@ -45,18 +45,22 @@ class AgentPlanTest {
     }
 
     @Test
-    fun `the status word is read leniently but not guessed`() {
+    fun `the status word is read leniently and an unknown word marks the step failed`() {
         val lenient = AgentPlan.parse(args("sign in" to " In_Progress "))
         assertThat((lenient as AgentPlan.Parsed.Ok).items.single().status)
             .isEqualTo(AgentPlan.Status.IN_PROGRESS)
 
+        // An invented status no longer rejects the WHOLE list — the model
+        // used to lose every step it was watching progress on over one odd
+        // word. The step survives, marked FAILED, and the model reads it as
+        // not done, which is the only part that drives the loop's nudges.
         val unknown = AgentPlan.parse(args("sign in" to "halfway"))
-        assertThat(unknown).isInstanceOf(AgentPlan.Parsed.Failure::class.java)
-        // The refusal has to name the words that work, or the model repeats it.
-        assertThat((unknown as AgentPlan.Parsed.Failure).reason)
-            .contains("pending")
-        assertThat(unknown.reason).contains("in_progress")
-        assertThat(unknown.reason).contains("done")
+        val item = (unknown as AgentPlan.Parsed.Ok).items.single()
+        assertThat(item.status).isEqualTo(AgentPlan.Status.FAILED)
+        assertThat(item.text).isEqualTo("sign in")
+        // Void-returning last statement: an assertion that returns Ordered
+        // makes the method non-void and JUnit4 then runs none of the class.
+        assertThat(item.status.mark).isEqualTo("[!]")
     }
 
     @Test

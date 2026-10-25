@@ -1276,7 +1276,10 @@ class AgentToolExecutor(
      */
     private fun bindTo(id: String) {
         tabId = id
-        vm.pinTabForAgent(id)
+        // The CHAT owner slot: a task host pinning its own page rides the
+        // separate "task" slot, so neither can lift the other's tab — see
+        // BrowserViewModel.pinTabForAgent's per-owner map.
+        vm.pinTabForAgent(BrowserViewModel.PIN_OWNER_CHAT, id)
     }
 
     private suspend fun formatSnapshot(): String? {

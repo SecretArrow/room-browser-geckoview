@@ -28,7 +28,7 @@ fn js_quote(s: &str) -> String {
 }
 
 fn chrome_major(chrome: &str) -> String {
-    // "124.0.6367.91" → "124"
+    // "156.0.8078.48" → "156"
     chrome
         .split('.')
         .next()

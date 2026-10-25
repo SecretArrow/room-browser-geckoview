@@ -62,7 +62,7 @@ class ProfileBackupTest {
         assertThat(restored.payload.profile.id.value)
             .isEqualTo("11111111-2222-3333-4444-555555555555")
         assertThat(restored.payload.profile.name).isEqualTo("Research")
-        assertThat(restored.payload.profile.settings.searchEngineId).isEqualTo("duckduckgo")
+        assertThat(restored.payload.profile.settings.searchEngineId).isEqualTo("google")
         assertThat(restored.payload.bookmarks.single().title).isEqualTo("Example")
         assertThat(restored.payload.sitePermissions).hasSize(2)
         assertThat(restored.payload.sitePermissions.first().decision).isEqualTo("BLOCK")

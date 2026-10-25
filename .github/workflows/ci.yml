@@ -603,7 +603,20 @@ jobs:
     # finding out, and it no longer waits ~4 minutes for autofix to finish
     # doing nothing. The cost, on purpose: when quality fails this run, the
     # emulator has already run.
-    runs-on: ubuntu-latest
+    #
+    # Pin the runner IMAGE, and only here. The fleet is migrating to Ubuntu 26
+    # (annotation on recent runs), and this is the one job whose stack is
+    # proven against the 24.04 image rather than portable across images: the
+    # emulator + KVM pair (the udev rule and /dev/kvm below, the
+    # android-emulator-runner action and its API 30 system image), the pinned
+    # NDK/CMake locations under /usr/local/lib/android/sdk, and the
+    # accessibility-tree behavior the instrumented suite's own recovery paths
+    # were tuned against — the last image change (2026-10) alone cost the
+    # DevToolsSearchE2eTest recovery runs 40070510408 and 40083429230. Every
+    # other job stays on ubuntu-latest ON PURPOSE: their SDK install steps
+    # self-verify and reinstall, which makes them the canaries for the new
+    # image. Flip this back once one full suite has passed on the new image.
+    runs-on: ubuntu-24.04
     # A hung emulator boot or a stalled SDK download would otherwise hold a
     # runner for the 360-minute default. Raised from 90 to 120 when the
     # engine started shipping inside the APK: the install now unpacks
@@ -860,7 +873,7 @@ jobs:
           targets: x86_64-pc-windows-msvc
 
       - name: Cache cargo registry + target
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             ~/.cargo/registry
@@ -945,7 +958,7 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       - name: Cache cargo registry + target
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             ~/.cargo/registry

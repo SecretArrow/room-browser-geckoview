@@ -405,35 +405,128 @@ class BrowserAgentController(
     private var callFactory: OkHttpClient = tuned(httpClient)
 
     // ------------------------------------------------------------- UI state
+    //
+    // EVERY chat-scoped surface lives in a per-session [ChatSessionState], in
+    // [sessionStates] below. The controller keeps the map, the accessors the
+    // panel renders, and the ONE running turn's bookkeeping. See the class's
+    // KDoc for why the old controller-level fields — one shared entries list,
+    // one running flag, one plan — could not survive a chat switch mid-turn.
 
-    var entries by mutableStateOf<List<AgentEntry>>(emptyList())
-        private set
-    var running by mutableStateOf(false)
-        private set
-    var statusLine by mutableStateOf<String?>(null)
-        private set
-    var approval by mutableStateOf<AgentApproval?>(null)
-        private set
+    /** The chat the panel is showing, or null while none is resolved yet. */
     var activeSessionId by mutableStateOf<Long?>(null)
         private set
 
     /**
-     * The step list the model last wrote with `plan`, empty until it writes
-     * one. Held here rather than in the transcript because it is a view of the
-     * work in progress: the tool rows already record that a list was set, and
-     * what the user needs on screen is the CURRENT list, not every revision of
-     * it. It belongs to the chat, so a new chat, another chat and another tab
-     * all start empty.
+     * One state per chat, access-ordered so the eldest loaded window is the
+     * first eviction candidate. Guarded by [statesLock]: every touch is
+     * main-confined today, but the map is the one structure a future caller
+     * could reach from a stream thread, and the lock costs a compare.
      */
-    var plan by mutableStateOf<List<AgentPlan.Item>>(emptyList())
+    private val sessionStates = LinkedHashMap<Long?, ChatSessionState>(16, 0.75f, true)
+    private val statesLock = Any()
+
+    /**
+     * Whether ANY turn is running — the controller's single turn slot. The
+     * per-chat mirror is [ChatSessionState.running]. The composer, the pill
+     * and the [send] guard read this one, because at most one turn exists.
+     */
+    var running by mutableStateOf(false)
         private set
 
     /**
-     * Whether the plan panel sheet is on screen. ONLY a user toggle flips it
-     * (the header button, the sheet's own dismissal); chat switches, plan
-     * updates, running turns and recompositions must never mutate it.
+     * The chat the RUNNING turn was minted against, or null between turns.
+     * The turn's status lines, approvals, plan and rows all route through the
+     * state this names — never through [activeSessionId], which belongs to
+     * the user and may point somewhere else for the whole turn.
+     */
+    private var turnOriginSessionId: Long? = null
+
+    private val turnState: ChatSessionState?
+        get() = turnOriginSessionId?.let { peekState(it) }
+
+    /** The state of the chat the panel shows, created on demand. */
+    private val panelState: ChatSessionState
+        get() = stateFor(activeSessionId)
+
+    /**
+     * The state of [sessionId]'s chat, created on first ask. Sessions whose
+     * state is evicted (see [trimStatesLocked]) simply reload their window
+     * from the database on the next ask — the cache is an optimization, the
+     * row is the truth.
+     */
+    fun stateFor(sessionId: Long?): ChatSessionState = synchronized(statesLock) {
+        sessionStates.getOrPut(sessionId) {
+            ChatSessionState(sessionId).also { trimStatesLocked() }
+        }
+    }
+
+    /**
+     * [sessionId]'s state WITHOUT creating one — for readers that must not
+     * allocate (the panel's accessors when a turn is not running, the
+     * eviction checks) and for callers probing whether a chat is loaded.
+     */
+    fun peekState(id: Long?): ChatSessionState? = synchronized(statesLock) { sessionStates[id] }
+
+    /**
+     * The LRU cap on held windows. Twelve loaded transcripts cover any
+     * browsing session a person actually does; beyond that the eldest
+     * non-running, non-visible state falls out and costs a reload when it is
+     * wanted again. Never larger than the live-engine budget, for the same
+     * reason: a cache bigger than what a session can touch is only memory.
+     */
+    private fun trimStatesLocked() {
+        while (sessionStates.size > SESSION_STATE_CAP) {
+            val victim = sessionStates.entries.firstOrNull { (id, state) ->
+                id != activeSessionId && !state.running
+            } ?: return
+            sessionStates.remove(victim.key)
+        }
+    }
+
+    private fun evictState(id: Long?) {
+        synchronized(statesLock) { sessionStates.remove(id) }
+    }
+
+    private fun evictAllStates() {
+        synchronized(statesLock) { sessionStates.clear() }
+    }
+
+    // ------- accessors the panel renders (the chat it is showing, and the
+    // running turn's prompt/status wherever the panel has drifted to) -------
+
+    val entries: List<AgentEntry> get() = panelState.entries
+    val plan: List<AgentPlan.Item> get() = panelState.plan
+    val hasOlderEntries: Boolean get() = panelState.hasOlderEntries
+    val retryable: RetryableTurn? get() = panelState.retryable
+
+    /**
+     * The prompt waiting on the user: a RUNNING turn's own — surfaced from
+     * any chat, because there is at most one turn and therefore at most one
+     * prompt to answer — else the visible chat's own.
+     */
+    val approval: AgentApproval?
+        get() = turnState?.approval ?: panelState.approval
+
+    /** Same routing as [approval]: the turn's line while a turn runs. */
+    val statusLine: String?
+        get() = turnState?.statusLine ?: panelState.statusLine
+
+    /**
+     * Whether the plan panel is open. Controller-owned ON PURPOSE: the panel
+     * survives chat switches, tab switches, recompositions and whole turns,
+     * none of which a remember{} inside the composable would. NOTHING writes
+     * this except the user's toggle (and the sheet's own user-dismiss) — not
+     * a chat switch, not a task update, not a turn starting or ending.
      */
     var planPanelOpen by mutableStateOf(false)
+
+    /**
+     * The step list of the chat the panel is showing is [panelState].plan;
+     * token costs are NOT held here — the provider's reported counts land on
+     * the assistant row that ended the turn (see the FinalAnswer handler and
+     * [AgentUsage]), which is a per-row fact the transcript and the export
+     * read back from the database.
+     */
 
     /**
      * Bumped every time the chat the panel points at CHANGES (new chat,
@@ -449,24 +542,6 @@ class BrowserAgentController(
      */
     var draftEpoch by mutableStateOf(0)
         private set
-
-    /**
-     * Whether the DB holds transcript rows older than the ones [entries]
-     * currently shows. The panel turns exactly this into its "load older"
-     * affordance, so a chat under one window renders an item list with
-     * nothing extra in it — byte-identical to the pre-paging panel.
-     */
-    var hasOlderEntries by mutableStateOf(false)
-        private set
-
-    /**
-     * The id of the oldest message row [entries] was built from — the keyset
-     * cursor "load older" pages below. Tracked from the ROWS and not from the
-     * entries because a row whose entry was dropped (an unparseable plugin
-     * card, say) must still be paged past, or the next window would re-read
-     * it, drop it again, and offer "load older" forever.
-     */
-    private var oldestLoadedRowId: Long? = null
 
     /**
      * The "allow on this site for this session" answers, kept per controller —
@@ -490,14 +565,6 @@ class BrowserAgentController(
 
     /** Where the running turn's page is, or null when that cannot be said. */
     private var originOfTurn: () -> String? = { null }
-
-    /**
-     * The last turn that did not finish, or null once one completes cleanly.
-     * Non-null is what puts the Retry button in the composer; it survives a
-     * stop on purpose, since the work is still wanted.
-     */
-    var retryable by mutableStateOf<RetryableTurn?>(null)
-        private set
 
     /**
      * The tab whose conversation is on screen, or null while none is
@@ -562,11 +629,23 @@ class BrowserAgentController(
     /** A challenge hand-over the executor is waiting out; completed by [resume]. */
     private var challengeResume: CompletableDeferred<Unit>? = null
 
-    /** Cached /models results per provider id. */
-    private val modelCache = HashMap<Long, List<String>>()
+    /**
+     * Cached /models results per provider id — BOUNDED (see the cap): a
+     * profile with a long provider history used to grow these HashMaps
+     * without limit, and every entry is held for the controller's whole life.
+     * Eight covers every provider a person actually rotates through; the
+     * eldest falls out instead of the memory.
+     */
+    private val modelCache = object : LinkedHashMap<Long, List<String>>(8, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<Long, List<String>>): Boolean =
+            size > BOUNDED_CACHE_CAP
+    }
 
-    /** Decrypted API keys — memory only, never persisted. */
-    private val apiKeyCache = HashMap<Long, String>()
+    /** Decrypted API keys — memory only, never persisted, bounded as above. */
+    private val apiKeyCache = object : LinkedHashMap<Long, String>(8, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<Long, String>): Boolean =
+            size > BOUNDED_CACHE_CAP
+    }
 
     private var turnJob: Job? = null
 
@@ -579,6 +658,12 @@ class BrowserAgentController(
      * [showTabConversation].
      */
     private var conversationRequest = 0L
+
+    /**
+     * When [refreshProviders] last actually read, in elapsedRealtime — the
+     * freshness guard that stops the panel's every resume-and-expand (and
+     * BrowserActivity.onResume on top) from stampeding the same Room read.
+     */
 
     /**
      * Whether this turn has already told the user that the local decision
@@ -605,6 +690,14 @@ class BrowserAgentController(
 
     /** The per-chat catalogue of plugin tools, commands and hooks. */
     private val pluginCatalog = AgentPluginCatalog(pluginRepo, pluginRuntime)
+
+    // ------------------------------------------------------------- skills
+    //
+    // The skills store lives one call away, not here: AgentSkillsTools.access
+    // (the same accessor the executor chain's `skills` tool reads) owns the
+    // registry and the installer, and skillsContextAddition() below reads it
+    // for the system prompt — one store, so a listing and the prompt block
+    // can never disagree about what is installed.
 
     /**
      * The airplane surface the /airplane command and the airplane_mode tool
@@ -694,8 +787,15 @@ class BrowserAgentController(
      * ':browser' process within moments, but on slow/emulator filesystems the
      * ping can occasionally be lost — the panel would then keep showing a
      * stale "No provider configured" state. Called whenever the agent panel
-     * is opened/expanded AND from BrowserActivity.onResume so the freshly
-     * configured provider is always picked up immediately.
+     * is opened/expanded AND from BrowserActivity.onResume.
+     *
+     * NO freshness guard, on purpose: the first version of this refactor
+     * de-duplicated the resume bursts behind a ten-second window, and the
+     * provider editor e2e caught it — a provider saved and returned from
+     * INSIDE the window left the panel on the stale "No provider configured"
+     * state, and the composer answered every send with "configure a provider
+     * first". The read is a single indexed query; the correctness of the
+     * resume path is worth more than the milliseconds its guard saved.
      */
     fun refreshProviders() {
         scope.launch {
@@ -725,6 +825,12 @@ class BrowserAgentController(
         AgentForeground.stopCurrentTurn = null
         AgentForeground.pauseCurrentTurn = null
         AgentForeground.finish()
+        // Everything cached dies with the controller: held windows, decrypted
+        // keys and model lists must not outlive the profile they were read
+        // for — the next controller belongs to the next profile.
+        evictAllStates()
+        modelCache.clear()
+        apiKeyCache.clear()
         scope.cancel()
     }
 
@@ -940,9 +1046,13 @@ class BrowserAgentController(
      * tab is left with no conversation, so the next message begins a fresh
      * one. Without the detach the tab would still resolve to the old chat and
      * this button would appear to do nothing.
+     *
+     * NO running gate. Switching away from a chat whose turn is running is
+     * safe now that every write of a turn lands in the turn's own captured
+     * state: the panel simply starts rendering the empty null-keyed state,
+     * and the running chat keeps moving underneath it.
      */
     fun newSession() {
-        if (running) return
         // Takes the panel: any tab resolve still reading is now stale.
         conversationRequest++
         // A new chat is a new draft: the composer's text and attachments
@@ -952,17 +1062,11 @@ class BrowserAgentController(
         activeSessionId = null
         // A site-scoped approval belongs to the chat it was given in.
         pointApprovalsAt(null)
-        // So does the step list: the next chat plans its own work.
-        plan = emptyList()
-        entries = emptyList()
-        // And its window: a chat with no rows loaded has nothing older to
-        // page in — leaving the cursor behind would offer a button that reads
-        // the previous chat's history into this one.
-        hasOlderEntries = false
-        oldestLoadedRowId = null
-        // A failed turn belongs to the chat it was asked in; a fresh chat is
-        // not where its Retry button should still be waiting.
-        retryable = null
+        // The panel now renders stateFor(null) — empty by construction, so
+        // nothing else needs clearing here. The chat this tab WAS showing
+        // keeps its own state (rows, plan, retry offer), so returning to it
+        // — from the history list or by switching the tab back — restores
+        // everything without a single read.
         if (previous != null) {
             scope.launch { repo.bindSessionToTab(previous, "") }
         }
@@ -981,15 +1085,19 @@ class BrowserAgentController(
      * this tab's) and [id] takes its place. A chat picked while no tab is
      * resolved is left as it was rather than detached from the tab that owns
      * it — moving a conversation is only ever the user's doing.
+     *
+     * No running gate — see [newSession].
      */
     fun openSession(id: Long) {
-        if (running) return
         scope.launch {
             val session = repo.session(id) ?: return@launch
             // Takes the panel: any tab resolve still reading is now stale.
             conversationRequest++
             val tabId = vm.activeTabId
-            if (tabId != null) {
+            // A task-owned tab is the task's, not the user's: binding a chat
+            // onto it would leave the chat attached to a page a run is
+            // driving (and detached from the tab the user reads).
+            if (tabId != null && !vm.isTaskTab(tabId)) {
                 val previous = activeSessionId
                 if (previous != null && previous != id) repo.bindSessionToTab(previous, "")
                 repo.bindSessionToTab(id, tabId)
@@ -1000,9 +1108,7 @@ class BrowserAgentController(
             draftEpoch++
             activeSessionId = session.id
             pointApprovalsAt(session.id)
-            plan = AgentPlan.decode(session.planJson)
-            loadTranscriptWindow(session.id)
-            retryable = null
+            ensureWindowLoaded(session, stateFor(session.id))
         }
     }
 
@@ -1016,7 +1122,12 @@ class BrowserAgentController(
      * things can overtake it, and both would be destructive: a faster tab
      * switch (which would leave the wrong conversation on screen with nothing
      * to say so) and a message being sent (which would erase the message the
-     * user just sent, because `entries` is the one list the panel draws).
+     * user just sent, because the entries list is what the panel draws).
+     *
+     * THE CACHE: a chat whose state already holds its newest window re-renders
+     * from memory with no query at all — see [ensureWindowLoaded]. This is
+     * what makes the tab switch away-and-back free, and it is why the old
+     * "task tab steals the panel" round-trip cost two full reloads.
      */
     private suspend fun showTabConversation(tabId: String) {
         val token = ++conversationRequest
@@ -1031,52 +1142,77 @@ class BrowserAgentController(
         // Another chat is another site; coming back to this one keeps what it
         // was told "for the rest of this chat".
         pointApprovalsAt(session?.id)
-        plan = session?.let { AgentPlan.decode(it.planJson) }.orEmpty()
-        if (session != null) loadTranscriptWindow(session.id) else clearTranscriptWindow()
+        // A tab with no chat shows the null-keyed state — empty by
+        // construction. Nothing global is wiped: the chat we came FROM keeps
+        // its own state, so going back re-renders it from memory.
+        if (session == null) return
+        ensureWindowLoaded(session, stateFor(session.id))
     }
 
     /**
-     * Loads the chat's newest transcript window into [entries], off the main
-     * thread for the row→entry mapping: tool rows carry multi-KB payloads and
-     * plugin rows are JSON, and a tab switch used to re-parse a whole day's
-     * worth of them on Main. The Room query is bounded by
+     * Makes sure [st] holds its chat's plan and newest transcript window,
+     * reusing what it already holds when that is still the truth.
+     *
+     * The freshness test is the chat's persisted ROW COUNT (one indexed COUNT
+     * query) against the count captured at load: equal means nothing landed
+     * since the last look — no query beyond the count, no re-map, the panel
+     * re-renders the held rows as-is. Different means a turn ran here while
+     * the chat was away (or rows were cleared), and the newest window is
+     * reloaded — the one case where memory is behind the row.
+     */
+    private suspend fun ensureWindowLoaded(session: AgentSessionEntity, st: ChatSessionState) {
+        if (!st.planLoaded) {
+            st.plan = AgentPlan.decode(session.planJson)
+            st.planLoaded = true
+        }
+        val persisted = runCatching { repo.messageCount(session.id) }.getOrDefault(st.persistedRowCount)
+        if (!st.hasLoadedWindow || persisted != st.persistedRowCount) {
+            loadTranscriptWindow(session.id, st, persisted)
+        }
+    }
+
+    /**
+     * Loads the chat's newest transcript window into ITS OWN state, off the
+     * main thread for the row→entry mapping: tool rows carry multi-KB payloads
+     * and plugin rows are JSON, and a tab switch used to re-parse a whole
+     * day's worth of them on Main. The Room query is bounded by
      * [TRANSCRIPT_WINDOW_ROWS] on the same move — the read and the map were
      * the two halves of the same stall.
      */
-    private suspend fun loadTranscriptWindow(sessionId: Long) {
+    private suspend fun loadTranscriptWindow(sessionId: Long, st: ChatSessionState, persisted: Int) {
         val page = repo.messagePage(sessionId, Long.MAX_VALUE, TRANSCRIPT_WINDOW_ROWS)
         val mapped = withContext(Dispatchers.Default) { page.rows.mapNotNull(::entryFromRow) }
         // Written together, and after the mapping, so a load overtaken by a
-        // faster tab switch lands all of its own state or none of it — the
-        // same staleness contract the token guard above already keeps.
-        hasOlderEntries = page.hasOlder
-        oldestLoadedRowId = page.rows.firstOrNull()?.id
-        entries = mapped
-    }
-
-    /** Empties [entries] and the window bookkeeping that paged it in. */
-    private fun clearTranscriptWindow() {
-        entries = emptyList()
-        hasOlderEntries = false
-        oldestLoadedRowId = null
+        // faster switch lands all of its own state or none of it. And because
+        // it writes the SESSION's own state, an overtake can no longer splice
+        // another chat's rows anywhere — the worst case is a stale window in
+        // the chat it belongs to, corrected by the next [ensureWindowLoaded].
+        st.hasOlderEntries = page.hasOlder
+        st.oldestLoadedRowId = page.rows.firstOrNull()?.id
+        st.persistedRowCount = persisted
+        st.hasLoadedWindow = true
+        st.replaceAll(mapped)
     }
 
     /**
-     * Pages the next older window of THIS chat in front of [entries] and
-     * answers how many entries landed (0 when a turn is running, when nothing
-     * is loaded, or when the chat has nothing older).
+     * Pages the next older window of THIS chat in front of its entries and
+     * answers how many entries landed (0 when the chat's own turn is running,
+     * when nothing is loaded, or when the chat has nothing older).
      *
      * The return count is what the panel keeps its viewport put with: the
      * rows land BEFORE the entry the user was reading, and the panel offsets
      * its scroll by exactly the count so the frame that grows the list is
-     * also the frame that stays put. A turn running is refused rather than
-     * reconciled — the turn holds plain indices into `entries` (its streaming
-     * row), and shifting them under it would splice the live stream.
+     * also the frame that stays put. A turn running in THIS chat is refused
+     * rather than reconciled — the turn holds an index into its streaming
+     * row, and shifting it would splice the live stream. Another chat's turn
+     * is no obstacle: the lists are separate states now, which is the whole
+     * point of [ChatSessionState].
      */
     suspend fun loadOlderEntries(): Int {
-        if (running) return 0
         val session = activeSessionId ?: return 0
-        val before = oldestLoadedRowId ?: return 0
+        val st = stateFor(session)
+        if (st.running) return 0
+        val before = st.oldestLoadedRowId ?: return 0
         val page = repo.messagePage(session, before, TRANSCRIPT_WINDOW_ROWS)
         // Stale-page guard, read AFTER the query: a chat that took the panel
         // while this page was in flight owns the window bookkeeping now, and
@@ -1086,38 +1222,40 @@ class BrowserAgentController(
             // Rows were promised and are gone (the chat was cleared under
             // us): the honest answer is the end of history, not a button
             // that keeps promising it.
-            hasOlderEntries = false
+            st.hasOlderEntries = false
             return 0
         }
         val older = withContext(Dispatchers.Default) { page.rows.mapNotNull(::entryFromRow) }
         // Re-read after the mapping, for the same reason plus one more: a
-        // turn that started meanwhile holds plain indices into `entries`
-        // (its streaming row), and prepending now would splice the live
-        // stream — the refusal above cannot cover a turn that began while
-        // the page was reading.
-        if (running || activeSessionId != session) return 0
+        // turn that started meanwhile holds an index into the streaming row,
+        // and prepending now would splice the live stream — the refusal
+        // above cannot cover a turn that began while the page was reading.
+        if (st.running || activeSessionId != session) return 0
         // The cursor moves even when every entry was dropped (unparseable
         // rows exist): paging past them is the only way the NEXT window gets
-        // a chance to hold something renderable.
-        hasOlderEntries = page.hasOlder
-        oldestLoadedRowId = page.rows.first().id
-        if (older.isEmpty()) return 0
-        entries = older + entries
-        return older.size
+        // a chance to hold something renderable. The persisted count is NOT
+        // touched: it counts the chat's total rows, and loading older changes
+        // the window, not the chat.
+        st.hasOlderEntries = page.hasOlder
+        st.oldestLoadedRowId = page.rows.first().id
+        return st.prependOlder(older)
     }
 
     /**
      * Follows the user to the tab they just opened.
      *
-     * While a turn is RUNNING this does nothing, deliberately. `entries` is
-     * one list for the whole controller, so re-pointing it mid-turn would
-     * erase the running turn's progress from the screen — and the turn is
-     * usually the reason the panel is open at all. The panel therefore stays
-     * with the turn and re-binds when it ends (see [runTurn]); the header
-     * says so meanwhile.
+     * No running gate, and that is the point of the per-session rewrite: the
+     * running turn writes into its OWN chat's state, so re-pointing the PANEL
+     * cannot erase its progress from the screen — the user sees whichever
+     * chat they switch to, and the turn's chat keeps streaming underneath.
+     * The one exception is a TASK's tab (a scheduled run's page): the run
+     * needed that tab active so its engine would attach, and the panel must
+     * not pay for that with the conversation the user was reading — see
+     * [com.roombrowser.browser.BrowserTaskPageHost].
      */
     private fun onActiveTabChanged(tabId: String?) {
-        if (running || tabId == null || tabId == conversationTabId) return
+        if (tabId != null && vm.isTaskTab(tabId)) return
+        if (tabId == null || tabId == conversationTabId) return
         scope.launch { showTabConversation(tabId) }
     }
 
@@ -1128,6 +1266,9 @@ class BrowserAgentController(
             // the data directories the cascade leaves behind.
             runCatching { deactivateChatPlugins(pluginRepo, pluginRuntime, id, "chat-deleted") }
             repo.deleteSession(id)
+            // The deleted chat's held window goes with it: keeping it would
+            // be memory for a chat nothing can ever reopen.
+            evictState(id)
             if (activeSessionId == id) newSession()
         }
     }
@@ -1140,6 +1281,8 @@ class BrowserAgentController(
                 runCatching { deactivateChatPlugins(pluginRepo, pluginRuntime, session.id, "chat-deleted") }
             }
             repo.deleteSessionsForProfile(profileId.value)
+            // Every held window goes with every row.
+            evictAllStates()
             newSession()
             messages.value = "Agent sessions cleared"
         }
@@ -1220,24 +1363,37 @@ class BrowserAgentController(
         }
     }
 
-    fun stop() {
+    /**
+     * Stops the running turn, routed BY SESSION: the rows, status and
+     * approval the stop writes land in the turn's OWN chat state — the one
+     * [turnOriginSessionId] names — never in whichever chat the panel has
+     * drifted to. [sessionId] is who is asking (the notification's Stop
+     * action carries the controller's own answer for the turn it was minted
+     * by); only the turn that is actually running accepts one, and a call
+     * from any other chat is refused rather than answered.
+     */
+    fun stop(sessionId: Long? = turnOriginSessionId) {
+        if (sessionId != turnOriginSessionId) return
         val job = turnJob ?: return
+        val st = stateFor(turnOriginSessionId)
         turnJob = null
         job.cancel()
         running = false
-        statusLine = null
-        approval = null
+        st.running = false
+        st.statusLine = null
+        st.approval = null
         clearPause()
-        entries = entries + AgentEntry.Notice("Stopped by user", error = true, at = System.currentTimeMillis())
+        st.appendEntry(AgentEntry.Notice("Stopped by user", error = true, at = System.currentTimeMillis()))
     }
 
     /**
      * Pauses the turn. Honoured BETWEEN steps — nothing can cut a tool in half —
      * and refused while a challenge is on screen, where the turn is already
      * stopped and "Task Paused" would replace the line that says what the user
-     * is being asked to do.
+     * is being asked to do. Routed by session like [stop].
      */
-    fun pause() {
+    fun pause(sessionId: Long? = turnOriginSessionId) {
+        if (sessionId != turnOriginSessionId) return
         if (!running || pauseState != AgentPause.None) return
         applyPauseState(AgentPause.Paused)
     }
@@ -1260,9 +1416,10 @@ class BrowserAgentController(
     }
 
     /** What the notification's single Pause/Resume action does. */
-    fun togglePause() {
+    fun togglePause(sessionId: Long? = turnOriginSessionId) {
+        if (sessionId != turnOriginSessionId) return
         if (!running) return
-        if (pauseState == AgentPause.None) pause() else resume()
+        if (pauseState == AgentPause.None) pause(sessionId) else resume()
     }
 
     /** Waits out a user Pause between steps; see [AgentLoop.beforeStep]. */
@@ -1318,7 +1475,12 @@ class BrowserAgentController(
 
     fun respondApproval(answer: ApprovalAnswer) {
         approval?.let { it.respond(answer) }
-        approval = null
+        // Cleared where it was found — the running turn's prompt when one is
+        // surfaced (even though the panel has drifted to another chat), else
+        // the visible chat's own. Writing both would also be safe, but only
+        // one of them can be showing a prompt right now.
+        val turn = turnState
+        if (turn?.approval != null) turn.approval = null else panelState.approval = null
     }
 
     private suspend fun runTurn(
@@ -1341,7 +1503,18 @@ class BrowserAgentController(
         // the gate's yolo/confirm checks included — works from one
         // authoritative value.
         runCatching { settings = appState.agentSettingsSnapshot() }
+        // THE TURN'S STATE, captured here and never re-read from
+        // [activeSessionId]: every row, status line, approval and plan this
+        // turn writes lands in this chat's own ChatSessionState, so a user
+        // switching chats (or tabs) mid-turn cannot drag a single write into
+        // the chat they moved to. The var (not val) is deliberate: a turn
+        // started on a tab with no chat yet writes into the null-keyed scratch
+        // state until its session row exists, then adopts the real one — see
+        // the adoption below.
+        var st = stateFor(activeSessionId)
+        turnOriginSessionId = st.sessionId
         running = true
+        st.running = true
         gateFailureNoted = false
         // Where "this site" is for the approvals this turn asks about. The URL
         // is the engine's, never the page's, and it is only trusted while the
@@ -1352,22 +1525,33 @@ class BrowserAgentController(
             if (id != null && vm.isActiveTab(id)) SiteMemory.originOf(vm.pageState.url) else null
         }
         // Background mode: foreground service + wake lock so the turn keeps
-        // running when the user leaves the app or the screen turns off.
-        AgentForeground.stopCurrentTurn = { stop() }
-        AgentForeground.pauseCurrentTurn = { togglePause() }
+        // running when the user leaves the app or the screen turns off. The
+        // notification's actions are routed through the controller BY SESSION:
+        // the lambdas read the turn's own origin id at invocation, so a Stop
+        // or Pause can only ever reach the turn whose notification carries it
+        // — never another chat's state.
+        AgentForeground.stopCurrentTurn = { stop(turnOriginSessionId) }
+        AgentForeground.pauseCurrentTurn = { togglePause(turnOriginSessionId) }
         AgentForeground.begin(appContext)
         AgentForeground.status("Working: " + text.take(60))
+        // The pre-turn steps (plugin command handling) may have left a line on
+        // THIS chat's state before any turn existed; from here the turn's
+        // lines route to the same state, so clear it directly — setStatus's
+        // dedupe reads the accessor, which cannot tell a stale pre-turn line
+        // from the turn's own, and would keep both.
+        st.statusLine = null
         setStatus(null)
         // The chat bubble (and the persisted row) mention the attached file
         // names; the LLM still receives the raw text plus an attachment block.
         val display = if (attachments.isEmpty()) text
         else text + "\n📎 " + attachments.joinToString(", ") { it.name }
-        entries = entries + AgentEntry.User(display, System.currentTimeMillis())
+        st.appendEntry(AgentEntry.User(display, System.currentTimeMillis()))
         // Offered for retry until this turn finishes cleanly. Set here, before
         // anything can fail, so every failure path below — an error event, a
         // throw, the user's Stop — leaves the button up without each of them
-        // having to remember to raise it.
-        retryable = RetryableTurn(text, includePage, attachments)
+        // having to remember to raise it. It lives in the TURN's chat state:
+        // a failed turn belongs to the chat it was asked in.
+        st.retryable = RetryableTurn(text, includePage, attachments)
         // YOLO has no prompt to remind anyone it is on, which is exactly why
         // it needs saying: the user turned it on at a prompt, possibly days
         // ago, and every turn since has looked identical to one where the
@@ -1379,16 +1563,15 @@ class BrowserAgentController(
                 error = true
             )
         }
-        var streamingIndex = -1
         // The turn's stream coalescer (see [AgentStreamCoalescer]): every
-        // streamed delta lands here and reaches the transcript one window
-        // at a time, through this one seam. `streamingIndex` stays the plain
-        // local it always was — the flush callback below and the boundary
-        // handlers in the event loop are its only writers, and all of them
-        // run on the turn's own event sequence (see the class's threading
-        // note for why that confinement is the design, not an accident).
+        // streamed delta lands here and reaches THIS chat's transcript one
+        // window at a time, through this one seam. `streamingIndex` lives in
+        // the state, not a local — the flush callback below and the boundary
+        // handlers in the event loop are its only writers, and all of them run
+        // on the turn's own event sequence (see the class's threading note for
+        // why that confinement is the design, not an accident).
         val stream = AgentStreamCoalescer { textDelta, thinkingDelta ->
-            streamingIndex = upsertStreamingAssistant(streamingIndex, textDelta, thinkingDelta)
+            st.streamingIndex = st.upsertStreaming(st.streamingIndex ?: -1, textDelta, thinkingDelta)
         }
         // An error reported as an EVENT rather than thrown still means the turn
         // did not do what was asked, so it must not clear the retry offer.
@@ -1406,8 +1589,10 @@ class BrowserAgentController(
             // of it, and the engine is pinned so the live-engine budget cannot
             // evict the page out from under the turn either. Pinned inside the
             // try so the finally below lifts it even if a step from here on
-            // throws.
-            vm.pinTabForAgent(tabId)
+            // throws. The pin carries the CHAT owner: a task host's pin (the
+            // "task" owner) is a separate slot, so neither side can lift the
+            // other's tab — see BrowserViewModel.pinTabForAgent.
+            tabId?.let { id -> vm.pinTabForAgent(BrowserViewModel.PIN_OWNER_CHAT, id) }
             val apiKey = apiKeyFor(provider).orEmpty()
             // Only the native Ollama protocol consumes the tuning; the other
             // gateways ignore it (default null keeps their wire format intact).
@@ -1476,15 +1661,12 @@ class BrowserAgentController(
                 scratchpad = pad,
                 nodeRuntime = AgentNodeRuntime(appContext, vm.profile),
                 nodePackages = AgentNodePackages(appContext),
-                // The skills tools ride the same process-wide surface the /skills
-                // chat commands and the skills screen share — one repository, one
-                // fetch transport, built lazily inside (see AgentSkillsTools).
-                skills = AgentSkillsTools.access(appContext),
                 onPause = { state -> applyPauseState(state) },
                 awaitChallengeResume = { awaitChallengeDone() },
                 visionUnsupportedReason = {
                     activeProvider?.protocol?.let { AgentVisionSupport.unsupportedReason(it) }
                 },
+                skills = AgentSkillsTools.access(appContext),
                 // The turn's tool chain gets the same airplane bridge the
                 // /airplane command rides — one promise, two callers.
                 airplane = airplaneBridge
@@ -1558,14 +1740,32 @@ class BrowserAgentController(
                 tabId = tabId.orEmpty()
             )
             activeSessionId = sessionId
+            // The turn's writes route BY SESSION (stop(), the notification's
+            // actions, the approval prompts all read this id), so resolving
+            // the scratch id must reach them too — a Stop arriving between
+            // here and the end of the turn has to land on THIS turn's chat.
+            turnOriginSessionId = sessionId
             // Adopting the tab's chat is continuing it, so what it was already
             // allowed to do on a site still stands.
             pointApprovalsAt(sessionId)
             tabId?.let { id -> conversationTabId = id }
-            // Carrying on with the chat the panel was already showing keeps the
-            // list in memory. Landing anywhere else takes the row's, so a chat
-            // deleted underneath us cannot lend its list to its replacement.
-            if (sessionId != previousId) plan = AgentPlan.decode(known?.planJson)
+            if (sessionId != st.sessionId) {
+                // The turn began on the null-keyed scratch state (the tab had
+                // no chat yet) and its row exists now: everything written so
+                // far moves onto the real chat's own state — UNDER the prior
+                // rows that chat's window holds, or the user's bubble would
+                // float above a transcript it belongs beneath.
+                val resolved = stateFor(sessionId)
+                known?.let { ensureWindowLoaded(it, resolved) }
+                resolved.adoptFrom(st)
+                st = resolved
+            } else if (known != null && !st.hasLoadedWindow) {
+                // Continuing the panel's chat, but the send outran its resolve
+                // (the panel pointed here before the window read came back):
+                // load the row's window now, or the turn's rows would append
+                // to an empty transcript the next reload would not match.
+                ensureWindowLoaded(known, st)
+            }
             // The catalogue read every later step of this turn needs — the
             // message hooks below, the plugin prompt blocks, the tool
             // definitions — is STARTED here, beside the turn, instead of being
@@ -1733,7 +1933,7 @@ class BrowserAgentController(
                 settings = settings,
                 attachments = attachments,
                 request = text,
-                plan = plan
+                plan = st.plan
             )
 
             // The chat's plugin tools, resolved once here (each probe starts
@@ -1755,6 +1955,12 @@ class BrowserAgentController(
                 stopRequested = { budget.stopped },
                 stopReason = { budget.stopReason }
             )
+            // The loop answers what the turn cost — real provider usage where
+            // it reported any, the documented chars/4 estimate where it did
+            // not. Booked onto [st], the chat that ran it, never onto
+            // whichever chat the panel shows now; a turn cancelled out of the
+            // loop loses its usage, which is the honest reading of an answer
+            // nobody received.
             loop.runTurn(history) { event ->
                 when (event) {
                     is AgentEvent.AssistantText -> {
@@ -1773,24 +1979,26 @@ class BrowserAgentController(
                     }
                     is AgentEvent.ToolStarted -> {
                         // The bubble closes here, so its last window lands
-                        // first: finalizeAssistant reads the entry's text,
-                        // and the text it must read is every delta that
-                        // arrived, not just the ones a flush already carried.
+                        // first: the finalize reads the entry's text, and the
+                        // text it must read is every delta that arrived, not
+                        // just the ones a flush already carried.
                         stream.flush()
-                        streamingIndex = finalizeAssistant(streamingIndex)
-                        entries = entries + AgentEntry.Tool(
-                            callId = event.id,
-                            name = event.name,
-                            label = AgentTools.describeTool(event.name, event.argsJson),
-                            running = true,
-                            ok = true,
-                            summary = "",
-                            at = System.currentTimeMillis()
+                        st.streamingIndex = st.finalizeStreaming(st.streamingIndex ?: -1)
+                        st.appendEntry(
+                            AgentEntry.Tool(
+                                callId = event.id,
+                                name = event.name,
+                                label = AgentTools.describeTool(event.name, event.argsJson),
+                                running = true,
+                                ok = true,
+                                summary = "",
+                                at = System.currentTimeMillis()
+                            )
                         )
                         setStatus(AgentTools.describeTool(event.name, event.argsJson))
                     }
                     is AgentEvent.ToolFinished -> {
-                        updateToolEntry(event.id) { it.copy(running = false, ok = event.ok, summary = event.summary) }
+                        st.updateTool(event.id) { it.copy(running = false, ok = event.ok, summary = event.summary) }
                         setStatus("Step done")
                         repo.addMessage(
                             sessionId, "tool",
@@ -1800,7 +2008,7 @@ class BrowserAgentController(
                         )
                     }
                     is AgentEvent.PlanUpdated -> {
-                        plan = event.items
+                        st.plan = event.items
                         // The row is the copy that outlives the process, so the
                         // card is still there when the chat is reopened and the
                         // model is shown its own list on the next turn.
@@ -1821,50 +2029,44 @@ class BrowserAgentController(
                         // the provider's reported counts land on exactly the
                         // row this answer produced, never on a guess at which
                         // row that is. A turn with no report writes the row
-                        // with null columns and records nothing.
+                        // with null columns and records nothing. The state's
+                        // own apply finds the open bubble wherever the panel
+                        // has drifted to, because it reads THIS chat's list.
                         val answerRowId = repo.addMessage(sessionId, "assistant", answer)
-                        val reportedUsage = event.usage
-                        // The answer is the bubble the user watched appear, so
-                        // it lands in it rather than beside it.
-                        entries = AgentTranscript.answer(
-                            entries = entries,
-                            openIndex = streamingIndex,
-                            answer = answer,
-                            at = System.currentTimeMillis(),
-                            usage = reportedUsage,
-                            recordUsage = { usage ->
-                                repo.setMessageUsage(
-                                    answerRowId,
-                                    usage.promptTokens,
-                                    usage.completionTokens
-                                )
-                            }
-                        )
-                        streamingIndex = -1
+                        event.usage?.let { usage ->
+                            repo.setMessageUsage(
+                                answerRowId,
+                                usage.promptTokens,
+                                usage.completionTokens
+                            )
+                        }
+                        st.applyAnswer(st.streamingIndex ?: -1, answer, System.currentTimeMillis())
+                        st.streamingIndex = -1
                         repo.touchSession(sessionId)
                         setStatus(null)
                     }
                     is AgentEvent.AgentError -> {
-                        // finalize below reads the entry's text — drain first,
-                        // exactly as a tool boundary does.
+                        // The finally below reads the entry's text — drain
+                        // first, exactly as a tool boundary does.
                         stream.flush()
-                        streamingIndex = finalizeAssistant(streamingIndex)
+                        st.streamingIndex = st.finalizeStreaming(st.streamingIndex ?: -1)
                         turnFailed = true
-                        entries = entries + AgentEntry.Notice(
-                            text = "Agent error: ${event.message}",
-                            error = true,
-                            at = System.currentTimeMillis()
+                        st.appendEntry(
+                            AgentEntry.Notice(
+                                text = "Agent error: ${event.message}",
+                                error = true,
+                                at = System.currentTimeMillis()
+                            )
                         )
                         repo.addMessage(sessionId, "assistant", "⚠ error: ${event.message}")
                         setStatus(null)
                     }
                     is AgentEvent.Notice -> {
-                        entries = entries + AgentEntry.Notice(event.text, error = false, at = System.currentTimeMillis())
+                        st.appendEntry(AgentEntry.Notice(event.text, error = false, at = System.currentTimeMillis()))
                     }
                 }
             }
-            repo.touchSession(sessionId)
-            if (!turnFailed) retryable = null
+            if (!turnFailed) st.retryable = null
             // The turn finished, so the panel belongs to the user again: if
             // they moved to another tab while it ran, that tab's conversation
             // takes the screen now.
@@ -1892,10 +2094,12 @@ class BrowserAgentController(
         } catch (ce: CancellationException) {
             throw ce
         } catch (t: Throwable) {
-            entries = entries + AgentEntry.Notice(
-                text = "Agent error: ${t.friendlyMessage()}",
-                error = true,
-                at = System.currentTimeMillis()
+            st.appendEntry(
+                AgentEntry.Notice(
+                    text = "Agent error: ${t.friendlyMessage()}",
+                    error = true,
+                    at = System.currentTimeMillis()
+                )
             )
         } finally {
             // Drain before anything else. This is the boundary every ending
@@ -1908,26 +2112,30 @@ class BrowserAgentController(
             // itself is unwinding, and after this the listener is gone for
             // good, so nothing can append behind the drain.
             //
-            // The drain is guarded by the bubble still being ours, and only
-            // on this path could it not be: a Stop drops `running` the
-            // instant it cancels, and everything that re-points the panel
-            // (openSession, newSession, the tab-change re-bind) is gated on
-            // exactly that flag — so one of them can win the dispatch race
-            // and swap `entries` for another chat's rows before this finally
-            // runs. Writing the tail THERE would put a stray streaming
-            // bubble into a conversation it never belonged to. Dropping it
-            // instead is the honest outcome: the partial bubble was never
-            // persisted, so a re-bind loses it today too. On every normal
-            // ending nothing could have re-bound (running stayed true until
-            // this finally), the guard holds, and the flush always lands.
-            if (streamingIndex >= 0 && streamingIndex < entries.size &&
-                (entries[streamingIndex] as? AgentEntry.Assistant)?.streaming == true
+            // The drain is guarded by the bubble still being open IN THE
+            // TURN'S OWN STATE — the one structural win of the per-session
+            // rewrite: a Stop or a chat switch can re-point the panel, but it
+            // cannot reach into this chat's list, so the tail this finally
+            // writes can never land in a conversation it never belonged to.
+            // The guard still matters: stop() drops `running` the instant it
+            // cancels and appends its own notice, and the bubble's last
+            // window must land before that notice, not after it.
+            val open = st.streamingIndex
+            if (open != null && open >= 0 && open < st.entries.size &&
+                (st.entries[open] as? AgentEntry.Assistant)?.streaming == true
             ) {
                 stream.flush()
             }
             running = false
+            st.running = false
+            // The turn is over, so the turn/panel routing split collapses:
+            // turnOriginSessionId CLEARS here, or every later note() — a
+            // plugin activation, an /airplane answer, a gate's reply between
+            // turns — would ride turnState into the chat that JUST ran and
+            // never reach the chat the user is looking at now.
+            turnOriginSessionId = null
             setStatus(null)
-            approval = null
+            st.approval = null
             // The hidden page belongs to the turn, so it goes with the turn —
             // it is never in the tab list, and a session left alive keeps a
             // renderer and its cookies' page state around for nothing.
@@ -1942,9 +2150,11 @@ class BrowserAgentController(
             AgentForeground.pauseCurrentTurn = null
             AgentForeground.finish()
             // The pin belongs to the turn, so it lifts with the turn —
-            // including when the turn threw. Cleared by value and not by id on
-            // purpose: the turn may have rebound itself to a tab it opened.
-            vm.pinTabForAgent(null)
+            // including when the turn threw. Cleared by OWNER and not by tab
+            // id on purpose: the turn may have rebound itself to a tab it
+            // opened, and a task host's pin (the "task" owner) is a separate
+            // slot this turn must never touch.
+            vm.unpinTab(BrowserViewModel.PIN_OWNER_CHAT)
         }
     }
 
@@ -1985,22 +2195,13 @@ class BrowserAgentController(
      * reading it also settles the catalogue's cache for the tool definitions
      * the turn resolves further down (the same probe, paid once).
      */
+    private suspend fun skillsContextAddition(): String =
+        runCatching { AgentSkillsTools.access(appContext).promptBlock() }.getOrNull().orEmpty()
+
     private suspend fun pluginContextAddition(sessionId: Long): String =
         AgentPluginCatalog.systemPromptAddition(
             runCatching { pluginCatalog.sessionPlugins(sessionId) }.getOrDefault(emptyList())
         )
-
-    /**
-     * The system-prompt addition for the ENABLED skills — name, description
-     * and SKILL.md body per skill, worded and capped by the repository's own
-     * [SkillRepository.skillsPromptBlock]. Empty when no skill is enabled, so
-     * a chat without skills keeps a byte-identical prompt — the same contract
-     * [pluginContextAddition] holds for plugins. A read failure is an empty
-     * string rather than a broken turn: the skills block is an addition, and
-     * the turn must not die for want of an addition.
-     */
-    private suspend fun skillsContextAddition(): String =
-        runCatching { AgentSkillsTools.access(appContext).promptBlock() }.getOrNull().orEmpty()
 
     /**
      * The transcript as a `chat.context` grant reads it: the chat's last
@@ -2193,7 +2394,12 @@ class BrowserAgentController(
      * the wire agree on one spelling, so nothing has to be re-derived later.
      */
     private suspend fun appendPluginCard(sessionId: Long, card: PluginCard, pluginName: String) {
-        entries = entries + AgentEntry.Plugin(card, pluginName, System.currentTimeMillis())
+        // The card belongs to the chat it was raised in — which is the session
+        // id the caller resolved — so it lands in THAT chat's state, whether
+        // or not its turn is the one running and whether or not the panel is
+        // showing this chat right now.
+        stateFor(sessionId)
+            .appendEntry(AgentEntry.Plugin(card, pluginName, System.currentTimeMillis()))
         repo.addMessage(sessionId, "plugin", card.toJson().toString(), toolName = pluginName)
     }
 
@@ -2229,47 +2435,14 @@ class BrowserAgentController(
     }
 
     // ------------------------------------------------------------- entry helpers
-
-    /** Finds-or-appends the streaming assistant entry; appends text/thinking. */
-    private fun upsertStreamingAssistant(index: Int, text: String, thinking: String?): Int {
-        val i = if (index >= 0 && index < entries.size &&
-            entries[index] is AgentEntry.Assistant && (entries[index] as AgentEntry.Assistant).streaming
-        ) index else {
-            entries = entries + AgentEntry.Assistant("", "", streaming = true, at = System.currentTimeMillis())
-            entries.size - 1
-        }
-        val current = entries[i] as AgentEntry.Assistant
-        entries = entries.toMutableList().apply {
-            set(i, current.copy(text = current.text + text, thinking = current.thinking + (thinking ?: "")))
-        }
-        return i
-    }
-
-    /** Marks the streaming assistant entry as finished (if one exists). */
-    private fun finalizeAssistant(index: Int): Int {
-        if (index >= 0 && index < entries.size) {
-            val entry = entries[index]
-            if (entry is AgentEntry.Assistant && entry.streaming) {
-                // Tokens arrive one at a time, so the fence can only come off
-                // once the whole answer is in.
-                val done = entry.copy(
-                    streaming = false,
-                    text = UntrustedContent.stripMarkers(entry.text)
-                )
-                entries = entries.toMutableList().apply { set(index, done) }
-            }
-        }
-        return -1
-    }
-
-    private fun updateToolEntry(callId: String, transform: (AgentEntry.Tool) -> AgentEntry.Tool) {
-        val index = entries.indexOfFirst { it is AgentEntry.Tool && it.callId == callId }
-        if (index >= 0) {
-            entries = entries.toMutableList().apply {
-                set(index, transform(get(index) as AgentEntry.Tool))
-            }
-        }
-    }
+    //
+    // The old controller-level upsertStreamingAssistant / finalizeAssistant /
+    // updateToolEntry are GONE: every one of them indexed and copy()-replaced
+    // the ONE shared entries list, which is exactly the write a chat switch
+    // mid-turn used to splice into the wrong chat. Their per-session
+    // counterparts live on [ChatSessionState] itself — upsertStreaming,
+    // finalizeStreaming, updateTool, applyAnswer — and the turn calls them on
+    // the state it captured at its start.
 
     // ------------------------------------------------------------- approvals
 
@@ -2291,7 +2464,13 @@ class BrowserAgentController(
      */
     private fun setStatus(text: String?) {
         if (text == statusLine) return
-        statusLine = text
+        // The line belongs to the turn while one runs — wherever the panel
+        // has drifted to — and to the visible chat between turns (the resolve
+        // and plugin-command paths set interim lines before any turn exists).
+        // The pre-turn writes land on the state the turn later captures, so
+        // runTurn's own reset clears them there; nothing routes through two
+        // states at once.
+        (turnState ?: panelState).statusLine = text
         AgentForeground.status(text ?: "Working…")
     }
 
@@ -2308,20 +2487,22 @@ class BrowserAgentController(
         return try {
             withTimeout(APPROVAL_TIMEOUT_MS) {
                 suspendCancellableCoroutine { continuation ->
-                    approval = AgentApproval(
-                        name = name,
-                        label = label,
-                        at = SystemClock.elapsedRealtime(),
-                        origin = originOfTurn()
-                    ) { answer ->
-                        if (continuation.isActive) continuation.resume(answer)
-                    }
+                    showApproval(
+                        AgentApproval(
+                            name = name,
+                            label = label,
+                            at = SystemClock.elapsedRealtime(),
+                            origin = originOfTurn()
+                        ) { answer ->
+                            if (continuation.isActive) continuation.resume(answer)
+                        }
+                    )
                 }
             }
         } catch (ce: CancellationException) {
             ApprovalAnswer.Deny // timeout or turn cancelled → deny
         } finally {
-            approval = null
+            dismissApproval()
         }
     }
 
@@ -2335,29 +2516,31 @@ class BrowserAgentController(
         return try {
             withTimeout(APPROVAL_TIMEOUT_MS) {
                 suspendCancellableCoroutine { continuation ->
-                    approval = AgentApproval(WALLET_APPROVAL_NAME, label, SystemClock.elapsedRealtime()) { answer ->
-                        if (continuation.isActive) {
-                            when (answer) {
-                                ApprovalAnswer.Allow, ApprovalAnswer.AllowForSite ->
-                                    continuation.resume(true)
-                                ApprovalAnswer.AlwaysAllow -> {
-                                    note(
-                                        "Wallet requests always ask — this one was allowed once, " +
-                                            "and the next will ask again.",
-                                        error = false
-                                    )
-                                    continuation.resume(true)
+                    showApproval(
+                        AgentApproval(WALLET_APPROVAL_NAME, label, SystemClock.elapsedRealtime()) { answer ->
+                            if (continuation.isActive) {
+                                when (answer) {
+                                    ApprovalAnswer.Allow, ApprovalAnswer.AllowForSite ->
+                                        continuation.resume(true)
+                                    ApprovalAnswer.AlwaysAllow -> {
+                                        note(
+                                            "Wallet requests always ask — this one was allowed once, " +
+                                                "and the next will ask again.",
+                                            error = false
+                                        )
+                                        continuation.resume(true)
+                                    }
+                                    ApprovalAnswer.Deny -> continuation.resume(false)
                                 }
-                                ApprovalAnswer.Deny -> continuation.resume(false)
                             }
                         }
-                    }
+                    )
                 }
             }
         } catch (ce: CancellationException) {
             false
         } finally {
-            approval = null
+            dismissApproval()
         }
     }
 
@@ -2379,21 +2562,40 @@ class BrowserAgentController(
         return try {
             withTimeout(APPROVAL_TIMEOUT_MS) {
                 suspendCancellableCoroutine { continuation ->
-                    approval = AgentApproval(
-                        name = name,
-                        label = label,
-                        at = SystemClock.elapsedRealtime(),
-                        destructive = true
-                    ) { answer ->
-                        if (continuation.isActive) continuation.resume(answer)
-                    }
+                    showApproval(
+                        AgentApproval(
+                            name = name,
+                            label = label,
+                            at = SystemClock.elapsedRealtime(),
+                            destructive = true
+                        ) { answer ->
+                            if (continuation.isActive) continuation.resume(answer)
+                        }
+                    )
                 }
             }
         } catch (ce: CancellationException) {
             ApprovalAnswer.Deny // timeout or turn cancelled → deny
         } finally {
-            approval = null
+            dismissApproval()
         }
+    }
+
+    /**
+     * The prompt lives in the chat whose turn raised it — [turnState], not
+     * the visible chat — which is what lets the panel surface a RUNNING
+     * turn's question above a transcript it does not belong to without ever
+     * writing one into the wrong chat. Null turn state (the turn was stopped
+     * between the gate's ask and this write) shows nothing; the wait times
+     * out and denies, which is the same answer an unanswered prompt gets.
+     */
+    private fun showApproval(approval: AgentApproval) {
+        turnState?.approval = approval
+    }
+
+    /** Retires whatever prompt this turn had up; a no-op when none is. */
+    private fun dismissApproval() {
+        turnState?.approval = null
     }
 
     private suspend fun destructiveVerdict(name: String, label: String): ActionVerdict =
@@ -2558,7 +2760,11 @@ class BrowserAgentController(
     }
 
     private fun note(text: String, error: Boolean) {
-        entries = entries + AgentEntry.Notice(text, error = error, at = System.currentTimeMillis())
+        // Same routing as the status line: the turn's chat while a turn runs
+        // (a gate's answer belongs beside the action it answered about), the
+        // visible chat between turns (plugin activations, command notices).
+        (turnState ?: panelState)
+            .appendEntry(AgentEntry.Notice(text, error = error, at = System.currentTimeMillis()))
     }
 
     private fun Throwable.friendlyMessage(): String = when (this) {
@@ -2596,6 +2802,24 @@ class BrowserAgentController(
 
     companion object {
         private const val APPROVAL_TIMEOUT_MS = 120_000L
+
+        /**
+         * The LRU cap on held transcript windows (see [trimStatesLocked]).
+         * Twelve loaded transcripts cover any browsing session a person
+         * actually does; beyond that the eldest non-running, non-visible
+         * state falls out and costs a reload when it is wanted again. Never
+         * larger than the live-engine budget, for the same reason: a cache
+         * bigger than what a session can touch is only memory.
+         */
+        private const val SESSION_STATE_CAP = 12
+
+        /**
+         * The cap on the provider-derived caches below ([apiKeyCache] and
+         * [modelCache]): one entry per provider is all a profile can ask
+         * for, and a profile with a dozen providers edited in and out over
+         * a long session must not accumulate unbounded maps.
+         */
+        private const val BOUNDED_CACHE_CAP = 12
 
         /**
          * How many transcript rows a chat opens with, and how many each

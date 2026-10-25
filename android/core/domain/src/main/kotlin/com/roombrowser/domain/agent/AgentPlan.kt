@@ -39,15 +39,30 @@ object AgentPlan {
     enum class Status(val id: String, val mark: String) {
         PENDING("pending", "[ ]"),
         IN_PROGRESS("in_progress", "[>]"),
-        DONE("done", "[x]");
+        DONE("done", "[x]"),
+
+        /**
+         * Not a word the model is ASKED to send — the tool's refusal names
+         * only the three above — but a word models send anyway ("failed",
+         * "blocked", "error"…), and rejecting the WHOLE list over one such
+         * step hid every step the user was watching progress on. So unknown
+         * and failed-shaped statuses land HERE: one item, rendered with an
+         * error mark, the list intact. The model still reads the item as not
+         * done, which is the only part that drives the loop's own nudges.
+         */
+        FAILED("failed", "[!]");
 
         companion object {
             val ids: List<String> = entries.map { it.id }
 
-            /** Lenient about case and spacing, strict about the word. */
-            fun of(raw: String?): Status? {
-                val id = raw?.trim()?.lowercase() ?: return null
-                return entries.firstOrNull { it.id == id }
+            /**
+             * Lenient about case and spacing; anything it cannot match is
+             * FAILED rather than null, so a model's invented status can never
+             * again reject a list it otherwise wrote correctly.
+             */
+            fun of(raw: String?): Status {
+                val id = raw?.trim()?.lowercase()
+                return entries.firstOrNull { it.id == id } ?: FAILED
             }
         }
     }
@@ -86,11 +101,9 @@ object AgentPlan {
             val text = step["text"]?.jsonPrimitive?.contentOrNull?.trim().orEmpty()
             if (text.isBlank()) return Parsed.Failure("plan: step ${index + 1} has no text")
             val raw = step["status"]?.jsonPrimitive?.contentOrNull
-            val status = Status.of(raw)
-                ?: return Parsed.Failure(
-                    "plan: step ${index + 1} has status '${raw.orEmpty()}' — use ${Status.ids.joinToString(", ")}"
-                )
-            items += Item(text.take(MAX_TEXT_CHARS), status)
+            // An unmatched status word degrades to FAILED (see Status.of) —
+            // the list survives, one step marked broken.
+            items += Item(text.take(MAX_TEXT_CHARS), Status.of(raw))
         }
         return Parsed.Ok(items)
     }

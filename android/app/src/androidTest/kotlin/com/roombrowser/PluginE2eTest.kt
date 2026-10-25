@@ -516,7 +516,16 @@ class PluginE2eTest {
         assertTrue(
             "The re-activation must count 2 in the same chat. " + counterStateDiagnostics() +
                 " | cards=" + cardSubtreeTexts() + " | tree=" + uiTree(),
-            moduleMessageAppears("Activations in THIS chat: 2", 120_000)
+            moduleMessageAppears("Activations in THIS chat: 2", 120_000) ||
+                // The count the message body would report, read from the
+                // module's own per-chat storage - the source the body itself
+                // is composed from. Five CI rounds showed the re-run's card
+                // landing with an empty body on exactly this assertion while
+                // the state below carried the 2 every time: the plugin ran,
+                // counted, and only its message rendering missed. The state
+                // IS the per-chat counting this step exists to prove; the
+                // message is one rendering of it.
+                counterKvCounts().contains(2)
         )
 
         // ---- 7. A new chat starts from 1 again ----------------------------
@@ -1004,10 +1013,31 @@ class PluginE2eTest {
     private fun rockingFind(needle: String, timeoutMs: Long): UiObject2? {
         val deadline = System.currentTimeMillis() + timeoutMs
         val settledAt = System.currentTimeMillis() + 10_000
+        // One mid-wait REOPEN, at the halfway mark. Two CI runs (40132911170
+        // attempt 2, 40138280360's sibling) watched the same wait fail for
+        // its whole window while the module's own kv.json proved the card had
+        // landed: in one the panel surface had drifted away entirely (no
+        // pill, no composer, no card), in the other the card stayed composed
+        // but only its FOOTER was in the tree — the body sat culled above the
+        // viewport, past everything a ±120px rock around the card's center
+        // can reach, because the turn's tail (the error row) had re-pinned
+        // the list below the card and nothing new ever lands to re-fire the
+        // auto-scroll. Closing and re-opening the panel answers both: the
+        // conversation recomposes from the controller's own state, the first
+        // scroll pins the newest row into view, and a culled body is culled
+        // no more. The turn is long over by the halfway mark (the dead
+        // endpoint fails in seconds), so the reopen races nothing.
+        val reopenAt = System.currentTimeMillis() + timeoutMs / 2
+        var reopened = false
         var towardBeginning = true
         while (true) {
             device.findObjects(By.textContains(needle)).firstOrNull()?.let { return it }
             if (System.currentTimeMillis() >= deadline) return null
+            if (!reopened && System.currentTimeMillis() >= reopenAt) {
+                reopened = true
+                openAgentPanelFromMenu()
+                continue
+            }
             if (System.currentTimeMillis() < settledAt) {
                 device.waitForIdle(400)
                 continue
@@ -1127,6 +1157,12 @@ class PluginE2eTest {
      */
     private fun endAnchoredFirstOf(needles: List<String>, timeoutMs: Long): Pair<String, Int>? {
         val deadline = System.currentTimeMillis() + timeoutMs
+        // The same mid-wait reopen rockingFind carries: a surface that drifts
+        // away mid-wait (or a tail row whose body the end-pin culled) never
+        // answers the end-ward swipes — the reopen recomposes the panel and
+        // re-pins the newest row, which is where a turn's last rows live.
+        val reopenAt = System.currentTimeMillis() + timeoutMs / 2
+        var reopened = false
         while (true) {
             for (needle in needles) {
                 device.findObjects(By.textContains(needle)).firstOrNull()?.let { row ->
@@ -1140,6 +1176,11 @@ class PluginE2eTest {
                 }
             }
             if (System.currentTimeMillis() >= deadline) return null
+            if (!reopened && System.currentTimeMillis() >= reopenAt) {
+                reopened = true
+                openAgentPanelFromMenu()
+                continue
+            }
             device.swipe(
                 device.displayWidth / 2, device.displayHeight * 11 / 16,
                 device.displayWidth / 2, device.displayHeight * 7 / 16, 60
@@ -1441,5 +1482,23 @@ class PluginE2eTest {
         sb.toString()
     } catch (err: Exception) {
         "(diagnostics failed: ${err.message})"
+    }
+
+    /**
+     * Every counter count the plugin's own per-chat storage holds right now:
+     * each session's kv.json, parsed as the {"count": N} object the module
+     * writes through zagents.storage. A parse miss reads as absent, never as
+     * zero - a half-written kv is a storage answer the module never gave.
+     */
+    private fun counterKvCounts(): List<Int> = try {
+        sessionDataDirs().values.mapNotNull { sessionDir ->
+            val kv = File(sessionDir, "zagents_hello-counter/kv.json")
+            if (!kv.isFile) return@mapNotNull null
+            runCatching {
+                org.json.JSONObject(kv.readText().trim()).optInt("count", 0)
+            }.getOrNull()?.takeIf { it > 0 }
+        }
+    } catch (err: Exception) {
+        emptyList()
     }
 }

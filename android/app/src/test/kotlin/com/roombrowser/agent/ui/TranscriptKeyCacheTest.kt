@@ -106,4 +106,22 @@ class TranscriptKeyCacheTest {
         val keys = cache.keysFor(rows)
         assertThat(cache.keysFor(rows)).isSameInstanceAs(keys)
     }
+
+    @Test
+    fun `a live list that grows in place recomputes instead of handing back short keys`() {
+        // The ChatSessionState mirrors hold [entries] as a live
+        // SnapshotStateList: the SAME object comes back grown after a row
+        // lands. The old identity shortcut answered that shape with the
+        // FIRST generation's keys — the stale-short-keys shape that crashed
+        // the transcript's `keys[index]` pass on CI (IndexOutOfBounds, the
+        // :browser process dead). A grown same-object list is a MISS: the
+        // recompute must see the new size.
+        val cache = TranscriptKeyCache()
+        val live = mutableListOf<AgentEntry>(AgentEntry.User("hi", at = 1L))
+        assertThat(cache.keysFor(live)).hasSize(1)
+        live += AgentEntry.Assistant("yo", thinking = "", streaming = false, at = 2L)
+        val grown = cache.keysFor(live)
+        assertThat(grown).hasSize(2)
+        assertThat(grown).isEqualTo(transcriptKeys(live))
+    }
 }

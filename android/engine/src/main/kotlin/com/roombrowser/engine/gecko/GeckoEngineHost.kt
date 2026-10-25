@@ -191,8 +191,28 @@ internal class GeckoEngineHost : EngineHost {
         val created = GeckoRuntime.create(app)
         runtime = created
         bound = profileId
-        // Before the bridge and before any session: a page's FIRST script may
-        // feature-detect the passkey API, and the answer must already be final.
+        // THE SIGN-IN CHAIN, re-asserted on every bind. Both writes below go to
+        // the USER branch, and a user-branch pref PERSISTS into the Gecko
+        // profile directory: a value a previous release wrote outlives the
+        // process that wrote it, so a default this code depends on must be
+        // RE-WRITTEN here rather than assumed from the earlier install.
+        //
+        // They run before the bridge and before any session: a page's FIRST
+        // script may feature-detect the passkey API, and the answer must
+        // already be final.
+        //
+        // The rest of the chain is re-asserted where its inputs exist. Cookie
+        // behavior (BOTH jars) and the mixed-content pref on every [configure]
+        // -- see [applyEngineWideSettings], which the facade's createSession
+        // path reaches before any load is issued. The proxy prefs on every
+        // proxy decision, whose null case CLEARS the user branch rather than
+        // merely switching the mode off, so a proxy a previous install left
+        // behind cannot quietly carry sign-in traffic to a dead endpoint.
+        // JavaScript is a session setting ([GeckoEngineSession.settingsFor]),
+        // not a persisted pref, so it cannot go stale. Nothing here may
+        // weaken any of these: no TLS or certificate bypass exists in this
+        // file, and the WebAuthn pref stays FALSE -- see [hideWebAuthn] for
+        // why it must never be re-enabled.
         hideWebAuthn()
         trustEnterpriseRoots()
         installBridge(created)
@@ -325,7 +345,17 @@ internal class GeckoEngineHost : EngineHost {
 
     // These live on the runtime, not on a session, so they are re-applied on every
     // configure rather than set once: a profile switch must not leave two profiles
-    // disagreeing, and GeckoView has no per-session equivalent.
+    // disagreeing, and GeckoView has no per-session equivalent. Re-asserting on
+    // every configure is also the stale-pref defence: [applyMixedContentBlocking]
+    // writes a USER-branch pref that persists across installs, so a value an
+    // earlier release wrote is overwritten by the profile's own setting the
+    // moment the first session is configured -- before any page can load.
+    //
+    // This is the second half of the sign-in chain [bindOnMainThread] starts.
+    // ACCEPT_ALL (third-party included, unless the profile says otherwise) on
+    // BOTH jars is what keeps a login alive across an OAuth redirect through a
+    // third-party host, and the compat mixed-content default keeps an https
+    // sign-in page's passive http references from failing silently.
     private fun applyEngineWideSettings(profile: Profile) {
         applyCookieBehavior(profile.settings.blockThirdPartyCookies)
         applyMixedContentBlocking(profile.settings.blockMixedContent)

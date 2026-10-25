@@ -288,7 +288,9 @@ class DevToolsSearchE2eTest {
         assertDevToolsOpened(consoleChip, consoleBody)
         assertTrue(
             "The page's console marker must reach the console feed first\n$scrollTrace\n${uiTree()}",
-            scrollPanelToText(logMarker) || recoveredFeedScroll(consoleChip, consoleBody, logMarker)
+            awaitFeedRow(logMarker) ||
+                scrollPanelToText(logMarker) ||
+                recoveredFeedScroll(consoleChip, consoleBody, logMarker)
         )
         assertTrue(
             "The Network panel must compose before its feed can be read\n${uiTree()}",
@@ -296,7 +298,9 @@ class DevToolsSearchE2eTest {
         )
         assertTrue(
             "A request the page made must reach the network feed first\n$scrollTrace\n${uiTree()}",
-            scrollPanelToText(netPath) || recoveredFeedScroll(networkChip, networkBody, netPath)
+            awaitFeedRow(netPath) ||
+                scrollPanelToText(netPath) ||
+                recoveredFeedScroll(networkChip, networkBody, netPath)
         )
         assertTrue(
             "The Search panel must compose again before it can be driven\n${uiTree()}",
@@ -379,6 +383,13 @@ class DevToolsSearchE2eTest {
      * The fixture page: a named global holding the run's tag, one storage key,
      * a heading, one console marker logged at load, and a fetch that keeps
      * repeating so the network feed has something live to hold.
+     *
+     * The beat is 2s, not the 700ms it once was: the fetch loop IS the load
+     * that triggers the engine's content-process recycle (see the recovery
+     * below), and a 700ms beat gave a 104-test suite a recycle mid-test every
+     * round - exactly while this test holds its panels open. A 2s beat still
+     * lands 8+ events inside the 20s feed await, so every assertion reads the
+     * same evidence, and the recycle pressure drops by a factor of three.
      */
     private fun fixturePage(): String = """
         <!DOCTYPE html><html><head>
@@ -394,7 +405,7 @@ class DevToolsSearchE2eTest {
             catch (e) {}
           }
           beat();
-          setInterval(beat, 700);
+          setInterval(beat, 2000);
         </script>
         </body></html>
     """.trimIndent()
@@ -645,28 +656,69 @@ class DevToolsSearchE2eTest {
      * earns the recovery because it alone holds its panels open across a
      * multi-minute walk while that recycle lands.
      *
-     * TWO relaunches, not one: after the 2026-10 runner image change the
+     * THREE relaunches, not one: after the 2026-10 runner image change the
      * crawl outlasted a single fresh activity twice in a row (CI run
      * 40070510408, attempts 1 and 2: the network feed's row was never found,
      * and the failure's own tree probe reported "the window was
      * mid-transition"), so the first relaunch can come up while the tree is
      * still wedged. The second starts a full walk later, from a tree that
      * has had that much longer to settle, and the first attempt's heading
-     * wait is doubled to 60 seconds for the same reason. Each attempt is
+     * wait is doubled to 60 seconds for the same reason. A third attempt
+     * joined them after runs 40161081030/40161082512 still failed twice with
+     * an empty tree dump - the fixture beat also slowed to 2s to cut the
+     * recycle pressure at its source. Each attempt is
      * bounded by the walk budget, so the whole recovery costs minutes, not
      * the hour the un-walked crawl once did.
      */
     private fun recoveredFeedScroll(panelChip: String, panelBody: String, text: String): Boolean {
-        repeat(2) { attempt ->
+        repeat(3) { attempt ->
             restartEngineProcess()
             launchEngine(server.url("/page-$tag").toString())
             if (!hasText(pageHeading, if (attempt == 0) 60_000 else 30_000)) return@repeat
             if (!openDeveloperToolsPanel(consoleChip, consoleBody)) return@repeat
             if (panelChip != consoleChip && !selectPanel(panelChip, panelBody)) return@repeat
+            // A relaunch re-arms every feed from scratch: the engine's
+            // extension reconnects, the rings it held while nobody listened
+            // flush, and only then does the row exist. A walk that starts
+            // before that hunts an empty body, so the same bounded await runs
+            // here first -- its expiry still reaches the walk below.
+            awaitFeedRow(text)
             if (scrollPanelToText(text)) return true
         }
         return false
     }
+
+    // ---------- Awaiting a feed event ---------------------------------------
+
+    /**
+     * How long a feed is given to deliver the event the next assertion hunts
+     * for, counted from the moment the panel that arms it composed.
+     *
+     * Composing a panel only STARTS its capture. The arming message then
+     * crosses to the engine's bridge extension, the extension flushes the
+     * observations it held while nobody was listening, and the fixture's next
+     * request lands only after that -- the page beats every 700ms, so an
+     * event arrives on schedule, but ARRIVING is a property of the chain, not
+     * of the panel being open. Every hop is fast; the whole chain is what a
+     * panel-open is allowed to cost before the row exists at all. That is
+     * exactly the ordering this suite's one CI failure lost: the scroll walk
+     * began on a body the event had not reached, and the feed delivered the
+     * row a moment after the assertion had already been decided. Waiting for
+     * the event BEFORE walking is the fix at the root, not a delay bolted on:
+     * the wait returns the moment the row is drawn, and its expiry still
+     * reaches the walk and the engine-restart recovery below, so a genuinely
+     * broken feed still fails the assertion.
+     */
+    private val feedEventTimeoutMs = 20_000L
+
+    /**
+     * The await itself: [Until.hasObject] against a deadline, this file's
+     * existing wait form (the reveal dialog uses the same call). A row can
+     * only be drawn by the feed, so a hit here IS the event having arrived;
+     * a miss says "not yet" and hands the decision to the caller's fallbacks.
+     */
+    private fun awaitFeedRow(text: String): Boolean =
+        device.wait(Until.hasObject(By.textContains(text)), feedEventTimeoutMs)
 
     /**
      * Kills the engine-bearing process so the next [launchEngine] is a cold

@@ -444,6 +444,12 @@ class PluginMigrationTest {
     private fun revertToV16() {
         val db = openRaw()
         try {
+            // v16 also predates the agent schema's later deltas: the replay
+            // from here crosses 18 -> 19 (message usage columns) and
+            // 19 -> 20 (the task plan column), and the current-shape tables
+            // would make those ADD COLUMNs die with "duplicate column name".
+            stripMessageUsageColumns(db)
+            stripTaskPlanJsonColumn(db)
             db.execSQL("DROP TABLE IF EXISTS `chat_plugins`")
             db.execSQL("DROP TABLE IF EXISTS `plugins`")
             db.execSQL("DROP TABLE IF EXISTS `room_master_table`")
@@ -468,6 +474,10 @@ class PluginMigrationTest {
     private fun revertToV17() {
         val db = openRaw()
         try {
+            // v17 predates the v18->v19 usage columns: same duplicate-column
+            // guard as revertToV16 above.
+            stripMessageUsageColumns(db)
+            stripTaskPlanJsonColumn(db)
             db.execSQL("DROP TABLE IF EXISTS `room_master_table`")
             db.execSQL(
                 "CREATE TABLE `plugins_v17` (" +

@@ -253,6 +253,11 @@ class TotpMigrationTest {
             // agent_messages and agent_skills drops, or the replay's
             // 18 -> 19 step dies on a duplicate column. (v13 replay)
             stripAgentMessageUsageColumns(db)
+            // And the v19 -> v20 delta on `ai_tasks`: the replay from v13
+            // climbs all the way to the current version, so its 19 -> 20 step
+            // re-adds `plan_json` — it must not find the column already there.
+            // (Same contract as every other revertToV* in this suite.)
+            stripTaskPlanJsonColumn(db)
             db.version = 13
         } finally {
             db.close()

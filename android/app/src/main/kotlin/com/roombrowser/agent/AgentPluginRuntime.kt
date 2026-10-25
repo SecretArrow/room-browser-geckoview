@@ -21,6 +21,7 @@ import com.roombrowser.domain.plugins.PluginInputsSchema
 import com.roombrowser.domain.plugins.PluginPermissions
 import com.roombrowser.domain.plugins.ZAgentsManifest
 import com.roombrowser.node.NodeRunner
+import com.roombrowser.node.NodeRuntime
 import com.roombrowser.node.PluginCallRequest
 import com.roombrowser.node.PluginCallResult
 import com.roombrowser.node.PluginChatEntry
@@ -518,6 +519,11 @@ class AgentPluginRuntime(
             title = if (module) plugin.name else null,
             zagentsVersion = if (module) plugin.zagentsVersion else null,
             zagentsName = if (module) plugin.zagentsName else null,
+            // The npm store beside the runtime: the require shim's guarded
+            // fallback for packages the plugin did not bundle. Same directory
+            // node_packages installs into — one truth, passed rather than
+            // re-derived host-side.
+            nodeModulesRoot = File(NodeRuntime.directory(context), "node_modules").absolutePath,
             history = history.takeIf { it.isNotEmpty() && PluginPermissions.CHAT_CONTEXT in effective }
         )
         runCatching { call(request, generate, form) }

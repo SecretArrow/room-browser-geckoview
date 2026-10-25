@@ -121,7 +121,10 @@ data class ProfileSettings(
     val fontScale: Float = 1.0f,
     val tabLayout: TabLayout = TabLayout.GRID,
     // Search & homepage
-    val searchEngineId: String = "duckduckgo",
+    // Google is the out-of-the-box engine (2026-10 revision): the widest
+    // result coverage and the search suggestion endpoint most users expect;
+    // DuckDuckGo, Brave, Startpage and the rest stay one tap away in Settings.
+    val searchEngineId: String = "google",
     val homepageEnabled: Boolean = true,
     val homepageShortcuts: List<String> = defaultShortcuts,
     val showPrivacyStats: Boolean = true,
@@ -174,18 +177,21 @@ data class ProfileSettings(
     // installs and newly created profiles (profiles that already stored an
     // explicit value keep it).
     //
-    // What stays ON out of the box is httpsUpgrade, which falls back to http
-    // when the secure version is unreachable and therefore never breaks an
-    // http-only site.
+    // httpsUpgrade joins them OFF out of the box (2026-10 revision): the
+    // silent http->https rewrite confused captive portals, routers and other
+    // plain-http LAN endpoints, and the fallback hop doubled the first
+    // navigation on slow networks. The upgrade stays available per profile in
+    // Settings, and profiles that stored an explicit value keep it.
     val blockAds: Boolean = false,
     val blockTrackers: Boolean = false,
     val blockCrossSiteTrackers: Boolean = false,
     val blockPopups: Boolean = false,
     val blockMalicious: Boolean = false,
-    // HTTPS-First: upgrade http navigations to https, then FALL BACK to the
-    // original http URL automatically when the secure version is unreachable
-    // (HttpsUpgradeFallbackPolicy) — upgrades no longer break http-only sites.
-    val httpsUpgrade: Boolean = true,
+    // HTTPS-First: when enabled, http navigations upgrade to https and FALL
+    // BACK to the original http URL automatically when the secure version is
+    // unreachable (HttpsUpgradeFallbackPolicy) — upgrades never break
+    // http-only sites. Default OFF; see the privacy block above.
+    val httpsUpgrade: Boolean = false,
     // Compatibility defaults (2026-09): third-party cookies are ALLOWED and
     // mixed content runs in compatibility mode out of the box. The previous
     // strict defaults blanked login flows and media on many real sites;

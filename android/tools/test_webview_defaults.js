@@ -27,8 +27,12 @@
 // EDITION-AWARE: the GeckoView sibling carries this file byte-identical. The
 // engine tree present decides which half of the parity is asserted -- the
 // header opt-out, the popup gate and the render-gone recovery here; the
-// ACCEPT_ALL cookie behaviour there -- while the shared assertions (profile
-// defaults, the UA sanitizer) run in both editions.
+// ACCEPT_ALL cookie behaviour, the sign-in-critical pref chain (WebAuthn
+// hidden, enterprise roots trusted, compat mixed content, every user-branch
+// pref re-written at bind/configure so a stale value from an earlier install
+// cannot outlive its default) and the DEFAULT-stays-engine-UA rule there --
+// while the shared assertions (profile defaults, the UA sanitizer) run in
+// both editions.
 //
 // One PASS line per check; exit non-zero the moment anything failed.
 
@@ -51,6 +55,9 @@ const WEBVIEW_SESSION_KT = path.join(
 const GECKO_HOST_KT = path.join(
     ANDROID,
     'engine/src/main/kotlin/com/roombrowser/engine/gecko/GeckoEngineHost.kt');
+const GECKO_SESSION_KT = path.join(
+    ANDROID,
+    'engine/src/main/kotlin/com/roombrowser/engine/gecko/GeckoEngineSession.kt');
 const VERSIONS_TOML = path.join(ANDROID, 'gradle', 'libs.versions.toml');
 const CI_YML = path.join(REPO, '.github', 'workflows', 'ci.yml');
 
@@ -118,8 +125,8 @@ fixture('profile-compat-defaults', function () {
         });
     matches(
         profile,
-        /val\s+httpsUpgrade:\s*Boolean\s*=\s*true/,
-        'httpsUpgrade stays on (its http fallback is what makes it safe)');
+        /val\s+httpsUpgrade:\s*Boolean\s*=\s*false/,
+        'httpsUpgrade is default-off (2026-10: captive portals and plain-http LAN endpoints); still available per profile');
     matches(
         profile,
         /val\s+blockThirdPartyCookies:\s*Boolean\s*=\s*false/,
@@ -274,6 +281,84 @@ if (IS_GECKO) {
             host,
             /setCookieBehaviorPrivateMode\(/,
             'the private-mode jar follows the same behaviour');
+    });
+
+    // The sign-in chain: every pref a modern login flow depends on, asserted
+    // at the SOURCE LINES that decide it. Two of them are user-branch writes
+    // that PERSIST into the Gecko profile, so the assertion is not just "the
+    // pref exists" but "it is re-written on every bind" -- a value a previous
+    // release wrote must not outlive the default this code depends on.
+    fixture('gecko-signin-prefs', function () {
+        const host = stripKotlinComments(read(GECKO_HOST_KT));
+        // WebAuthn stays hidden: an assertion that can never be serviced
+        // hangs a passkey sign-in on a promise nothing settles, so the API is
+        // removed from the pages rather than left to fail. NEVER re-enable.
+        matches(
+            host,
+            /WEBAUTHN_PREF\s*=\s*"security\.webauth\.webauthn"/,
+            'the WebAuthn master switch is named');
+        matches(
+            host,
+            /setGeckoPref\(\s*WEBAUTHN_PREF,\s*false,/,
+            'WebAuthn is written OFF, on the user branch');
+        matches(
+            host,
+            /hideWebAuthn\(\)\s+trustEnterpriseRoots\(\)/,
+            'WebAuthn-hide and enterprise roots are re-asserted together on every bind');
+        // Enterprise roots: the user-installed CAs are this edition's whole
+        // equivalent of the sibling's networkSecurityConfig (GeckoView does
+        // not read that XML), and the only non-bypass way to say "I trust
+        // this network".
+        matches(
+            host,
+            /ENTERPRISE_ROOTS_PREF\s*=\s*"security\.enterprise_roots\.enabled"/,
+            'the enterprise-roots pref is named');
+        matches(
+            host,
+            /setGeckoPref\(\s*ENTERPRISE_ROOTS_PREF,\s*true,/,
+            'user-installed CAs are trusted, on the user branch');
+        // Mixed content in compatibility mode: the pref is written from the
+        // profile's own setting on every configure (session creation
+        // included), so a stale persisted value cannot survive the first
+        // session. The shared profile fixture pins the default (false).
+        matches(
+            host,
+            /MIXED_CONTENT_PREF\s*=\s*"security\.mixed_content\.block_display_content"/,
+            'the mixed-content pref is the passive/display one (active is engine-blocked)');
+        matches(
+            host,
+            /setGeckoPref\(\s*MIXED_CONTENT_PREF,/,
+            'the mixed-content pref is written through the pref controller');
+        matches(
+            host,
+            /applyMixedContentBlocking\(profile\.settings\.blockMixedContent\)/,
+            'the mixed-content write follows the profile setting, re-asserted per configure');
+        // The configure-time half of the chain: the runtime-wide settings are
+        // re-applied on every configure, never assumed from a prior install.
+        matches(
+            host,
+            /applyEngineWideSettings\(profile\)/,
+            'cookie + mixed-content defaults are re-asserted on every configure');
+    });
+
+    // DEFAULT mode stays the engine's own UA; the override fires only when a
+    // profile chose an identity. This is the Gecko half of the sibling's UA
+    // neutralization -- structural here (the engine UA is Firefox mobile, no
+    // WebView markers, no X-Requested-With) rather than stripped.
+    fixture('gecko-ua-default-is-engine', function () {
+        const session = stripKotlinComments(read(GECKO_SESSION_KT));
+        matches(
+            session,
+            /USER_AGENT_MODE_MOBILE/,
+            'a non-desktop session runs in the engine\'s mobile UA mode');
+        matches(
+            session,
+            /UserAgents\.effectiveUserAgent\(profile\.settings\)\?\.let\s*\{\s*builder\.userAgentOverride\(it\)\s*\}/,
+            'the override is set only when a profile actually names an identity');
+        matches(
+            session,
+            /setUserAgentOverride\(UserAgents\.effectiveUserAgent\(profile\.settings\)\)/,
+            'a configure back to DEFAULT passes the null override, which resets to the engine UA');
     });
 }
 

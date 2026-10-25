@@ -309,6 +309,14 @@ internal class GeckoEngineSession(
      * the WebView edition could read its engine's stock UA back and strip the
      * WebView markers from it, and GeckoView exposes no way to ask what it
      * would have sent -- only whether an override is set.
+     *
+     * For sign-in the DEFAULT half is the important one, and it is structural
+     * here rather than stripped: a DEFAULT profile presents Firefox mobile,
+     * carrying none of the WebView markers (`; wv)`, `Version/4.0`, the
+     * X-Requested-With header) that Google's "This browser or app may not be
+     * secure" wall keys on. The override fires ONLY when the profile chose an
+     * identity, so nothing this code adds can turn a login page against
+     * itself.
      */
     private fun applyUserAgent(
         builder: GeckoSessionSettings.Builder,

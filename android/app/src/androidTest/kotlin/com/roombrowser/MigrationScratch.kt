@@ -55,18 +55,16 @@ internal fun stripPlanJsonColumn(db: SQLiteDatabase) {
 }
 
 /**
- * Undoes the v19 delta, in place: the two nullable usage columns leave
- * `agent_messages` (rebuilt at its v18 shape, rows and ids copied across —
- * SQLite cannot DROP COLUMN on the API levels this suite runs), and the
- * `agent_skills` table goes with its unique index.
+ * Undoes the v18->v19 delta on `agent_messages`, in place: the two nullable
+ * usage columns go, everything v18 had stays.
  *
- * The same rule [stripPlanJsonColumn] documents applies one version later:
- * every migration test that replays from a version BELOW 18 finds
- * `prompt_tokens` already on the table otherwise, and the replay's
- * 18 -> 19 ADD COLUMN dies with "duplicate column name". A later version
- * that alters `agent_messages` again has to extend this the same way.
+ * Same story as [stripPlanJsonColumn] above — the migration tests build their
+ * "old" database from the CURRENT schema, so a replay from below v19 finds
+ * the columns already there and dies with "duplicate column name". Rebuilt
+ * from the v18 CREATE TABLE with the rows copied across, ids included; the
+ * two columns are nullable with no index, so nothing else drops with them.
  */
-internal fun stripAgentMessageUsageColumns(db: SQLiteDatabase) {
+internal fun stripMessageUsageColumns(db: SQLiteDatabase) {
     db.execSQL(
         "CREATE TABLE `agent_messages_v18` (" +
             "`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, " +
@@ -80,17 +78,60 @@ internal fun stripAgentMessageUsageColumns(db: SQLiteDatabase) {
     )
     db.execSQL(
         "INSERT INTO `agent_messages_v18` " +
-            "(`id`, `session_id`, `role`, `content`, `tool_name`, `tool_args`, " +
-            "`tool_result`, `created_at`) " +
-            "SELECT `id`, `session_id`, `role`, `content`, `tool_name`, `tool_args`, " +
-            "`tool_result`, `created_at` FROM `agent_messages`"
+            "(`id`, `session_id`, `role`, `content`, `tool_name`, `tool_args`, `tool_result`, `created_at`) " +
+            "SELECT `id`, `session_id`, `role`, `content`, `tool_name`, `tool_args`, `tool_result`, `created_at` " +
+            "FROM `agent_messages`"
     )
     db.execSQL("DROP TABLE `agent_messages`")
     db.execSQL("ALTER TABLE `agent_messages_v18` RENAME TO `agent_messages`")
     db.execSQL(
-        "CREATE INDEX IF NOT EXISTS `index_agent_messages_session_id` " +
-            "ON `agent_messages` (`session_id`)"
+        "CREATE INDEX `index_agent_messages_session_id` ON `agent_messages` (`session_id`)"
     )
-    // agent_skills arrives at v19; the replay's 18 -> 19 CREATE recreates it.
-    db.execSQL("DROP TABLE IF EXISTS `agent_skills`")
+}
+
+/**
+ * The sibling edition's name for [stripMessageUsageColumns], kept so a test
+ * ported from either edition compiles against either file: one body, two
+ * names, and a rename on one side cannot orphan the other's callers.
+ */
+internal fun stripAgentMessageUsageColumns(db: SQLiteDatabase) =
+    stripMessageUsageColumns(db)
+
+/**
+ * Undoes the v19->v20 delta on `ai_tasks`, in place: the `plan_json` column
+ * goes, everything v19 had stays.
+ *
+ * Same pattern again: the migration tests that replay from below v20 must not
+ * leave the column in place, or the replay's 19 -> 20 ADD COLUMN dies with
+ * "duplicate column name" before it tests anything.
+ */
+internal fun stripTaskPlanJsonColumn(db: SQLiteDatabase) {
+    db.execSQL(
+        "CREATE TABLE `ai_tasks_v19` (" +
+            "`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, " +
+            "`name` TEXT NOT NULL, " +
+            "`prompt` TEXT NOT NULL, " +
+            "`profile_id` TEXT NOT NULL, " +
+            "`schedule_json` TEXT NOT NULL, " +
+            "`permissions_json` TEXT NOT NULL, " +
+            "`run_config_json` TEXT NOT NULL DEFAULT '', " +
+            "`enabled` INTEGER NOT NULL, " +
+            "`last_run_at_ms` INTEGER, " +
+            "`last_run_status` TEXT NOT NULL, " +
+            "`last_result_summary` TEXT, " +
+            "`created_at` INTEGER NOT NULL)"
+    )
+    db.execSQL(
+        "INSERT INTO `ai_tasks_v19` " +
+            "(`id`, `name`, `prompt`, `profile_id`, `schedule_json`, `permissions_json`, " +
+            "`run_config_json`, `enabled`, `last_run_at_ms`, `last_run_status`, `last_result_summary`, `created_at`) " +
+            "SELECT `id`, `name`, `prompt`, `profile_id`, `schedule_json`, `permissions_json`, " +
+            "`run_config_json`, `enabled`, `last_run_at_ms`, `last_run_status`, `last_result_summary`, `created_at` " +
+            "FROM `ai_tasks`"
+    )
+    db.execSQL("DROP TABLE `ai_tasks`")
+    db.execSQL("ALTER TABLE `ai_tasks_v19` RENAME TO `ai_tasks`")
+    db.execSQL(
+        "CREATE INDEX `index_ai_tasks_profile_id` ON `ai_tasks` (`profile_id`)"
+    )
 }

@@ -121,6 +121,18 @@ data class PluginCallRequest(
     /** The module's sanitized name, verbatim from the row. */
     val zagentsName: String? = null,
     /**
+     * The NodePackageStore's install root (`<nodeDir>/node_modules`), when
+     * the caller has one, so a plugin whose npm dependencies were NOT bundled
+     * in its ZIP can still resolve them — read-only, contained, and only
+     * AFTER the plugin's own tree fails to answer. Null (or blank, which is
+     * omitted from the line) keeps the shim exactly as it was: bundled
+     * packages or built-ins, nothing else. WHY A FIELD AND NOT A CONSTANT:
+     * the host is also run by the desktop harness, where the store's
+     * location is not this app's to know — the caller that owns the store
+     * passes its own truth.
+     */
+    val nodeModulesRoot: String? = null,
+    /**
      * The CURRENT chat's transcript (user and assistant turns only), most
      * recent last, sent ONLY when `chat.context` is in the effective grant
      * set — otherwise the field is absent and the host answers the plugin an
@@ -490,6 +502,10 @@ internal object NodeProtocol {
             if (!call.title.isNullOrBlank()) put("title", call.title)
             if (!call.zagentsVersion.isNullOrBlank()) put("zagentsVersion", call.zagentsVersion)
             if (!call.zagentsName.isNullOrBlank()) put("zagentsName", call.zagentsName)
+            // The npm store's root, for the require shim's guarded fallback.
+            // Same omit-when-absent rule as every optional field: a null
+            // member is read by the host as "no store", never as an empty one.
+            if (!call.nodeModulesRoot.isNullOrBlank()) put("nodeModulesRoot", call.nodeModulesRoot)
             // Same omit-when-empty rule as userAgent above: absent means "not
             // granted", never "granted and empty".
             if (!call.history.isNullOrEmpty()) {

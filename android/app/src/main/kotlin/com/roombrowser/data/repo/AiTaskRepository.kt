@@ -96,6 +96,9 @@ class AiTaskRepository(private val dao: AiTaskDao) {
                 scheduleJson = AiTaskCodec.encodeSchedule(schedule),
                 permissionsJson = AiTaskCodec.encodePermissions(permissions),
                 runConfigJson = AiTaskCodec.encodeRunConfig(runConfig),
+                // The plan belongs to the RUNS, not the form: editing a task
+                // must not erase what its last run wrote down.
+                planJson = existing?.planJson ?: "",
                 enabled = enabled,
                 lastRunAtMs = existing?.lastRunAtMs,
                 lastRunStatus = existing?.lastRunStatus ?: "",
@@ -121,6 +124,13 @@ class AiTaskRepository(private val dao: AiTaskDao) {
 
     /** The same rows, read once — what the sweep looks at before it waits. */
     suspend fun deferredNow(): List<AiTaskEntity> = dao.byStatus(AiTaskRunStatus.DEFERRED.name)
+
+    /**
+     * Persists the step list a run last wrote with `plan`, so the task list —
+     * which already observes [tasks] — shows the run's live plan status with
+     * no reload: the Room Flow re-emits the row the moment this lands.
+     */
+    suspend fun setTaskPlan(id: Long, planJson: String) = dao.setPlan(id, planJson)
 
     suspend fun delete(id: Long) = dao.delete(id)
 

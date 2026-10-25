@@ -92,7 +92,7 @@ class UrlIntelligenceTest {
     fun `plain query is search`() {
         val (input, url) = UrlIntelligence.classify("how to boil eggs")
         assertThat(input).isInstanceOf(Input.Search::class.java)
-        assertThat(url).contains("duckduckgo.com")
+        assertThat(url).contains("google.com")
         assertThat(url).contains("how+to+boil+eggs")
     }
 

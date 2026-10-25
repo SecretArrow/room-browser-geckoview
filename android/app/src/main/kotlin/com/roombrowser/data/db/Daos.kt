@@ -815,6 +815,10 @@ interface AiTaskDao {
     @Query("SELECT * FROM ai_tasks WHERE last_run_status = :status AND enabled = 1 ORDER BY last_run_at_ms ASC")
     suspend fun byStatus(status: String): List<AiTaskEntity>
 
+    /** Replaces the step list a run last wrote, as AgentPlan.encode spells it. */
+    @Query("UPDATE ai_tasks SET plan_json = :plan WHERE id = :id")
+    suspend fun setPlan(id: Long, plan: String)
+
     @Query("DELETE FROM ai_tasks WHERE id = :id")
     suspend fun delete(id: Long)
 
