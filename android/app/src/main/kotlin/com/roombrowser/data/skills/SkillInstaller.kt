@@ -19,6 +19,7 @@ import java.nio.file.Files
 import java.security.MessageDigest
 import java.util.Locale
 import java.util.UUID
+import java.util.concurrent.TimeUnit
 import java.util.stream.Collectors
 
 /**
@@ -50,9 +51,23 @@ class SkillHttpResponse(val code: Int, val body: ByteArray, val message: String)
  */
 class HttpSkillFetch(client: OkHttpClient = AppHttpClients.agent()) : SkillFetch {
 
+    /**
+     * A HARD DEADLINE, scoped to this fetch.
+     *
+     * The shared agent client deliberately sets only a connect timeout, because
+     * a slow model answer may legitimately hold a socket for minutes. A skill
+     * install has no such excuse: it is one bounded download of a tarball, and
+     * without a call deadline a connection that dribbles bytes forever pins the
+     * install coroutine behind a spinner with no way out. The read deadline
+     * catches the same connection one step earlier, and both are generous
+     * enough that a genuinely slow link still finishes.
+     */
     private val http: OkHttpClient = client.newBuilder()
         .followRedirects(false)
         .followSslRedirects(false)
+        .connectTimeout(15, TimeUnit.SECONDS)
+        .readTimeout(30, TimeUnit.SECONDS)
+        .callTimeout(120, TimeUnit.SECONDS)
         .build()
 
     override fun get(url: HttpUrl, accept: String?): SkillHttpResponse {
@@ -106,8 +121,10 @@ sealed class SkillInstallResult {
 
     /**
      * Installed; [updated] is true when a skill with the same id already
-     * existed (same id = replace, whatever its old source was). [entity] is
-     * the row exactly as it now stands in the store.
+     * existed FROM THE SAME SOURCE and was replaced. A different source
+     * claiming an installed id is refused, not replaced — see the check in
+     * [SkillInstaller.install]. [entity] is the row exactly as it now stands
+     * in the store.
      */
     data class Installed(
         val entity: AgentSkillEntity,
@@ -156,9 +173,14 @@ class DaoSkillStore(private val dao: AgentSkillDao) : SkillStore {
  *     rulebook PluginZipInstaller enforces for a ZIP, duplicated here as
  *     constants on purpose: the plugin installer's private companion is not
  *     a shared surface, and the two rules must stay in lock-step by test.
- *  5. The skill directory is copied into a staging directory and renamed
- *     into place — the rename is the commit, and a refusal anywhere before
- *     it leaves the previously installed skill exactly as it was.
+ *  5. The skill directory is copied into a staging directory and swapped into
+ *     place by two renames (old tree aside, new tree in, backup dropped) —
+ *     the rename is the commit, a refusal anywhere before it leaves the
+ *     previously installed skill exactly as it was, and a failed swap puts
+ *     the old tree back.
+ *  6. A skill id already installed FROM A DIFFERENT SOURCE is refused: the
+ *     id is derived from the skill's name, so replacing across repositories
+ *     would let one repo overwrite the instructions of another's skill.
  *
  * JVM-testable with a fake [SkillFetch] and a fake [SkillStore].
  */
@@ -259,6 +281,24 @@ class SkillInstaller(
                     )
                 val skillId = SkillSpecs.skillIdFor(manifest.name)
 
+                // A SKILL ID IS DERIVED FROM THE NAME, so two repositories can
+                // claim the same one — and the id is the whole identity: the
+                // prompt block, the files and the user's enabled switch all
+                // key on it. Replacing across sources would therefore let any
+                // repository overwrite the instructions of a skill the user
+                // vetted and enabled, with no visible change but the text that
+                // reaches the system prompt. An update is the SAME source
+                // (repo and folder); anything else must be removed by the
+                // user first, which is the consent a replace needs.
+                val existing = store.bySkillId(skillId)
+                if (existing != null && !sameSource(existing, spec)) {
+                    return@withContext SkillInstallResult.Refused(
+                        "\"${existing.displayName}\" (id $skillId) is already installed from " +
+                            "${existing.sourceLabel} — remove it from Agent skills first if you " +
+                            "mean to replace it with ${spec.sourceLabel}"
+                    )
+                }
+
                 // The copy is the commit's payload: the whole skill directory —
                 // SKILL.md, references/, everything — into a fresh staging
                 // directory that will BE the installed skill.
@@ -266,22 +306,27 @@ class SkillInstaller(
                 val destination = File(commit, skillId)
                 try {
                     copyTree(skillDir, destination)
-                    val existing = store.bySkillId(skillId)
                     val target = File(skillsDir, skillId)
-                    // The rename is the commit: the old directory is removed
-                    // only once the new tree sits fully staged beside it, so
-                    // a failure before this line leaves the previous install
-                    // untouched and one after it leaves the row authoritative.
-                    if (target.exists() && !target.deleteRecursively()) {
+                    // The rename is the commit, and the OLD TREE IS MOVED
+                    // ASIDE rather than deleted: a delete followed by a rename
+                    // that fails would leave the skill gone from disk while its
+                    // row still said it was installed. The swap is two renames
+                    // on one filesystem, and the backup is restored if the
+                    // second one does not land.
+                    val backup = File(skillsDir, ".old-${UUID.randomUUID()}")
+                    val hadPrevious = target.exists()
+                    if (hadPrevious && !target.renameTo(backup)) {
                         return@withContext SkillInstallResult.Refused(
                             "the previously installed \"$skillId\" directory could not be replaced"
                         )
                     }
                     if (!destination.renameTo(target)) {
+                        if (hadPrevious) backup.renameTo(target)
                         return@withContext SkillInstallResult.Refused(
                             "the skill directory could not be written (${target.name})"
                         )
                     }
+                    backup.deleteRecursively()
                     val entity = AgentSkillEntity(
                         id = existing?.id ?: 0L,
                         skillId = skillId,
@@ -317,6 +362,22 @@ class SkillInstaller(
                 stage.deleteRecursively()
             }
         }
+
+    /**
+     * Whether the installed row came from exactly the place [spec] names.
+     * Owner and repo are case-insensitive (GitHub's own rule); the folder is
+     * compared as written, because it is a path on a case-sensitive tree.
+     */
+    private fun sameSource(existing: AgentSkillEntity, spec: SkillSpec): Boolean =
+        existing.sourceRepo.equals(spec.sourceRepo, ignoreCase = true) &&
+            existing.subPath == spec.subPath
+
+    /** `owner/repo` or `owner/repo/path` — how a source is named to a person. */
+    private val AgentSkillEntity.sourceLabel: String
+        get() = sourceRepo + (if (subPath.isEmpty()) "" else "/$subPath")
+
+    private val SkillSpec.sourceLabel: String
+        get() = sourceRepo + (if (subPath.isEmpty()) "" else "/$subPath")
 
     /**
      * The repo API's default_branch, or null when the API is unreachable,

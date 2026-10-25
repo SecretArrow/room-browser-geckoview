@@ -227,54 +227,93 @@ class SkillInstallerTest {
     // ------------------------------------------------------------- re-installing
 
     @Test
-    fun `reinstalling replaces the directory and updates the row in place`() = runBlocking<Unit> {
-        // The FIRST install carries a file the second one does not, so the
-        // replace (not merge) of the directory is observable.
-        val firstFetch = FakeFetch(
-            "https://api.github.com/repos/owner/demo-hub" to ok("""{"default_branch":"main"}"""),
-            "https://api.github.com/repos/owner/demo-hub/branches/main" to
-                ok("""{"commit":{"sha":"abc"}}"""),
-            "https://codeload.github.com/owner/demo-hub/tar.gz/refs/heads/main" to
-                ok(
-                    hubTarball(
-                        "demo-hub-main",
-                        skillMdFor("1.13.0"),
-                        "demo-hub-main/skills/w/only-first.md" to "first",
-                        skillDir = "demo-hub-main/skills/w"
+    fun `reinstalling from the same source replaces the directory and updates the row in place`() =
+        runBlocking<Unit> {
+            // The FIRST install carries a file the second one does not, so the
+            // replace (not merge) of the directory is observable.
+            val firstFetch = FakeFetch(
+                "https://api.github.com/repos/owner/demo-hub" to ok("""{"default_branch":"main"}"""),
+                "https://api.github.com/repos/owner/demo-hub/branches/main" to
+                    ok("""{"commit":{"sha":"abc"}}"""),
+                "https://codeload.github.com/owner/demo-hub/tar.gz/refs/heads/main" to
+                    ok(
+                        hubTarball(
+                            "demo-hub-main",
+                            skillMdFor("1.13.0"),
+                            "demo-hub-main/skills/w/only-first.md" to "first",
+                            skillDir = "demo-hub-main/skills/w"
+                        )
                     )
-                )
-        )
-        installer(firstFetch).install("owner/demo-hub/skills/w", nowMs = 1_000)
-        val first = store.rows.getValue("binance-agentic-wallet")
-        store.upsert(first.copy(enabled = false))
+            )
+            installer(firstFetch).install("owner/demo-hub/skills/w", nowMs = 1_000)
+            val first = store.rows.getValue("binance-agentic-wallet")
+            store.upsert(first.copy(enabled = false))
 
-        // A different repo, the same skill name: same id, replaced content.
-        val fetch = FakeFetch(
-            "https://api.github.com/repos/other/demo-hub" to ok("""{"default_branch":"main"}"""),
-            "https://api.github.com/repos/other/demo-hub/branches/main" to
-                ok("""{"commit":{"sha":"newsha"}}"""),
-            "https://codeload.github.com/other/demo-hub/tar.gz/refs/heads/main" to
-                ok(hubTarball(skillMd = skillMdFor("2.0.0"), skillDir = "demo-hub-main/skills/w"))
-        )
-        val result = SkillInstaller(skillsDir, fetch, store)
-            .install("other/demo-hub/skills/w", nowMs = 2_000) as SkillInstallResult.Installed
+            // The SAME repo and folder, a newer commit: this is the update
+            // path, and it replaces the tree and the row in place.
+            val fetch = FakeFetch(
+                "https://api.github.com/repos/owner/demo-hub" to ok("""{"default_branch":"main"}"""),
+                "https://api.github.com/repos/owner/demo-hub/branches/main" to
+                    ok("""{"commit":{"sha":"newsha"}}"""),
+                "https://codeload.github.com/owner/demo-hub/tar.gz/refs/heads/main" to
+                    ok(hubTarball(skillMd = skillMdFor("2.0.0"), skillDir = "demo-hub-main/skills/w"))
+            )
+            val result = installer(fetch)
+                .install("owner/demo-hub/skills/w", nowMs = 2_000) as SkillInstallResult.Installed
 
-        assertThat(result.updated).isTrue()
-        val second = store.rows.getValue("binance-agentic-wallet")
-        assertThat(second.id).isEqualTo(first.id)
-        assertThat(second.installedAt).isEqualTo(1_000) // the first install's moment
-        assertThat(second.updatedAt).isEqualTo(2_000)
-        assertThat(second.version).isEqualTo("2.0.0")
-        assertThat(second.commitRef).isEqualTo("newsha")
-        assertThat(second.enabled).isFalse() // the user's switch survives an update
+            assertThat(result.updated).isTrue()
+            val second = store.rows.getValue("binance-agentic-wallet")
+            assertThat(second.id).isEqualTo(first.id)
+            assertThat(second.installedAt).isEqualTo(1_000) // the first install's moment
+            assertThat(second.updatedAt).isEqualTo(2_000)
+            assertThat(second.version).isEqualTo("2.0.0")
+            assertThat(second.commitRef).isEqualTo("newsha")
+            assertThat(second.enabled).isFalse() // the user's switch survives an update
 
-        // The directory was REPLACED, not merged: the reference file that only
-        // the first install carried is gone.
-        assertThat(File(skillsDir, "binance-agentic-wallet/references/send.md").isFile).isTrue()
-        assertThat(
-            File(skillsDir, "binance-agentic-wallet").walkTopDown().any { it.name == "only-first.md" }
-        ).isFalse()
-    }
+            // The directory was REPLACED, not merged: the reference file that
+            // only the first install carried is gone.
+            assertThat(File(skillsDir, "binance-agentic-wallet/references/send.md").isFile).isTrue()
+            assertThat(
+                File(skillsDir, "binance-agentic-wallet").walkTopDown().any { it.name == "only-first.md" }
+            ).isFalse()
+        }
+
+    @Test
+    fun `a different repository claiming an installed skill id is refused, files untouched`() =
+        runBlocking<Unit> {
+            installer(hubFetch(skillDir = "skills/w"))
+                .install("owner/demo-hub/skills/w", nowMs = 1_000)
+            val installed = store.rows.getValue("binance-agentic-wallet")
+            store.upsert(installed.copy(enabled = false))
+            val filesBefore = File(skillsDir, "binance-agentic-wallet").walkTopDown()
+                .filter { it.isFile }
+                .map { it.relativeTo(File(skillsDir, "binance-agentic-wallet")).path }
+                .toSortedSet()
+
+            // Same skill NAME, different owner: the id would collide, and
+            // replacing across sources is how one repo would hijack another's
+            // instructions. The refusal names both sides.
+            val result = installer(hubFetch(host = "other", skillDir = "skills/w"))
+                .install("other/demo-hub/skills/w", nowMs = 2_000)
+
+            assertThat(result).isInstanceOf(SkillInstallResult.Refused::class.java)
+            val reason = (result as SkillInstallResult.Refused).reason
+            assertThat(reason).contains("already installed from owner/demo-hub/skills/w")
+            assertThat(reason).contains("remove it")
+
+            // Nothing moved: the row, its enabled switch and its files are
+            // exactly as the user left them.
+            val after = store.rows.getValue("binance-agentic-wallet")
+            assertThat(after.sourceRepo).isEqualTo("owner/demo-hub")
+            assertThat(after.enabled).isFalse()
+            assertThat(after.updatedAt).isEqualTo(1_000)
+            assertThat(
+                File(skillsDir, "binance-agentic-wallet").walkTopDown()
+                    .filter { it.isFile }
+                    .map { it.relativeTo(File(skillsDir, "binance-agentic-wallet")).path }
+                    .toSortedSet()
+            ).isEqualTo(filesBefore)
+        }
 
     // ------------------------------------------------------------- fixtures
 

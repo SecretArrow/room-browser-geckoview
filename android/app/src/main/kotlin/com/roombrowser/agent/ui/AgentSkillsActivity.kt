@@ -267,7 +267,20 @@ private fun AgentSkillsRoot(controller: AgentSettingsController, onClose: () -> 
                     onClick = {
                         installDialog = false
                         scope.launch {
-                            when (val result = repo.install(spec)) {
+                            // A failed install is a RESULT, never a crash: the
+                            // fetch is network traffic and the commit is disk
+                            // I/O, so both can throw, and an exception escaping
+                            // this lambda would take the activity down without
+                            // telling the person what went wrong.
+                            val result = runCatching { repo.install(spec) }
+                                .getOrElse { error ->
+                                    report(
+                                        "Install failed: " +
+                                            (error.message ?: error.javaClass.simpleName)
+                                    )
+                                    return@launch
+                                }
+                            when (result) {
                                 is SkillInstallResult.Refused -> report(result.reason)
                                 is SkillInstallResult.Installed -> {
                                     val where = result.entity.sourceRepo +

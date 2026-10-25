@@ -628,14 +628,17 @@ private fun AgentPanelHeader(
                 )
             }
         }
-        // Both are off while a turn runs, because both are refused then:
-        // newSession/openSession bail on `running` so the running turn keeps
-        // the one transcript list the panel has. A tap that silently did
-        // nothing is worse than a control that says it is unavailable.
-        IconButton(onClick = onNewSession, enabled = !agent.running) {
+        // Both stay ENABLED while a turn runs: neither refuses anymore. A
+        // turn's every write lands in the state it captured at its start, so
+        // leaving the chat mid-turn is safe — the running chat keeps moving
+        // underneath, the panel renders whichever chat the user asked for,
+        // and the plan toggle and the "Running in another tab" line above
+        // keep the work reachable. Gating these on `running` was the last
+        // trace of the one-shared-list design they used to protect.
+        IconButton(onClick = onNewSession) {
             Icon(Icons.Filled.Add, contentDescription = "New agent chat")
         }
-        IconButton(onClick = onOpenSessions, enabled = !agent.running) {
+        IconButton(onClick = onOpenSessions) {
             Icon(Icons.Filled.History, contentDescription = "Agent chat history")
         }
         // The plan panel toggle. A pure user flip (planPanelOpen's contract),
@@ -2372,11 +2375,13 @@ private fun readAttachmentText(resolver: ContentResolver, uri: Uri): Pair<String
  * It reads [BrowserAgentController.plan] DIRECTLY in composition — never a
  * remembered copy — so a model rewriting the list mid-turn re-renders it the
  * moment the state lands: this is the real-time window on the work, not a
- * snapshot taken when it opened. Its ONLY closer is the user (swipe, scrim,
+ * snapshot taken when it opened. That accessor prefers the RUNNING turn's
+ * plan, so switching to another chat mid-task does not blank the list the
+ * user opened this sheet to watch. Its ONLY closer is the user (swipe, scrim,
  * or the toggle that opened it), because [planPanelOpen] is a user toggle by
  * contract: plan updates, chat switches and the turn ending must never write
- * it. A chat switch that lands an empty plan therefore does not close the
- * sheet — it shows the empty-state line below until the user dismisses it.
+ * it. Between turns the sheet shows the visible chat's own plan, and a chat
+ * with none gets the empty-state line below until the user dismisses it.
  *
  * Shown from [AgentPanelHeader], which both hosts render, so one site covers
  * the floating panel and the full-screen agent alike.

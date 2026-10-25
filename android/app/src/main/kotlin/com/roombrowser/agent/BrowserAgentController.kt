@@ -495,7 +495,23 @@ class BrowserAgentController(
     // running turn's prompt/status wherever the panel has drifted to) -------
 
     val entries: List<AgentEntry> get() = panelState.entries
-    val plan: List<AgentPlan.Item> get() = panelState.plan
+
+    /**
+     * The step list the plan panel renders: a RUNNING turn's own while it has
+     * one — the live window on the work, whichever chat the panel happens to
+     * be showing — else the visible chat's.
+     *
+     * Same routing as [approval], and for the same reason: a person who walks
+     * off to another chat mid-turn must not watch the panel's step list go
+     * blank while the task is still working. The `isNotEmpty` guard is what
+     * keeps the fallback honest: a turn that has not written a plan yet says
+     * nothing about the chat on screen, so the panel keeps showing that
+     * chat's list instead of blanking it. Once the turn ends it is no longer
+     * the turn's state, and the panel returns to the chat it shows.
+     */
+    val plan: List<AgentPlan.Item>
+        get() = turnState?.plan?.takeIf { it.isNotEmpty() } ?: panelState.plan
+
     val hasOlderEntries: Boolean get() = panelState.hasOlderEntries
     val retryable: RetryableTurn? get() = panelState.retryable
 

@@ -218,16 +218,31 @@ class ChatSessionState(val sessionId: Long?) {
         if (other === this) return
         entries.addAll(other.entries)
         retryable = other.retryable
+        // THE TURN'S LIVE BOOKKEEPING MOVES WITH ITS ROWS. A turn that began on
+        // the null-keyed scratch state set `running` there (the controller's
+        // `send` does it before the session row exists); the resolved state
+        // this chat actually renders would otherwise report `running = false`
+        // for the whole turn. Two things read that flag and both fail quietly:
+        // the LRU trim protects `state.running` from eviction, so a user
+        // visiting enough chats mid-turn could evict the state the turn is
+        // still writing to, and the "load older" guards refuse to splice a
+        // page into a live transcript only while it is true. The scratch state
+        // is emptied and its flags cleared, so it cannot stay pinned as
+        // running either.
+        //
+        // `plan` is deliberately NOT copied: the resolved chat owns whatever
+        // window was just loaded for it, and the scratch state has no plan to
+        // contribute — the turn writes the plan to whichever state it holds
+        // once the model supplies one.
+        running = other.running
+        statusLine = other.statusLine
+        approval = other.approval
+        streamingIndex = other.streamingIndex
         other.entries.clear()
         other.retryable = null
-    }
-
-    /** Empties the transcript and the window bookkeeping that paged it in. */
-    internal fun clearTranscriptWindow() {
-        entries.clear()
-        hasOlderEntries = false
-        oldestLoadedRowId = null
-        hasLoadedWindow = false
-        persistedRowCount = 0
+        other.running = false
+        other.statusLine = null
+        other.approval = null
+        other.streamingIndex = null
     }
 }

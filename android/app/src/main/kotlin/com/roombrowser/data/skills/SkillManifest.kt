@@ -69,6 +69,12 @@ object SkillSpecs {
     /** A run of `segment/segment/...` inside free text (natural language). */
     private val CANDIDATE = Regex("[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)+")
 
+    /** A scheme-qualified URL anywhere in the text, sentence punctuation aside. */
+    private val URL = Regex("""[A-Za-z][A-Za-z0-9+.\-]*://[^\s<>"'`]+""")
+
+    /** The only hosts a skill may come from. */
+    private val GITHUB_HOSTS = setOf("github.com", "www.github.com")
+
     private const val MAX_SEGMENTS = 16
     private const val MAX_SEGMENT_LENGTH = 100
 
@@ -103,6 +109,13 @@ object SkillSpecs {
                     "e.g. `npx skills add owner/repo/path/to/skill`"
             )
         }
+        // EVERY scheme-qualified URL is judged before anything is parsed out of
+        // it, because a host check performed on a SUBSTRING is no check at
+        // all: "https://example.com/github.com/owner/repo" contains the token
+        // "github.com/" and used to be silently re-pointed at GitHub, so the
+        // person got a repository they never named. The install only ever
+        // fetches https://github.com, and now it says so instead of guessing.
+        urlProblem(text)?.let { return SkillSpecParse.Invalid(it) }
         // The URL check runs before the prefix strip: "npx skills add https://..."
         // is a legal CLI spelling, and the URL parser is the right one for it.
         if (text.contains("github.com/")) return parseUrl(text)
@@ -113,6 +126,33 @@ object SkillSpecs {
             segments[0].contains(' ') || segments[0].contains('\t') -> parseNaturalLanguage(text)
             else -> buildSpec(segments, stripped)
         }
+    }
+
+    /**
+     * The refusal for the first URL in [text] that is not an https GitHub one,
+     * or null when every URL in it is. Only `github.com` (and its `www`
+     * spelling) is accepted: `api.github.com` and `codeload.github.com` are
+     * hosts this installer builds itself, never ones a person names.
+     */
+    private fun urlProblem(text: String): String? {
+        for (match in URL.findAll(text)) {
+            val token = match.value.trimEnd('.', ',', ';', ')', ']', '}', '!', '?')
+            val scheme = token.substringBefore("://").lowercase()
+            val host = token.substringAfter("://")
+                .substringBefore('/')
+                .substringBefore('?')
+                .substringBefore('#')
+                .lowercase()
+            if (scheme != "https") {
+                return "only https://github.com URLs are accepted — \"${token.take(80)}\" uses $scheme"
+            }
+            if (host !in GITHUB_HOSTS) {
+                return "\"${host.take(80)}\" is not GitHub — a skill install only fetches from " +
+                    "https://github.com, so name the repository as owner/repo or paste its " +
+                    "github.com URL"
+            }
+        }
+        return null
     }
 
     /** `npx skills add`, `skills add`, and their `install` spellings, once each. */

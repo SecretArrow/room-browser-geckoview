@@ -117,6 +117,33 @@ class SkillManifestTest {
         assertThat((parsed as SkillSpecParse.Invalid).reason).contains("query")
     }
 
+    @Test
+    fun `a link on another host that carries github com in its path is refused`() {
+        // The install only ever fetches GitHub. A substring check would have
+        // re-pointed this at github.com/owner/repo — a repository the person
+        // never named — so the host is judged, not the text.
+        val parsed = SkillSpecs.parse("https://example.com/github.com/owner/repo/tree/main/skills/demo")
+        val reason = (parsed as SkillSpecParse.Invalid).reason
+        assertThat(reason).contains("example.com")
+        assertThat(reason).contains("not GitHub")
+    }
+
+    @Test
+    fun `a github subdomain that is not the repo host is refused`() {
+        val parsed = SkillSpecs.parse("https://api.github.com/repos/owner/repo")
+        assertThat((parsed as SkillSpecParse.Invalid).reason).contains("not GitHub")
+    }
+
+    @Test
+    fun `a www github url and a plain github url both parse`() {
+        val www = SkillSpecs.parse("https://www.github.com/owner/repo/tree/main/skills/demo")
+        assertThat((www as SkillSpecParse.Ok).spec.displayPath)
+            .isEqualTo("owner/repo/skills/demo")
+
+        val plain = SkillSpecs.parse("https://github.com/owner/repo")
+        assertThat((plain as SkillSpecParse.Ok).spec.sourceRepo).isEqualTo("owner/repo")
+    }
+
     // ------------------------------------------------------------- spec: natural language
 
     @Test
